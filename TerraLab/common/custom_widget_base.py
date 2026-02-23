@@ -623,7 +623,7 @@ class CustomWidgetBase(QWidget):
                 self._resizing = True
                 self._resize_edges = edges
                 self._resize_drag_pos = event.globalPos()
-            elif self.title_bar.geometry().contains(event.pos()):
+            elif hasattr(self, 'title_bar') and self.title_bar.geometry().contains(event.pos()):
                 self._resizing = False
                 self.old_pos = event.globalPos()
 

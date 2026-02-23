@@ -878,7 +878,7 @@ class VillageOverlay(QObject):
         """Receive new horizon profile and regenerate village on the terrain."""
         print(f"[VillageOverlay] Profile updated. Regenerating village...")
         self.profile = profile
-        self._generate()
+        #self._generate() #TODO: Molt millorable i poc madur. es desactiva temporalment
         self.request_update.emit()
 
     def _generate(self):
@@ -979,8 +979,8 @@ class VillageOverlay(QObject):
         # Since we don't store the band ID on the object easily right now, 
         # let's assume a generic parallax for "village layer" or derive it?
         # Actually, simpler: Objects at different distances should move differently.
-        # But for now, we'll keep the single 1.5 parallax to match the 'Near' layer roughly.
-        parallax_objects = 1.35 # Matches approx near_1_2
+        # But for now, we'll keep it at 1.0 to ensure zero drift relative to Stars/Compass.
+        parallax_objects = 1.0 # 1.0 = Perfectly aligned with coordinate system.
         
         def make_parallax_projection(base_proj_fn, parallax_factor):
             def parallax_proj(alt, az):

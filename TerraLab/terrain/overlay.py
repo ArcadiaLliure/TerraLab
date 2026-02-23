@@ -38,34 +38,34 @@ LAYER_DEFS = [
     # (band_id,          parallax, night_color,             day_color)
     
     # --- Deep Horizon (100km+) [Atmospheric Blue] ---
-    ("haze_220_plus",    1.02,     QColor(60, 70, 90),      QColor(170, 185, 205)),   # Haze 3
-    ("haze_150_220",     1.03,     QColor(58, 68, 88),      QColor(168, 183, 203)),   # Haze 2
-    ("haze_100_150",     1.04,     QColor(56, 66, 86),      QColor(165, 180, 200)),   # Haze 1
+    ("haze_220_plus",    1.0,      QColor(60, 70, 90),      QColor(170, 185, 205)),   # Haze 3
+    ("haze_150_220",     1.0,      QColor(58, 68, 88),      QColor(168, 183, 203)),   # Haze 2
+    ("haze_100_150",     1.0,      QColor(56, 66, 86),      QColor(165, 180, 200)),   # Haze 1
 
     # --- Far Range (25-100km) [Blue Haze] ---
-    ("far_70_100",       1.05,     QColor(54, 64, 84),      QColor(160, 175, 195)),
-    ("far_50_70",        1.06,     QColor(52, 62, 82),      QColor(155, 170, 190)),
-    ("far_35_50",        1.08,     QColor(50, 60, 80),      QColor(150, 165, 185)),
-    ("far_25_35",        1.10,     QColor(48, 58, 78),      QColor(145, 160, 180)),
+    ("far_70_100",       1.0,      QColor(54, 64, 84),      QColor(160, 175, 195)),
+    ("far_50_70",        1.0,      QColor(52, 62, 82),      QColor(155, 170, 190)),
+    ("far_35_50",        1.0,      QColor(50, 60, 80),      QColor(150, 165, 185)),
+    ("far_25_35",        1.0,      QColor(48, 58, 78),      QColor(145, 160, 180)),
 
     # --- Mid Range (5-25km) [Transition: Green-Blue] ---
-    ("mid_20_25",        1.12,     QColor(44, 54, 74),      QColor(135, 150, 170)),
-    ("mid_15_20",        1.14,     QColor(40, 50, 70),      QColor(125, 140, 160)),
-    ("mid_10_15",        1.16,     QColor(36, 46, 66),      QColor(115, 130, 150)),
-    ("mid_7_10",         1.18,     QColor(32, 42, 62),      QColor(105, 120, 135)),
-    ("mid_5_7",          1.20,     QColor(28, 38, 58),      QColor(95, 110, 120)),
+    ("mid_20_25",        1.0,      QColor(44, 54, 74),      QColor(135, 150, 170)),
+    ("mid_15_20",        1.0,      QColor(40, 50, 70),      QColor(125, 140, 160)),
+    ("mid_10_15",        1.0,      QColor(36, 46, 66),      QColor(115, 130, 150)),
+    ("mid_7_10",         1.0,      QColor(32, 42, 62),      QColor(105, 120, 135)),
+    ("mid_5_7",          1.0,      QColor(28, 38, 58),      QColor(95, 110, 120)),
 
     # --- Near Hills (1-5km) [Forest Green/Olive] ---
-    ("near_4_5",         1.22,     QColor(24, 34, 54),      QColor(90, 105, 100)),
-    ("near_3_4",         1.24,     QColor(20, 30, 50),      QColor(85, 100, 90)),
-    ("near_2_3",         1.26,     QColor(16, 26, 46),      QColor(80, 95, 80)),
-    ("near_1.5_2",       1.28,     QColor(12, 22, 42),      QColor(75, 90, 75)),
-    ("near_1_1.5",       1.30,     QColor(10, 18, 38),      QColor(70, 85, 70)),
+    ("near_4_5",         1.0,      QColor(24, 34, 54),      QColor(90, 105, 100)),
+    ("near_3_4",         1.0,      QColor(20, 30, 50),      QColor(85, 100, 90)),
+    ("near_2_3",         1.0,      QColor(16, 26, 46),      QColor(80, 95, 80)),
+    ("near_1.5_2",       1.0,      QColor(12, 22, 42),      QColor(75, 90, 75)),
+    ("near_1_1.5",       1.0,      QColor(10, 18, 38),      QColor(70, 85, 70)),
 
     # --- Immediate Ground (0-1km) [Dark Forest] ---
-    ("gnd_500_1k",       1.35,     QColor(8, 16, 34),       QColor(65, 80, 65)),
-    ("gnd_250_500",      1.40,     QColor(6, 14, 30),       QColor(60, 75, 60)),
-    ("gnd_0_250",        1.45,     QColor(5, 12, 28),       QColor(55, 70, 55)),      # Closest
+    ("gnd_500_1k",       1.0,      QColor(8, 16, 34),       QColor(65, 80, 65)),
+    ("gnd_250_500",      1.0,      QColor(6, 14, 30),       QColor(60, 75, 60)),
+    ("gnd_0_250",        1.0,      QColor(5, 12, 28),       QColor(55, 70, 55)),      # Closest
 ]
 
 # Ground fill (solid color below the nearest horizon line)
@@ -115,6 +115,12 @@ class _BandPoints:
             else:
                 h = elev_deg * vert_exag
             pts.append((az, h))
+            
+        # Ensure perfect 360-degree closure for continuous rendering
+        if pts and pts[0][0] == 0 and pts[-1][0] < 360:
+            # Duplicate first point at 360.0 to join blocks seamlessly
+            pts.append((360.0, pts[0][1]))
+            
         return pts
 
 
@@ -262,21 +268,22 @@ class HorizonOverlay(QObject):
             return
 
         strip = []
-        offsets = [-360, 0, 360]
+        
+        # Calculate base offset to center the periodic data around cur_az
+        parallax_shift = (parallax - 1.0) * cur_az
+        # We want az + parallax_shift + offset*360 \approx cur_az
+        # Center az is 180. target_offset = cur_az - parallax_shift - 180
+        base_offset = round((cur_az - parallax_shift - 180) / 360.0) * 360
+        offsets = [base_offset - 360, base_offset, base_offset + 360]
         
         for offset in offsets:
             for az, h_deg in pts:
-                # Apply parallax as an offset to the logical azimuth
-                layer_az = az + (parallax - 1.0) * cur_az
-                final_az = layer_az + offset
+                # Apply parallax and dynamic offset
+                final_az = az + parallax_shift + offset
                 delta_az = final_az - cur_az
                 
                 x = cx + delta_az * px_h
                 
-                # Cull crude offscreen
-                if x < -w or x > w * 2:
-                    continue
-
                 # Query Y anchor from Sky Projection to match curvature
                 # We use 'final_az' (includes parallax) to get the local horizon Y
                 anchor = proj_fn(0, final_az)
@@ -304,18 +311,18 @@ class HorizonOverlay(QObject):
 
         pts = band_pts.points
         strip = []
-        offsets = [-360, 0, 360]
+        
+        # Calculate base offset to center ground logic around cur_az
+        parallax_shift = (parallax_factor - 1.0) * cur_az
+        base_offset = round((cur_az - parallax_shift - 180) / 360.0) * 360
+        offsets = [base_offset - 360, base_offset, base_offset + 360]
         
         for offset in offsets:
             for az, h_deg in pts:
-                layer_az = az + (parallax_factor - 1.0) * cur_az
-                final_az = layer_az + offset
+                final_az = az + parallax_shift + offset
                 delta_az = final_az - cur_az
                 x = cx + delta_az * px_h
                 
-                if x < -w or x > w * 2:
-                    continue
-
                 anchor = proj_fn(0, final_az)
                 if anchor is None:
                     continue
@@ -354,7 +361,8 @@ class HorizonOverlay(QObject):
             p1 = top_points[i+1]
             
             # Check for wrap discontinuity/gap
-            if abs(p1.x() - p0.x()) > 100:
+            # Increase threshold significantly to allow for wider viewports
+            if abs(p1.x() - p0.x()) > 1000:
                 # Close current subpath down to bottom
                 path.lineTo(p0.x(), bottom_y)
                 path.closeSubpath()

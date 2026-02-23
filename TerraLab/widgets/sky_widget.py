@@ -1327,7 +1327,7 @@ class AstroCanvas(QWidget):
         else:
             # Easing
             step = diff * 0.1
-            self.azimuth_offset = (current + step) % 360
+            self.azimuth_offset = (current + step)
             
         self.update()
 
@@ -1507,7 +1507,9 @@ class AstroCanvas(QWidget):
                 # Use cached eclipse dimming
                 eclipse_dimming = self._eclipse_cache.get('value', 1.0)
     
-                self.draw_background(painter, eff_sun_alt, eff_sun_az, self.azimuth_offset, dimming=eclipse_dimming)
+                # Wrap view_az (azimuth_offset) to 0..360 only for background logic/sun-pos
+                wrapped_az = self.azimuth_offset % 360.0
+                self.draw_background(painter, eff_sun_alt, eff_sun_az, wrapped_az, dimming=eclipse_dimming)
     
                 # === WEATHER SYSTEM ===
                 # Moved to end of paintEvent to ensure clouds occlude stars/planets
@@ -3213,19 +3215,37 @@ class AstroCanvas(QWidget):
         # Create a closed path for the sky (Alt >= 0)
         sky_path = QPainterPath()
         points = []
-        # Trace horizon circle
-        for az in range(0, 360, 2):
-            pt = self.project_universal_stereo(0, az)
-            if pt:
-                points.append(QPointF(*pt))
+        # Trace horizon circle with perfect closure
+        # We trace a bit more than 180 degrees from cur_az to cover wide FOVs
+        # But for ground mask, a simple 360 circle is usually enough UNLESS fov > 180.
+        # Let's use 3 blocks to match HorizonOverlay
+        for offset in [-360, 0, 360]:
+            for az in range(0, 361, 10): # Coarse is fine for simple flat horizon
+                pt = self.project_universal_stereo(0, az + offset)
+                if pt:
+                    points.append(QPointF(*pt))
+                elif points:
+                    # End of a block or anti-pode
+                    points.append(None) 
         
-        if len(points) < 3: 
-            return # Should not happen in Zenith view
+        if not points: 
+            return
 
-        sky_path.moveTo(points[0])
-        for p in points[1:]:
-            sky_path.lineTo(p)
-        sky_path.closeSubpath()
+        # Build path from segmented points
+        first = True
+        for p in points:
+            if p is None:
+                first = True
+                continue
+            if first:
+                sky_path.moveTo(p)
+                first = False
+            else:
+                sky_path.lineTo(p)
+        
+        # Don't closeSubpath because it might draw a line across the screen
+        # Instead, we assume the ground is everything below these points.
+        # For a truly robust mask, we'd need to properly clip to screen rect.
         
         # Ground = FullRect - SkyPath
         full_rect = QPainterPath()
@@ -3244,6 +3264,7 @@ class AstroCanvas(QWidget):
         painter.drawPath(sky_path)
     
     def draw_compass(self, painter):
+        w = self.width()
         painter.setPen(QPen(QColor(200, 200, 200, 150)))
         font = painter.font()
         font.setBold(True)
@@ -3261,12 +3282,19 @@ class AstroCanvas(QWidget):
             (315, "Astro.Dir.NW",    "NW")
         ]
         
-        for deg, key, default_text in dirs:
-            pt = self.project_universal_stereo(0, deg)
-            if pt:
-                # Use translation
-                label = getTraduction(key, default_text)
-                painter.drawText(int(pt[0])-10, int(pt[1])-5, label)
+        # Wrap view_az (azimuth_offset) to 0..360 only for labels
+        # But use continuous projection logic for placement
+        
+        # Draw 3 blocks to cover wide viewports
+        for offset in [-360, 0, 360]:
+            for deg, key, default_text in dirs:
+                pt = self.project_universal_stereo(0, deg + offset)
+                if pt:
+                    # Cull labels way off screen to avoid overlap or weirdness
+                    if pt[0] < -200 or pt[0] > w + 200: continue
+                    
+                    label = getTraduction(key, default_text)
+                    painter.drawText(int(pt[0])-10, int(pt[1])-5, label)
 
     # draw_planets removed (Unused)
 
@@ -3426,7 +3454,7 @@ class AstroCanvas(QWidget):
         if self.dragging:
             dx = event.x() - self.last_mouse_x
             dy = event.y() - self.last_mouse_y
-            self.azimuth_offset = (self.azimuth_offset - dx * 0.5) % 360
+            self.azimuth_offset = (self.azimuth_offset - dx * 0.5) 
             self.elevation_angle += dy * 0.5
             self.elevation_angle = max(-90, min(90, self.elevation_angle))
             self.last_mouse_x = event.x()
@@ -4510,18 +4538,21 @@ class AstronomicalWidget(CustomWidgetBase):
         # Update Horizon Overlay (Background Mountains)
         if hasattr(self.canvas, 'horizon_overlay'):
             self.canvas.horizon_overlay.set_profile(profile)
+            
+        # Update Village Overlay (Foreground Objects)
+        if hasattr(self.canvas, 'village'):
+             self.canvas.village.set_profile(profile)
+             
+        self.canvas.update()
 
     def on_horizon_progress(self, msg):
         """Update loading label with progress message."""
         if hasattr(self, 'lbl_loading'):
             self.lbl_loading.setText(msg)
-            self.lbl_loading.show()
-            self.lbl_loading.raise_()
-            
-        # Update Village Overlay (Foreground Objects)
-        if hasattr(self.canvas, 'village_overlay'):
-             self.canvas.village_overlay.set_profile(profile)
-             
+            if self.lbl_loading.isHidden():
+                self.lbl_loading.show()
+                self.lbl_loading.raise_()
+        
         self.canvas.update()
 
     def pause_updates(self):
@@ -4657,6 +4688,15 @@ class AstronomicalWidget(CustomWidgetBase):
         self.btn_realtime.setToolTip(getTraduction("Astro.RealTime", "Tiempo real"))
         self.btn_realtime.toggled.connect(self.toggle_realtime)
         row1.addWidget(self.btn_realtime)
+        
+        row1.addSpacing(10)
+        
+        # DEM Configuration Button
+        self.btn_terrain = QPushButton("\U0001f310") # World icon
+        self.btn_terrain.setFixedSize(30, 24)
+        self.btn_terrain.setToolTip("Configurar MDT / Mapes")
+        self.btn_terrain.clicked.connect(self.configure_terrain)
+        row1.addWidget(self.btn_terrain)
         
         row1.addSpacing(10)
         layout_top.addLayout(row1)
@@ -5099,6 +5139,17 @@ class AstronomicalWidget(CustomWidgetBase):
         self.spike_magnitude_threshold = val / 10.0
         print(f"[DEBUG] Spike threshold updated to: {self.spike_magnitude_threshold} (slider val: {val})")
         self.canvas.update()
+
+    def configure_terrain(self):
+        """Open DEM configuration dialog."""
+        from TerraLab.widgets.terrain_config_dialog import TerrainConfigDialog
+        dlg = TerrainConfigDialog(self)
+        if dlg.exec_() == QDialog.Accepted:
+            # Re-read config in worker
+            if hasattr(self, 'horizon_worker'):
+                self.horizon_worker.reload_config()
+            # Trigger re-bake
+            self.request_relocation()
 
     def update_illusion_enabled(self, checked):
         self.canvas.illusion_enabled = checked

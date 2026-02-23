@@ -22,6 +22,11 @@ class HorizonWorker(QObject):
         self.cache = None
         self.index = None
 
+    def reload_config(self):
+        """Reset state to force re-initialization on next bake."""
+        self.is_initialized = False
+        self.tiles_dir = None # Force re-read from ConfigManager
+
     def initialize(self):
         """Lazy initialization of heavy DEM index."""
         if self.is_initialized:
