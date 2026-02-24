@@ -105,23 +105,28 @@ class _BandPoints:
     def _build(self, profile, band_id, vert_exag):
         raw = profile.get_band_points(band_id)
         if not raw:
-            return []
+            return None, None
 
-        pts = []
-        for az, elev_deg in raw:
-            if elev_deg < self.VOID_THRESHOLD:
-                # Void — project as way below horizon, not flat (0°)
-                h = -20.0
-            else:
-                h = elev_deg * vert_exag
-            pts.append((az, h))
+        # Unpack raw data (list of (az, elev))
+        # Check if raw is already a numpy array from the engine
+        if isinstance(raw, np.ndarray):
+            az = raw[:, 0]
+            elev = raw[:, 1]
+        else:
+            az = np.array([pt[0] for pt in raw], dtype=np.float32)
+            elev = np.array([pt[1] for pt in raw], dtype=np.float32)
+
+        # Handle voids
+        h = np.where(elev < self.VOID_THRESHOLD, -20.0, elev * vert_exag)
             
-        # Ensure perfect 360-degree closure for continuous rendering
-        if pts and pts[0][0] == 0 and pts[-1][0] < 360:
-            # Duplicate first point at 360.0 to join blocks seamlessly
-            pts.append((360.0, pts[0][1]))
+        # Ensure perfect 360-degree closure
+        if len(az) > 0 and az[0] == 0 and az[-1] < 360:
+            az = np.append(az, 360.0)
+            h = np.append(h, h[0])
             
-        return pts
+        # Ensure sorting for polygon continuity
+        sort_idx = np.argsort(az)
+        return az[sort_idx], h[sort_idx]
 
 
 # ─── Main overlay class ──────────────────────────────────────────
@@ -156,7 +161,7 @@ class HorizonOverlay(QObject):
                     print(f"[HorizonOverlay] Profile loaded. Processing layers...")
                     for band_id, parallax, night_c, day_c in LAYER_DEFS:
                         bp = _BandPoints(profile, band_id, vert_exaggeration)
-                        if bp.points:
+                        if bp.points[0] is not None:
                             self._layers.append((bp, parallax, night_c, day_c))
                         else:
                             print(f"[HorizonOverlay]   Band '{band_id}': no data, skipped")
@@ -181,7 +186,7 @@ class HorizonOverlay(QObject):
         try:
             for band_id, parallax, night_c, day_c in LAYER_DEFS:
                 bp = _BandPoints(profile, band_id, self.vert_exaggeration)
-                if bp.points:
+                if bp.points[0] is not None:
                     self._layers.append((bp, parallax, night_c, day_c))
             
             self._loaded = bool(self._layers)
@@ -190,11 +195,12 @@ class HorizonOverlay(QObject):
         except Exception as e:
             print(f"[HorizonOverlay] Error setting profile: {e}")
 
-    def draw(self, painter: QPainter, projection_fn,
+    def draw(self, painter: QPainter, projection_fn, 
              width: int, height: int,
              current_azimuth: float, zoom_level: float,
              elevation_angle: float, ut_hour: float,
-             draw_flat_line: bool = False):
+             draw_flat_line: bool = False,
+             projection_fn_numpy = None):
         """
         Main entry: draw all terrain layers.
         If draw_flat_line is True, ignores loaded data/fallback and draws a simple straight line.
@@ -204,182 +210,188 @@ class HorizonOverlay(QObject):
 
         t_night = _calc_t_night(ut_hour)
 
+        bottom_y = height * 2.0
+
         # Flat Line Mode
         if draw_flat_line:
             color = _lerp_color(GROUND_DAY, GROUND_NIGHT, t_night)
             painter.setPen(QPen(color, 2))
             painter.setBrush(QBrush(color))
             
-            # Simple horizon line based on elevation angle (pitch)
-            # Center (0° elev) is at height/2 if looking straight.
-            # px_per_deg approx = height / fov_vertical ? 
-            # Better to use projection function if available for consistency.
             pt = projection_fn(0.0, current_azimuth)
             if pt:
                 y = pt[1]
-                # Fill from horizon down
-                painter.drawRect(0, int(y), width, int(height - y))
+                # If y is off-screen top, drawn from top of screen
+                y_draw = int(max(-bottom_y, y))
+                painter.drawRect(0, y_draw, width, int(bottom_y * 1.5)) # Big enough to cover
             return
 
-        # Horizontal scale  (Linear Perspective-like)
-        # Using same FOV logic as village, but linear projection
         fov_deg = 100.0 / zoom_level
         px_per_deg_h = width / fov_deg
         center_x = width / 2.0
-
-        # Vertical scale  (independent exaggeration — POC-inspired)
-        vert_scale = self.vert_exaggeration * zoom_level  # Use instance exaggerated factor
+        vert_scale = self.vert_exaggeration * zoom_level
         px_per_alt_deg = (height / 45.0) * vert_scale
 
         painter.setRenderHint(QPainter.Antialiasing)
 
+        # Pre-calculate Culling range
+        # CULLING_MARGIN: degrees outside viewport to keep for smooth transitions
+        culling_margin = 10.0
+        az_min = current_azimuth - (fov_deg / 2.0) - culling_margin
+        az_max = current_azimuth + (fov_deg / 2.0) + culling_margin
+
         # --- Draw each band back-to-front ---
-        # Wraps azimuth: draws [-360, 0, +360] versions of points
         for band_pts, parallax, night_c, day_c in self._layers:
             color = _lerp_color(day_c, night_c, t_night)
             self._draw_band_linear(painter, band_pts, color, projection_fn,
                                    width, height, center_x, px_per_deg_h, px_per_alt_deg,
-                                   current_azimuth, parallax)
+                                   current_azimuth, parallax, az_min, az_max, projection_fn_numpy)
 
-        # --- Draw ground fill (solid, below nearest horizon) ---
+        # --- Draw ground fill ---
         if self._layers:
             ground_c = _lerp_color(GROUND_DAY, GROUND_NIGHT, t_night)
-            nearest = self._layers[-1]  # last = nearest (band index -1)
-            # Overlap slightly (1.0 pixel offset up) to fix blue line gaps
-            # Pass nearest layer's parallax to keep ground strictly attached to near mountains
+            nearest = self._layers[-1]
             self._draw_ground_linear(painter, nearest[0], ground_c, projection_fn,
                                      width, height, center_x, px_per_deg_h, px_per_alt_deg,
-                                     current_azimuth, parallax_factor=nearest[1],
-                                     overlap_px=1.0)
+                                     current_azimuth, nearest[1], az_min, az_max, 
+                                     overlap_px=1.0, projection_fn_numpy=projection_fn_numpy)
 
     # ── private rendering (Linear Horizontal) ──
 
     def _draw_band_linear(self, painter, band_pts, color, proj_fn,
                           w, h, cx, px_h, px_alt,
-                          cur_az, parallax):
+                          cur_az, parallax, az_min, az_max, proj_fn_numpy=None):
         """
         Draw one filled silhouette band using Linear X mapping.
         """
-        painter.setBrush(QBrush(color))
-        painter.setPen(QPen(color, 1))   # thin outline = no hairline gaps
+        az_raw, h_raw = band_pts.points
+        if az_raw is None: return
 
-        pts = band_pts.points
-        if not pts:
-            return
-
-        strip = []
-        
-        # Calculate base offset to center the periodic data around cur_az
+        # Apply parallax shift
         parallax_shift = (parallax - 1.0) * cur_az
-        # We want az + parallax_shift + offset*360 \approx cur_az
-        # Center az is 180. target_offset = cur_az - parallax_shift - 180
+        
+        # Calculate base offset to center around current azimuth
+        # az_raw is 0..360, so center is 180.
         base_offset = round((cur_az - parallax_shift - 180) / 360.0) * 360
         offsets = [base_offset - 360, base_offset, base_offset + 360]
-        
+
+        all_sx = []
+        all_sy = []
+
         for offset in offsets:
-            for az, h_deg in pts:
-                # Apply parallax and dynamic offset
-                final_az = az + parallax_shift + offset
-                delta_az = final_az - cur_az
-                
-                x = cx + delta_az * px_h
-                
-                # Query Y anchor from Sky Projection to match curvature
-                # We use 'final_az' (includes parallax) to get the local horizon Y
-                anchor = proj_fn(0, final_az)
-                if anchor is None:
-                    continue
-                
-                y_base = anchor[1] + 2.0
-                y_top = y_base - (h_deg * px_alt)
-                
-                strip.append(QPointF(x, y_top))
-                
-        if len(strip) > 1:
-             self._fill_strip_downward(painter, strip, h * 2)
+            final_az = az_raw + parallax_shift + offset
+            
+            # 1. CULLING: Only keep points within view
+            mask = (final_az >= az_min) & (final_az <= az_max)
+            if not np.any(mask): continue
+            
+            culled_az = final_az[mask]
+            culled_h = h_raw[mask]
+            
+            # 2. VECTORIZED PROJECTION
+            # Linear X mapping
+            sx = cx + (culled_az - cur_az) * px_h
+            
+            # Curve Y mapping (Stereographic correction)
+            if proj_fn_numpy:
+                # Optimized vectorized call
+                # We only need the Y from the projection as y_base
+                _, sy_base = proj_fn_numpy(np.zeros_like(culled_az), culled_az)
+                sy = sy_base + 2.0 - (culled_h * px_alt)
+            else:
+                # Fallback to scalar (slow)
+                sy = []
+                for a_val, h_val in zip(culled_az, culled_h):
+                    anchor = proj_fn(0, a_val)
+                    if anchor:
+                        sy.append(anchor[1] + 2.0 - h_val * px_alt)
+                    else:
+                        sy.append(h * 2) # Safety
+                sy = np.array(sy)
+
+            all_sx.append(sx)
+            all_sy.append(sy)
+            
+        if all_sx:
+            self._fill_strip_downward_numpy(painter, all_sx, all_sy, color, h * 2)
 
 
     def _draw_ground_linear(self, painter, band_pts, color, proj_fn,
                             w, h, cx, px_h, px_alt,
-                            cur_az, parallax_factor, overlap_px=0.0):
+                            cur_az, parallax_factor, az_min, az_max, overlap_px=0.0, 
+                            projection_fn_numpy=None):
         """
-        Draw ground fill using the same linear projection as the nearest band.
-        Fills from the horizon line (y_base) DOWN to bottom.
+        Draw ground fill using same linear/vectorized logic as bands.
         """
-        painter.setBrush(QBrush(color))
-        painter.setPen(Qt.NoPen)
+        az_raw, h_raw = band_pts.points
+        if az_raw is None: return
 
-        pts = band_pts.points
-        strip = []
-        
-        # Calculate base offset to center ground logic around cur_az
         parallax_shift = (parallax_factor - 1.0) * cur_az
         base_offset = round((cur_az - parallax_shift - 180) / 360.0) * 360
         offsets = [base_offset - 360, base_offset, base_offset + 360]
-        
-        for offset in offsets:
-            for az, h_deg in pts:
-                final_az = az + parallax_shift + offset
-                delta_az = final_az - cur_az
-                x = cx + delta_az * px_h
-                
-                anchor = proj_fn(0, final_az)
-                if anchor is None:
-                    continue
-                
-                # Ground starts at y_base (Horizon) - overlap (upward)
-                # FIX: Use the actual terrain height (y_top) instead of flat horizon (y_start)
-                # to prevent cutting off near terrain features with a straight line.
-                
-                y_base = anchor[1] + 2.0
-                y_top = y_base - (h_deg * px_alt)
-                
-                # Apply overlap to prevent hairline gaps
-                y_fill_start = y_top - overlap_px
-                
-                strip.append(QPointF(x, y_fill_start))
-        
-        if len(strip) > 1:
-            self._fill_strip_downward(painter, strip, h * 2)
 
-    @staticmethod
-    def _fill_strip_downward(painter, top_points, bottom_y):
-        """Draw filled polygon from top_points down to bottom_y."""
-        if not top_points:
-            return
+        all_sx = []
+        all_sy = []
+
+        for offset in offsets:
+            final_az = az_raw + parallax_shift + offset
+            mask = (final_az >= az_min) & (final_az <= az_max)
+            if not np.any(mask): continue
             
-        path = QPainterPath()
-        # Sort points by X just in case? 
-        # No, iterating azimuths + offsets guarantees X order (-inf to +inf).
-        
-        start_pt = top_points[0]
-        path.moveTo(start_pt.x(), bottom_y)
-        path.lineTo(start_pt)
-        
-        for i in range(len(top_points) - 1):
-            p0 = top_points[i]
-            p1 = top_points[i+1]
+            culled_az = final_az[mask]
+            culled_h = h_raw[mask]
             
-            # Check for wrap discontinuity/gap
-            # Increase threshold significantly to allow for wider viewports
-            if abs(p1.x() - p0.x()) > 1000:
-                # Close current subpath down to bottom
-                path.lineTo(p0.x(), bottom_y)
-                path.closeSubpath()
-                # Start new subpath
-                path.moveTo(p1.x(), bottom_y)
-                path.lineTo(p1)
-                continue
+            sx = cx + (culled_az - cur_az) * px_h
             
-            # Sharp, realistic mountain silhouette
-            path.lineTo(p1)
+            if projection_fn_numpy:
+                _, sy_base = projection_fn_numpy(np.zeros_like(culled_az), culled_az)
+                sy = sy_base + 2.0 - (culled_h * px_alt) - overlap_px
+            else:
+                sy = []
+                for a_val, h_val in zip(culled_az, culled_h):
+                    anchor = proj_fn(0, a_val)
+                    if anchor:
+                        sy.append(anchor[1] + 2.0 - h_val * px_alt - overlap_px)
+                    else:
+                        sy.append(h * 2)
+                sy = np.array(sy)
+
+            all_sx.append(sx)
+            all_sy.append(sy)
             
-        last = top_points[-1]
-        path.lineTo(last)
-        path.lineTo(last.x(), bottom_y)
-        path.closeSubpath()
-        
-        painter.drawPath(path)
+        if all_sx:
+            self._fill_strip_downward_numpy(painter, all_sx, all_sy, color, h * 2, solid=True)
+
+    def _fill_strip_downward_numpy(self, painter, list_sx, list_sy, color, bottom_y, solid=False):
+        """Vectorized polygon drawing from NumPy arrays."""
+        painter.setBrush(QBrush(color))
+        if solid:
+            painter.setPen(Qt.NoPen)
+        else:
+            painter.setPen(QPen(color, 1))
+
+        for sx_arr, sy_arr in zip(list_sx, list_sy):
+            if len(sx_arr) < 2: continue
+            
+            # 1. Filter out NaNs/Infs (projection singularities)
+            valid = np.isfinite(sx_arr) & np.isfinite(sy_arr)
+            if not np.any(valid): continue
+            
+            f_sx = sx_arr[valid]
+            f_sy = sy_arr[valid]
+            
+            if len(f_sx) < 2: continue
+
+            # Constructing QPolygonF from list of QPointF
+            # Convert to float explicit for compatibility
+            pts = [QPointF(float(x), float(y)) for x, y in zip(f_sx, f_sy)]
+            
+            # Close downward
+            pts.append(QPointF(float(f_sx[-1]), float(bottom_y)))
+            pts.append(QPointF(float(f_sx[0]), float(bottom_y)))
+            
+            poly = QPolygonF(pts)
+            painter.drawPolygon(poly)
 
     # ── procedural fallback ──
 
@@ -395,7 +407,8 @@ class HorizonOverlay(QObject):
         ]
 
         for bid, par, nc, dc, base, freq, amp in configs:
-            pts = []
+            pts_az = []
+            pts_h = []
             # Generate 360 degrees
             for step in range(720): # 0.5 deg steps
                 az = step * 0.5 
@@ -433,8 +446,9 @@ class HorizonOverlay(QObject):
                         # 0=Flat, 1=Mount
                         val = 0.2 * (1.0 - t) + val * t
 
-                pts.append((az, max(0.2, val)))
+                pts_az.append(az)
+                pts_h.append(max(0.2, val))
             
             bp = _BandPoints.__new__(_BandPoints)
-            bp.points = pts
+            bp.points = (np.array(pts_az, dtype=np.float32), np.array(pts_h, dtype=np.float32))
             self._layers.append((bp, par, nc, dc))

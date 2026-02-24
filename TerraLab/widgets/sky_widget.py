@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QSlider, QLineEdit, QPushButton, QFrame,
                              QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication)
 from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, pyqtSlot, QObject, QThread, QLineF, QUrl
-from PyQt5.QtGui import QPainter, QColor, QPen, QRadialGradient, QBrush, QPainterPath, QLinearGradient, QPixmap, QFont, QTransform, QImage
+from PyQt5.QtGui import QPainter, QColor, QPen, QRadialGradient, QBrush, QPainterPath, QLinearGradient, QPixmap, QFont, QTransform, QImage, QPolygonF
 
 from TerraLab.common.custom_widget_base import CustomWidgetBase
 from TerraLab.common.utils import resource_path, getTraduction
@@ -571,6 +571,290 @@ class RusticTimeBar(QWidget):
         self.valueChanged.emit(self.current_hour)
 
 
+# --- ASYNC LOADING WORKERS ---
+
+class CatalogLoaderWorker(QObject):
+    """Background worker to load star catalog without freezing UI."""
+    catalog_ready = pyqtSignal(list, object, object, object, object, object, object)
+    # (celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b)
+
+    @pyqtSlot(str)
+    def load(self, json_path):
+        import time
+        t0 = time.time()
+
+        celestial_objects = []
+        np_ra = np_dec = np_mag = np_r = np_g = np_b = None
+
+        # --- Binary NPY cache path ---
+        cache_dir = os.path.dirname(json_path)
+        npy_ra_path = os.path.join(cache_dir, 'gaia_cache_ra.npy')
+        npy_dec_path = os.path.join(cache_dir, 'gaia_cache_dec.npy')
+        npy_mag_path = os.path.join(cache_dir, 'gaia_cache_mag.npy')
+        npy_r_path = os.path.join(cache_dir, 'gaia_cache_r.npy')
+        npy_g_path = os.path.join(cache_dir, 'gaia_cache_g.npy')
+        npy_b_path = os.path.join(cache_dir, 'gaia_cache_b.npy')
+        npy_ids_path = os.path.join(cache_dir, 'gaia_cache_ids.npy')
+        npy_bprp_path = os.path.join(cache_dir, 'gaia_cache_bprp.npy')
+
+        # Check if binary cache exists and is newer than JSON
+        use_cache = False
+        if np and os.path.exists(npy_ra_path) and os.path.exists(json_path):
+            try:
+                cache_mtime = os.path.getmtime(npy_ra_path)
+                json_mtime = os.path.getmtime(json_path)
+                if cache_mtime >= json_mtime:
+                    use_cache = True
+            except:
+                pass
+
+        if use_cache:
+            try:
+                np_ra = np.load(npy_ra_path)
+                np_dec = np.load(npy_dec_path)
+                np_mag = np.load(npy_mag_path)
+                np_r = np.load(npy_r_path)
+                np_g = np.load(npy_g_path)
+                np_b = np.load(npy_b_path)
+                ids_arr = np.load(npy_ids_path, allow_pickle=True)
+                bprp_arr = np.load(npy_bprp_path)
+
+                # Rebuild celestial_objects list from cached arrays
+                for i in range(len(np_ra)):
+                    celestial_objects.append({
+                        'id': str(ids_arr[i]),
+                        'ra': float(np_ra[i]),
+                        'dec': float(np_dec[i]),
+                        'mag': float(np_mag[i]),
+                        'bp_rp': float(bprp_arr[i])
+                    })
+                print(f"[CatalogLoader] Loaded {len(celestial_objects)} stars from NPY cache in {time.time()-t0:.3f}s")
+                self.catalog_ready.emit(celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b)
+                return
+            except Exception as e:
+                print(f"[CatalogLoader] NPY cache invalid, falling back to JSON: {e}")
+                celestial_objects = []
+
+        # --- Parse JSON (slow path) ---
+        if os.path.exists(json_path):
+            import json
+            try:
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+                source_list = []
+                if isinstance(data, dict) and 'data' in data:
+                    source_list = data['data']
+                elif isinstance(data, list):
+                    source_list = data
+
+                for s in source_list:
+                    try:
+                        if isinstance(s, list):
+                            star_id = str(s[0])
+                            ra = float(s[2])
+                            dec = float(s[3])
+                            mag = float(s[4])
+                            bp_rp = 0.8
+                            if len(s) > 7 and s[7] is not None:
+                                bp_rp = float(s[7])
+                        elif isinstance(s, dict):
+                            star_id = str(s.get('source_id', 'Unknown'))
+                            ra = float(s.get('ra', 0))
+                            dec = float(s.get('dec', 0))
+                            mag = float(s.get('phot_g_mean_mag', 10))
+                            bp_rp = float(s.get('bp_rp', 0.8))
+                        else:
+                            continue
+                        celestial_objects.append({
+                            'id': star_id, 'ra': ra, 'dec': dec, 'mag': mag, 'bp_rp': bp_rp
+                        })
+                    except:
+                        continue
+                print(f"[CatalogLoader] Parsed {len(celestial_objects)} stars from JSON in {time.time()-t0:.3f}s")
+            except Exception as e:
+                print(f"[CatalogLoader] Error loading JSON: {e}")
+
+        if not celestial_objects:
+            print("[CatalogLoader] Fallback to random stars")
+            import random as _rnd
+            for _ in range(500):
+                celestial_objects.append({
+                    'ra': _rnd.uniform(0, 360), 'dec': _rnd.uniform(-90, 90),
+                    'mag': _rnd.uniform(1.0, 6.0), 'bp_rp': _rnd.uniform(-0.5, 2.0)
+                })
+
+        # Sort by magnitude
+        celestial_objects.sort(key=lambda x: x['mag'])
+
+        # Build numpy arrays
+        if np:
+            try:
+                np_ra = np.array([s['ra'] for s in celestial_objects], dtype=np.float32)
+                np_dec = np.array([s['dec'] for s in celestial_objects], dtype=np.float32)
+                np_mag = np.array([s['mag'] for s in celestial_objects], dtype=np.float32)
+
+                def get_rgb(s):
+                    bp_rp = s.get('bp_rp', 0.8)
+                    if bp_rp < 0.0: return (160, 190, 255)
+                    elif bp_rp < 0.5:
+                        t = (bp_rp - 0.0) / 0.5
+                        return (160 + int(95*t), 190 + int(65*t), 255)
+                    elif bp_rp < 1.0:
+                        t = (bp_rp - 0.5) / 0.5
+                        return (255, 255, 255 - int(55*t))
+                    elif bp_rp < 2.0:
+                        t = (bp_rp - 1.0) / 1.0
+                        return (255, 255 - int(80*t), 200 - int(100*t))
+                    else: return (255, 175, 100)
+
+                cols = [get_rgb(s) for s in celestial_objects]
+                np_r = np.array([c[0] for c in cols], dtype=np.uint8)
+                np_g = np.array([c[1] for c in cols], dtype=np.uint8)
+                np_b = np.array([c[2] for c in cols], dtype=np.uint8)
+
+                # Save binary cache for next startup
+                try:
+                    ids_arr = np.array([s['id'] for s in celestial_objects], dtype=object)
+                    bprp_arr = np.array([s['bp_rp'] for s in celestial_objects], dtype=np.float32)
+                    np.save(npy_ra_path, np_ra)
+                    np.save(npy_dec_path, np_dec)
+                    np.save(npy_mag_path, np_mag)
+                    np.save(npy_r_path, np_r)
+                    np.save(npy_g_path, np_g)
+                    np.save(npy_b_path, np_b)
+                    np.save(npy_ids_path, ids_arr)
+                    np.save(npy_bprp_path, bprp_arr)
+                    print(f"[CatalogLoader] Saved NPY cache ({len(np_ra)} stars)")
+                except Exception as e:
+                    print(f"[CatalogLoader] Could not save NPY cache: {e}")
+
+                print(f"[CatalogLoader] NumPy arrays ready: {len(np_ra)} stars in {time.time()-t0:.3f}s")
+            except Exception as e:
+                print(f"[CatalogLoader] NumPy error: {e}")
+                np_ra = np_dec = np_mag = np_r = np_g = np_b = None
+
+        self.catalog_ready.emit(celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b)
+
+
+class SkyfieldLoaderWorker(QObject):
+    """Background worker to load Skyfield ephemeris without freezing UI."""
+    skyfield_ready = pyqtSignal(object, object)  # (ts, eph)
+
+    @pyqtSlot()
+    def load(self):
+        import time
+        t0 = time.time()
+        try:
+            ts = load.timescale()
+            eph = load('de421.bsp')
+            print(f"[SkyfieldLoader] Initialized in {time.time()-t0:.3f}s")
+            self.skyfield_ready.emit(ts, eph)
+        except Exception as e:
+            print(f"[SkyfieldLoader] Error: {e}")
+            self.skyfield_ready.emit(None, None)
+
+
+def _compute_trail_segments_chunk(args):
+    """
+    Worker function for ProcessPoolExecutor to parallelize star trail math.
+    Bypasses GIL to process coordinate chunks in parallel.
+    """
+    (ra, dec, f_r, f_g, f_b, step_lsts, sin_lat, cos_lat, 
+     scale_h, cx, cy_base, y_center_val, cam_az_rad, jump_threshold) = args
+    
+    import numpy as np
+    import math
+
+    # 1. Physics (Broadcasting)
+    ra_col = ra[:, np.newaxis]
+    ha = step_lsts[np.newaxis, :] - ra_col
+    ha_rad = np.radians(ha)
+    dec_rad = np.radians(dec)[:, np.newaxis]
+    
+    sin_dec = np.sin(dec_rad)
+    cos_dec = np.cos(dec_rad)
+    
+    sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * np.cos(ha_rad)
+    sin_alt = np.clip(sin_alt, -1.0, 1.0)
+    alt_rad = np.arcsin(sin_alt)
+    
+    cos_alt = np.cos(alt_rad)
+    cos_az_num = sin_dec - sin_alt * sin_lat
+    cos_az_den = cos_alt * cos_lat + 1e-10
+    cos_az = np.clip(cos_az_num / cos_az_den, -1.0, 1.0)
+    az_rad = np.arccos(cos_az)
+    sin_ha = np.sin(ha_rad)
+    az_rad = np.where(sin_ha > 0, 2*np.pi - az_rad, az_rad) 
+    
+    # 2. Projection
+    az_rel_rad = az_rad - cam_az_rad
+    cos_alt = np.cos(alt_rad)
+    sin_alt = np.sin(alt_rad)
+    cos_az_rel = np.cos(az_rel_rad)
+    sin_az_rel = np.sin(az_rel_rad)
+    
+    denom = 1.0 + cos_alt * cos_az_rel
+    invalid = denom < 1e-6
+    k = np.where(invalid, 0.0, 2.0 / denom)
+    x = k * cos_alt * sin_az_rel
+    y = k * sin_alt
+    
+    sx = cx + x * scale_h
+    sy = cy_base - (y - y_center_val) * scale_h
+    
+    # 3. Segments
+    results = []
+    for i in range(len(ra)):
+        row_inv = invalid[i]
+        if np.all(row_inv): continue
+        
+        row_x = sx[i]
+        row_y = sy[i]
+        
+        valid_idxs = np.where(~row_inv)[0]
+        if len(valid_idxs) < 2: continue
+        
+        diffs = np.diff(valid_idxs)
+        breaks = np.where(diffs > 1)[0]
+        
+        starts = [valid_idxs[0]]
+        ends = []
+        for b in breaks:
+            ends.append(valid_idxs[b])
+            starts.append(valid_idxs[b+1])
+        ends.append(valid_idxs[-1])
+        
+        star_segments = []
+        for s_idx, e_idx in zip(starts, ends):
+            chunk_x = row_x[s_idx : e_idx+1]
+            chunk_y = row_y[s_idx : e_idx+1]
+            if len(chunk_x) < 2: continue
+            
+            dx = np.abs(np.diff(chunk_x))
+            dy = np.abs(np.diff(chunk_y))
+            jumps = (dx + dy) > jump_threshold
+            
+            if np.any(jumps):
+                j_locs = np.where(jumps)[0]
+                c_starts = [0]
+                c_ends = []
+                for jl in j_locs:
+                    c_ends.append(jl)
+                    c_starts.append(jl+1)
+                c_ends.append(len(chunk_x)-1)
+                for cs, ce in zip(c_starts, c_ends):
+                    if ce >= cs:
+                        star_segments.append((chunk_x[cs:ce+1], chunk_y[cs:ce+1]))
+            else:
+                star_segments.append((chunk_x, chunk_y))
+        
+        if star_segments:
+            results.append(((int(f_r[i]), int(f_g[i]), int(f_b[i])), star_segments))
+            
+    return results
+
+
 class StarRenderWorker(QObject):
     result_ready = pyqtSignal(QImage, list) # image, visible_stars_list
     trails_ready = pyqtSignal(QImage) # trail image
@@ -881,10 +1165,19 @@ class StarRenderWorker(QObject):
                 self.trails_ready.emit(img)
                 return
             
-            step_density = 4.0
-            mag_cap = 5.5
+            # Determine is_moving
+            is_moving = params.get('is_moving', False)
+
+            if is_moving:
+                # Low Quality: Only bright stars, few steps
+                step_density = 1.0 # 1 step per hour
+                mag_cap = 4.0      # Only stars brighter than mag 4
+            else:
+                # High Quality
+                step_density = 4.0 # 4 steps per hour (15m)
+                mag_cap = 5.5      # PERFORMANCE FIX: Valid only for bright stars
+
             n_steps = max(2, min(50, int(abs(diff) * step_density)))
-            
             limit = min(mag_limit, mag_cap)
             
             # Create QImage
@@ -981,39 +1274,42 @@ class StarRenderWorker(QObject):
             
             jump_threshold = min(width, height) * 0.5
             
-            for i in range(len(f_ra)):
-                row_x = sx[i]
-                row_y = sy[i]
-                row_inv = invalid[i]
-                
-                if np.all(row_inv):
-                    continue
-                
-                path = QPainterPath()
-                first_pt = True
-                last_x, last_y = 0, 0
-                
-                for j in range(len(row_x)):
-                    if row_inv[j]:
-                        first_pt = True
-                        continue
+            # Use Multiprocessing to bypass GIL for coordinate math and segment detection
+            from concurrent.futures import ProcessPoolExecutor
+            import os
+
+            n_stars = len(f_ra)
+            n_workers = min(4, os.cpu_count() or 4)
+            chunk_size = (n_stars + n_workers - 1) // n_workers
+            
+            tasks = []
+            for i in range(0, n_stars, chunk_size):
+                 end_idx = min(i + chunk_size, n_stars)
+                 tasks.append((
+                     f_ra[i:end_idx], f_dec[i:end_idx], f_r[i:end_idx], f_g[i:end_idx], f_b[i:end_idx],
+                     step_lsts, sin_lat, cos_lat, scale_h, cx, cy_base, y_center_val, cam_az_rad, jump_threshold
+                 ))
+            
+            # Execute tasks in parallel
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                all_results = list(executor.map(_compute_trail_segments_chunk, tasks))
+            
+            # Draw aggregated results onto the pixel buffer
+            for chunk_res in all_results:
+                for (r, g, b), star_segments in chunk_res:
+                    color = QColor(r, g, b, 120)
+                    painter.setPen(QPen(color, 1.0))
                     
-                    x, y = row_x[j], row_y[j]
-                    
-                    if first_pt:
-                        path.moveTo(x, y)
-                        first_pt = False
-                    else:
-                        if abs(x - last_x) + abs(y - last_y) > jump_threshold:
-                            path.moveTo(x, y)
-                        else:
-                            path.lineTo(x, y)
-                    
-                    last_x, last_y = x, y
-                
-                c = QColor(int(f_r[i]), int(f_g[i]), int(f_b[i]), 120)
-                painter.setPen(QPen(c, 1.0))
-                painter.drawPath(path)
+                    path = QPainterPath()
+                    for seg_x, seg_y in star_segments:
+                        first = True
+                        for px, py in zip(seg_x, seg_y):
+                            if first:
+                                path.moveTo(float(px), float(py))
+                                first = False
+                            else:
+                                path.lineTo(float(px), float(py))
+                    painter.drawPath(path)
             
             painter.end()
             self.trails_ready.emit(img)
@@ -1577,11 +1873,13 @@ class AstroCanvas(QWidget):
                         # Project cached moon
                         pt = self.project_universal_stereo(md['alt'], md['az'])
                         if pt:
-                             import math
+                             # math is already imported at module level
                              # Radius approx (degrees to pixels)
                              R_proj = min(self.width(), self.height()) / 2.0 * self.zoom_level
                              ppd = R_proj / 90.0
-                             mr_px = md['rad_deg'] * ppd * 10.0 # celestial_scale 10 assumed
+                             # Defensive check for rad_deg
+                             m_rad_deg = md.get('rad_deg', 0.25)
+                             mr_px = m_rad_deg * ppd * 10.0 # celestial_scale 10 assumed
                              moon_mask = (pt[0], pt[1], mr_px)
                     
                     if not moon_mask:
@@ -1590,7 +1888,7 @@ class AstroCanvas(QWidget):
                             mx, my, m_rad, _, _, _, _ = moon_proj
                             moon_mask = (mx, my, m_rad)
                         
-                self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit)
+                self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit, eff_lat=eff_lat)
                     
                 # 4. Celestial Bodies (Sun/Moon/Planets/Satellites)
                 # Try Skyfield First
@@ -1598,9 +1896,9 @@ class AstroCanvas(QWidget):
                      # update_skyfield_cache already called
                      self.draw_skyfield_objects(painter, ut_hour, day_of_year, ambient_light=ambient_light, mag_limit=final_mag_limit)
                 else:
-                     # Fallback to Manual AstroEngine
-                     self.draw_sun(painter, solar_hour, ut_hour=ut_hour)
-                     self.draw_moon(painter, ut_hour)
+                     # Skyfield not yet loaded (async) — show loading hint
+                     painter.setPen(QColor(180, 180, 180, 120))
+                     painter.drawText(self.rect(), Qt.AlignCenter, getTraduction("Astro.LoadingCelestial", "⏳ Loading celestial data..."))
             else:
                 # Sky Disabled -> Draw Black Background
                 painter.fillRect(self.rect(), Qt.black)
@@ -1646,14 +1944,15 @@ class AstroCanvas(QWidget):
                     self.width(), self.height(),
                     self.azimuth_offset, self.zoom_level,
                     self.elevation_angle, ut_hour,
-                    draw_flat_line=force_flat
+                    draw_flat_line=force_flat,
+                    projection_fn_numpy=self.project_universal_stereo_numpy
                 )
             
             # === VILLAGE OVERLAY (houses, trees, lanterns) ===
             # Only show village if Topography is ENABLED (and Horizon is enabled? Usually implied)
             # Let's say Village requires Topography enabled.
-            if use_detailed_topo:
-                self.village.draw_with_projection(painter, self.project_universal_stereo, self.width(), self.height(), ut_hour, self.azimuth_offset, self.zoom_level, self.elevation_angle)
+            # if use_detailed_topo:
+            #     self.village.draw_with_projection(painter, self.project_universal_stereo, self.width(), self.height(), ut_hour, self.azimuth_offset, self.zoom_level, self.elevation_angle)
 
 
             
@@ -1752,12 +2051,26 @@ class AstroCanvas(QWidget):
 
     
     def draw_analytic_trails(self, painter, start_hour, end_hour):
-        # 1. Draw Cached Trail Image if available
+        # 1. Determine interaction state
+        pw = self.parent_widget
+        is_moving = self.dragging or getattr(pw, '_dragging_time', False) or (hasattr(self, 'anim_timer') and self.anim_timer.isActive())
+        
+        # 2. Draw Cached Trail Image if available
         if self._cached_trail_image and not self._cached_trail_image.isNull():
             painter.drawImage(0, 0, self._cached_trail_image)
         
-        # 2. Trigger Worker for NEXT frame (if not busy)
-        pw = self.parent_widget
+        # 3. If interacting, draw a "Fast-Path" (Reduced LOD) synchronously to avoid flickering
+        if is_moving:
+            diff = end_hour - start_hour
+            if diff < -12.0: diff += 24.0
+            elif diff > 12.0: diff -= 24.0
+            
+            if abs(diff) > 0.001:
+                # Synchronous call to NumPy renderer with aggressive LOD
+                # We use few steps and only very bright stars for zero-lag feedback
+                self.draw_analytic_trails_numpy(painter, start_hour, end_hour, diff, n_steps=5, limit=3.0, is_moving=True)
+        
+        # 4. Trigger Worker for NEXT frame (if not busy)
         if np and hasattr(pw, 'np_ra') and not self.trail_rendering_busy:
             self.trail_rendering_busy = True
             
@@ -1779,7 +2092,8 @@ class AstroCanvas(QWidget):
                 'lat_rad': math.radians(pw.latitude),
                 'day_of_year': pw.manual_day,
                 'longitude': pw.longitude,
-                'mag_limit': pw.magnitude_limit
+                'mag_limit': pw.magnitude_limit,
+                'is_moving': is_moving
             }
             
             self.request_trails_signal.emit(params)
@@ -2008,107 +2322,50 @@ class AstroCanvas(QWidget):
         
         sx = cx + x * scale_h
         sy = cy_base - (y - y_center_val) * scale_h
-        
-        # Invalid logic: Behind camera or wrapped too far?
-        # For trails (LINES), we still need to prevent wrapping across the anti-pode.
-        # Check Azimuth Separation
-        # Normalize az_rel to -pi, pi
-        az_rel_norm = (az_rel_rad + np.pi) % (2*np.pi) - np.pi
-        limit_angle = 170.0 * (np.pi / 180.0)
-        invalid_az = np.abs(az_rel_norm) > limit_angle
-        
-        invalid = invalid | invalid_az
-        
-        # 5. Drawing (Grouped by Color)
-        alpha_val = 120 if not is_moving else 60
-        
-        # Quantize colors to reduce number of batches (SetPen calls)
-        # Use 32-level quantization (mask 0xE0)
-        # But we already have f_r, f_g, f_b in uint8
-        # Let's simple use integer comparison
-        # Or just use the exact color? 
-        # Most stars share standard colors from the palette function anyway!
-        # The 'get_star_color' only produces ~5 unique colors.
-        # So we can just tuple them.
-        
-        from PyQt5.QtGui import QPolygonF
+        jump_threshold = min(w, h) * 0.5
         
         batches = {} # Key: (r,g,b), Value: QPainterPath
         
-        n_stars = sx.shape[0]
-        n_pts = sx.shape[1]
-        
-        # We assume f_r, f_g, f_b are standard from palette.
-        # Convert to list of tuples for fast iter
-        # Actually doing this in loop is ok
-        
-        for i in range(n_stars):
+        for i in range(len(ra)):
+            row_x = sx[i]
+            row_y = sy[i]
             row_inv = invalid[i]
-            if np.all(row_inv): continue
             
-            # Get Key
-            key = (f_r[i], f_g[i], f_b[i])
+            if np.all(row_inv):
+                continue
             
+            # Get Key for batching
+            key = (int(f_r[i]), int(f_g[i]), int(f_b[i]))
             if key not in batches:
                 batches[key] = QPainterPath()
             path = batches[key]
             
-            # Row points
-            row_x = sx[i]
-            row_y = sy[i]
-            
             # Identify continuous segments
-            # Indices where valid:
             valid_idxs = np.where(~row_inv)[0]
             if len(valid_idxs) < 2: continue
             
-            # Detect jumps (discontinuities in indices OR large distance)
-            # Distance check is hard without looping. 
-            # Index check handles 'behind camera' clipping.
-            # Screen wrapping requires distance check.
-            
-            # Let's iterate valid chunks
-            # Find breaks in valid_idxs (where diff > 1)
             diffs = np.diff(valid_idxs)
             breaks = np.where(diffs > 1)[0]
             
-            # List of start, end indices for chunks
             starts = [valid_idxs[0]]
             ends = []
             for b in breaks:
-                ends.append(valid_idxs[b]) # Inclusive? No, slice logic
+                ends.append(valid_idxs[b])
                 starts.append(valid_idxs[b+1])
             ends.append(valid_idxs[-1])
             
-            # Process chunks
             for s_idx, e_idx in zip(starts, ends):
-                # Slice range: s_idx to e_idx+1
-                # But we also need distance check within chunk?
-                # NumPy logic for dist > threshold?
-                # Let's assume most chunks are contiguous.
-                # Just use QPolygonF for the chunk.
-                
-                # Extract chunk
                 chunk_x = row_x[s_idx : e_idx+1]
                 chunk_y = row_y[s_idx : e_idx+1]
                 
                 if len(chunk_x) < 2: continue
                 
-                # Check for screen wrap jumps (jump_threshold)
-                jump_threshold = min(w, h) * 0.5
                 dx = np.abs(np.diff(chunk_x))
                 dy = np.abs(np.diff(chunk_y))
-                # Dist check (manhattan approx)
                 jumps = (dx + dy) > jump_threshold
                 
                 if np.any(jumps):
-                    # Complex case: split further
-                    # This is rare for circumpolar unless wide FOV
-                    # Fallback to point loop for this chunk?
-                    # Or just split?
-                    # Split indices
                     j_locs = np.where(jumps)[0]
-                    # locations to split are after index j
                     c_starts = [0]
                     c_ends = []
                     for jl in j_locs:
@@ -2117,21 +2374,22 @@ class AstroCanvas(QWidget):
                     c_ends.append(len(chunk_x)-1)
                     
                     for cs, ce in zip(c_starts, c_ends):
-                        if ce > cs:
-                             pts = [QPointF(x,y) for x,y in zip(chunk_x[cs:ce+1], chunk_y[cs:ce+1])]
-                             path.addPolygon(QPolygonF(pts))
+                        if ce >= cs:
+                             p_pts = [QPointF(float(x_val), float(y_val)) for x_val, y_val in zip(chunk_x[cs:ce+1], chunk_y[cs:ce+1])]
+                             if len(p_pts) > 1:
+                                path.addPolygon(QPolygonF(p_pts))
                 else:
-                    # Good chunk
-                    pts = [QPointF(x,y) for x,y in zip(chunk_x, chunk_y)]
-                    path.addPolygon(QPolygonF(pts))
+                    p_pts = [QPointF(float(x_val), float(y_val)) for x_val, y_val in zip(chunk_x, chunk_y)]
+                    if len(p_pts) > 1:
+                        path.addPolygon(QPolygonF(p_pts))
 
         # Render Batches
+        alpha_val = 120 if not is_moving else 60
         painter.setBrush(Qt.NoBrush)
         painter.setRenderHint(QPainter.Antialiasing, False if is_moving else True)
         
-        for key, path in batches.items():
-            r, g, b = key
-            color = QColor(int(r), int(g), int(b), alpha_val)
+        for (r, g, b), path in batches.items():
+            color = QColor(r, g, b, alpha_val)
             painter.setPen(QPen(color, 1.0))
             painter.drawPath(path)
 
@@ -2169,45 +2427,59 @@ class AstroCanvas(QWidget):
         y = k * sin_alt
         
         # 3. Screen Mapping
-        # Shift Y based on elevation_angle (Scroll)
-        # We model elevation as a vertical shift of the projection plane
-        # Shift amount? If elevation=90, we want Zenith (y at 90) to be at center.
-        # At 90 deg, alt=90 -> y = 2*sin(90)/(1+0) = 2.
-        # So shift should be proportional to elevation?
-        
-        # Linear approximation for shift to match user expectation:
-        # At elev=0, center is y=0.
-        # At elev=90, center is y=2 (Zenith).
-        # But wait, y=2 means "2 Radii". 
-        
-        # Let's use specific shift:
-        # y_shift = (elevation_angle / 90.0) * 2.0 ? 
-        # Check linearity. Stereo Y for Lat L is 2*tan(L/2).
-        # We want the screen center to point at 'elevation_angle'.
-        # So we align screen cy with y_val of elevation_angle.
-        
         elev_rad = math.radians(self.elevation_angle)
-        # Avoid infinity at 180, but we clamp elev to +/- 90 usually.
         y_center_val = 2.0 * math.tan(elev_rad / 2.0)
         
         # Pixel coordinates
-        # cx, cy is screen center
         cx = w / 2.0
-        # Base Cy is center. We shift the world DOWN by y_center_val * scale 
-        # So that the point corresponding to y_center_val is at screen center.
-        
-        # User defined ratio:
         cy_base = (h / 2.0) + (h * self.vertical_offset_ratio)
         
         screen_x = cx + x * scale_h
         screen_y = cy_base - (y - y_center_val) * scale_h
         
-        # Clipping: Only clip if behind (already handled by denom) 
-        # or if way off screen horizontally to prevent wrapping?
-        # For points, we don't care. For lines we might. This is points/lines generic.
-        # We relax the azimuth clip completely here.
-        
         return (screen_x, screen_y)
+
+    def project_universal_stereo_numpy(self, alt_array, az_array):
+        """
+        Vectorized version of project_universal_stereo using NumPy.
+        Returns: (screen_x_array, screen_y_array)
+        """
+        if np is None: return None, None
+
+        w, h = self.width(), self.height()
+        scale_h = h / 2.0 * self.zoom_level
+        cx = w / 2.0
+        cy_base = (h / 2.0) + (h * self.vertical_offset_ratio)
+
+        # 1. Coordinates relative to Camera Azimuth
+        az_rel = np.radians(az_array - self.azimuth_offset)
+        alt_rad = np.radians(alt_array)
+
+        # 2. Stereographic Projection
+        cos_alt = np.cos(alt_rad)
+        sin_alt = np.sin(alt_rad)
+        cos_az = np.cos(az_rel)
+        sin_az = np.sin(az_rel)
+
+        denom = 1.0 + cos_alt * cos_az
+        valid_mask = denom > 1e-6
+        safe_denom = np.where(valid_mask, denom, 1.0)
+        
+        k = 2.0 / safe_denom
+        x = k * cos_alt * sin_az
+        y = k * sin_alt
+
+        # 3. Screen Mapping
+        elev_rad = math.radians(self.elevation_angle)
+        y_center_val = 2.0 * math.tan(elev_rad / 2.0)
+
+        screen_x = cx + x * scale_h
+        screen_y = cy_base - (y - y_center_val) * scale_h
+        
+        screen_x = np.where(valid_mask, screen_x, np.nan)
+        screen_y = np.where(valid_mask, screen_y, np.nan)
+
+        return screen_x, screen_y
 
 # ... (inside AstronomicalWidget)
 
@@ -2218,6 +2490,8 @@ class AstroCanvas(QWidget):
         self.zoom_level *= factor
         # Allow much deep zoom for Eclipse Inspection (0.5 to 50.0)
         self.zoom_level = max(0.5, min(50.0, self.zoom_level))
+        # Keep cached trail image during movement to avoid flickering
+        # The Fast-Path will draw on top.
         self.update()
 
 
@@ -2409,21 +2683,24 @@ class AstroCanvas(QWidget):
     def draw_background(self, painter, sun_alt, sun_az, view_az, dimming=1.0):
         rect = self.rect()
         
-        # Quantize cache keys to avoid jitter re-calc
-        # 0.5 deg for altitude, 2 deg for azimuth
-        q_sun_alt = round(sun_alt * 2) / 2.0
-        q_sun_az = round(sun_az / 2) * 2
-        q_view_az = round(view_az / 2) * 2
+        # Interactive state (mouse dragging or time bar dragging)
+        is_interacting = self.dragging or getattr(self.parent_widget, '_dragging_time', False)
         
+        # Reduced Resolution for performance during dragging
+        # (4096 pixels -> 1024 pixels, 75% less physical sky model calculation)
+        w_res = 32 if is_interacting else 64
+        h_res = 32 if is_interacting else 64
+        
+        # Higher quantization during interaction to maximize cache hits
+        q_sun_alt = (round(sun_alt * 2) / 2.0) if not is_interacting else round(sun_alt)
+        q_sun_az = (round(sun_az / 2) * 2) if not is_interacting else (round(sun_az / 4) * 4)
+        q_view_az = (round(view_az / 2) * 2) if not is_interacting else (round(view_az / 4) * 4)
+
         w, h = self.width(), self.height()
-        zoom = self.zoom_level
-        
-        # FIX: Include Elevation (Pitch) in cache key to detect view changes
-        # Reduced Resolution to 64x64 for performance (since we use SmoothPixmap)
-        w_res = 64 
-        h_res = 64
-        
-        cache_key = (q_sun_alt, q_sun_az, q_view_az, w_res, h_res, w, h, zoom, round(self.elevation_angle, 1))
+        zoom = round(self.zoom_level, 2)
+        elev_q = round(self.elevation_angle, 1)
+
+        cache_key = (q_sun_alt, q_sun_az, q_view_az, w_res, h_res, w, h, zoom, elev_q)
         
         if self._bg_cache_key != cache_key or self._bg_cache_pixmap is None:
             # Regenerate using physics model
@@ -2510,7 +2787,11 @@ class AstroCanvas(QWidget):
         self._cached_trail_image = img
         self.trail_rendering_busy = False
 
-    def draw_stars(self, painter, hour, sun_alt, sun_az, for_trails=False, visibility_factor=1.0, moon_mask=None, mag_limit=None):
+    def draw_stars(self, painter, hour, sun_alt, sun_az, for_trails=False, visibility_factor=1.0, moon_mask=None, mag_limit=None, eff_lat=None):
+        if np and hasattr(self.parent_widget, 'np_ra'):
+            self.draw_stars_numpy(painter, hour, sun_alt, sun_az, mag_limit=mag_limit, eff_lat=eff_lat)
+            return
+
         if visibility_factor <= 0: return
 
         # If we are drawing trials, we can't use the static image cache logic (different times).
@@ -2531,9 +2812,9 @@ class AstroCanvas(QWidget):
              if np and hasattr(self.parent_widget, 'np_ra'):
                  self.draw_stars_numpy(painter, hour, sun_alt, sun_az, mag_limit=mag_limit)
         
-        # 2. Trigger Worker for NEXT frame
+        # 2. Trigger Worker for NEXT frame (skip if user is dragging time bar)
         pw = self.parent_widget
-        if np and hasattr(pw, 'np_ra') and not self.rendering_busy:
+        if np and hasattr(pw, 'np_ra') and not self.rendering_busy and not getattr(pw, '_dragging_time', False):
             self.rendering_busy = True # Lock
             
             # Gather params
@@ -2571,23 +2852,31 @@ class AstroCanvas(QWidget):
 
 
 
-    def draw_stars_numpy(self, painter, hour, sun_alt, sun_az, mag_limit=None):
-        if mag_limit is None: mag_limit = self.parent_widget.magnitude_limit
-        if self.dragging: mag_limit = min(mag_limit, 6.0)
-        
-        # 1. Physics (Vectorized)
+    def draw_stars_numpy(self, painter, hour, sun_alt, sun_az, mag_limit=None, eff_lat=None):
         pw = self.parent_widget
-        lat_rad = math.radians(pw.latitude)
+        if mag_limit is None: mag_limit = pw.magnitude_limit
+        if eff_lat is None: eff_lat = pw.latitude
         
-        # HA = LST - RA
-        # LST scalar
+        is_interacting = self.dragging or getattr(pw, '_dragging_time', False)
+        if is_interacting: 
+            mag_limit = min(mag_limit, 5.5) # Fewer stars during interactive movement
+        
+        # 1. Filtering (Pre-Math) - OPTIMIZATION
+        # Only process stars within magnitude range to avoid expensive math on 77k+ stars
+        original_idxs = np.where(pw.np_mag < mag_limit + 0.5)[0]
+        if len(original_idxs) == 0: return
+        
+        ra = pw.np_ra[original_idxs]
+        dec = pw.np_dec[original_idxs]
+        mag = pw.np_mag[original_idxs]
+        f_r_pre = pw.np_r[original_idxs]
+        f_g_pre = pw.np_g[original_idxs]
+        f_b_pre = pw.np_b[original_idxs]
+
+        # 2. Physics (Vectorized)
+        lat_rad = math.radians(eff_lat)
         day_of_year = pw.manual_day
         lst = (100.0 + day_of_year * 0.9856 + hour * 15.0 + pw.longitude) % 360
-        
-        # Arrays
-        ra = pw.np_ra
-        dec = pw.np_dec
-        mag = pw.np_mag
         
         # HA
         ha = (lst - ra)
@@ -2643,22 +2932,20 @@ class AstroCanvas(QWidget):
         mask = mag < limit_buffer
         
         # Apply Mask 1
-        idxs = np.where(mask)[0] # Indices into original arrays
+        idxs = np.where(mask)[0] 
         if len(idxs) == 0: return
         
-        # Filter arrays
-        # We keep 'indices' to track back to celestial_objects for click detection
-        # Create an array of original indices if we need them?
-        # Actually idxs ARE the original indices because we masked the full array.
-        indices = idxs
+        # Map back to original indices for celestial_objects interaction
+        # original_idxs was created during pre-filtering
+        indices = original_idxs[idxs]
         
         f_alt = alt_deg[idxs]
         f_az = az_deg[idxs]
         f_mag = mag[idxs]
         f_ll = local_limit[idxs]
-        f_r = pw.np_r[idxs]
-        f_g = pw.np_g[idxs]
-        f_b = pw.np_b[idxs]
+        f_r = f_r_pre[idxs]
+        f_g = f_g_pre[idxs]
+        f_b = f_b_pre[idxs]
         
         # 3. Projection - UNIVERSAL STEREOGRAPHIC (Horizon Centered)
         w, h = self.width(), self.height()
@@ -2739,6 +3026,11 @@ class AstroCanvas(QWidget):
         
         painter.setPen(Qt.NoPen)
         
+        # Prepare local list for visible stars (used for click detection)
+        self.visible_stars = np.array([], dtype=np.int32)
+        self.visible_stars_sx = np.array([], dtype=np.float32)
+        self.visible_stars_sy = np.array([], dtype=np.float32)
+        
         count = len(sx)
         if count == 0: return
 
@@ -2766,13 +3058,9 @@ class AstroCanvas(QWidget):
             alpha_f = eff_alpha[i]
             x, y = sx[i], sy[i]
             
-            # Interaction: Add to visible_stars
-            # We recover the original object using the index
-            # This is key for "Clicking" functionality
-            idx = indices[i]
-            # Safety check
-            if idx < len(cel_objs):
-                self.visible_stars.append((x, y, cel_objs[idx]))
+            # Skip slow individual object population unless needed for interaction
+            # self.visible_stars.append((x, y, cel_objs[idx]))
+            # DEPRECATED individual population for performance
             
             # Color
             if mag > 5.0:
@@ -2804,6 +3092,11 @@ class AstroCanvas(QWidget):
                  except Exception:
                      pass  # Silently skip spikes if there's an error
                      
+        # Update visible stars for click detection
+        self.visible_stars = indices
+        self.visible_stars_sx = sx
+        self.visible_stars_sy = sy
+
         # Polaris Label (Manual check)
         # Using original list for this checks is fast (1 item)
         # Or check in loop:
@@ -2905,6 +3198,14 @@ class AstroCanvas(QWidget):
     def normalize_deg(self, d):
         return d % 360.0
 
+    # --- Accurate Time & LST Methods ---
+    def get_datetime_utc(self, ut_hour):
+        # Construct UTC datetime from manual year/day/hour
+        y = self.parent_widget.manual_year
+        d = self.parent_widget.manual_day
+        dt_start = datetime(y, 1, 1, tzinfo=timezone.utc)
+        return dt_start + timedelta(days=d, hours=ut_hour)
+
     def julian_day(self, dt):
         # High precision JD using standard epoch
         # J2000.0 is 2000-01-01 12:00:00 UTC = JD 2451545.0
@@ -2922,14 +3223,6 @@ class AstroCanvas(QWidget):
         dt = self.get_datetime_utc(ut_hour)
         jd = self.julian_day(dt)
         return jd - 2451545.0
-
-    # --- Accurate Time & LST Methods ---
-    def get_datetime_utc(self, ut_hour):
-        # Construct UTC datetime from manual year/day/hour
-        y = self.parent_widget.manual_year
-        d = self.parent_widget.manual_day
-        dt_start = datetime(y, 1, 1, tzinfo=timezone.utc)
-        return dt_start + timedelta(days=d, hours=ut_hour)
 
     # REMOVED manual algorithm julian_day to avoid bugs.
     
@@ -3459,10 +3752,15 @@ class AstroCanvas(QWidget):
             self.elevation_angle = max(-90, min(90, self.elevation_angle))
             self.last_mouse_x = event.x()
             self.last_mouse_y = event.y()
+            # Keep cached trail image during movement to avoid flickering
+            # The Fast-Path will draw on top.
             self.update()
             
     def mouseReleaseEvent(self, event):
         self.dragging = False
+        # Invalidate trail cache only when movement STOPS to trigger a clean bake
+        self._cached_trail_image = None
+        self.update()
         
         # Click Detection (Min movement)
         if (event.pos() - self.press_pos).manhattanLength() < 5:
@@ -3470,11 +3768,16 @@ class AstroCanvas(QWidget):
             min_dist = 20 # Click Radius
             selected = None
             
-            for sx, sy, star in self.visible_stars:
-                dist = math.hypot(sx - click_pt.x(), sy - click_pt.y())
-                if dist < min_dist:
-                    min_dist = dist
-                    selected = star
+            # Use NumPy search for efficiency
+            if hasattr(self, 'visible_stars') and len(self.visible_stars) > 0:
+                dists = np.hypot(self.visible_stars_sx - click_pt.x(), 
+                                 self.visible_stars_sy - click_pt.y())
+                idx_min = np.argmin(dists)
+                if dists[idx_min] < min_dist:
+                    star_idx = self.visible_stars[idx_min]
+                    cel_objs = self.parent_widget.celestial_objects
+                    if star_idx < len(cel_objs):
+                        selected = cel_objs[star_idx]
             
             if selected:
                 info = (f"ID: {selected.get('id', 'N/A')}\n"
@@ -4076,14 +4379,14 @@ class AstroCanvas(QWidget):
             if hasattr(self, 'time_bar'):
                 self.time_bar.set_time(self.manual_hour)
         
-        # DYNAMIC FPS FOR RAIN
-        # Rain looks laggy at 10fps. 
+        # DYNAMIC FPS
+        # Rain looks laggy at low fps.
         if hasattr(self, 'weather') and self.weather.precip_int > 0.1:
             if self.timer.interval() != 33:
-                self.timer.setInterval(33) # 30 FPS
+                self.timer.setInterval(33) # 30 FPS for rain
         else:
-            if self.timer.interval() != 100:
-                self.timer.setInterval(100) # 10 FPS
+            if self.timer.interval() > 50 or self.timer.interval() == 33:
+                self.timer.setInterval(50) # 20 FPS base (was 10)
                 
         self.canvas.update()
 
@@ -4467,15 +4770,31 @@ class AstronomicalWidget(CustomWidgetBase):
         # 2. Init Base Widget (Calls setup_ui -> setup_content)
         super().__init__(title="Astronomy", parent=parent, **kwargs)
         
-        # 3. Post-UI initialization
+        # 3. Post-UI initialization — ASYNC (non-blocking)
+        self.show_satellites = False
+        self.satellites = []
+        
+        # --- Async Skyfield loading (Optimization 4) ---
         if SKYFIELD_AVAILABLE:
-            self.init_skyfield()
-            self.show_satellites = False
-            self.satellites = []
-            if self.show_satellites:
-                self.load_satellites_from_tle()
-                
-        self.load_catalog()
+            self._skyfield_thread = QThread()
+            self._skyfield_worker = SkyfieldLoaderWorker()
+            self._skyfield_worker.moveToThread(self._skyfield_thread)
+            self._skyfield_worker.skyfield_ready.connect(self._on_skyfield_ready)
+            self._skyfield_thread.started.connect(self._skyfield_worker.load)
+            self._skyfield_thread.start()
+            print("[AstroWidget] Skyfield loading in background...")
+        
+        # --- Async Catalog loading (Optimization 3 + 5) ---
+        self._catalog_thread = QThread()
+        self._catalog_worker = CatalogLoaderWorker()
+        self._catalog_worker.moveToThread(self._catalog_thread)
+        self._catalog_worker.catalog_ready.connect(self._on_catalog_ready)
+        local_dir = os.path.dirname(os.path.abspath(__file__))
+        json_path = os.path.join(local_dir, '..', 'data', 'stars', 'gaia_stars.json')
+        # Use lambda to pass argument when thread starts
+        self._catalog_thread.started.connect(lambda: self._catalog_worker.load(json_path))
+        self._catalog_thread.start()
+        print("[AstroWidget] Star catalog loading in background...")
 
         # Initialize Horizon Worker for dynamic baking
         from TerraLab.terrain.worker import HorizonWorker
@@ -4577,7 +4896,37 @@ class AstronomicalWidget(CustomWidgetBase):
         else:
             self.timer.setInterval(50)   # 20 FPS
 
+    def _on_skyfield_ready(self, ts, eph):
+        """Callback when Skyfield finishes loading in background."""
+        if ts is not None and eph is not None:
+            self.ts = ts
+            self.eph = eph
+            print("[AstroWidget] Skyfield ready (async).")
+            if self.show_satellites:
+                self.load_satellites_from_tle()
+            self.canvas.update()
+        else:
+            print("[AstroWidget] Skyfield failed to load.")
+        # Clean up thread
+        self._skyfield_thread.quit()
+    
+    def _on_catalog_ready(self, celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b):
+        """Callback when star catalog finishes loading in background."""
+        self.celestial_objects = celestial_objects
+        if np_ra is not None:
+            self.np_ra = np_ra
+            self.np_dec = np_dec
+            self.np_mag = np_mag
+            self.np_r = np_r
+            self.np_g = np_g
+            self.np_b = np_b
+        print(f"[AstroWidget] Star catalog ready: {len(celestial_objects)} stars (async).")
+        self.canvas.update()
+        # Clean up thread
+        self._catalog_thread.quit()
+
     def init_skyfield(self):
+        """Legacy synchronous init. Kept for compatibility."""
         try:
             self.ts = load.timescale()
             self.eph = load('de421.bsp')
@@ -4650,7 +4999,7 @@ class AstronomicalWidget(CustomWidgetBase):
         row1.addWidget(self.txt_lon)
         
         # Relocate Button (Triggers Bake)
-        self.btn_relocate = QPushButton("Reubicar")
+        self.btn_relocate = QPushButton(getTraduction("Astro.Relocate", "Reubicar"))
         self.btn_relocate.setStyleSheet("font-size: 10px; font-weight: bold; padding: 2px 8px;")
         self.btn_relocate.clicked.connect(self.request_relocation)
         row1.addWidget(self.btn_relocate)
@@ -4694,7 +5043,7 @@ class AstronomicalWidget(CustomWidgetBase):
         # DEM Configuration Button
         self.btn_terrain = QPushButton("\U0001f310") # World icon
         self.btn_terrain.setFixedSize(30, 24)
-        self.btn_terrain.setToolTip("Configurar MDT / Mapes")
+        self.btn_terrain.setToolTip(getTraduction("Astro.TerrainConfig", "Configurar MDT / Mapes"))
         self.btn_terrain.clicked.connect(self.configure_terrain)
         row1.addWidget(self.btn_terrain)
         
@@ -4726,30 +5075,30 @@ class AstronomicalWidget(CustomWidgetBase):
         row3.addWidget(self.chk_trails)
         
         # New Toggles
-        self.chk_enable_sky = QCheckBox("Sky")
+        self.chk_enable_sky = QCheckBox(getTraduction("Astro.Sky", "Cel"))
         self.chk_enable_sky.setChecked(True)
         self.chk_enable_sky.setStyleSheet("font-size: 10px;")
         self.chk_enable_sky.toggled.connect(self.canvas.update)
         row3.addWidget(self.chk_enable_sky)
         
         # Horizon Line Toggle (Simple/Flat vs Off)
-        self.chk_enable_horizon = QCheckBox("Horitzó")
-        self.chk_enable_horizon.setToolTip("Mostrar/Ocultar línea de horizonte base")
+        self.chk_enable_horizon = QCheckBox(getTraduction("Astro.Horizon", "Horitzó"))
+        self.chk_enable_horizon.setToolTip(getTraduction("Astro.HorizonTooltip", "Mostrar/Amagar línia d'horitzó base"))
         self.chk_enable_horizon.setChecked(True)
         self.chk_enable_horizon.setStyleSheet("font-size: 10px;")
         self.chk_enable_horizon.toggled.connect(self.canvas.update)
         row3.addWidget(self.chk_enable_horizon)
         
         # Topography Toggle (Complex Terrain vs Flat)
-        self.chk_enable_village = QCheckBox("Topografia")
-        self.chk_enable_village.setToolTip("Activar terreno 3D detallado")
+        self.chk_enable_village = QCheckBox(getTraduction("Astro.Topography", "Topografia"))
+        self.chk_enable_village.setToolTip(getTraduction("Astro.TopographyTooltip", "Activar terreny 3D detallat"))
         self.chk_enable_village.setChecked(True)
         self.chk_enable_village.setStyleSheet("font-size: 10px;")
         self.chk_enable_village.toggled.connect(self.canvas.update)
         row3.addWidget(self.chk_enable_village)
         
         # Loading Indicator (Initially Hidden)
-        self.lbl_loading = QLabel("⏳ Carregant topografia...", self)
+        self.lbl_loading = QLabel(getTraduction("Astro.LoadingTopography", "⏳ Carregant topografia..."), self)
         self.lbl_loading.setStyleSheet("color: yellow; font-weight: bold; background-color: rgba(0,0,0,100); padding: 5px; border-radius: 4px;")
         self.lbl_loading.setAlignment(Qt.AlignCenter)
         self.lbl_loading.hide() # Hidden until bake starts
@@ -4790,7 +5139,7 @@ class AstronomicalWidget(CustomWidgetBase):
         row4 = QHBoxLayout()
         row4.setSpacing(5)
         
-        self.chk_illusion = QCheckBox("Moon Illusion")
+        self.chk_illusion = QCheckBox(getTraduction("Astro.MoonIllusion", "Il·lusió Lunar"))
         self.chk_illusion.setStyleSheet("font-weight: bold; font-size: 10px;")
         self.chk_illusion.setChecked(True)
         self.chk_illusion.toggled.connect(self.update_illusion_enabled)
@@ -4799,14 +5148,14 @@ class AstronomicalWidget(CustomWidgetBase):
         self.slider_href = add_tiny_slider(row4, "H.Refs", (0, 100), 50, self.update_horizon_refs)
         self.slider_flat = add_tiny_slider(row4, "Dome", (0, 100), 50, self.update_dome_flattening)
         
-        self.chk_trained = QCheckBox("Train")
-        self.chk_trained.setToolTip("Trained Observer (Reduces Illusion)")
+        self.chk_trained = QCheckBox(getTraduction("Astro.Train", "Entrenat"))
+        self.chk_trained.setToolTip(getTraduction("Astro.TrainTooltip", "Observador entrenat (Redueix la il·lusió)"))
         self.chk_trained.setStyleSheet("font-size: 10px;")
         self.chk_trained.toggled.connect(self.update_trained_observer)
         row4.addWidget(self.chk_trained)
 
-        self.chk_lock = QCheckBox("LockEcl")
-        self.chk_lock.setToolTip("Lock Scale during Eclipse (Scientific Accuracy)")
+        self.chk_lock = QCheckBox(getTraduction("Astro.LockEcl", "BlocEcl"))
+        self.chk_lock.setToolTip(getTraduction("Astro.LockEclTooltip", "Bloquejar escala durant eclipsi (Precisió científica)"))
         self.chk_lock.setChecked(True)
         self.chk_lock.setStyleSheet("font-size: 10px;")
         self.chk_lock.toggled.connect(self.update_eclipse_lock)
@@ -4908,6 +5257,29 @@ class AstronomicalWidget(CustomWidgetBase):
         self.use_real_time = False
         self.btn_realtime.setChecked(False)
         self.manual_hour = val
+        # Suppress async star worker and invalidate cache during dragging
+        # Stars render synchronously via fast numpy path — no lag
+        self._dragging_time = True
+        if hasattr(self.canvas, '_cached_star_image'):
+            self.canvas._cached_star_image = None
+        # Keep cached trail image during dragging to avoid flickering.
+        # Fast-Path will provide feedback.
+        # Temporarily boost FPS during manual time changes
+        if hasattr(self, 'timer') and self.timer.interval() > 33:
+            self.timer.setInterval(33)  # 30 FPS during dragging
+        # Restore normal mode after 500ms of no dragging
+        if not hasattr(self, '_drag_restore_timer'):
+            self._drag_restore_timer = QTimer()
+            self._drag_restore_timer.setSingleShot(True)
+            def _end_drag():
+                self._dragging_time = False
+                self.timer.setInterval(50)
+                # Movement stopped: Invalidate trail cache to trigger high-quality bake
+                if hasattr(self.canvas, '_cached_trail_image'):
+                    self.canvas._cached_trail_image = None
+                self.canvas.update()
+            self._drag_restore_timer.timeout.connect(_end_drag)
+        self._drag_restore_timer.start(500)
         self.canvas.update()
         
     def request_relocation(self):
@@ -4918,7 +5290,7 @@ class AstronomicalWidget(CustomWidgetBase):
             
             # Reset UI state (hide old terrain, show loading)
             if hasattr(self, 'lbl_loading'):
-                self.lbl_loading.setText("⏳ Recalculant topografia...")
+                self.lbl_loading.setText(getTraduction("Astro.RecalcTopography", "⏳ Recalculant topografia..."))
                 self.lbl_loading.show()
                 self.lbl_loading.raise_()
             

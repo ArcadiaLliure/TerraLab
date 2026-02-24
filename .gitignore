@@ -210,3 +210,6 @@ __marimo__/
 tools/TerraLab/data/terrain_cache/*.npy
 tools/TerraLab/data/terrain_cache/*.asc
 tools/TerraLab/data/terrain_cache/*.txt
+#stars
+
+TerraLab/data/stars/*.npy

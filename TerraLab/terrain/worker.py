@@ -3,6 +3,7 @@ import time
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
 from TerraLab.terrain.engine import bake_and_save, HorizonBaker, TileIndex, TileCache, DemSampler, HorizonProfile, DEFAULT_BANDS
+from TerraLab.common.utils import getTraduction
 
 class HorizonWorker(QObject):
     """
@@ -115,24 +116,37 @@ class HorizonWorker(QObject):
             x_utm, y_utm = latlon_to_utm31(lat, lon)
             print(f"[HorizonWorker] UTM Coords: {x_utm}, {y_utm}", flush=True)
             
-            # --- Pre-warm Cache with Feedback ---
+            # --- Pre-warm Cache with Feedback (Parallel I/O) ---
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            
             vis_radius = 150000.0 # 150km #TODO: Apujar en un futur quan es distribueixi fora de Catalunya
             print(f"[HorizonWorker] Determining tiles in {vis_radius/1000}km radius...")
             tiles_needed = self.index.get_overlapping_tiles(x_utm, y_utm, vis_radius)
             total_tiles = len(tiles_needed)
             print(f"[HorizonWorker] Need {total_tiles} tiles.")
             
-            for i, tile in enumerate(tiles_needed):
-                # Only signal every N tiles to avoid UI spam, BUT for new parsing it's slow anyway so every 1 is fine if slow, or every 5 if fast.
-                if i % 5 == 0 or i == total_tiles - 1:
-                    percent = int((i+1) / total_tiles * 100)
-                    msg = f"⏳ Cargando mapas: {i+1}/{total_tiles} ({percent}%)"
-                    self.progress_message.emit(msg)
-                
-                # Force load (will generate NPY if needed)
-                self.cache.load(tile)
+            # Parallel tile loading (I/O-bound — threads are ideal)
+            n_tile_workers = min(8, total_tiles or 1)
+            loaded_count = 0
             
-            self.progress_message.emit(f"⏳ Calculando horizonte...")
+            def _load_tile(tile):
+                return self.cache.load(tile)
+            
+            with ThreadPoolExecutor(max_workers=n_tile_workers) as executor:
+                futures = {executor.submit(_load_tile, tile): tile for tile in tiles_needed}
+                for future in as_completed(futures):
+                    loaded_count += 1
+                    if loaded_count % 5 == 0 or loaded_count == total_tiles:
+                        percent = int(loaded_count / total_tiles * 100)
+                        tpl = getTraduction("Horizon.LoadingMaps", "⏳ Carregant mapes: {loaded}/{total} ({pct}%)")
+                        msg = tpl.format(loaded=loaded_count, total=total_tiles, pct=percent)
+                        self.progress_message.emit(msg)
+                    try:
+                        future.result()
+                    except Exception as e:
+                        print(f"[HorizonWorker] Tile load error: {e}")
+            
+            self.progress_message.emit(getTraduction("Horizon.CalculatingHorizonGeneric", "⏳ Calculant horitzó..."))
             
             # Sample ground height for this location
             # If valid, use it. If not, fallback.
@@ -145,13 +159,19 @@ class HorizonWorker(QObject):
             
             # Bake using increased radius for far mountains
             print("[HorizonWorker] Starting self.baker.bake...")
+            
+            def bake_progress(pct, msg):
+                tpl = getTraduction("Horizon.CalculatingHorizon", "⏳ Calculant horitzó: {pct}%")
+                self.progress_message.emit(tpl.format(pct=pct))
+            
             azimuths, bands = self.baker.bake(
                 x_utm, y_utm,
                 obs_h_ground=ground_h,
                 step_m=50,       # 50m step
                 d_max=vis_radius,    # 150km visibility (was 100km)
                 delta_az_deg=0.5,
-                band_defs=DEFAULT_BANDS
+                band_defs=DEFAULT_BANDS,
+                progress_callback=bake_progress
             )
             print("[HorizonWorker] self.baker.bake returned.")
             

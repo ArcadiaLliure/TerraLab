@@ -280,17 +280,20 @@ class TileIndex:
 # ─────────────────────────────────────────────
 
 class TileCache:
-    """LRU cache for loaded DEM grids, with .npy binary caching on disk."""
+    """LRU cache for loaded DEM grids, with .npy binary caching on disk. Thread-safe."""
 
     def __init__(self, capacity: int = 16):
+        import threading
         self.capacity = capacity
         self.cache: OrderedDict = OrderedDict()
+        self._lock = threading.Lock()
 
     def load(self, tile_info: Dict) -> Tuple[Optional[np.ndarray], Optional[Dict]]:
         path = tile_info["path"]
-        if path in self.cache:
-            self.cache.move_to_end(path)
-            return self.cache[path]
+        with self._lock:
+            if path in self.cache:
+                self.cache.move_to_end(path)
+                return self.cache[path]
 
         header = tile_info["header"]
         filename = os.path.basename(path)
@@ -313,9 +316,10 @@ class TileCache:
         if candidate_npy:
             try:
                 data = np.load(candidate_npy, mmap_mode="r")
-                self.cache[path] = (data, header)
-                if len(self.cache) > self.capacity:
-                    self.cache.popitem(last=False)
+                with self._lock:
+                    self.cache[path] = (data, header)
+                    if len(self.cache) > self.capacity:
+                        self.cache.popitem(last=False)
                 # print(f"[HorizonEngine] Loaded cached npy: {os.path.basename(candidate_npy)}")
                 return data, header
             except Exception as e:
@@ -379,9 +383,10 @@ class TileCache:
             if os.path.exists(npy_path):
                  data = np.load(npy_path, mmap_mode="r")
 
-            self.cache[path] = (data, header)
-            if len(self.cache) > self.capacity:
-                self.cache.popitem(last=False)
+            with self._lock:
+                self.cache[path] = (data, header)
+                if len(self.cache) > self.capacity:
+                    self.cache.popitem(last=False)
             
             print(f"[HorizonEngine] Parsed & Cached: {os.path.basename(path)}")
             return data, header
@@ -482,6 +487,54 @@ class HorizonBaker:
         self.eye_height = eye_height
         self.R = R
 
+    def _raycast_chunk(self, args):
+        """Process a chunk of azimuths for parallel execution."""
+        (az_indices, sin_az_chunk, cos_az_chunk, obs_x, obs_y,
+         h_eye_abs, step_m, d_max, band_defs_simple, R) = args
+        
+        n_bands = len(band_defs_simple)
+        n_chunk = len(az_indices)
+        
+        # Per-chunk band results: list of (angles, dists, heights) arrays
+        chunk_angles = [np.full(n_chunk, -np.inf) for _ in range(n_bands)]
+        chunk_dists = [np.zeros(n_chunk) for _ in range(n_bands)]
+        chunk_heights = [np.zeros(n_chunk) for _ in range(n_bands)]
+        
+        for local_i in range(n_chunk):
+            c = sin_az_chunk[local_i]
+            s = cos_az_chunk[local_i]
+            d = step_m
+
+            while d < d_max:
+                x = obs_x + d * c
+                y = obs_y + d * s
+
+                h_terr = self.sampler.sample(x, y)
+
+                if h_terr is not None:
+                    drop = (d * d) / (2.0 * R)
+                    h_visual = h_terr - drop - h_eye_abs
+                    ang = math.atan2(h_visual, d)
+
+                    for b_idx in range(n_bands):
+                        b_min, b_max = band_defs_simple[b_idx]
+                        if b_min <= d < b_max:
+                            if ang > chunk_angles[b_idx][local_i]:
+                                chunk_angles[b_idx][local_i] = ang
+                                chunk_dists[b_idx][local_i] = d
+                                chunk_heights[b_idx][local_i] = h_terr
+                            break
+
+                # Dynamic stepping: finer near, coarser far
+                if d < 3000:
+                    d += step_m
+                elif d < 15000:
+                    d += step_m * 2
+                else:
+                    d += step_m * 4
+
+        return az_indices, chunk_angles, chunk_dists, chunk_heights
+
     def bake(
         self,
         obs_x: float,
@@ -491,13 +544,19 @@ class HorizonBaker:
         d_max: float = 100_000,
         delta_az_deg: float = 0.5,
         band_defs: Optional[List[Dict]] = None,
+        progress_callback=None,
     ) -> Tuple[np.ndarray, List[Dict]]:
         """
-        Compute multi-band horizon profile.
+        Compute multi-band horizon profile (sequential — CPU-bound under GIL).
+
+        Args:
+            progress_callback: Optional callable(percent: int, msg: str).
 
         Returns (azimuths, bands) where bands is a list of dicts
         each containing 'id', 'angles', 'dists', 'heights' arrays.
         """
+        import time
+
         if obs_h_ground is None:
             val = self.sampler.sample(obs_x, obs_y)
             if val is None:
@@ -530,6 +589,8 @@ class HorizonBaker:
         cos_az = np.cos(az_rads)
 
         print(f"[HorizonEngine] Baking {n_az} azimuths, max_dist={d_max / 1000:.0f}km...")
+        t0 = time.time()
+        last_report = 0
 
         for i in range(n_az):
             c = sin_az[i]
@@ -543,15 +604,10 @@ class HorizonBaker:
                 h_terr = self.sampler.sample(x, y)
 
                 if h_terr is not None:
-                    # Valid terrain found
-                    
-                    # Curvature drop correction
                     drop = (d * d) / (2.0 * self.R)
                     h_visual = h_terr - drop - h_eye_abs
-                    # Use atan2 for correct quadrant handling (though d always > 0)
                     ang = math.atan2(h_visual, d)
 
-                    # Update the appropriate band
                     for b in bands:
                         if b["min"] <= d < b["max"]:
                             if ang > b["angles"][i]:
@@ -559,11 +615,6 @@ class HorizonBaker:
                                 b["dists"][i] = d
                                 b["heights"][i] = h_terr
                             break
-                elif d > 5000 and i % 10 == 0:
-                     # Optimization: if we are deep in void, maybe check if we should abort?
-                     # relying on user instruction "keep silhouette", so we just continue marching.
-                     # But we can step faster? No, risky if a small peak appears.
-                     pass
 
                 # Dynamic stepping: finer near, coarser far
                 if d < 3000:
@@ -573,10 +624,18 @@ class HorizonBaker:
                 else:
                     d += step_m * 4
 
-            if i % 100 == 0 and i > 0:
-                print(f"[HorizonEngine]   {i}/{n_az} azimuths...")
+            # Progress reporting (every 5%)
+            pct = int((i + 1) / n_az * 100)
+            if pct >= last_report + 5:
+                last_report = pct
+                if progress_callback:
+                    progress_callback(pct, f"⏳ Calculando horizonte: {pct}%")
+                if pct % 25 == 0:
+                    elapsed = time.time() - t0
+                    print(f"[HorizonEngine]   {pct}% ({i+1}/{n_az} azimuths, {elapsed:.1f}s)")
 
-        print(f"[HorizonEngine] Bake complete.")
+        elapsed = time.time() - t0
+        print(f"[HorizonEngine] Bake complete in {elapsed:.2f}s.")
         return azimuths, bands
 
 

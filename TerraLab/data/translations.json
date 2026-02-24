@@ -1,0 +1,352 @@
+{
+    "Astro.Lat": {
+        "ca": "Latitud:",
+        "es": "Latitud:",
+        "en": "Latitude:",
+        "fr": "Latitude :",
+        "it": "Latitudine:"
+    },
+    "Astro.Lon": {
+        "ca": "Longitud:",
+        "es": "Longitud:",
+        "en": "Longitude:",
+        "fr": "Longitude :",
+        "it": "Longitudine:"
+    },
+    "Astro.Relocate": {
+        "ca": "Reubicar",
+        "es": "Reubicar",
+        "en": "Relocate",
+        "fr": "Relocaliser",
+        "it": "Riposiziona"
+    },
+    "Astro.ViewZenith": {
+        "ca": "Zenit",
+        "es": "Cénit",
+        "en": "Zenith",
+        "fr": "Zénith",
+        "it": "Zenit"
+    },
+    "Astro.ViewHorizontal": {
+        "ca": "Horitzó",
+        "es": "Horizonte",
+        "en": "Horizon",
+        "fr": "Horizon",
+        "it": "Orizzonte"
+    },
+    "Astro.RealTimeButton": {
+        "ca": "Temps Real",
+        "es": "Tiempo Real",
+        "en": "Real Time",
+        "fr": "Temps Réel",
+        "it": "Tempo Reale"
+    },
+    "Astro.RealTime": {
+        "ca": "Temps real",
+        "es": "Tiempo real",
+        "en": "Real time",
+        "fr": "Temps réel",
+        "it": "Tempo reale"
+    },
+    "Astro.TerrainConfig": {
+        "ca": "Configurar MDT / Mapes",
+        "es": "Configurar MDT / Mapas",
+        "en": "Configure DEM / Maps",
+        "fr": "Configurer MNT / Cartes",
+        "it": "Configura DEM / Mappe"
+    },
+    "Astro.Circumpolar": {
+        "ca": "Circumpolar",
+        "es": "Circumpolar",
+        "en": "Circumpolar",
+        "fr": "Circumpolaire",
+        "it": "Circumpolare"
+    },
+    "Astro.Sky": {
+        "ca": "Cel",
+        "es": "Cielo",
+        "en": "Sky",
+        "fr": "Ciel",
+        "it": "Cielo"
+    },
+    "Astro.Horizon": {
+        "ca": "Horitzó",
+        "es": "Horizonte",
+        "en": "Horizon",
+        "fr": "Horizon",
+        "it": "Orizzonte"
+    },
+    "Astro.HorizonTooltip": {
+        "ca": "Mostrar/Amagar línia d'horitzó base",
+        "es": "Mostrar/Ocultar línea de horizonte base",
+        "en": "Show/Hide base horizon line",
+        "fr": "Afficher/Masquer la ligne d'horizon de base",
+        "it": "Mostra/Nascondi linea dell'orizzonte di base"
+    },
+    "Astro.Topography": {
+        "ca": "Topografia",
+        "es": "Topografía",
+        "en": "Topography",
+        "fr": "Topographie",
+        "it": "Topografia"
+    },
+    "Astro.TopographyTooltip": {
+        "ca": "Activar terreny 3D detallat",
+        "es": "Activar terreno 3D detallado",
+        "en": "Enable detailed 3D terrain",
+        "fr": "Activer le terrain 3D détaillé",
+        "it": "Attiva terreno 3D dettagliato"
+    },
+    "Astro.LoadingTopography": {
+        "ca": "⏳ Carregant topografia...",
+        "es": "⏳ Cargando topografía...",
+        "en": "⏳ Loading topography...",
+        "fr": "⏳ Chargement de la topographie…",
+        "it": "⏳ Caricamento topografia…"
+    },
+    "Astro.RecalcTopography": {
+        "ca": "⏳ Recalculant topografia...",
+        "es": "⏳ Recalculando topografía...",
+        "en": "⏳ Recalculating topography...",
+        "fr": "⏳ Recalcul de la topographie…",
+        "it": "⏳ Ricalcolo topografia…"
+    },
+    "Astro.LoadingCelestial": {
+        "ca": "⏳ Carregant dades celestes...",
+        "es": "⏳ Cargando datos celestes...",
+        "en": "⏳ Loading celestial data...",
+        "fr": "⏳ Chargement des données célestes…",
+        "it": "⏳ Caricamento dati celesti…"
+    },
+    "Astro.Mag": {
+        "ca": "Magnitud",
+        "es": "Magnitud",
+        "en": "Magnitude",
+        "fr": "Magnitude",
+        "it": "Magnitudine"
+    },
+    "Astro.Size": {
+        "ca": "Mida",
+        "es": "Tamaño",
+        "en": "Size",
+        "fr": "Taille",
+        "it": "Dimensione"
+    },
+    "Astro.Spk": {
+        "ca": "Puntes",
+        "es": "Puntas",
+        "en": "Spikes",
+        "fr": "Pointes",
+        "it": "Punte"
+    },
+    "Astro.MoonIllusion": {
+        "ca": "Il·lusió Lunar",
+        "es": "Ilusión Lunar",
+        "en": "Moon Illusion",
+        "fr": "Illusion Lunaire",
+        "it": "Illusione Lunare"
+    },
+    "Astro.Train": {
+        "ca": "Entrenat",
+        "es": "Entrenado",
+        "en": "Train",
+        "fr": "Entraîné",
+        "it": "Addestrato"
+    },
+    "Astro.TrainTooltip": {
+        "ca": "Observador entrenat (Redueix la il·lusió)",
+        "es": "Observador entrenado (Reduce la ilusión)",
+        "en": "Trained Observer (Reduces Illusion)",
+        "fr": "Observateur entraîné (Réduit l'illusion)",
+        "it": "Osservatore addestrato (Riduce l'illusione)"
+    },
+    "Astro.LockEcl": {
+        "ca": "BlocEcl",
+        "es": "BlocEcl",
+        "en": "LockEcl",
+        "fr": "VerrÉcl",
+        "it": "BlocEcl"
+    },
+    "Astro.LockEclTooltip": {
+        "ca": "Bloquejar escala durant eclipsi (Precisió científica)",
+        "es": "Bloquear escala durante eclipse (Precisión científica)",
+        "en": "Lock Scale during Eclipse (Scientific Accuracy)",
+        "fr": "Verrouiller l'échelle pendant l'éclipse (Précision scientifique)",
+        "it": "Blocca scala durante eclissi (Precisione scientifica)"
+    },
+    "Astro.Stars": {
+        "ca": "ESTRELLES",
+        "es": "ESTRELLAS",
+        "en": "STARS",
+        "fr": "ÉTOILES",
+        "it": "STELLE"
+    },
+    "Astro.Looking": {
+        "ca": "MIRANT",
+        "es": "MIRANDO",
+        "en": "LOOKING",
+        "fr": "DIRECTION",
+        "it": "GUARDANDO"
+    },
+    "Astro.N": {
+        "ca": "N",
+        "es": "N",
+        "en": "N",
+        "fr": "N",
+        "it": "N"
+    },
+    "Astro.NE": {
+        "ca": "NE",
+        "es": "NE",
+        "en": "NE",
+        "fr": "NE",
+        "it": "NE"
+    },
+    "Astro.E": {
+        "ca": "E",
+        "es": "E",
+        "en": "E",
+        "fr": "E",
+        "it": "E"
+    },
+    "Astro.SE": {
+        "ca": "SE",
+        "es": "SE",
+        "en": "SE",
+        "fr": "SE",
+        "it": "SE"
+    },
+    "Astro.S": {
+        "ca": "S",
+        "es": "S",
+        "en": "S",
+        "fr": "S",
+        "it": "S"
+    },
+    "Astro.SW": {
+        "ca": "SO",
+        "es": "SO",
+        "en": "SW",
+        "fr": "SO",
+        "it": "SO"
+    },
+    "Astro.W": {
+        "ca": "O",
+        "es": "O",
+        "en": "W",
+        "fr": "O",
+        "it": "O"
+    },
+    "Astro.NW": {
+        "ca": "NO",
+        "es": "NO",
+        "en": "NW",
+        "fr": "NO",
+        "it": "NO"
+    },
+    "Horizon.LoadingMaps": {
+        "ca": "⏳ Carregant mapes: {loaded}/{total} ({pct}%)",
+        "es": "⏳ Cargando mapas: {loaded}/{total} ({pct}%)",
+        "en": "⏳ Loading maps: {loaded}/{total} ({pct}%)",
+        "fr": "⏳ Chargement des cartes : {loaded}/{total} ({pct}%)",
+        "it": "⏳ Caricamento mappe: {loaded}/{total} ({pct}%)"
+    },
+    "Horizon.CalculatingHorizon": {
+        "ca": "⏳ Calculant horitzó: {pct}%",
+        "es": "⏳ Calculando horizonte: {pct}%",
+        "en": "⏳ Calculating horizon: {pct}%",
+        "fr": "⏳ Calcul de l'horizon : {pct}%",
+        "it": "⏳ Calcolo dell'orizzonte: {pct}%"
+    },
+    "Horizon.CalculatingHorizonGeneric": {
+        "ca": "⏳ Calculant horitzó...",
+        "es": "⏳ Calculando horizonte...",
+        "en": "⏳ Calculating horizon...",
+        "fr": "⏳ Calcul de l'horizon…",
+        "it": "⏳ Calcolo dell'orizzonte…"
+    },
+    "Month.Jan": {
+        "ca": "Gen",
+        "es": "Ene",
+        "en": "Jan",
+        "fr": "Jan",
+        "it": "Gen"
+    },
+    "Month.Feb": {
+        "ca": "Feb",
+        "es": "Feb",
+        "en": "Feb",
+        "fr": "Fév",
+        "it": "Feb"
+    },
+    "Month.Mar": {
+        "ca": "Mar",
+        "es": "Mar",
+        "en": "Mar",
+        "fr": "Mar",
+        "it": "Mar"
+    },
+    "Month.Apr": {
+        "ca": "Abr",
+        "es": "Abr",
+        "en": "Apr",
+        "fr": "Avr",
+        "it": "Apr"
+    },
+    "Month.May": {
+        "ca": "Mai",
+        "es": "May",
+        "en": "May",
+        "fr": "Mai",
+        "it": "Mag"
+    },
+    "Month.Jun": {
+        "ca": "Jun",
+        "es": "Jun",
+        "en": "Jun",
+        "fr": "Jun",
+        "it": "Giu"
+    },
+    "Month.Jul": {
+        "ca": "Jul",
+        "es": "Jul",
+        "en": "Jul",
+        "fr": "Jul",
+        "it": "Lug"
+    },
+    "Month.Aug": {
+        "ca": "Ago",
+        "es": "Ago",
+        "en": "Aug",
+        "fr": "Aoû",
+        "it": "Ago"
+    },
+    "Month.Sep": {
+        "ca": "Set",
+        "es": "Sep",
+        "en": "Sep",
+        "fr": "Sep",
+        "it": "Set"
+    },
+    "Month.Oct": {
+        "ca": "Oct",
+        "es": "Oct",
+        "en": "Oct",
+        "fr": "Oct",
+        "it": "Ott"
+    },
+    "Month.Nov": {
+        "ca": "Nov",
+        "es": "Nov",
+        "en": "Nov",
+        "fr": "Nov",
+        "it": "Nov"
+    },
+    "Month.Dec": {
+        "ca": "Des",
+        "es": "Dic",
+        "en": "Dec",
+        "fr": "Déc",
+        "it": "Dic"
+    }
+}
