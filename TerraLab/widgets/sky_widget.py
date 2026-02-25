@@ -1048,24 +1048,55 @@ class StarRenderWorker(QObject):
                 # Prevent QPointF overflow or crash with extreme zoom
                 if abs(x) > 200000 or abs(y) > 200000: continue
 
+                r_val, g_val, b_val = int(f_r[i]), int(f_g[i]), int(f_b[i])
+
                 if mag > 5.0:
-                     size = max(1.0, 1.2 * zoom_level * 0.6) * star_scale
-                     a_val = 200 - min(150, int((mag - 5.0) * 10))
-                     final_a = int(max(50, a_val) * alpha_f)
-                     painter.setBrush(QColor(int(f_r[i]), int(f_g[i]), int(f_b[i]), final_a))
+                     # Estrellas de fondo: un puntito que de verdad sea visible pero sin halo
+                     # Máximo de 1 píxel real, independientemente del zoom para evitar "bolitas"
+                     size = min(1.0, 1.2 * star_scale)
+                     a_val = 220 - min(100, int((mag - 5.0) * 15))
+                     # Faint stars lose color saturation to the eye; pull them towards white/grey
+                     desat = 0.5
+                     r_desat = int(r_val * (1-desat) + 200 * desat)
+                     g_desat = int(g_val * (1-desat) + 200 * desat)
+                     b_desat = int(b_val * (1-desat) + 220 * desat)
+                     
+                     final_a = int(max(60, a_val) * alpha_f * 0.7)
+                     
+                     painter.setBrush(QColor(r_desat, g_desat, b_desat, final_a))
                      painter.drawEllipse(QPointF(x, y), size, size)
                 else:
-                     size = max(1.5, (5.0 - mag) * 0.6 * zoom_level) * star_scale
-                     final_a = int(255 * alpha_f)
-                     c = QColor(int(f_r[i]), int(f_g[i]), int(f_b[i]), final_a)
-                     painter.setBrush(c)
-                     painter.drawEllipse(QPointF(x, y), size, size)
+                     # Estrellas principales
+                     size = max(1.5, (5.0 - mag) * 0.7 * star_scale)
+                     core_radius = min(4.0, size) 
                      
-                     if mag < 3.0: # Halo
-                         halo_size = size * 2.5
-                         c.setAlpha(int(40 * alpha_f))
-                         painter.setBrush(c)
+                     final_a = int(255 * alpha_f)
+                     star_c_intense = QColor(r_val, g_val, b_val, final_a)
+                     transparent_c = QColor(r_val, g_val, b_val, 0)
+                     
+                     # 1. Halo mucho más centrado y menos opaco para evitar el "velo"
+                     if mag < 4.0:
+                         halo_size = core_radius * (5.5 - mag) * 1.8 * zoom_level
+                         if mag < 1.0:
+                             halo_size = core_radius * 8.0 * zoom_level
+                             
+                         halo_grad = QRadialGradient(x, y, halo_size)
+                         halo_grad.setColorAt(0.0, QColor(r_val, g_val, b_val, int(90 * alpha_f)))
+                         halo_grad.setColorAt(0.1, QColor(r_val, g_val, b_val, int(30 * alpha_f)))
+                         halo_grad.setColorAt(0.3, QColor(r_val, g_val, b_val, int(5 * alpha_f)))
+                         halo_grad.setColorAt(1.0, transparent_c)
+                         
+                         painter.setBrush(QBrush(halo_grad))
                          painter.drawEllipse(QPointF(x, y), halo_size, halo_size)
+                     
+                     # 2. Núcleo más brillante y denso
+                     core_grad = QRadialGradient(x, y, core_radius)
+                     core_grad.setColorAt(0.0, QColor(255, 255, 255, final_a))
+                     core_grad.setColorAt(0.6, star_c_intense) # Mantiene el color base más hacia el borde
+                     core_grad.setColorAt(1.0, transparent_c)
+                     
+                     painter.setBrush(QBrush(core_grad))
+                     painter.drawEllipse(QPointF(x, y), core_radius, core_radius)
                      
                      # Diffraction Spikes for brightest stars (replicating draw_spikes logic)
                      # Use spike_threshold from params if available, otherwise default to 2.0
@@ -3058,30 +3089,57 @@ class AstroCanvas(QWidget):
             alpha_f = eff_alpha[i]
             x, y = sx[i], sy[i]
             
-            # Skip slow individual object population unless needed for interaction
-            # self.visible_stars.append((x, y, cel_objs[idx]))
-            # DEPRECATED individual population for performance
-            
             # Color
+            r_val, g_val, b_val = int(f_r[i]), int(f_g[i]), int(f_b[i])
+            
+            # Use QRadialGradient for realistic star blur/bloom
             if mag > 5.0:
-                 size = max(1.0, 1.2 * self.zoom_level * 0.6) * scale
-                 a_val = 200 - min(150, int((mag - 5.0) * 10))
-                 final_a = int(max(50, a_val) * alpha_f)
+                 # Estrellas de fondo: un puntito que de verdad sea visible pero sin halo
+                 # Máximo de 1 píxel real, independientemente del zoom para evitar "bolitas"
+                 size = min(1.0, 1.2 * scale)
+                 a_val = 220 - min(100, int((mag - 5.0) * 15))
+                 # Faint stars lose color saturation to the eye; pull them towards white/grey
+                 desat = 0.5
+                 r_desat = int(r_val * (1-desat) + 200 * desat)
+                 g_desat = int(g_val * (1-desat) + 200 * desat)
+                 b_desat = int(b_val * (1-desat) + 220 * desat)
                  
-                 painter.setBrush(QColor(int(f_r[i]), int(f_g[i]), int(f_b[i]), final_a))
+                 final_a = int(max(60, a_val) * alpha_f * 0.7)
+                 
+                 painter.setBrush(QColor(r_desat, g_desat, b_desat, final_a))
                  painter.drawEllipse(QPointF(x, y), size, size)
             else:
-                 size = max(1.5, (5.0 - mag) * 0.6 * self.zoom_level) * scale
-                 final_a = int(255 * alpha_f)
-                 c = QColor(int(f_r[i]), int(f_g[i]), int(f_b[i]), final_a)
-                 painter.setBrush(c)
-                 painter.drawEllipse(QPointF(x, y), size, size)
+                 # Estrellas principales
+                 size = max(1.5, (5.0 - mag) * 0.7 * scale)
+                 core_radius = min(4.0, size)
                  
-                 if mag < 3.0:
-                     halo_size = size * 2.5
-                     c.setAlpha(int(40 * alpha_f))
-                     painter.setBrush(c)
+                 final_a = int(255 * alpha_f)
+                 star_c_intense = QColor(r_val, g_val, b_val, final_a)
+                 transparent_c = QColor(r_val, g_val, b_val, 0)
+                 
+                 # 1. Halo mucho más centrado y menos opaco para evitar el "velo"
+                 if mag < 4.0:
+                     halo_size = core_radius * (5.5 - mag) * 1.8 * self.zoom_level
+                     if mag < 1.0:
+                         halo_size = core_radius * 8.0 * self.zoom_level
+                         
+                     halo_grad = QRadialGradient(x, y, halo_size)
+                     halo_grad.setColorAt(0.0, QColor(r_val, g_val, b_val, int(90 * alpha_f)))
+                     halo_grad.setColorAt(0.1, QColor(r_val, g_val, b_val, int(30 * alpha_f)))
+                     halo_grad.setColorAt(0.3, QColor(r_val, g_val, b_val, int(5 * alpha_f)))
+                     halo_grad.setColorAt(1.0, transparent_c)
+                     
+                     painter.setBrush(QBrush(halo_grad))
                      painter.drawEllipse(QPointF(x, y), halo_size, halo_size)
+                 
+                 # 2. Núcleo más brillante y denso
+                 core_grad = QRadialGradient(x, y, core_radius)
+                 core_grad.setColorAt(0.0, QColor(255, 255, 255, final_a))
+                 core_grad.setColorAt(0.6, star_c_intense) # Mantiene el color base más hacia el borde
+                 core_grad.setColorAt(1.0, transparent_c)
+                 
+                 painter.setBrush(QBrush(core_grad))
+                 painter.drawEllipse(QPointF(x, y), core_radius, core_radius)
                  
                  # Draw diffraction spikes using the slider threshold
                  try:
@@ -4754,7 +4812,7 @@ class AstronomicalWidget(CustomWidgetBase):
         self.longitude = 0.750917
         self.magnitude_limit = 6.0
         self.spike_magnitude_threshold = 2.0
-        self.star_scale = 1.0
+        self.star_scale = 0.5
         
         self.celestial_objects = []
         self.use_real_time = True
