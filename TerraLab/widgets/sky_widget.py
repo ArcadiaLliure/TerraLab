@@ -1,6 +1,8 @@
 import math
 import os
 import random
+import time
+import random
 try:
     import numpy as np
 except ImportError:
@@ -8,7 +10,7 @@ except ImportError:
 from datetime import datetime, timedelta, timezone
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QSlider, QLineEdit, QPushButton, QFrame,
-                             QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication)
+                             QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox)
 from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, pyqtSlot, QObject, QThread, QLineF, QUrl
 from PyQt5.QtGui import QPainter, QColor, QPen, QRadialGradient, QBrush, QPainterPath, QLinearGradient, QPixmap, QFont, QTransform, QImage, QPolygonF
 
@@ -1400,6 +1402,11 @@ class AstroCanvas(QWidget):
         # Village Overlay (houses, trees, lanterns — on top of terrain)
         self.village = VillageOverlay()
         self.village.request_update.connect(self.update)
+
+        # HintOverlay — toast HUD contextual per a zoom, temps i ubicació
+        from TerraLab.widgets.hint_overlay import HintOverlay as _HintOverlay
+        self.hint_overlay = _HintOverlay(parent=self)
+
         
         # Threading for Stars
         self._cached_star_image = None
@@ -1819,7 +1826,7 @@ class AstroCanvas(QWidget):
             eff_sun_alt = 90.0
             eclipse_dimming = 1.0
 
-            if self.parent_widget.chk_enable_sky.isChecked():
+            if True: # Always calculate sky background and celestial positions
                 eff_sun_alt, eff_sun_az = self.get_sun_alt_az(eff_hour, eff_lat, day_of_year)
                 
                 # Eclipse Dimming Calculation with SMART THROTTLING
@@ -1932,7 +1939,8 @@ class AstroCanvas(QWidget):
                             mx, my, m_rad, _, _, _, _ = moon_proj
                             moon_mask = (mx, my, m_rad)
                         
-                self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit, eff_lat=eff_lat)
+                if self.parent_widget.chk_enable_sky.isChecked():
+                    self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit, eff_lat=eff_lat)
                     
                 # 4. Celestial Bodies (Sun/Moon/Planets/Satellites)
                 # Try Skyfield First
@@ -1943,13 +1951,6 @@ class AstroCanvas(QWidget):
                      # Skyfield not yet loaded (async) — show loading hint
                      painter.setPen(QColor(180, 180, 180, 120))
                      painter.drawText(self.rect(), Qt.AlignCenter, getTraduction("Astro.LoadingCelestial", "⏳ Loading celestial data..."))
-            else:
-                # Sky Disabled -> Draw Black Background
-                painter.fillRect(self.rect(), Qt.black)
-                # Weather must still draw? User said "checkbox para deshabilitar background".
-                # Usually implies weather is separate? Or part of background?
-                # Weather is "Atmosphere". Let's assume weather draws ON TOP of black if enabled.
-                pass
 
             # === WEATHER SYSTEM (Final Layer to occlude stars) ===
             self.weather.update_weather(day_of_year, local_hour)
@@ -1957,8 +1958,8 @@ class AstroCanvas(QWidget):
             # Scale FOV inversely with zoom (Zoom 2.0 -> FOV 50 deg if base is 100)
             base_fov = 100.0
             current_fov = base_fov / self.zoom_level
-            # Pass eff_sun_alt (or 90) to weather for lighting
-            w_sun_alt = eff_sun_alt if self.parent_widget.chk_enable_sky.isChecked() else 90.0
+            # Pass eff_sun_alt to weather for lighting
+            w_sun_alt = eff_sun_alt # Always computed now
             self.weather.draw(painter, w_sun_alt, self.azimuth_offset, self.elevation_angle, current_fov, eclipse_dimming=eclipse_dimming)
 
             
@@ -2537,6 +2538,16 @@ class AstroCanvas(QWidget):
         # Keep cached trail image during movement to avoid flickering
         # The Fast-Path will draw on top.
         self.update()
+
+        # ─ Toast HUD: mostra FOV i focal equivalent al zoom actual ─
+        if hasattr(self, 'hint_overlay'):
+            fov_deg  = 100.0 / self.zoom_level
+            focal_eq = max(1, round(43.27 / math.radians(fov_deg)))
+            txt = getTraduction("HUD.ZoomHint", "FOV {fov}°  ·  {focal}mm").format(
+                fov=f"{fov_deg:.1f}", focal=focal_eq
+            )
+            self.hint_overlay.show_hint(txt)
+
 
 
 
@@ -3983,6 +3994,10 @@ class AstroCanvas(QWidget):
                 sun_radius_px = max(3.0, sun_ang_radius_deg * pixels_per_deg * celestial_scale * scale_s)
                 moon_radius_px = max(3.0, moon_ang_radius_deg * pixels_per_deg * celestial_scale * scale_m)
 
+                show_sun_moon = True
+                if hasattr(self.parent_widget, 'chk_sun_moon'):
+                    show_sun_moon = self.parent_widget.chk_sun_moon.isChecked()
+
                 # ... Sun Color (Copied logic, can optimize later) ...
                 c_zenith = QColor(255, 255, 240)
                 c_golden = QColor(255, 200, 100)
@@ -4025,7 +4040,9 @@ class AstroCanvas(QWidget):
                         eff_corona_opacity *= (1.0 - dim_factor)
                 
                 visual_ppd = pixels_per_deg * celestial_scale
-                self.draw_sun_skyfield(painter, alt_s_deg, az_s_deg, sun_radius_px, eff_sun_color, eff_corona_opacity, visual_ppd)
+                
+                if show_sun_moon:
+                    self.draw_sun_skyfield(painter, alt_s_deg, az_s_deg, sun_radius_px, eff_sun_color, eff_corona_opacity, visual_ppd)
                 
                 # Illumination (Approx)
                 elongation = sep_real # Roughly close enough for visual phase if not precise
@@ -4048,44 +4065,49 @@ class AstroCanvas(QWidget):
                      b = int(235 * (1-t_moon_set) + 100 * t_moon_set)
                      moon_tint = QColor(r, g, b)
                      
-                self.draw_moon_skyfield(painter, alt_m_vis, az_m_vis, illumination, rotation_deg, moon_radius_px, 1.0, is_eclipsing, (alt_s_deg > -6), sun_params=(alt_s_deg, az_s_deg, sun_radius_px), pixels_per_deg=visual_ppd, tint_color=moon_tint)
+                if show_sun_moon:
+                    self.draw_moon_skyfield(painter, alt_m_vis, az_m_vis, illumination, rotation_deg, moon_radius_px, 1.0, is_eclipsing, (alt_s_deg > -6), sun_params=(alt_s_deg, az_s_deg, sun_radius_px), pixels_per_deg=visual_ppd, tint_color=moon_tint)
                 
                 # Planets
-                for p in data['planets']:
-                    # Recompute visibility
-                    s_alt_rad = math.radians(alt_s_deg)
-                    s_az_rad = math.radians(az_s_deg)
-                    p_alt_rad = math.radians(p['alt'])
-                    p_az_rad = math.radians(p['az'])
+                show_planets = True
+                if hasattr(self.parent_widget, 'chk_planets'):
+                    show_planets = self.parent_widget.chk_planets.isChecked()
                     
-                    sin_p = math.sin(p_alt_rad)
-                    sin_s = math.sin(s_alt_rad)
-                    cos_p = math.cos(p_alt_rad)
-                    cos_s = math.cos(s_alt_rad)
-                    
-                    cos_gamma = sin_p*sin_s + cos_p*cos_s*math.cos(p_az_rad - s_az_rad)
-                    
-                    # Glare/Directional Modifier (Strict -4.0)
-                    dir_modifier = -4.0 * cos_gamma
-                    local_limit = mag_limit + dir_modifier
-                    
-                    # Caching handles magnitude now
-                    mag = p.get('mag', -2.0)
-                    
-                    # Visibility Check (Magnitude vs Limit)
-                    # "Brighter than limit" means (mag < limit)
-                    diff = local_limit - mag
-                    fade_in = max(0.0, min(1.0, diff * 2.0))
-                    
-                    if fade_in > 0.01:
-                        p_rad = max(2.0, (p['sz']/10.0) * pixels_per_deg * 2.0)
+                if show_planets:
+                    for p in data['planets']:
+                        # Recompute visibility
+                        s_alt_rad = math.radians(alt_s_deg)
+                        s_az_rad = math.radians(az_s_deg)
+                        p_alt_rad = math.radians(p['alt'])
+                        p_az_rad = math.radians(p['az'])
                         
-                        # Apply fade to alpha
-                        p_col = QColor(p['col'])
-                        p_col.setAlphaF(fade_in)
+                        sin_p = math.sin(p_alt_rad)
+                        sin_s = math.sin(s_alt_rad)
+                        cos_p = math.cos(p_alt_rad)
+                        cos_s = math.cos(s_alt_rad)
                         
-                        self.draw_planet(painter, p['alt'], p['az'], p['name'], p_col, p_rad, mag)
-
+                        cos_gamma = sin_p*sin_s + cos_p*cos_s*math.cos(p_az_rad - s_az_rad)
+                        
+                        # Glare/Directional Modifier (Strict -4.0)
+                        dir_modifier = -4.0 * cos_gamma
+                        local_limit = mag_limit + dir_modifier
+                        
+                        # Caching handles magnitude now
+                        mag = p.get('mag', -2.0)
+                        
+                        # Visibility Check (Magnitude vs Limit)
+                        # "Brighter than limit" means (mag < limit)
+                        diff = local_limit - mag
+                        fade_in = max(0.0, min(1.0, diff * 2.0))
+                        
+                        if fade_in > 0.01:
+                            p_rad = max(2.0, (p['sz']/10.0) * pixels_per_deg * 2.0)
+                            
+                            # Apply fade to alpha
+                            p_col = QColor(p['col'])
+                            p_col.setAlphaF(fade_in)
+                            
+                            self.draw_planet(painter, p['alt'], p['az'], p['name'], p_col, p_rad, mag)
 
                 return
             except Exception as e:
@@ -5080,236 +5102,272 @@ class AstronomicalWidget(CustomWidgetBase):
         # Main Layout is Vertical inside the frame
         frame_layout = QVBoxLayout()
         frame_layout.setSpacing(0) 
+        # === CUSTOM MOCKUP LAYOUT (3 HORIZONTAL PANELS) ===
+        frame_layout = QVBoxLayout()
+        frame_layout.setSpacing(5)
         frame_layout.setContentsMargins(5, 5, 5, 5)
 
-        # --- PANEL TOP (Location, Date, Views) ---
-        self.panel_top = QWidget()
-        layout_top = QVBoxLayout(self.panel_top)
-        layout_top.setContentsMargins(0,0,0,0)
-        layout_top.setSpacing(4)
-
-        row1 = QHBoxLayout()
-        row1.setSpacing(8)
-        
-        # Lat/Lon
-        row1.addWidget(QLabel(getTraduction("Astro.Lat", "Latitud:")))
-        self.txt_lat = QLineEdit(str(self.latitude))
-        self.txt_lat.setMinimumWidth(60)
-        self.txt_lat.returnPressed.connect(self.update_location)
-        row1.addWidget(self.txt_lat)
-        
-        row1.addWidget(QLabel(getTraduction("Astro.Lon", "Longitud:")))
-        self.txt_lon = QLineEdit(str(self.longitude))
-        self.txt_lon.setMinimumWidth(60)
-        self.txt_lon.returnPressed.connect(self.update_location)
-        row1.addWidget(self.txt_lon)
-        
-        # Relocate Button (Triggers Bake)
-        self.btn_relocate = QPushButton(getTraduction("Astro.Relocate", "Reubicar"))
-        self.btn_relocate.setStyleSheet("font-size: 10px; font-weight: bold; padding: 2px 8px;")
-        self.btn_relocate.clicked.connect(self.request_relocation)
-        row1.addWidget(self.btn_relocate)
-        
-        row1.addSpacing(10)
-        
-        self.btn_prev_day = QPushButton("<")
-        self.btn_prev_day.setFixedWidth(20)
-        self.btn_prev_day.clicked.connect(self.prev_day)
-        row1.addWidget(self.btn_prev_day)
-        
-        self.lbl_date = ClickableLabel(self.format_date(self.manual_day))
-        self.lbl_date.setAlignment(Qt.AlignCenter)
-        self.lbl_date.setMinimumWidth(80)
-        self.lbl_date.setCursor(Qt.PointingHandCursor)
-        self.lbl_date.clicked.connect(self.open_calendar)
-        self.lbl_date.setStyleSheet("color: #ddd; font-weight: bold;")
-        row1.addWidget(self.lbl_date)
-        
-        self.btn_next_day = QPushButton(">")
-        self.btn_next_day.setFixedWidth(20)
-        self.btn_next_day.clicked.connect(self.next_day)
-        row1.addWidget(self.btn_next_day)
-        
-        row1.addStretch(1)
-        
-        self.btn_view = QPushButton(getTraduction("Astro.ViewZenith", "Cénit"))
-        self.btn_view.setMinimumWidth(90)
-        self.btn_view.clicked.connect(self.toggle_view)
-        row1.addWidget(self.btn_view)
-        
-        self.btn_realtime = QPushButton(getTraduction("Astro.RealTimeButton", "Tiempo Real"))
-        self.btn_realtime.setCheckable(True)
-        self.btn_realtime.setMinimumWidth(80)
-        self.btn_realtime.setToolTip(getTraduction("Astro.RealTime", "Tiempo real"))
-        self.btn_realtime.toggled.connect(self.toggle_realtime)
-        row1.addWidget(self.btn_realtime)
-        
-        row1.addSpacing(10)
-        
-        # DEM Configuration Button
-        self.btn_terrain = QPushButton("\U0001f310") # World icon
-        self.btn_terrain.setFixedSize(30, 24)
-        self.btn_terrain.setToolTip(getTraduction("Astro.TerrainConfig", "Configurar MDT / Mapes"))
-        self.btn_terrain.clicked.connect(self.configure_terrain)
-        row1.addWidget(self.btn_terrain)
-        
-        row1.addSpacing(10)
-        layout_top.addLayout(row1)
-        
-        # --- ROW 2: Altitude Offset & Feedback ---
-        from PyQt5.QtWidgets import QDoubleSpinBox
-        from TerraLab.common.utils import get_config_value
-        row2 = QHBoxLayout()
-        row2.setSpacing(8)
-        
-        row2.addWidget(QLabel(getTraduction("Astro.ExtraHeight", "Altura extra (m):")))
-        self.spin_extra_height = QDoubleSpinBox()
-        self.spin_extra_height.setRange(0.0, 10000.0)
-        self.spin_extra_height.setSingleStep(0.5)
-        self.spin_extra_height.setDecimals(1)
-        
-        # Tooltip translated fallback
-        tt_fallback = "Añade elevación a tu punto de observación por encima del terreno base obtenido del DEM."
-        self.spin_extra_height.setToolTip(getTraduction("Astro.ExtraHeightTooltip", tt_fallback))
-        
-        # Load persisted offset if exists, else 0
-        saved_offset = float(get_config_value("observer_offset", 0.0))
-        self.spin_extra_height.setValue(saved_offset)
-        self.spin_extra_height.valueChanged.connect(self.on_extra_height_changed)
-        
-        row2.addWidget(self.spin_extra_height)
-        
-        self.lbl_altitude_info = QLabel("Altitud terreno: -- m | Total observador: -- m")
-        self.lbl_altitude_info.setStyleSheet("color: #b0c4de; font-style: italic; font-size: 11px;")
-        row2.addWidget(self.lbl_altitude_info)
-        row2.addStretch(1)
-        
-        layout_top.addLayout(row2)
-        
-        frame_layout.addWidget(self.panel_top)
-        
-        # --- TIME BAR (Always Visible) ---
+        # ── TIME BAR (At the top) ────────────────────────────────────────────
         self.time_bar = RusticTimeBar()
         self.time_bar.valueChanged.connect(self.on_time_bar_change)
-        # Initialize
         self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
-        
-        frame_layout.addWidget(self.time_bar, 1)
+        frame_layout.addWidget(self.time_bar)
 
-        # --- PANEL BOTTOM (Controls, Weather, Illusion) ---
-        self.panel_bottom = QWidget()
-        layout_bot = QVBoxLayout(self.panel_bottom)
-        layout_bot.setContentsMargins(0,0,0,0)
-        layout_bot.setSpacing(4)
-
-        # Row 3
-        row3 = QHBoxLayout()
-        row3.setSpacing(10)
-        
-        self.chk_trails = QCheckBox(getTraduction("Astro.Circumpolar", "Circumpolar"))
-        self.chk_trails.toggled.connect(self.on_trails_toggled)
-        row3.addWidget(self.chk_trails)
-        
-        # New Toggles
-        self.chk_enable_sky = QCheckBox(getTraduction("Astro.Sky", "Cel"))
-        self.chk_enable_sky.setChecked(True)
-        self.chk_enable_sky.setStyleSheet("font-size: 10px;")
-        self.chk_enable_sky.toggled.connect(self.canvas.update)
-        row3.addWidget(self.chk_enable_sky)
-        
-        # Horizon Line Toggle (Simple/Flat vs Off)
-        self.chk_enable_horizon = QCheckBox(getTraduction("Astro.Horizon", "Horitzó"))
-        self.chk_enable_horizon.setToolTip(getTraduction("Astro.HorizonTooltip", "Mostrar/Amagar línia d'horitzó base"))
-        self.chk_enable_horizon.setChecked(True)
-        self.chk_enable_horizon.setStyleSheet("font-size: 10px;")
-        self.chk_enable_horizon.toggled.connect(self.canvas.update)
-        row3.addWidget(self.chk_enable_horizon)
-        
-        # Topography Toggle (Complex Terrain vs Flat)
-        self.chk_enable_village = QCheckBox(getTraduction("Astro.Topography", "Topografia"))
-        self.chk_enable_village.setToolTip(getTraduction("Astro.TopographyTooltip", "Activar terreny 3D detallat"))
-        self.chk_enable_village.setChecked(True)
-        self.chk_enable_village.setStyleSheet("font-size: 10px;")
-        self.chk_enable_village.toggled.connect(self.canvas.update)
-        row3.addWidget(self.chk_enable_village)
-        
-        # Loading Indicator (Initially Hidden)
+        # Loading indicator (absolute, sobre canvas)
         self.lbl_loading = QLabel(getTraduction("Astro.LoadingTopography", "⏳ Carregant topografia..."), self)
         self.lbl_loading.setStyleSheet("color: yellow; font-weight: bold; background-color: rgba(0,0,0,100); padding: 5px; border-radius: 4px;")
         self.lbl_loading.setAlignment(Qt.AlignCenter)
-        self.lbl_loading.hide() # Hidden until bake starts
-        # Absolute positioning will be handled in resizeEvent or just add to layout temporarily if easier?
-        # Better: Add to top-right of canvas overlay. But layout is vertical. 
-        # Making it child of self allows absolute naming.
-        self.lbl_loading.move(10, 50) # Top-leftish
+        self.lbl_loading.hide()
+        self.lbl_loading.move(10, 50)
         self.lbl_loading.resize(200, 30)
-        
-        row3.addStretch(1)
-        
-        def add_tiny_slider(layout, label, val_range, init_val, callback):
-            l = QHBoxLayout()
-            l.setSpacing(2)
-            lbl = QLabel(label)
-            lbl.setStyleSheet("font-size: 10px;") # Color set by global style
-            l.addWidget(lbl)
-            sld = QSlider(Qt.Horizontal)
-            sld.setRange(*val_range)
-            sld.setValue(init_val)
-            sld.setFixedWidth(60)
-            sld.valueChanged.connect(callback)
-            l.addWidget(sld)
-            layout.addLayout(l)
-            return sld
 
-        self.slider_mag = add_tiny_slider(row3, getTraduction("Astro.Mag", "Magnitud"), (-20, 100), int(self.magnitude_limit*10), self.update_magnitude)
-        self.slider_size = add_tiny_slider(row3, getTraduction("Astro.Size", "Tamaño"), (5, 40), int(self.star_scale*10), self.update_star_scale)
-        self.slider_spikes = add_tiny_slider(row3, getTraduction("Astro.Spk", "Puntas"), (-30, 70), int(self.spike_magnitude_threshold*10), self.update_spikes)
+        # ── THE 3 BOTTOM PANELS ──────────────────────────────────────────────
+        panels_layout = QHBoxLayout()
+        panels_layout.setSpacing(10)
+        panels_layout.setContentsMargins(0, 0, 0, 0)
         
-        layout_bot.addLayout(row3)
-        
-        # Weather
-        weather_controls = WeatherControlWidget.create_controls(self, self.canvas.weather)
-        layout_bot.addWidget(weather_controls)
+        gb_style = """
+            QGroupBox { border: 1px solid #777; border-radius: 3px; margin-top: 1.2em; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #000; font-weight: bold; }
+            QLabel { font-size: 10px; color: #000; font-style: normal; font-weight: normal; }
+            QCheckBox { font-size: 10px; color: #000; font-style: normal; font-weight: normal; }
+        """
 
-        # Row 4: Illusion
-        row4 = QHBoxLayout()
-        row4.setSpacing(5)
-        
-        self.chk_illusion = QCheckBox(getTraduction("Astro.MoonIllusion", "Il·lusió Lunar"))
-        self.chk_illusion.setStyleSheet("font-weight: bold; font-size: 10px;")
-        self.chk_illusion.setChecked(True)
-        self.chk_illusion.toggled.connect(self.update_illusion_enabled)
-        row4.addWidget(self.chk_illusion)
-        
-        self.slider_href = add_tiny_slider(row4, "H.Refs", (0, 100), 50, self.update_horizon_refs)
-        self.slider_flat = add_tiny_slider(row4, "Dome", (0, 100), 50, self.update_dome_flattening)
-        
-        self.chk_trained = QCheckBox(getTraduction("Astro.Train", "Entrenat"))
-        self.chk_trained.setToolTip(getTraduction("Astro.TrainTooltip", "Observador entrenat (Redueix la il·lusió)"))
-        self.chk_trained.setStyleSheet("font-size: 10px;")
-        self.chk_trained.toggled.connect(self.update_trained_observer)
-        row4.addWidget(self.chk_trained)
+        # 1. LOCALITZACIÓ =====================================================
+        gb_loc = QGroupBox("Localització")
+        gb_loc.setStyleSheet(gb_style)
+        l_loc = QHBoxLayout(gb_loc)
+        l_loc.setSpacing(15)
 
-        self.chk_lock = QCheckBox(getTraduction("Astro.LockEcl", "BlocEcl"))
-        self.chk_lock.setToolTip(getTraduction("Astro.LockEclTooltip", "Bloquejar escala durant eclipsi (Precisió científica)"))
-        self.chk_lock.setChecked(True)
-        self.chk_lock.setStyleSheet("font-size: 10px;")
-        self.chk_lock.toggled.connect(self.update_eclipse_lock)
-        row4.addWidget(self.chk_lock)
+        # Col: inputs (Lat, Lon, Alt) + Button
+        l_coord = QVBoxLayout()
+        l_coord.setSpacing(2)
         
-        self.chk_pure_colors = QCheckBox(getTraduction("Astro.PureColors", "Colors purs"))
-        self.chk_pure_colors.setToolTip(getTraduction("Astro.PureColorsTooltip", "Utilitza índex B-V pur sense desaturació visual"))
-        self.chk_pure_colors.setStyleSheet("font-size: 10px;")
+        h_latlon = QHBoxLayout()
+        v_inputs = QVBoxLayout()
+        v_inputs.setSpacing(2)
+        
+        h_lat = QHBoxLayout(); h_lat.addWidget(QLabel("Latitud")); self.txt_lat = QLineEdit(str(self.latitude))
+        self.txt_lat.setFixedWidth(60); self.txt_lat.returnPressed.connect(self.update_location); h_lat.addWidget(self.txt_lat)
+        v_inputs.addLayout(h_lat)
+
+        h_lon = QHBoxLayout(); h_lon.addWidget(QLabel("Longitud")); self.txt_lon = QLineEdit(str(self.longitude))
+        self.txt_lon.setFixedWidth(60); self.txt_lon.returnPressed.connect(self.update_location); h_lon.addWidget(self.txt_lon)
+        v_inputs.addLayout(h_lon)
+        h_latlon.addLayout(v_inputs)
+        
+        # Lock/Pin button
+        self.btn_relocate = QPushButton("📌")
+        self.btn_relocate.setFixedSize(24, 40)
+        self.btn_relocate.setToolTip(getTraduction("Astro.Relocate", "Reubicar"))
+        self.btn_relocate.clicked.connect(self.request_relocation)
+        h_latlon.addWidget(self.btn_relocate)
+        l_coord.addLayout(h_latlon)
+
+        h_alt = QHBoxLayout()
+        lbl_alt = QLabel("Alçada\naddicional")
+        lbl_alt.setStyleSheet("font-size: 9px; line-height: 1;")
+        h_alt.addWidget(lbl_alt)
+        from PyQt5.QtWidgets import QDoubleSpinBox
+        from TerraLab.common.utils import get_config_value
+        self.spin_extra_height = QDoubleSpinBox()
+        self.spin_extra_height.setRange(0.0, 10000.0)
+        self.spin_extra_height.setSingleStep(0.5); self.spin_extra_height.setDecimals(1); self.spin_extra_height.setFixedWidth(50)
+        self.spin_extra_height.setValue(float(get_config_value("observer_offset", 0.0)))
+        self.spin_extra_height.valueChanged.connect(self.on_extra_height_changed)
+        h_alt.addWidget(self.spin_extra_height)
+        l_coord.addLayout(h_alt)
+        
+        self.lbl_altitude_info = QLabel("--")
+        self.lbl_altitude_info.hide() # Hidden as per Mockup
+        l_coord.addWidget(self.lbl_altitude_info)
+        l_loc.addLayout(l_coord)
+
+        # Col: Calendar Mockup
+        l_date = QVBoxLayout()
+        # Create a container with black background
+        cal_container = QFrame()
+        cal_container.setStyleSheet("border: 1px solid #555; background: #e0e0e0; border-radius: 4px;")
+        
+        cal_layout = QHBoxLayout(cal_container)
+        cal_layout.setContentsMargins(5, 5, 5, 5)
+        cal_layout.setSpacing(4)
+        
+        self.btn_prev_day = QPushButton("<")
+        self.btn_prev_day.setFixedSize(20, 20); self.btn_prev_day.clicked.connect(self.prev_day)
+        cal_layout.addWidget(self.btn_prev_day)
+        
+        self.lbl_date = ClickableLabel(self.format_date(self.manual_day))
+        self.lbl_date.setAlignment(Qt.AlignCenter)
+        self.lbl_date.setCursor(Qt.PointingHandCursor)
+        self.lbl_date.setStyleSheet("color: #000; font-style: normal; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        self.lbl_date.clicked.connect(self.open_calendar)
+        cal_layout.addWidget(self.lbl_date, 1) # Expand
+        
+        self.btn_next_day = QPushButton(">")
+        self.btn_next_day.setFixedSize(20, 20); self.btn_next_day.clicked.connect(self.next_day)
+        cal_layout.addWidget(self.btn_next_day)
+        
+        l_date.addWidget(cal_container)
+        
+        self.btn_realtime = QPushButton("Temps real")
+        self.btn_realtime.setCheckable(True); self.btn_realtime.toggled.connect(self.toggle_realtime)
+        self.btn_realtime.setStyleSheet("border-radius: 4px; border: 1px solid #777; font-style: normal; color: #000; background: #ddd; padding: 3px;")
+        l_date.addWidget(self.btn_realtime)
+        
+        l_date.addStretch(1)
+        l_loc.addLayout(l_date)
+        
+        panels_layout.addWidget(gb_loc, 1) # Factor 1 for loc
+
+        # 2. VISIÓ DEL CEL ====================================================
+        gb_sky = QGroupBox("Visió del cel")
+        gb_sky.setStyleSheet(gb_style)
+        l_sky = QHBoxLayout(gb_sky)
+        l_sky.setSpacing(15)
+
+        # Col 1: Checks
+        v_chk = QVBoxLayout(); v_chk.setSpacing(1)
+        self.chk_clima = QCheckBox("Clima"); self.chk_clima.setEnabled(True)
+        self.chk_clima.setChecked(False) # Clima OFF per defecte
+        # Set state initially
+        setattr(self.canvas.weather, 'enabled', False)
+        self.chk_clima.toggled.connect(lambda checked: [setattr(self.canvas.weather, 'enabled', checked), self.canvas.update()])
+        
+        self.chk_planets = QCheckBox("Planetes")
+        self.chk_planets.setEnabled(True)
+        self.chk_planets.setChecked(True)
+        self.chk_planets.toggled.connect(self.canvas.update)
+        
+        self.chk_sun_moon = QCheckBox("Sol i Lluna")
+        self.chk_sun_moon.setEnabled(True)
+        self.chk_sun_moon.setChecked(True)
+        self.chk_sun_moon.toggled.connect(self.canvas.update)
+        
+        self.chk_enable_sky = QCheckBox("Estrelles"); self.chk_enable_sky.setChecked(True); self.chk_enable_sky.toggled.connect(self.canvas.update)
+        self.chk_deep_space = QCheckBox("l'espai profund"); self.chk_deep_space.setEnabled(False) # TODO
+        
+        for c in (self.chk_clima, self.chk_planets, self.chk_sun_moon, self.chk_enable_sky, self.chk_deep_space):
+            c.setStyleSheet(c.styleSheet() + "; font-style: normal; font-weight: normal; color: #666;" if not c.isEnabled() else "; font-style: normal; font-weight: normal; color: #000;")
+            v_chk.addWidget(c)
+            
+        l_sky.addLayout(v_chk)
+
+        # Col 2: Sliders
+        v_sld = QVBoxLayout(); v_sld.setSpacing(2)
+        self.chk_pure_colors = QCheckBox("Colors purs")
+        self.chk_pure_colors.setStyleSheet("font-style: normal; font-weight: normal;")
         self.chk_pure_colors.toggled.connect(self.toggle_pure_colors)
-        row4.addWidget(self.chk_pure_colors)
-        
-        row4.addStretch(1)
-        layout_bot.addLayout(row4)
-        
-        frame_layout.addWidget(self.panel_bottom)
+        v_sld.addWidget(self.chk_pure_colors)
+
+        def make_sld(layout, label, r, val, cb):
+            h = QHBoxLayout(); h.setSpacing(4)
+            l = QLabel(label); l.setStyleSheet("font-style: normal; font-weight: normal; min-width: 65px;")
+            h.addWidget(l)
+            
+            l_min = QLabel(str(r[0])); l_min.setStyleSheet("font-size: 8px; color: #000;")
+            h.addWidget(l_min)
+            
+            s = QSlider(Qt.Horizontal); s.setRange(*r); s.setValue(val); s.setMinimumWidth(80)
+            h.addWidget(s)
+            
+            l_max = QLabel(str(r[1])); l_max.setStyleSheet("font-size: 8px; color: #000;")
+            h.addWidget(l_max)
+            
+            l_curr = QLabel(f"[{val}]"); l_curr.setStyleSheet("font-size: 9px; color: #000; min-width: 30px;")
+            h.addWidget(l_curr)
+            
+            def on_changed(new_val):
+                l_curr.setText(f"[{new_val}]")
+                if cb: cb(new_val)
+                
+            s.valueChanged.connect(on_changed)
+            layout.addLayout(h)
+            return s
+
+        self.slider_mag = make_sld(v_sld, "Magnitud", (-20, 100), int(self.magnitude_limit*10), self.update_magnitude)
+        self.slider_size = make_sld(v_sld, "Mida", (5, 40), int(self.star_scale*10), self.update_star_scale)
+        self.slider_spikes = make_sld(v_sld, "Puntes", (-30, 70), int(self.spike_magnitude_threshold*10), self.update_spikes)
+        self.slider_light = make_sld(v_sld, "Contaminació\nlluminosa", (0, 100), 0, None)
+        self.slider_light.setEnabled(False) # TODO
+        l_sky.addLayout(v_sld)
+
+        # Col 3: Circumpolar + Search
+        v_ext = QVBoxLayout(); v_ext.setSpacing(4)
+        self.chk_trails = QPushButton("Iniciar circumpolar")
+        self.chk_trails.setCheckable(True)
+        self.chk_trails.setStyleSheet("font-size: 10px; font-weight: normal; font-style: normal; border-radius: 8px; border: 1px solid #888; padding: 2px;")
+        self.chk_trails.toggled.connect(self.on_trails_toggled)
+        v_ext.addWidget(self.chk_trails)
+
+        self.lbl_trail_time = QLabel("")
+        self.lbl_trail_time.setStyleSheet("font-weight: normal; color: #000; font-size: 10px;")
+        self.lbl_trail_time.setAlignment(Qt.AlignCenter)
+        v_ext.addWidget(self.lbl_trail_time)
+        v_ext.addStretch()
+
+        self.txt_search = QLineEdit()
+        self.txt_search.setPlaceholderText("Cercar...")
+        self.txt_search.setStyleSheet("font-weight: normal; font-style: normal; border-radius: 4px; padding: 2px;")
+        self.txt_search.setEnabled(False) # TODO
+        v_ext.addWidget(self.txt_search)
+        l_sky.addLayout(v_ext)
+
+        panels_layout.addWidget(gb_sky, 1) # Factor 1 for sky
+
+        # 3. VISIÓ DEL TERRA ================================================
+        gb_earth = QGroupBox("Visió del terra")
+        gb_earth.setStyleSheet(gb_style)
+        v_earth = QVBoxLayout(gb_earth)
+        v_earth.setSpacing(6)
+
+        self.chk_enable_horizon = QCheckBox("Horitzó")
+        self.chk_enable_horizon.setStyleSheet("font-style: normal; font-weight: normal;")
+        self.chk_enable_horizon.setChecked(True)
+        self.chk_enable_horizon.toggled.connect(self.canvas.update)
+        v_earth.addWidget(self.chk_enable_horizon)
+
+        self.chk_enable_village = QCheckBox("Topografia")
+        self.chk_enable_village.setStyleSheet("font-style: normal; font-weight: normal;")
+        self.chk_enable_village.setChecked(True)
+        self.chk_enable_village.toggled.connect(self.canvas.update)
+        v_earth.addWidget(self.chk_enable_village)
+
+        h_lay = QHBoxLayout()
+        l_lay = QLabel("Nombre\nde capes")
+        l_lay.setStyleSheet("font-style: normal; font-weight: normal; font-size: 9px; line-height: 1;")
+        h_lay.addWidget(l_lay)
+        from PyQt5.QtWidgets import QComboBox
+        self.combo_layers = QComboBox()
+        self.combo_layers.addItems(["10", "20", "40", "60", "80"])
+        self.combo_layers.setFixedWidth(40)
+        self.combo_layers.setStyleSheet("font-style: normal; font-weight: normal;")
+        try:
+            curr_layers = int(get_config_value("horizon_quality", 80))
+        except:
+            curr_layers = 80
+        self.combo_layers.setCurrentText(str(curr_layers))
+        self.combo_layers.currentTextChanged.connect(self.on_layers_changed)
+        h_lay.addWidget(self.combo_layers)
+        v_earth.addLayout(h_lay)
+
+        v_earth.addStretch()
+        panels_layout.addWidget(gb_earth, 1) # Factor 1 for earth
+
+        frame_layout.addLayout(panels_layout)
+
+        # ── KEEP EXISTING VARIABLES FOR COMPATIBILITY (HIDDEN) ───────────
+        self.btn_view = QPushButton(); self.btn_view.hide()
+        self.btn_terrain = QPushButton(); self.btn_terrain.hide()
+        self.chk_illusion = QCheckBox(); self.chk_illusion.hide()
+        self.slider_href = QSlider(); self.slider_href.hide()
+        self.slider_flat = QSlider(); self.slider_flat.hide()
+        self.chk_trained = QCheckBox(); self.chk_trained.hide()
+        self.chk_lock = QCheckBox(); self.chk_lock.hide()
         
         # Add to main layout
         self.frame_controls = QFrame()
+
         self.frame_controls.setObjectName("controlFrame")
         self.frame_controls.setLayout(frame_layout)
         layout.addWidget(self.frame_controls)
@@ -5423,7 +5481,19 @@ class AstronomicalWidget(CustomWidgetBase):
             self._drag_restore_timer.timeout.connect(_end_drag)
         self._drag_restore_timer.start(500)
         self.canvas.update()
-        
+
+        # ─ Toast HUD: mostra hora local i UT durant el drag ─
+        if hasattr(self.canvas, 'hint_overlay'):
+            from datetime import datetime
+            tz_off = round(datetime.now().astimezone().utcoffset().total_seconds() / 3600.0, 1)
+            local_h = (val + tz_off) % 24
+            lh = f"{int(local_h):02d}:{int((local_h % 1)*60):02d}"
+            uth = f"{int(val):02d}:{int((val % 1)*60):02d}"
+            txt = getTraduction("HUD.TimeHint", "🕐 {local_h} local  ·  UT {ut_h}").format(
+                local_h=lh, ut_h=uth
+            )
+            self.canvas.hint_overlay.show_hint(txt)
+
     def request_relocation(self):
         """User changed location: trigger full bake."""
         try:
@@ -5441,9 +5511,28 @@ class AstronomicalWidget(CustomWidgetBase):
             
             # Emit signal to Horizon Worker
             self.request_horizon_bake.emit(self.latitude, self.longitude)
-            
+
+            # ─ Toast HUD: mostra nova ubicació i altitud si disponible ─
+            if hasattr(self.canvas, 'hint_overlay'):
+                dem_m  = getattr(self, '_last_dem_elevation', None)
+                offset = getattr(self, '_observer_offset', 0.0)
+                if dem_m is not None:
+                    txt = getTraduction(
+                        "HUD.LocationHint",
+                        "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m"
+                    ).format(
+                        lat=f"{self.latitude:.4f}",
+                        lon=f"{self.longitude:.4f}",
+                        dem=int(dem_m),
+                        offset=int(offset)
+                    )
+                else:
+                    txt = f"📍 {self.latitude:.4f}°, {self.longitude:.4f}°"
+                self.canvas.hint_overlay.show_hint(txt)
+
         except ValueError:
             print("[AstroWidget] Invalid Lat/Lon")
+
             
     def update_location(self):
         """Called by ReturnPressed on line edits."""
@@ -5584,6 +5673,27 @@ class AstronomicalWidget(CustomWidgetBase):
             self.manual_hour = (self.manual_hour + dt_hours) % 24.0
             self.time_bar.set_time(self.manual_hour)
             
+        # Update trails elapsed time
+        if hasattr(self, 'chk_trails') and self.chk_trails.isChecked():
+            if getattr(self, 'trails_real_start_time', None) is None:
+                self.trails_real_start_time = time.time()
+            elapsed = int(time.time() - self.trails_real_start_time)
+            if elapsed < 60:
+                self.lbl_trail_time.setText(f"{elapsed}s")
+            elif elapsed < 3600:
+                m = elapsed // 60
+                s = elapsed % 60
+                self.lbl_trail_time.setText(f"{m}m {s}s")
+            else:
+                h = elapsed // 3600
+                m = (elapsed % 3600) // 60
+                self.lbl_trail_time.setText(f"{h}h {m}m")
+        else:
+            if hasattr(self, 'trails_real_start_time'):
+                self.trails_real_start_time = None
+            if hasattr(self, 'lbl_trail_time'):
+                self.lbl_trail_time.setText("")
+
         self.canvas.update()
 
     def toggle_realtime(self, checked):
@@ -5680,7 +5790,20 @@ class AstronomicalWidget(CustomWidgetBase):
         print(f"[DEBUG] Spike threshold updated to: {self.spike_magnitude_threshold} (slider val: {val})")
         self.canvas.update()
 
+    def on_layers_changed(self, text):
+        """Update layer count from UI combo box and trigger a re-bake."""
+        try:
+            val = int(text)
+            from TerraLab.common.utils import set_config_value
+            set_config_value("horizon_quality", val)
+            if hasattr(self, 'horizon_worker'):
+                self.horizon_worker.reload_config()
+            self.request_relocation()
+        except ValueError:
+            pass
+
     def configure_terrain(self):
+
         """Open DEM configuration dialog."""
         from TerraLab.widgets.terrain_config_dialog import TerrainConfigDialog
         dlg = TerrainConfigDialog(self)
@@ -5790,6 +5913,16 @@ class AstronomicalWidget(CustomWidgetBase):
         self.btn_realtime.setChecked(False)
         self.manual_day = val
         self.lbl_date.setText(self.format_date(val))
+        
+        # Sync Gradient
+        self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
+        self.canvas.update()
+
+    def prev_day(self):
+        self.update_date(self.manual_day - 1)
+
+    def next_day(self):
+        self.update_date(self.manual_day + 1)
         # Update gradient when date changes
         self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
         self.canvas.update()

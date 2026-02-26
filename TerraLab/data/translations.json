@@ -560,5 +560,29 @@
         "fr": "📝 Le changement prend effet au prochain calcul de l'horizon (« Régénérer »).",
         "it": "📝 La modifica viene applicata al prossimo calcolo dell'orizzonte (\"Rigenera\").",
         "de": "📝 Die Änderung wird bei der nächsten Horizontberechnung (\"Neu berechnen\") wirksam."
+    },
+    "HUD.ZoomHint": {
+        "ca": "FOV {fov}°  ·  {focal}mm",
+        "es": "FOV {fov}°  ·  {focal}mm",
+        "en": "FOV {fov}°  ·  {focal}mm",
+        "fr": "FOV {fov}°  ·  {focal}mm",
+        "it": "FOV {fov}°  ·  {focal}mm",
+        "de": "FOV {fov}°  ·  {focal}mm"
+    },
+    "HUD.TimeHint": {
+        "ca": "🕐 {local_h} local  ·  UT {ut_h}",
+        "es": "🕐 {local_h} local  ·  UT {ut_h}",
+        "en": "🕐 {local_h} local  ·  UT {ut_h}",
+        "fr": "🕐 {local_h} locale  ·  UT {ut_h}",
+        "it": "🕐 {local_h} locale  ·  UT {ut_h}",
+        "de": "🕐 {local_h} Ortszeit  ·  UT {ut_h}"
+    },
+    "HUD.LocationHint": {
+        "ca": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m",
+        "es": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m",
+        "en": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m",
+        "fr": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m",
+        "it": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m",
+        "de": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m"
     }
 }

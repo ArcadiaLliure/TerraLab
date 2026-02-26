@@ -5,6 +5,7 @@
   "raster_path": "E:/MDT_Catalunya_ASC",
   "foo": "bar",
   "test_dummy_key": "hello_world",
-  "observer_offset": 1.7,
-  "horizon_quality": 80
+  "observer_offset": 2.0,
+  "horizon_quality": 80,
+  "horizon_layers": 20
 }
