@@ -3591,56 +3591,55 @@ class AstroCanvas(QWidget):
     # _render_moon_pixmap removed (Legacy)
 
     def draw_ground_mask(self, painter, is_day):
-        # Create a closed path for the sky (Alt >= 0)
-        sky_path = QPainterPath()
+        # Create a closed path for the ground (Alt <= 0)
+        ground_path = QPainterPath()
         points = []
-        # Trace horizon circle with perfect closure
-        # We trace a bit more than 180 degrees from cur_az to cover wide FOVs
-        # But for ground mask, a simple 360 circle is usually enough UNLESS fov > 180.
-        # Let's use 3 blocks to match HorizonOverlay
+        
+        # We trace 3 blocks to cover wide FOVs
         for offset in [-360, 0, 360]:
-            for az in range(0, 361, 10): # Coarse is fine for simple flat horizon
+            for az in range(0, 361, 10): 
                 pt = self.project_universal_stereo(0, az + offset)
                 if pt:
                     points.append(QPointF(*pt))
                 elif points:
-                    # End of a block or anti-pode
                     points.append(None) 
         
         if not points: 
             return
 
-        # Build path from segmented points
+        # Build path closing downwards to cover the bottom of the screen
+        bottom_y = self.height() * 2.0
+        
         first = True
+        current_block_start = None
+        
         for p in points:
             if p is None:
+                if not first and current_block_start:
+                    ground_path.lineTo(ground_path.currentPosition().x(), bottom_y)
+                    ground_path.lineTo(current_block_start.x(), bottom_y)
+                    ground_path.closeSubpath()
                 first = True
                 continue
+                
             if first:
-                sky_path.moveTo(p)
+                ground_path.moveTo(p)
+                current_block_start = p
                 first = False
             else:
-                sky_path.lineTo(p)
+                ground_path.lineTo(p)
+                
+        # Close the last block if open
+        if not first and current_block_start:
+             ground_path.lineTo(ground_path.currentPosition().x(), bottom_y)
+             ground_path.lineTo(current_block_start.x(), bottom_y)
+             ground_path.closeSubpath()
         
-        # Don't closeSubpath because it might draw a line across the screen
-        # Instead, we assume the ground is everything below these points.
-        # For a truly robust mask, we'd need to properly clip to screen rect.
-        
-        # Ground = FullRect - SkyPath
-        full_rect = QPainterPath()
-        full_rect.addRect(QRectF(self.rect()))
-        ground_path = full_rect.subtracted(sky_path)
-        
-        # Draw Ground
+        # Draw Ground Mask
         col = QColor(20, 30, 20) if is_day else QColor(5, 5, 10)
         painter.setBrush(col)
         painter.setPen(Qt.NoPen)
         painter.drawPath(ground_path)
-        
-        # Draw Horizon Line
-        painter.setPen(QPen(QColor(100, 200, 100, 100), 2))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawPath(sky_path)
     
     def draw_compass(self, painter):
         w = self.width()
@@ -4896,6 +4895,12 @@ class AstronomicalWidget(CustomWidgetBase):
 
         self.horizon_thread = QThread()
         self.horizon_worker = HorizonWorker() # Config handles path
+        
+        # Hydrate saved offset into worker before moving thread
+        from TerraLab.common.utils import get_config_value
+        saved_offset = float(get_config_value("observer_offset", 0.0))
+        self.horizon_worker.set_observer_offset(saved_offset)
+        
         self.horizon_worker.moveToThread(self.horizon_thread)
         
         self.horizon_worker.profile_ready.connect(self.on_horizon_profile_ready)
@@ -4941,15 +4946,29 @@ class AstronomicalWidget(CustomWidgetBase):
         if hasattr(self, 'lbl_loading'):
             self.lbl_loading.hide()
             
+        # Build matching layer_defs from band_defs attached by the worker
+        layer_defs = None
+        band_defs = getattr(profile, '_band_defs', None)
+        if band_defs is not None:
+            try:
+                from TerraLab.terrain.overlay import generate_layer_defs
+                layer_defs = generate_layer_defs(band_defs)
+            except Exception as e:
+                print(f"[AstroWidget] Warning: Could not generate layer_defs: {e}")
+            
         # Update Horizon Overlay (Background Mountains)
         if hasattr(self.canvas, 'horizon_overlay'):
-            self.canvas.horizon_overlay.set_profile(profile)
+            self.canvas.horizon_overlay.set_profile(profile, layer_defs=layer_defs)
             
         # Update Village Overlay (Foreground Objects)
         if hasattr(self.canvas, 'village'):
              self.canvas.village.set_profile(profile)
              
+        # Refresh the UI altitude label now that the worker has safely initialized the DEM data
+        self.update_altitude_label()
+             
         self.canvas.update()
+
 
     def on_horizon_progress(self, msg):
         """Update loading label with progress message."""
@@ -5136,6 +5155,36 @@ class AstronomicalWidget(CustomWidgetBase):
         
         row1.addSpacing(10)
         layout_top.addLayout(row1)
+        
+        # --- ROW 2: Altitude Offset & Feedback ---
+        from PyQt5.QtWidgets import QDoubleSpinBox
+        from TerraLab.common.utils import get_config_value
+        row2 = QHBoxLayout()
+        row2.setSpacing(8)
+        
+        row2.addWidget(QLabel(getTraduction("Astro.ExtraHeight", "Altura extra (m):")))
+        self.spin_extra_height = QDoubleSpinBox()
+        self.spin_extra_height.setRange(0.0, 10000.0)
+        self.spin_extra_height.setSingleStep(0.5)
+        self.spin_extra_height.setDecimals(1)
+        
+        # Tooltip translated fallback
+        tt_fallback = "Añade elevación a tu punto de observación por encima del terreno base obtenido del DEM."
+        self.spin_extra_height.setToolTip(getTraduction("Astro.ExtraHeightTooltip", tt_fallback))
+        
+        # Load persisted offset if exists, else 0
+        saved_offset = float(get_config_value("observer_offset", 0.0))
+        self.spin_extra_height.setValue(saved_offset)
+        self.spin_extra_height.valueChanged.connect(self.on_extra_height_changed)
+        
+        row2.addWidget(self.spin_extra_height)
+        
+        self.lbl_altitude_info = QLabel("Altitud terreno: -- m | Total observador: -- m")
+        self.lbl_altitude_info.setStyleSheet("color: #b0c4de; font-style: italic; font-size: 11px;")
+        row2.addWidget(self.lbl_altitude_info)
+        row2.addStretch(1)
+        
+        layout_top.addLayout(row2)
         
         frame_layout.addWidget(self.panel_top)
         
@@ -5589,12 +5638,34 @@ class AstronomicalWidget(CustomWidgetBase):
             
             # Request new horizon bake
             if hasattr(self, 'horizon_worker'):
-                 self.horizon_worker.request_bake(self.latitude, self.longitude)
+                 self.update_altitude_label()
+                 self.request_horizon_bake.emit(self.latitude, self.longitude)
             
             self.canvas.update()
             print(f"Location updated: {lat}, {lon}")
         except ValueError:
             print("Invalid location format")
+
+    def on_extra_height_changed(self, val):
+        from TerraLab.common.utils import set_config_value
+        set_config_value("observer_offset", val)
+        if hasattr(self, 'horizon_worker'):
+            self.horizon_worker.set_observer_offset(val)
+            self.update_altitude_label()
+            self.request_horizon_bake.emit(self.latitude, self.longitude)
+
+    def update_altitude_label(self):
+        if hasattr(self, 'horizon_worker'):
+            bare = self.horizon_worker.get_bare_elevation(self.latitude, self.longitude)
+            offset = self.spin_extra_height.value()
+            if bare is not None:
+                total = bare + offset
+                tpl = getTraduction("Astro.AltitudeInfo", "Altitud terreno: {dem} m | Total observador: {total} m")
+                self.lbl_altitude_info.setText(tpl.format(dem=f"{bare:.1f}", total=f"{total:.1f}"))
+            else:
+                fallback_str = getTraduction("Astro.AltitudeInfo", "Altitud terreno: {dem} m | Total observador: {total} m")
+                fallback_str = fallback_str.replace("{dem}", "--").replace("{total}", "--")
+                self.lbl_altitude_info.setText(fallback_str)
 
     def update_star_scale(self, val):
         self.star_scale = val / 10.0

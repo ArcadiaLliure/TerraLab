@@ -1,53 +1,33 @@
-
-import json
 import os
 import sys
-
-CONFIG_FILENAME = "config.json"
+from TerraLab.common.utils import get_config_value, set_config_value, _load_config, _save_config
 
 class ConfigManager:
+    """
+    Deprecated: Facade to maintain backward compatibility.
+    Use TerraLab.common.utils directly for configuration.
+    """
     _instance = None
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(ConfigManager, cls).__new__(cls)
-            cls._instance._load()
         return cls._instance
 
-    def _get_config_path(self):
-        # Config lives next to the executable or script
-        if getattr(sys, 'frozen', False):
-             base_path = os.path.dirname(sys.executable)
-        else:
-             base_path = os.path.dirname(os.path.abspath(__file__)) # TerraLab/
-             # Go up one level to root if in package
-             base_path = os.path.abspath(os.path.join(base_path, ".."))
-        
-        return os.path.join(base_path, CONFIG_FILENAME)
-
     def _load(self):
-        self.config_path = self._get_config_path()
-        self.data = {}
-        if os.path.exists(self.config_path):
-            try:
-                with open(self.config_path, 'r', encoding='utf-8') as f:
-                    self.data = json.load(f)
-            except Exception as e:
-                print(f"[ConfigManager] Error loading config: {e}")
+        # Now handled by utils.py
+        pass
 
     def save(self):
-        try:
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.data, f, indent=4)
-        except Exception as e:
-             print(f"[ConfigManager] Error saving config: {e}")
+        # Automatically handled by utils.py set_config_value but can be forced
+        cfg = _load_config()
+        _save_config(cfg)
 
     def get(self, key, default=None):
-        return self.data.get(key, default)
+        return get_config_value(key, default)
 
     def set(self, key, value):
-        self.data[key] = value
-        self.save()
+        set_config_value(key, value)
 
     # --- Specific Getters/Setters ---
 
@@ -56,3 +36,11 @@ class ConfigManager:
 
     def set_raster_path(self, path):
         self.set("raster_path", path)
+
+    # Horizon quality: number of depth bands (10=Low, 20=Normal, 40=High, 60=Ultra)
+    def get_horizon_quality(self):
+        return int(self.get("horizon_quality", 20))
+
+    def set_horizon_quality(self, n: int):
+        self.set("horizon_quality", int(n))
+

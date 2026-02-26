@@ -19,40 +19,108 @@ from typing import List, Optional, Dict, Tuple
 # --- Constants ---
 R_EARTH = 6_371_000.0
 
-# --- Band definitions for multi-layer depth ---
-# --- Band definitions for multi-layer depth (20 Bands) ---
-# Denser in near/mid range to resolve foreground roughness
-DEFAULT_BANDS = [
-    # Immediate Ground (0-1km) - 3 bands
-    {"id": "gnd_0_250",    "min": 0,       "max": 250},
-    {"id": "gnd_250_500",  "min": 250,     "max": 500},
-    {"id": "gnd_500_1k",   "min": 500,     "max": 1000},
-    
-    # Near Hills (1-5km) - 5 bands
-    {"id": "near_1_1.5",   "min": 1000,    "max": 1500},
-    {"id": "near_1.5_2",   "min": 1500,    "max": 2000},
-    {"id": "near_2_3",     "min": 2000,    "max": 3000},
-    {"id": "near_3_4",     "min": 3000,    "max": 4000},
-    {"id": "near_4_5",     "min": 4000,    "max": 5000},
-    
-    # Mid Range (5-25km) - 5 bands
-    {"id": "mid_5_7",      "min": 5000,    "max": 7000},
-    {"id": "mid_7_10",     "min": 7000,    "max": 10000},
-    {"id": "mid_10_15",    "min": 10000,   "max": 15000},
-    {"id": "mid_15_20",    "min": 15000,   "max": 20000},
-    {"id": "mid_20_25",    "min": 20000,   "max": 25000},
-    
-    # Far Range (25-100km) - 4 bands
-    {"id": "far_25_35",    "min": 25000,   "max": 35000},
-    {"id": "far_35_50",    "min": 35000,   "max": 50000},
-    {"id": "far_50_70",    "min": 50000,   "max": 70000},
-    {"id": "far_70_100",   "min": 70000,   "max": 100000},
-    
-    # Horizon Haze (100km+) - 3 bands
-    {"id": "haze_100_150", "min": 100000,  "max": 150000},
-    {"id": "haze_150_220", "min": 150000,  "max": 220000},
-    {"id": "haze_220_plus", "min": 220000, "max": 400000},
-]
+
+def generate_bands(n: int = 20, max_dist_m: float = 150_000) -> list:
+    """
+    Genera N bandes d'horitzó amb distribució logarítmica per zones (piecewise bilog).
+
+    Zones:
+      · Zona propera  (0 → near_km):  2/3 de les N bandes.
+        Recull detall de primer pla (colls, turons, cingleres).
+      · Zona llunyana (near_km → max): 1/3 de les N bandes.
+        Representa la boira atmosfèrica amb menys bandes (l'ull no n'aprecia el detall).
+
+    La distància mínima de la primera banda és step_min_m (≥ resolució del baker)
+    per evitar artefactes "paret" quan l'observador és a la vora d'un penya-segat.
+
+    Args:
+        n: Nombre total de bandes (10=Baix, 20=Normal, 40=Alt, 60=Ultra, 80=Extrem)
+        max_dist_m: Distància màxima de càlcul en metres
+    Returns:
+        Llista de dicts amb 'id', 'min', 'max' en metres
+    """
+    import math as _math
+
+    # ── Paramètres de partició ────────────────────────────────────────────────
+    # Distància de tall entre zona propera i zona llunyana
+    near_km   = 5_000.0   # metres
+    # Fracció de bandes dedicades a la zona propera (2/3)
+    near_frac = 2.0 / 3.0
+    # Distància mínima del primer extrem de banda
+    # El baker ara comença a 0.5m, però les bandes < 1m no aporten informació visual extra
+    step_min_m = 1.0
+
+
+    n_near = max(2, round(n * near_frac))
+    n_far  = max(1, n - n_near)
+
+    # ── Zona propera: log entre step_min_m i near_km ─────────────────────────
+    log_n_min = _math.log(step_min_m)
+    log_n_max = _math.log(near_km)
+
+    near_inner = []
+    for i in range(1, n_near + 1):
+        t = i / n_near
+        v = _math.exp(log_n_min + (log_n_max - log_n_min) * t)
+        near_inner.append(min(v, near_km))
+
+    # ── Zona llunyana: log entre near_km i max_dist_m ────────────────────────
+    log_f_min = _math.log(near_km)
+    log_f_max = _math.log(max_dist_m)
+
+    far_inner = []
+    for i in range(1, n_far + 1):
+        t = i / n_far
+        v = _math.exp(log_f_min + (log_f_max - log_f_min) * t)
+        far_inner.append(min(v, max_dist_m))
+
+    # ── Punts de tall combinats ───────────────────────────────────────────────
+    # Sempre comencem des de 0 i garantim near_km com a punt de transició
+    breakpoints = [0.0] + near_inner + far_inner
+
+    # ── Etiquetes de zona i format de noms ───────────────────────────────────
+    _zone_labels = [
+        (0,        750,      "gnd"),
+        (750,      5_000,    "near"),
+        (5_000,    25_000,   "mid"),
+        (25_000,   100_000,  "far"),
+        (100_000,  999_999,  "haze"),
+    ]
+
+    def _zone_for(m):
+        for lo, hi, label in _zone_labels:
+            if m < hi:
+                return label
+        return "haze"
+
+    def _fmt(m):
+        """Etiqueta de distància llegible: 250→'250', 1500→'1.5k', 35000→'35k'."""
+        if m < 1000:
+            return str(int(m))
+        elif m < 10_000:
+            v = m / 1_000
+            return f"{v:.1f}k".rstrip('0').rstrip('.') + 'k' if v != int(v) else f"{int(v)}k"
+        else:
+            return f"{int(round(m / 1000))}k"
+
+    # ── Construcció de la llista de bandes ────────────────────────────────────
+    bands = []
+    total_bps = len(breakpoints)
+    for i in range(total_bps - 1):
+        lo = breakpoints[i]
+        hi = breakpoints[i + 1]
+        if hi <= lo:
+            continue  # Salta bandes buides (pot passar per arrodoniments)
+        zone = _zone_for(lo)
+        band_id = f"{zone}_{_fmt(lo)}_{_fmt(hi)}"
+        bands.append({"id": band_id, "min": lo, "max": hi})
+
+    return bands
+
+
+# Àlies retrocompatible — qualitat per defecte = 20 bandes
+DEFAULT_BANDS = generate_bands(20)
+
 
 
 # ─────────────────────────────────────────────
@@ -482,8 +550,8 @@ class HorizonBaker:
     whatever silhouette data was already gathered.
     """
 
-    def __init__(self, sampler: DemSampler, eye_height: float = 1.7, R: float = R_EARTH):
-        self.sampler = sampler
+    def __init__(self, provider, eye_height: float = 1.7, R: float = R_EARTH):
+        self.provider = provider
         self.eye_height = eye_height
         self.R = R
 
@@ -509,7 +577,7 @@ class HorizonBaker:
                 x = obs_x + d * c
                 y = obs_y + d * s
 
-                h_terr = self.sampler.sample(x, y)
+                h_terr = self.provider.get_elevation(x, y)
 
                 if h_terr is not None:
                     drop = (d * d) / (2.0 * R)
@@ -558,7 +626,7 @@ class HorizonBaker:
         import time
 
         if obs_h_ground is None:
-            val = self.sampler.sample(obs_x, obs_y)
+            val = self.provider.get_elevation(obs_x, obs_y)
             if val is None:
                 print("[HorizonEngine] Observer outside DEM coverage. Using 0.")
                 obs_h_ground = 0
@@ -595,13 +663,19 @@ class HorizonBaker:
         for i in range(n_az):
             c = sin_az[i]
             s = cos_az[i]
-            d = step_m
+
+            # ── Escombrat adaptatiu: molt fi a l'acostament, groller a la llunyania ──
+            # Creixement geomètric × NEAR_FACTOR fins a assolir step_m,
+            # després pas lineal estàndard. Cost: ~16 mostres extra per azimut (negligible).
+            NEAR_START  = 0.5          # metres — primera mostra (resolució sub-metre)
+            NEAR_FACTOR = 1.50         # factor de creixement geomètric fins a step_m
+            d = NEAR_START
 
             while d < d_max:
                 x = obs_x + d * c
                 y = obs_y + d * s
 
-                h_terr = self.sampler.sample(x, y)
+                h_terr = self.provider.get_elevation(x, y)
 
                 if h_terr is not None:
                     drop = (d * d) / (2.0 * self.R)
@@ -612,17 +686,20 @@ class HorizonBaker:
                         if b["min"] <= d < b["max"]:
                             if ang > b["angles"][i]:
                                 b["angles"][i] = ang
-                                b["dists"][i] = d
+                                b["dists"][i]  = d
                                 b["heights"][i] = h_terr
                             break
 
-                # Dynamic stepping: finer near, coarser far
-                if d < 3000:
-                    d += step_m
-                elif d < 15000:
-                    d += step_m * 2
+                # Creixement adaptatiu del pas
+                if d < step_m:
+                    # Fase geomètrica: sub-metre → step_m (detall de primer pla)
+                    d = min(d * NEAR_FACTOR, step_m)
+                elif d < 3_000:
+                    d += step_m          # Zona propera (fins 3km): pas normal
+                elif d < 15_000:
+                    d += step_m * 2      # Zona mitja (fins 15km): pas doble
                 else:
-                    d += step_m * 4
+                    d += step_m * 4      # Zona llunyana (>15km): pas quadruple
 
             # Progress reporting (every 5%)
             pct = int((i + 1) / n_az * 100)

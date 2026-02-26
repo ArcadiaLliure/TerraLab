@@ -28,45 +28,79 @@ except ImportError:
 
 # ─── Layer definitions ───────────────────────────────────────────
 
-# Each layer maps to a baked profile band and has its own visual style.
-# Drawn back-to-front: farthest first, nearest last.
-# Colors match POC (Blue-Grey Atmospheric Gradient).
-
-# Colors match POC (Blue-Grey Atmospheric Gradient).
-# 20 Layers for high-definition depth (Organic Palette: Forest -> Haze)
-LAYER_DEFS = [
-    # (band_id,          parallax, night_color,             day_color)
-    
-    # --- Deep Horizon (100km+) [Atmospheric Blue] ---
-    ("haze_220_plus",    1.0,      QColor(60, 70, 90),      QColor(170, 185, 205)),   # Haze 3
-    ("haze_150_220",     1.0,      QColor(58, 68, 88),      QColor(168, 183, 203)),   # Haze 2
-    ("haze_100_150",     1.0,      QColor(56, 66, 86),      QColor(165, 180, 200)),   # Haze 1
-
-    # --- Far Range (25-100km) [Blue Haze] ---
-    ("far_70_100",       1.0,      QColor(54, 64, 84),      QColor(160, 175, 195)),
-    ("far_50_70",        1.0,      QColor(52, 62, 82),      QColor(155, 170, 190)),
-    ("far_35_50",        1.0,      QColor(50, 60, 80),      QColor(150, 165, 185)),
-    ("far_25_35",        1.0,      QColor(48, 58, 78),      QColor(145, 160, 180)),
-
-    # --- Mid Range (5-25km) [Transition: Green-Blue] ---
-    ("mid_20_25",        1.0,      QColor(44, 54, 74),      QColor(135, 150, 170)),
-    ("mid_15_20",        1.0,      QColor(40, 50, 70),      QColor(125, 140, 160)),
-    ("mid_10_15",        1.0,      QColor(36, 46, 66),      QColor(115, 130, 150)),
-    ("mid_7_10",         1.0,      QColor(32, 42, 62),      QColor(105, 120, 135)),
-    ("mid_5_7",          1.0,      QColor(28, 38, 58),      QColor(95, 110, 120)),
-
-    # --- Near Hills (1-5km) [Forest Green/Olive] ---
-    ("near_4_5",         1.0,      QColor(24, 34, 54),      QColor(90, 105, 100)),
-    ("near_3_4",         1.0,      QColor(20, 30, 50),      QColor(85, 100, 90)),
-    ("near_2_3",         1.0,      QColor(16, 26, 46),      QColor(80, 95, 80)),
-    ("near_1.5_2",       1.0,      QColor(12, 22, 42),      QColor(75, 90, 75)),
-    ("near_1_1.5",       1.0,      QColor(10, 18, 38),      QColor(70, 85, 70)),
-
-    # --- Immediate Ground (0-1km) [Dark Forest] ---
-    ("gnd_500_1k",       1.0,      QColor(8, 16, 34),       QColor(65, 80, 65)),
-    ("gnd_250_500",      1.0,      QColor(6, 14, 30),       QColor(60, 75, 60)),
-    ("gnd_0_250",        1.0,      QColor(5, 12, 28),       QColor(55, 70, 55)),      # Closest
+# ─── Layer color palette ─────────────────────────────────────────────────────
+#
+# Color key-stops for the gradient, from index 0 (farthest/deepest) to 1 (nearest/ground).
+# (night_rgb, day_rgb) tuples. We interpolate between these stops.
+#
+_PALETTE_STOPS = [
+    # t=0.0  Deepest Haze (farthest)
+    ((60, 70, 90),   (170, 185, 205)),
+    # t=0.25 Mid Haze
+    ((48, 58, 78),   (145, 160, 180)),
+    # t=0.50 Mid-range Green-Blue transition
+    ((32, 42, 62),   (105, 120, 135)),
+    # t=0.75 Near hills
+    ((14, 22, 44),   (75, 90, 75)),
+    # t=1.0  Immediate Foreground (nearest)
+    ((5, 12, 28),    (55, 70, 55)),
 ]
+
+
+def _palette_color(t: float):
+    """
+    Interpolate a (night_QColor, day_QColor) from the gradient palette at position t in [0, 1].
+    t=0 → farthest (Haze Blue), t=1 → nearest (Forest Green).
+    """
+    stops = _PALETTE_STOPS
+    n_seg = len(stops) - 1
+
+    seg_t = t * n_seg
+    seg_i = int(seg_t)
+    seg_f = seg_t - seg_i
+
+    if seg_i >= n_seg:
+        seg_i = n_seg - 1
+        seg_f = 1.0
+
+    (nr0, ng0, nb0), (dr0, dg0, db0) = stops[seg_i]
+    (nr1, ng1, nb1), (dr1, dg1, db1) = stops[seg_i + 1]
+
+    def lerp(a, b, f): return int(a + (b - a) * f)
+
+    night_c = QColor(lerp(nr0, nr1, seg_f), lerp(ng0, ng1, seg_f), lerp(nb0, nb1, seg_f))
+    day_c   = QColor(lerp(dr0, dr1, seg_f), lerp(dg0, dg1, seg_f), lerp(db0, db1, seg_f))
+    return night_c, day_c
+
+
+def generate_layer_defs(bands: list) -> list:
+    """
+    Given a list of band dicts (from engine.generate_bands), produce a LAYER_DEFS-compatible
+    list of (band_id, parallax, night_QColor, day_QColor) tuples.
+
+    Bands are expected in ASCENDING distance order (nearest first from engine),
+    but LAYER_DEFS must be in DESCENDING order (farthest drawn first = painter z-order).
+    """
+    n = len(bands)
+    result = []
+    # Reverse so we draw farthest first
+    for i, band in enumerate(reversed(bands)):
+        # t=0 for farthest (i=0 after reverse), t=1 for nearest (i=n-1 after reverse)
+        t = i / max(n - 1, 1)
+        # We want t=0 = farthest color, t=1 = nearest color
+        # After reversing bands, i=0 is the farthest, so t=0 → farthest → correct.
+        night_c, day_c = _palette_color(t)
+        result.append((band["id"], 1.0, night_c, day_c))
+    return result
+
+
+# Static sane default for use before a profile is loaded (20 bands)
+LAYER_DEFS = generate_layer_defs(__import__('TerraLab.terrain.engine', fromlist=['generate_bands']).generate_bands(20))
+
+
+
+
+
 
 # Ground fill (solid color below the nearest horizon line)
 GROUND_NIGHT = QColor(5, 10, 25)
@@ -90,6 +124,34 @@ def _calc_t_night(ut_hour: float) -> float:
     return max(0.0, min(1.0, t))
 
 
+def _parse_band_max_from_id(band_id: str) -> float:
+    """
+    Extreu la distància màxima en metres de l'ID d'una banda generada per generate_bands().
+
+    Format esperat:  zone_minFmt_maxFmt
+    Exemples:
+        'gnd_0_71'       → 71.0
+        'near_144_208'   → 208.0
+        'mid_1.5k_2k'    → 2000.0
+        'far_25k_38k'    → 38000.0
+        'haze_111k_150k' → 150000.0
+    Retorna 9999.0 si no es pot parsejar.
+    """
+    def _dist_str_to_m(s: str) -> float:
+        s = s.strip()
+        try:
+            if 'k' in s:
+                return float(s.replace('k', '')) * 1000.0
+            return float(s)
+        except ValueError:
+            return 9999.0
+
+    parts = band_id.rsplit('_', 2)  # zona + min + max (el max és l'últim segment)
+    if len(parts) >= 2:
+        return _dist_str_to_m(parts[-1])
+    return 9999.0
+
+
 # ─── Band data wrapper ───────────────────────────────────────────
 
 class _BandPoints:
@@ -98,7 +160,14 @@ class _BandPoints:
     VOID_THRESHOLD = -80.0   # DEM voids are stored as ≈ -90°
 
     def __init__(self, profile, band_id, vert_exaggeration=5.0):
+        self.band_id  = band_id
+        # El profile.bands no emmagatzema min/max (només id/angles/dists/heights).
+        # Parsegem la distància màxima de l'ID de la banda:
+        #   "gnd_0_71"     → max = 71m
+        #   "near_1.5k_2k" → max = 2000m
+        self.band_max = _parse_band_max_from_id(band_id)
         self.points = self._build(profile, band_id, vert_exaggeration)
+
 
     # ── private ──
 
@@ -176,15 +245,29 @@ class HorizonOverlay(QObject):
 
     # ── public API ──
 
-    def set_profile(self, profile):
-        """Update the overlay with a new HorizonProfile object (e.g. from background worker)."""
+    def set_profile(self, profile, layer_defs=None):
+        """Update the overlay with a new HorizonProfile object (e.g. from background worker).
+        
+        Args:
+            profile: HorizonProfile with baked bands
+            layer_defs: Optional list of (band_id, parallax, night_QColor, day_QColor).
+                        Generated by overlay.generate_layer_defs(bands). If None, uses LAYER_DEFS.
+        """
         if profile is None: return
         
-        print(f"[HorizonOverlay] Updating profile for {profile.observer_lat}, {profile.observer_lon}")
+        effective_defs = layer_defs if layer_defs is not None else LAYER_DEFS
+        
+        # Llavor de soroll baseada en la posició de l'observador per
+        # garantir coherència visual entre frames sense flickering.
+        import math as _m
+        self._noise_seed = (_m.sin(profile.observer_lat * 127.1) *
+                            _m.cos(profile.observer_lon * 311.7) * 99.0)
+        
+        print(f"[HorizonOverlay] Updating profile for {profile.observer_lat}, {profile.observer_lon} ({len(effective_defs)} layers)")
         self._layers.clear()
         
         try:
-            for band_id, parallax, night_c, day_c in LAYER_DEFS:
+            for band_id, parallax, night_c, day_c in effective_defs:
                 bp = _BandPoints(profile, band_id, self.vert_exaggeration)
                 if bp.points[0] is not None:
                     self._layers.append((bp, parallax, night_c, day_c))
@@ -240,20 +323,80 @@ class HorizonOverlay(QObject):
         az_min = current_azimuth - (fov_deg / 2.0) - culling_margin
         az_max = current_azimuth + (fov_deg / 2.0) + culling_margin
 
-        # --- Draw each band back-to-front ---
+        # ── Precomputa soroll orgànic per a les bandes de primer pla ──────────────
+        # Les bandes properes (< NEAR_NOISE_MAX_M) poden tenir siluetes massa planes
+        # perquè el pas del baker (50m) o la resolució del DEM no captura microterreny.
+        # Injectem harmònics sinusoïdals multi-escala per trencar la línia recta.
+        # L'amplitud s'esvaeix linealment fins a zero a NEAR_NOISE_MAX_M.
+        #
+        # ⚠ Les unitats de h_raw són en graus_elevació × vert_exaggeration.
+        # El soroll TAMBÉ ha d'estar en les mateixes unitats per ser visible!
+
+        NEAR_NOISE_MAX_M  = 500.0   # metres — bandes més llunyanes no reben soroll
+        NEAR_NOISE_AMP_DEG = 3.0    # amplitud màxima de variació en graus d'elevació
+        _NOISE_SEED = getattr(self, '_noise_seed', 0.0)
+
+        def _organic_noise(az_arr, band_max_m, seed, vert_exag):
+            """
+            Retorna delta en les mateixes unitats que h_raw (graus × vert_exag).
+
+            IMPORTANT: Les freqüències HAN de ser nombres enters perquè el soroll
+            sigui periòdic a 360°. Amb freqüència n enter:
+              sin(2π × n × (az+360°) + s) = sin(2π × n × az + s)
+            garantint continuïtat perfecta al seam 0°/360° (Nord).
+            Freqüències no enteres com 1.7 o 4.3 creen un tall visible al Nord.
+            """
+            if band_max_m >= NEAR_NOISE_MAX_M:
+                return None  # Cap soroll per a bandes llunyanes
+            # factor d'amplitud: 1.0 a 0m, 0.0 a NEAR_NOISE_MAX_M
+            frac = 1.0 - (band_max_m / NEAR_NOISE_MAX_M)
+            # amp en les mateixes unitats que h_raw
+            amp = NEAR_NOISE_AMP_DEG * frac * vert_exag
+            az_rad = np.deg2rad(az_arr)
+            s = seed
+            # Freqüències ENTERES → periodicitat garantida a 0/360°
+            # 1 cicle → forma gran de cresteria
+            # 3 cicles → detall mig (puigs i valls)
+            # 7 cicles → detall fi (roques, irregularitats)
+            noise = (
+                amp * 0.55 * np.sin(az_rad * 1 + s) +
+                amp * 0.30 * np.sin(az_rad * 3 + s * 1.7) +
+                amp * 0.15 * np.sin(az_rad * 7 + s * 3.1)
+            )
+            return noise
+
+
+        # ── Dibuix de cada banda de darrera cap a davant ─────────────────────────
         for band_pts, parallax, night_c, day_c in self._layers:
             color = _lerp_color(day_c, night_c, t_night)
-            self._draw_band_linear(painter, band_pts, color, projection_fn,
-                                   width, height, center_x, px_per_deg_h, px_per_alt_deg,
-                                   current_azimuth, parallax, az_min, az_max, projection_fn_numpy)
+            # Injectar soroll orgànic si la banda és dins la zona de primer pla
+            band_max_m = getattr(band_pts, 'band_max', NEAR_NOISE_MAX_M)
+            noise = _organic_noise(band_pts.points[0], band_max_m, _NOISE_SEED, self.vert_exaggeration) \
+                    if band_pts.points[0] is not None else None
+            if noise is not None:
+                # Aplica el soroll temporalment sense modificar les dades originals
+                az_raw, h_raw = band_pts.points
+                noisy_pts = (az_raw, h_raw + noise)
+                band_pts.points = noisy_pts
+                self._draw_band_linear(painter, band_pts, color, projection_fn,
+                                       width, height, center_x, px_per_deg_h, px_per_alt_deg,
+                                       current_azimuth, parallax, az_min, az_max, projection_fn_numpy)
+                band_pts.points = (az_raw, h_raw)  # restaura els punts originals
+            else:
+                self._draw_band_linear(painter, band_pts, color, projection_fn,
+                                       width, height, center_x, px_per_deg_h, px_per_alt_deg,
+                                       current_azimuth, parallax, az_min, az_max, projection_fn_numpy)
 
-        # --- Draw ground fill ---
+
+        # ── Farciment del terra amb gradient de perspectiva ───────────────────────
+        # Simulem el pla de terra que s'allunya amb un gradient fosc→color terra,
+        # evitant el rectangle pla uniforme que trenca el realisme.
         if self._layers:
             ground_c = _lerp_color(GROUND_DAY, GROUND_NIGHT, t_night)
             nearest = self._layers[-1]
             self._draw_ground_linear(painter, nearest[0], ground_c, projection_fn,
                                      width, height, center_x, px_per_deg_h, px_per_alt_deg,
-                                     current_azimuth, nearest[1], az_min, az_max, 
+                                     current_azimuth, nearest[1], az_min, az_max,
                                      overlap_px=1.0, projection_fn_numpy=projection_fn_numpy)
 
     # ── private rendering (Linear Horizontal) ──

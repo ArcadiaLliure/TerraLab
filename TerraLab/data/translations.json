@@ -13,6 +13,27 @@
         "fr": "Longitude :",
         "it": "Longitudine:"
     },
+    "Astro.ExtraHeight": {
+        "ca": "Alçada extra (m):",
+        "es": "Altura extra (m):",
+        "en": "Extra Height (m):",
+        "fr": "Hauteur supp. (m) :",
+        "it": "Altezza extra (m):"
+    },
+    "Astro.ExtraHeightTooltip": {
+        "ca": "Afegeix elevació al teu punt d'observació per sobre del terreny base obtingut del DEM.",
+        "es": "Añade elevación a tu punto de observación por encima del terreno base obtenido del DEM.",
+        "en": "Adds elevation to your observation point above the base terrain obtained from the DEM.",
+        "fr": "Ajoute de l'élévation à votre point d'observation au-dessus du terrain de base obtenu à partir du MNT.",
+        "it": "Aggiunge quota al tuo punto di osservazione sopra il terreno di base ottenuto dal DEM."
+    },
+    "Astro.AltitudeInfo": {
+        "ca": "Altitud terreny: {dem} m | Total observador: {total} m",
+        "es": "Altitud terreno: {dem} m | Total observador: {total} m",
+        "en": "Terrain altitude: {dem} m | Total observer: {total} m",
+        "fr": "Altitude terrain: {dem} m | Observateur total: {total} m",
+        "it": "Altitudine terreno: {dem} m | Totale osservatore: {total} m"
+    },
     "Astro.Relocate": {
         "ca": "Reubicar",
         "es": "Reubicar",
@@ -361,6 +382,183 @@
         "es": "Dic",
         "en": "Dec",
         "fr": "Déc",
-        "it": "Dic"
+        "it": "Dic",
+        "de": "Dez"
+    },
+    "Terrain.ConfigTitle": {
+        "ca": "Configuració de Mapes Topogràfics",
+        "es": "Configuración de Mapas Topográficos",
+        "en": "Topographic Map Configuration",
+        "fr": "Configuration des cartes topographiques",
+        "it": "Configurazione mappe topografiche",
+        "de": "Konfiguration topografischer Karten"
+    },
+    "Terrain.ConfigDesc": {
+        "ca": "TerraLab necessita dades d'elevació (MDT) per generar l'horitzó real.\nSi no en disposes, s'utilitzarà un paisatge generat proceduralment.\n\nFormats suportats: .asc (ESRI ASCII Grid) o .tif (GeoTIFF).",
+        "es": "TerraLab necesita datos de elevación (MDT) para generar el horizonte real.\nSi no dispones de ellos, se utilizará un paisaje generado proceduralmente.\n\nFormatos soportados: .asc (ESRI ASCII Grid) o .tif (GeoTIFF).",
+        "en": "TerraLab needs elevation data (DEM) to generate the real horizon.\nIf unavailable, a procedurally generated landscape will be used.\n\nSupported formats: .asc (ESRI ASCII Grid) or .tif (GeoTIFF).",
+        "fr": "TerraLab a besoin de données d'élévation (MNT) pour générer l'horizon réel.\nSans celles-ci, un paysage procédural sera utilisé.\n\nFormats supportés : .asc (ESRI ASCII Grid) ou .tif (GeoTIFF).",
+        "it": "TerraLab ha bisogno di dati di elevazione (DEM) per generare l'orizzonte reale.\nIn assenza di dati, verrà usato un paesaggio procedurale.\n\nFormati supportati: .asc (ESRI ASCII Grid) o .tif (GeoTIFF).",
+        "de": "TerraLab benötigt Höhendaten (DGM) zur Berechnung des echten Horizonts.\nFehlen diese, wird eine prozedurale Landschaft verwendet.\n\nUnterstützte Formate: .asc (ESRI ASCII Grid) oder .tif (GeoTIFF)."
+    },
+    "Terrain.DownloadICGC": {
+        "ca": "Descarregar MDT de Catalunya (ICGC)",
+        "es": "Descargar MDT de Cataluña (ICGC)",
+        "en": "Download Catalonia DEM (ICGC)",
+        "fr": "Télécharger le MNT de Catalogne (ICGC)",
+        "it": "Scarica il DEM della Catalogna (ICGC)",
+        "de": "DGM Katalonien herunterladen (ICGC)"
+    },
+    "Terrain.DownloadCopernicus": {
+        "ca": "Descarregar DEM d'Europa (Copernicus / GISCO-EU)",
+        "es": "Descargar DEM de Europa (Copernicus / GISCO-EU)",
+        "en": "Download European DEM (Copernicus / GISCO-EU)",
+        "fr": "Télécharger le MNT Europe (Copernicus / GISCO-EU)",
+        "it": "Scarica il DEM Europa (Copernicus / GISCO-EU)",
+        "de": "Europa-DGM herunterladen (Copernicus / GISCO-EU)"
+    },
+    "Terrain.DownloadCopernicusTooltip": {
+        "ca": "El DEM europeu de 25m de resolució del projecte Copernicus/GISCO cobreix tot el continent. Disponible per descàrrega lliure en fitxers de 5×5 graus.",
+        "es": "El DEM europeo de 25m de resolución del proyecto Copernicus/GISCO cubre todo el continente. Disponible para descarga libre en ficheros de 5×5 grados.",
+        "en": "The 25m-resolution European DEM from Copernicus/GISCO covers the whole continent. Available for free download in 5×5 degree tiles.",
+        "fr": "Le MNT européen à 25m de résolution du projet Copernicus/GISCO couvre tout le continent. Disponible en téléchargement gratuit par tuiles de 5×5 degrés.",
+        "it": "Il DEM europeo a 25m di risoluzione del progetto Copernicus/GISCO copre l'intero continente. Disponibile gratuitamente in tile da 5×5 gradi.",
+        "de": "Das europaweite DGM mit 25m Auflösung (Copernicus/GISCO) deckt den gesamten Kontinent ab. Kostenlos als 5×5-Grad-Kacheln verfügbar."
+    },
+    "Terrain.DownloadWorld": {
+        "ca": "ℹ Per a altres regions del món, consulteu l'agència cartogràfica del vostre país (p. ex. USGS, IGN, OS, BKG…).",
+        "es": "ℹ Para otras regiones del mundo, consultad la agencia cartográfica de vuestro país (p. ej. USGS, IGN, OS, BKG…).",
+        "en": "ℹ For other world regions, consult your national mapping agency (e.g. USGS, IGN, OS, BKG…).",
+        "fr": "ℹ Pour les autres régions du monde, consultez l'agence cartographique nationale (ex. USGS, IGN, OS, BKG…).",
+        "it": "ℹ Per altre regioni del mondo, consultare l'agenzia cartografica nazionale (es. USGS, IGN, OS, BKG…).",
+        "de": "ℹ Für andere Weltregionen wenden Sie sich an Ihre nationale Kartografieagentur (z. B. USGS, IGN, OS, BKG…)."
+    },
+    "Terrain.CurrentPath": {
+        "ca": "Ruta actual: (No configurada)",
+        "es": "Ruta actual: (No configurada)",
+        "en": "Current path: (Not configured)",
+        "fr": "Chemin actuel : (Non configuré)",
+        "it": "Percorso attuale: (Non configurato)",
+        "de": "Aktueller Pfad: (Nicht konfiguriert)"
+    },
+    "Terrain.CurrentPathSet": {
+        "ca": "Ruta actual: {path}",
+        "es": "Ruta actual: {path}",
+        "en": "Current path: {path}",
+        "fr": "Chemin actuel : {path}",
+        "it": "Percorso attuale: {path}",
+        "de": "Aktueller Pfad: {path}"
+    },
+    "Terrain.SelectFolder": {
+        "ca": "Seleccionar Carpeta DEM...",
+        "es": "Seleccionar Carpeta DEM...",
+        "en": "Select DEM Folder...",
+        "fr": "Sélectionner dossier MNT...",
+        "it": "Seleziona cartella DEM...",
+        "de": "DGM-Ordner auswählen..."
+    },
+    "Terrain.SelectFolderDialog": {
+        "ca": "Seleccionar carpeta amb fitxers .asc o .tif",
+        "es": "Seleccionar carpeta con ficheros .asc o .tif",
+        "en": "Select folder containing .asc or .tif files",
+        "fr": "Sélectionner le dossier contenant des fichiers .asc ou .tif",
+        "it": "Seleziona cartella con file .asc o .tif",
+        "de": "Ordner mit .asc- oder .tif-Dateien auswählen"
+    },
+    "Terrain.EmptyFolder": {
+        "ca": "Carpeta buida o sense DEM suportat",
+        "es": "Carpeta vacía o sin DEM soportado",
+        "en": "Empty folder or unsupported DEM",
+        "fr": "Dossier vide ou format MNT non supporté",
+        "it": "Cartella vuota o formato DEM non supportato",
+        "de": "Leerer Ordner oder nicht unterstütztes DGM-Format"
+    },
+    "Terrain.EmptyFolderMsg": {
+        "ca": "No s'han trobat arxius .asc, .txt o .tif en aquesta carpeta.\nAssegureu-vos de descomprimir els mapes aquí.",
+        "es": "No se han encontrado archivos .asc, .txt o .tif en esta carpeta.\nAsegúrate de descomprimir los mapas aquí.",
+        "en": "No .asc, .txt or .tif files were found in this folder.\nMake sure to extract the map files here.",
+        "fr": "Aucun fichier .asc, .txt ou .tif trouvé dans ce dossier.\nAssurez-vous de décompresser les cartes ici.",
+        "it": "Nessun file .asc, .txt o .tif trovato in questa cartella.\nAssicurati di estrarre i file mappa qui.",
+        "de": "Keine .asc-, .txt- oder .tif-Dateien in diesem Ordner gefunden.\nBitte entpacken Sie die Kartendaten hier."
+    },
+    "Terrain.CloseButton": {
+        "ca": "Tancar",
+        "es": "Cerrar",
+        "en": "Close",
+        "fr": "Fermer",
+        "it": "Chiudi",
+        "de": "Schließen"
+    },
+    "Terrain.Recommendation": {
+        "ca": "ℹ Recomanació: Descarregueu almenys 150km a la redona en fitxers trossejats (5×5° o similar).",
+        "es": "ℹ Recomendación: Descargar al menos 150km a la redonda en ficheros troceados (5×5° o similar).",
+        "en": "ℹ Recommendation: Download at least 150km around your location in tiled files (5×5° or similar).",
+        "fr": "ℹ Recommandation : Téléchargez au moins 150 km autour en tuiles (5×5° ou similaire).",
+        "it": "ℹ Raccomandazione: Scaricare almeno 150km intorno in file a riquadri (5×5° o simile).",
+        "de": "ℹ Empfehlung: Mindestens 150 km Umkreis als Kacheln herunterladen (5×5° oder ähnlich)."
+    },
+    "Horizon.QualityLabel": {
+        "ca": "Qualitat de l'horitzó:",
+        "es": "Calidad del horizonte:",
+        "en": "Horizon quality:",
+        "fr": "Qualité de l'horizon :",
+        "it": "Qualità dell'orizzonte:",
+        "de": "Horizontqualität:"
+    },
+    "Horizon.QualityTooltip": {
+        "ca": "Nombre de capes de profunditat del terreny.\nMés capes = millor gradient visual, major temps de càlcul inicial.",
+        "es": "Número de capas de profundidad del terreno.\nMás capas = mejor gradiente visual, mayor tiempo de cálculo inicial.",
+        "en": "Number of terrain depth layers.\nMore layers = better visual gradient, longer initial computation.",
+        "fr": "Nombre de couches de profondeur du terrain.\nPlus de couches = meilleur dégradé visuel, calcul initial plus long.",
+        "it": "Numero di strati di profondità del terreno.\nPiù strati = gradiente visivo migliore, calcolo iniziale più lungo.",
+        "de": "Anzahl der Tiefenschichten des Geländes.\nMehr Ebenen = besserer visueller Verlauf, längere Erstberechnung."
+    },
+    "Horizon.QualityLow": {
+        "ca": "Baix (10 capes)",
+        "es": "Bajo (10 capas)",
+        "en": "Low (10 layers)",
+        "fr": "Bas (10 couches)",
+        "it": "Bassa (10 strati)",
+        "de": "Niedrig (10 Ebenen)"
+    },
+    "Horizon.QualityNormal": {
+        "ca": "Normal (20 capes)",
+        "es": "Normal (20 capas)",
+        "en": "Normal (20 layers)",
+        "fr": "Normal (20 couches)",
+        "it": "Normale (20 strati)",
+        "de": "Normal (20 Ebenen)"
+    },
+    "Horizon.QualityHigh": {
+        "ca": "Alt (40 capes)",
+        "es": "Alto (40 capas)",
+        "en": "High (40 layers)",
+        "fr": "Élevé (40 couches)",
+        "it": "Alta (40 strati)",
+        "de": "Hoch (40 Ebenen)"
+    },
+    "Horizon.QualityUltra": {
+        "ca": "Ultra (60 capes)",
+        "es": "Ultra (60 capas)",
+        "en": "Ultra (60 layers)",
+        "fr": "Ultra (60 couches)",
+        "it": "Ultra (60 strati)",
+        "de": "Ultra (60 Ebenen)"
+    },
+    "Horizon.QualityExtreme": {
+        "ca": "Extrem (80 capes)",
+        "es": "Extremo (80 capas)",
+        "en": "Extreme (80 layers)",
+        "fr": "Extrême (80 couches)",
+        "it": "Estremo (80 strati)",
+        "de": "Extrem (80 Ebenen)"
+    },
+    "Horizon.QualityNote": {
+        "ca": "📝 El canvi s'aplica al proper càlcul de l'horitzó (\"Regenerar\").",
+        "es": "📝 El cambio se aplica en el próximo cálculo del horizonte (\"Regenerar\").",
+        "en": "📝 Change takes effect on the next horizon calculation (\"Regenerate\").",
+        "fr": "📝 Le changement prend effet au prochain calcul de l'horizon (« Régénérer »).",
+        "it": "📝 La modifica viene applicata al prossimo calcolo dell'orizzonte (\"Rigenera\").",
+        "de": "📝 Die Änderung wird bei der nächsten Horizontberechnung (\"Neu berechnen\") wirksam."
     }
 }
