@@ -1,0 +1,27 @@
+<PAMDataset>
+  <SRS dataAxisToSRSAxisMapping="1,2">PROJCRS["WGS 84 / Equal Earth Greenwich",BASEGEOGCRS["WGS 84",ENSEMBLE["World Geodetic System 1984 ensemble",MEMBER["World Geodetic System 1984 (Transit)"],MEMBER["World Geodetic System 1984 (G730)"],MEMBER["World Geodetic System 1984 (G873)"],MEMBER["World Geodetic System 1984 (G1150)"],MEMBER["World Geodetic System 1984 (G1674)"],MEMBER["World Geodetic System 1984 (G1762)"],MEMBER["World Geodetic System 1984 (G2139)"],ELLIPSOID["WGS 84",6378137,298.257223563,LENGTHUNIT["metre",1]],ENSEMBLEACCURACY[2.0]],PRIMEM["Greenwich",0,ANGLEUNIT["degree",0.0174532925199433]],ID["EPSG",4326]],CONVERSION["Equal Earth Greenwich",METHOD["Equal Earth",ID["EPSG",1078]],PARAMETER["Longitude of natural origin",0,ANGLEUNIT["degree",0.0174532925199433],ID["EPSG",8802]],PARAMETER["False easting",0,LENGTHUNIT["metre",1],ID["EPSG",8806]],PARAMETER["False northing",0,LENGTHUNIT["metre",1],ID["EPSG",8807]]],CS[Cartesian,2],AXIS["(E)",east,ORDER[1],LENGTHUNIT["metre",1]],AXIS["(N)",north,ORDER[2],LENGTHUNIT["metre",1]],USAGE[SCOPE["Very small scale equal-area mapping - Europe-Africa-centred."],AREA["World."],BBOX[-90,-180,90,180]],ID["EPSG",8857]]</SRS>
+  <PAMRasterBand band="1">
+    <Histograms>
+      <HistItem>
+        <HistMin>0</HistMin>
+        <HistMax>63</HistMax>
+        <BucketCount>256</BucketCount>
+        <IncludeOutOfRange>1</IncludeOutOfRange>
+        <Approximate>0</Approximate>
+        <HistCounts>450647452|0|0|0|1928974|0|0|0|1609940|0|0|0|3216035|0|0|0|5077888|0|0|0|3417903|0|0|0|2161797|0|0|0|1457223|0|0|0|1039392|0|0|0|778907|0|0|0|609794|0|0|0|490715|0|0|0|406031|0|0|0|341916|0|0|0|294381|0|0|0|255705|0|0|0|224788|0|0|0|199830|0|0|0|178897|0|0|0|161167|0|0|0|147386|0|0|0|0|134442|0|0|0|123739|0|0|0|113752|0|0|0|105909|0|0|0|98663|0|0|0|92351|0|0|0|86588|0|0|0|81632|0|0|0|76253|0|0|0|73037|0|0|0|68958|0|0|0|65218|0|0|0|62026|0|0|0|59576|0|0|0|57252|0|0|0|54650|0|0|0|52604|0|0|0|50151|0|0|0|48936|0|0|0|47058|0|0|0|45286|0|0|0|0|43776|0|0|0|42391|0|0|0|41497|0|0|0|40876|0|0|0|40070|0|0|0|38688|0|0|0|38349|0|0|0|37625|0|0|0|37366|0|0|0|36553|0|0|0|36684|0|0|0|36863|0|0|0|37252|0|0|0|37663|0|0|0|39299|0|0|0|41242|0|0|0|43564|0|0|0|47300|0|0|0|53561|0|0|0|61037|0|0|0|67443|0|0|0|0|101530</HistCounts>
+      </HistItem>
+    </Histograms>
+    <Metadata>
+      <MDI key="STATISTICS_COUNT">477244831.000000</MDI>
+      <MDI key="STATISTICS_COVARIANCES">11.19505511219566</MDI>
+      <MDI key="STATISTICS_EXCLUDEDVALUES"></MDI>
+      <MDI key="STATISTICS_MAXIMUM">63</MDI>
+      <MDI key="STATISTICS_MEAN">0.49405877169172</MDI>
+      <MDI key="STATISTICS_MEDIAN">0.000000</MDI>
+      <MDI key="STATISTICS_MINIMUM">0</MDI>
+      <MDI key="STATISTICS_SKIPFACTORX">1</MDI>
+      <MDI key="STATISTICS_SKIPFACTORY">1</MDI>
+      <MDI key="STATISTICS_STDDEV">3.3459012406519</MDI>
+    </Metadata>
+  </PAMRasterBand>
+</PAMDataset>
