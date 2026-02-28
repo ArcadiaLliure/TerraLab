@@ -4199,12 +4199,12 @@ class AstroCanvas(QWidget):
         # =========================================================================
 
         # Base Visual intensity mapping
-        visual_intensity = math.pow(intensity, 0.40) * dist_factor
+        # Use log scale to compress massive high-radiance cities
+        log_intensity = math.log10(1.0 + intensity)
+        visual_intensity = log_intensity * dist_factor
         
-        # The limit original era ~140 para que en el zenit/horizonte no sature blanco (Screen Mode).
-        alpha_base = min(120, int(visual_intensity * 40 * twilight_factor))
-        
-        # Aplicamos el multiplicador al final de manera estrictamente lineal (0.1 será el 10% real de la opacidad tope)
+        # Alpha Base Limit (Cap at 100 to avoid washing out starlight entirely)
+        alpha_base = min(100, int(visual_intensity * 60 * twilight_factor))
         alpha_base = int(alpha_base * CITY_DOME_ALPHA_MULTIPLIER)
         
         # Tolera no pintar casi-invisibles
@@ -4213,43 +4213,40 @@ class AstroCanvas(QWidget):
         # URBAN GLOW PALETTE: Sodium/LED desaturated colors (Warm Grey/Amber)
         # Saturation reduced from 140 to 60, Lightness from 140 to 100
         glow_hue = 35 + min(10, intensity/500.0) 
-        c_core = QColor.fromHsl(int(glow_hue), 60, 100, int(alpha_base * 0.35))
-        c_mid  = QColor.fromHsl(int(glow_hue), 40, 80, int(alpha_base * 0.15))
-        c_fringe = QColor.fromHsl(int(glow_hue), 30, 60, int(alpha_base * 0.04))
-        c_edge = QColor(c_fringe.red(), c_fringe.green(), c_fringe.blue(), int(alpha_base * 0.01))
+        c_core = QColor.fromHsl(int(glow_hue), 50, 80, int(alpha_base * 0.40))
+        c_mid  = QColor.fromHsl(int(glow_hue), 40, 60, int(alpha_base * 0.15))
+        c_fringe = QColor.fromHsl(int(glow_hue), 30, 40, int(alpha_base * 0.05))
+        c_edge = QColor(c_fringe.red(), c_fringe.green(), c_fringe.blue(), 1)
         c_trans = QColor(0, 0, 0, 0)
 
-        # Base radius on screen: Logarithmic scaling to avoid "muras" of color
-        rad_base = self.width() * 0.6
-        log_intensity = math.log10(1.0 + intensity)
-        rad_x = min(rad_base, log_intensity * 40.0 * self.zoom_level * dist_factor)
+        # Base radius on screen: Logarithmic scaling
+        # Cap the max radius so distant massive cities don't cover the whole screen width
+        max_rad = self.width() * 0.4
+        rad_x = min(max_rad, log_intensity * 30.0 * self.zoom_level * dist_factor)
         
-        # Vertical squashing to anchor on horizon
-        rad_y = rad_x * 0.6 # Squashed more to keep it near horizon
+        # Squashed flat near horizon (more realistic dome shape)
+        rad_y = rad_x * 0.35 
 
         painter.save()
         painter.setCompositionMode(QPainter.CompositionMode_Screen) 
         
-        # The center of the gradient is placed ON THE HORIZON.
-        # We draw it at 0,0 and apply a scale transform to squash it, preventing ellipse clipping edges.
+        # We draw it at 0,0 and apply a scale transform
+        painter.translate(x, y)
+        scale_y = rad_y / max(1.0, rad_x)
+        painter.scale(1.0, scale_y)
+        
         grad = QRadialGradient(QPointF(0, 0), rad_x)
         
-        # Colors: simulating I(alpha) = I * e^-(alpha/alpha0)^2
+        # Colors: Smooth exponential-like fade
         grad.setColorAt(0.00, c_core)
-        grad.setColorAt(0.20, c_mid)        
-        grad.setColorAt(0.50, c_fringe)     
-        # Use simple c_edge (can hit real 0 without max(1, ...) trap fixing banding completely)     
-        grad.setColorAt(0.75, c_edge)
+        grad.setColorAt(0.30, c_mid)        
+        grad.setColorAt(0.60, c_fringe)     
+        grad.setColorAt(0.90, c_edge)
         grad.setColorAt(1.00, c_trans)
         
         painter.setBrush(QBrush(grad))
         painter.setPen(Qt.NoPen)
         
-        scale_y = rad_y / max(1.0, rad_x)
-        painter.translate(x, y)
-        painter.scale(1.0, scale_y)
-        
-        # Draw a rectangle that spans the entirety of the bounded gradient
         painter.drawRect(int(-rad_x), int(-rad_x), int(rad_x * 2), int(rad_x * 2))
         painter.restore()
 
