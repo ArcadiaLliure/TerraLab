@@ -597,6 +597,7 @@ class CatalogLoaderWorker(QObject):
         npy_g_path = os.path.join(cache_dir, 'gaia_cache_g.npy')
         npy_b_path = os.path.join(cache_dir, 'gaia_cache_b.npy')
         npy_ids_path = os.path.join(cache_dir, 'gaia_cache_ids.npy')
+        npy_names_path = os.path.join(cache_dir, 'gaia_cache_names.npy')
         npy_bprp_path = os.path.join(cache_dir, 'gaia_cache_bprp.npy')
 
         # Check if binary cache exists and is newer than JSON
@@ -619,12 +620,14 @@ class CatalogLoaderWorker(QObject):
                 np_g = np.load(npy_g_path)
                 np_b = np.load(npy_b_path)
                 ids_arr = np.load(npy_ids_path, allow_pickle=True)
+                names_arr = np.load(npy_names_path, allow_pickle=True) if os.path.exists(npy_names_path) else None
                 bprp_arr = np.load(npy_bprp_path)
 
                 # Rebuild celestial_objects list from cached arrays
                 for i in range(len(np_ra)):
                     celestial_objects.append({
                         'id': str(ids_arr[i]),
+                        'name': str(names_arr[i]) if names_arr is not None else "",
                         'ra': float(np_ra[i]),
                         'dec': float(np_dec[i]),
                         'mag': float(np_mag[i]),
@@ -654,6 +657,7 @@ class CatalogLoaderWorker(QObject):
                     try:
                         if isinstance(s, list):
                             star_id = str(s[0])
+                            name = str(s[1]) if len(s) > 1 and s[1] else ""
                             ra = float(s[2])
                             dec = float(s[3])
                             mag = float(s[4])
@@ -662,6 +666,7 @@ class CatalogLoaderWorker(QObject):
                                 bp_rp = float(s[7])
                         elif isinstance(s, dict):
                             star_id = str(s.get('source_id', 'Unknown'))
+                            name = str(s.get('designation', ''))
                             ra = float(s.get('ra', 0))
                             dec = float(s.get('dec', 0))
                             mag = float(s.get('phot_g_mean_mag', 10))
@@ -669,7 +674,7 @@ class CatalogLoaderWorker(QObject):
                         else:
                             continue
                         celestial_objects.append({
-                            'id': star_id, 'ra': ra, 'dec': dec, 'mag': mag, 'bp_rp': bp_rp
+                            'id': star_id, 'name': name, 'ra': ra, 'dec': dec, 'mag': mag, 'bp_rp': bp_rp
                         })
                     except:
                         continue
@@ -718,6 +723,7 @@ class CatalogLoaderWorker(QObject):
                 # Save binary cache for next startup
                 try:
                     ids_arr = np.array([s['id'] for s in celestial_objects], dtype=object)
+                    names_arr = np.array([s['name'] for s in celestial_objects], dtype=object)
                     bprp_arr = np.array([s['bp_rp'] for s in celestial_objects], dtype=np.float32)
                     np.save(npy_ra_path, np_ra)
                     np.save(npy_dec_path, np_dec)
@@ -726,6 +732,7 @@ class CatalogLoaderWorker(QObject):
                     np.save(npy_g_path, np_g)
                     np.save(npy_b_path, np_b)
                     np.save(npy_ids_path, ids_arr)
+                    np.save(npy_names_path, names_arr)
                     np.save(npy_bprp_path, bprp_arr)
                     print(f"[CatalogLoader] Saved NPY cache ({len(np_ra)} stars)")
                 except Exception as e:
@@ -896,6 +903,10 @@ class StarRenderWorker(QObject):
             local_limit = params['mag_limit']
             star_scale = params['star_scale']
             
+            # Extract Bortle and Auto Flag for worker extinction
+            bortle = params.get('bortle', 1)
+            is_auto = params.get('is_auto', False)
+            
             # Create QImage
             img = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
             img.fill(Qt.transparent)
@@ -946,6 +957,29 @@ class StarRenderWorker(QObject):
             az_rad = np.arccos(cos_az)
             sin_ha = np.sin(ha_rad)
             az_rad = np.where(sin_ha > 0, 2*np.pi - az_rad, az_rad)
+            az_deg = np.degrees(az_rad)
+
+            # 3. Local Horizon Extinction (City domes) in Background Thread
+            # This must match draw_stars_numpy logic exactly
+            if is_auto and params.get('horizon_profile'):
+                 prof = params['horizon_profile']
+                 if hasattr(prof, 'light_domes') and len(prof.light_domes) > 0:
+                     # Bortle-based intensity scaling (B1=0%, B5=50%, B9=100%)
+                     lp_intensity_factor = max(0.0, (bortle - 1.0) / 8.0)
+                     
+                     az_indices = (az_deg * 2.0).astype(int) % len(prof.light_domes)
+                     intensity = prof.light_domes[az_indices]
+                     dist = prof.light_peak_distances[az_indices]
+
+                     # DYNAMIC RADIUS (a0) & PENALTY logic matching main thread
+                     dist_factor = np.exp(-dist / 35000.0)
+                     log_intensity = np.log10(1.0 + intensity)
+                     a0 = np.maximum(1.0, log_intensity * 8.0 * dist_factor)
+                     
+                     i_alpha = (intensity**0.40) * lp_intensity_factor * np.exp(-(alt_deg / a0)**2)
+                     
+                     extinction_penalty = i_alpha * 0.15
+                     local_limit = local_limit - extinction_penalty
             
             # Projection - UNIVERSAL STEREOGRAPHIC (Horizon Centered)
             # Match Star Render Worker to Main Thread
@@ -1527,6 +1561,12 @@ class AstroCanvas(QWidget):
             d_moon_km = ast_moon.distance().km
             sep_real = ast_sun.separation_from(ast_moon).degrees
             
+            # Phase / Illumination
+            s_earth = earth.at(t).observe(sun)
+            m_earth = earth.at(t).observe(moon)
+            elongation = s_earth.separation_from(m_earth).degrees
+            illumination = (1 - math.cos(math.radians(elongation))) / 2
+
             # Planets
             planets_data = []
             planet_defs = {
@@ -1545,41 +1585,40 @@ class AstroCanvas(QWidget):
                     p = eph[key]
                     ast = obs_loc.at(t).observe(p)
                     p_alt, p_az, p_dist = ast.apparent().altaz()
-                    # Optimize: Skip if below horizon (loose check -10)
-                    if p_alt.degrees > -10:
-                        # Calculate Magnitude (Important for Day/Night visibility)
-                        try:
-                            mag = self.calculate_planet_magnitude(name, p_dist.au, 0.0)
-                        except:
-                            mag = -2.0 # Fallback
-                            
-                        planets_data.append({
-                            'key': key, 'name': name, 'col': col, 'sz': sz,
-                            'alt': p_alt.degrees, 'az': p_az.degrees, 'dist_au': p_dist.au,
-                            'mag': mag
-                        })
+                    # No optimization skip: allow rendering planets even when viewing below horizon
+                    try:
+                        mag = self.calculate_planet_magnitude(name, p_dist.au, 0.0)
+                    except:
+                        mag = -2.0 # Fallback
+                        
+                    planets_data.append({
+                        'key': key, 'name': name, 'col': col, 'sz': sz,
+                        'alt': p_alt.degrees, 'az': p_az.degrees, 'dist_au': p_dist.au,
+                        'mag': mag
+                    })
                 except: pass
 
             # Eclipse Factor
-            # Simplified eclipse dimming logic here or use separate logic?
-            # We can rely on separation.
             sun_rad_deg = math.degrees(math.atan(696340.0 / d_sun_km))
             moon_rad_deg = math.degrees(math.atan(1737.4 / d_moon_km))
             
             # Simple Separation Factor for dimming
             eclipse_factor = 1.0
             if sep_real < (sun_rad_deg + moon_rad_deg):
-                 # Overlap area approx...
-                 # Use existing get_eclipse_dimming_factor logic style
+                 # Simple linear overlap approximation
                  dist_deg = sep_real
                  max_overlap = sun_rad_deg + moon_rad_deg
                  if dist_deg < max_overlap:
-                     penetration = (max_overlap - dist_deg) / (sun_rad_deg * 2) # Crude
-                     eclipse_factor = max(0.05, 1.0 - penetration) # Never fully 0 from this alone
+                     penetration = (max_overlap - dist_deg) / (sun_rad_deg * 2)
+                     eclipse_factor = max(0.05, 1.0 - penetration)
 
             cache_data = {
                 'sun': {'alt': alt_s.degrees, 'az': az_s.degrees, 'dist_km': d_sun_km, 'rad_deg': sun_rad_deg},
-                'moon': {'alt': alt_m_real.degrees, 'az': az_m_real.degrees, 'dist_km': d_moon_km, 'rad_deg': moon_rad_deg, 'sep_real': sep_real},
+                'moon': {
+                    'alt': alt_m_real.degrees, 'az': az_m_real.degrees, 
+                    'dist_km': d_moon_km, 'rad_deg': moon_rad_deg, 
+                    'sep_real': sep_real, 'illumination': illumination, 'elongation': elongation
+                },
                 'planets': planets_data,
                 'eclipse_factor': eclipse_factor
             }
@@ -1801,21 +1840,13 @@ class AstroCanvas(QWidget):
             solar_hour_anti = (solar_hour + 12.0) % 24.0
             is_day_anti = rise_anti <= solar_hour_anti < set_anti
             
-            # Choose context based on viewing angle
-            # If looking down (<-10 deg), show Antipodal Sky condition
-            if self.elevation_angle < -10:
-                eff_is_day = is_day_anti
-                eff_hour = solar_hour_anti
-                eff_rise = rise_anti
-                eff_set = set_anti
-                eff_lat = -self.parent_widget.latitude
-
-            else:
-                eff_is_day = is_day_loc
-                eff_hour = solar_hour
-                eff_rise = rise_loc
-                eff_set = set_loc
-                eff_lat = self.parent_widget.latitude
+            # Compute effective variables based on observer location
+            # (We keep the environment continuous even if looking below the horizon)
+            eff_is_day = is_day_loc
+            eff_hour = solar_hour
+            eff_rise = rise_loc
+            eff_set = set_loc
+            eff_lat = self.parent_widget.latitude
 
             
             
@@ -1856,148 +1887,144 @@ class AstroCanvas(QWidget):
     
                 # Wrap view_az (azimuth_offset) to 0..360 only for background logic/sun-pos
                 wrapped_az = self.azimuth_offset % 360.0
-                self.draw_background(painter, eff_sun_alt, eff_sun_az, wrapped_az, dimming=eclipse_dimming)
+            # 1. Background (Sky Gradient)
+            self.draw_background(painter, eff_sun_alt, eff_sun_az, wrapped_az, dimming=eclipse_dimming)
+            
+            # 2. Light Pollution & Ambient Glows (Drawn BEFORE stars to avoid occlusion)
+            if hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
+                self.draw_light_domes(painter, self.horizon_overlay.profile, eff_sun_alt, eclipse_dimming)
     
-                # === WEATHER SYSTEM ===
-                # Moved to end of paintEvent to ensure clouds occlude stars/planets
-                
-                # 2. Draw Trails
-                checked = self.parent_widget.chk_trails.isChecked()
-                # Trails only visible if dark enough (Sun below -6 deg, Civil Twilight)
-                if checked and eff_sun_alt < -6.0:
-                    if self.trail_start_hour is None:
-                        self.trail_start_hour = ut_hour
-                    self.draw_analytic_trails(painter, self.trail_start_hour, ut_hour)
-                else:
-                    self.trail_start_hour = None
-    
-                # 3. Current Stars (Use UT Hour)
-                # Calculate Ambient Light Level (0.0 = Pitch Black, 1.0 = Full Day)
-                # Base on Sun Altitude
-                if eff_sun_alt > 0:
-                    base_light = 1.0
-                elif eff_sun_alt < -18.0:
-                    base_light = 0.0
-                else:
-                    # Twilight Interpolation (0 to -18)
-                    base_light = 1.0 - (eff_sun_alt / -18.0)
-                    base_light = max(0.0, min(1.0, base_light))
-                    
-                # Apply Eclipse Dimming
-                # Ambient light is reducing by eclipse factor
-                ambient_light = base_light * eclipse_dimming
-                
-                # Calculate Dynamic Magnitude Limit based on Sun Altitude (Twilight Phases)
-                # ... (Logic identical to before)
-                # ASTROPHYSICAL LIMITS (STRICTER)
-                # Day (~ -8.0): Hides Venus (-4.6) and Jupiter (-2.6) completely
-                # Civil (-8.0 -> 0.0)
-                # Nautical (0.0 -> 3.0)
-                # Astro (3.0 -> 6.0)
-                sun_mag_limit = -8.0
-                if eff_sun_alt > 0: 
-                     sun_mag_limit = -8.0
-                elif eff_sun_alt > -6.0:
-                     t = (eff_sun_alt - 0.0) / -6.0
-                     sun_mag_limit = -8.0 + 8.0 * t # Ramp to 0.0 (-8 -> 0)
-                elif eff_sun_alt > -12.0:
-                     t = (eff_sun_alt + 6.0) / -6.0
-                     sun_mag_limit = 0.0 + 3.0 * t # Ramp to 3.0
-                elif eff_sun_alt > -18.0:
-                     t = (eff_sun_alt + 12.0) / -6.0
-                     sun_mag_limit = 3.0 + 3.0 * t # Ramp to 6.0
-                else:
-                     sun_mag_limit = self.parent_widget.magnitude_limit # 6.0
-                
-                # Eclipse Bonus: Needs to lift -8.0 (Day) to +6.0 (Night) -> +14.0 boost
-                eclipse_bonus = (1.0 - eclipse_dimming) * 14.0
-                final_mag_limit = min(self.parent_widget.magnitude_limit, sun_mag_limit + eclipse_bonus)
-                
-                vis_factor = 1.0
-                
-                # Moon Mask Precalc (Use Cache)
-                moon_mask = None
-                if vis_factor > 0.01:
-                    # Try cached moon
-                    if self._sf_cache['data']:
-                        md = self._sf_cache['data']['moon']
-                        # Project cached moon
-                        pt = self.project_universal_stereo(md['alt'], md['az'])
-                        if pt:
-                             # math is already imported at module level
-                             # Radius approx (degrees to pixels)
-                             R_proj = min(self.width(), self.height()) / 2.0 * self.zoom_level
-                             ppd = R_proj / 90.0
-                             # Defensive check for rad_deg
-                             m_rad_deg = md.get('rad_deg', 0.25)
-                             mr_px = m_rad_deg * ppd * 10.0 # celestial_scale 10 assumed
-                             moon_mask = (pt[0], pt[1], mr_px)
-                    
-                    if not moon_mask:
-                        moon_proj = self.get_moon_projection(ut_hour)
-                        if moon_proj:
-                            mx, my, m_rad, _, _, _, _ = moon_proj
-                            moon_mask = (mx, my, m_rad)
-                        
-                if self.parent_widget.chk_enable_sky.isChecked():
-                    self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit, eff_lat=eff_lat)
-                    
-                # 4. Celestial Bodies (Sun/Moon/Planets/Satellites)
-                # Try Skyfield First
-                if SKYFIELD_AVAILABLE and hasattr(self.parent_widget, 'eph'):
-                     # update_skyfield_cache already called
-                     self.draw_skyfield_objects(painter, ut_hour, day_of_year, ambient_light=ambient_light, mag_limit=final_mag_limit)
-                else:
-                     # Skyfield not yet loaded (async) — show loading hint
-                     painter.setPen(QColor(180, 180, 180, 120))
-                     painter.drawText(self.rect(), Qt.AlignCenter, getTraduction("Astro.LoadingCelestial", "⏳ Loading celestial data..."))
-
-            # === WEATHER SYSTEM (Final Layer to occlude stars) ===
+            # === WEATHER SYSTEM (Background clouds) ===
             self.weather.update_weather(day_of_year, local_hour)
             self.weather.update_thunder()
-            # Scale FOV inversely with zoom (Zoom 2.0 -> FOV 50 deg if base is 100)
+            
+            w_sun_alt = eff_sun_alt
             base_fov = 100.0
             current_fov = base_fov / self.zoom_level
-            # Pass eff_sun_alt to weather for lighting
-            w_sun_alt = eff_sun_alt # Always computed now
             self.weather.draw(painter, w_sun_alt, self.azimuth_offset, self.elevation_angle, current_fov, eclipse_dimming=eclipse_dimming)
 
+            # 3. Trails
+            checked = self.parent_widget.chk_trails.isChecked()
+            if checked and eff_sun_alt < -6.0:
+                if self.trail_start_hour is None:
+                    self.trail_start_hour = ut_hour
+                self.draw_analytic_trails(painter, self.trail_start_hour, ut_hour)
+            else:
+                self.trail_start_hour = None
+    
+            # === STAR PARAMETER CALCULATION ===
+            # Calculate Ambient Light Level (0.0 = Pitch Black, 1.0 = Full Day)
+            if eff_sun_alt > 0:
+                base_light = 1.0
+            elif eff_sun_alt < -18.0:
+                base_light = 0.0
+            else:
+                base_light = 1.0 - (eff_sun_alt / -18.0)
+                base_light = max(0.0, min(1.0, base_light))
             
-            # 5. Ground/Horizon
-            # Skip ground mask if village overlay is enabled (village provides its own ground)
-            # DISABLED: This function doesn't exist and was covering the sky
-            # if self.elevation_angle > -10 and not self.parent_widget.chk_enable_village.isChecked():
-            #     self.draw_ground_mask(painter, is_day_loc)
+            ambient_light = base_light * eclipse_dimming
             
-            # === HORIZON OVERLAY (terrain/mountains/flat line) ===
-            # If "Horitzó" checkbox exists and is checked
+            # Dynamic Magnitude Limit
+            sun_mag_limit = -8.0
+            if eff_sun_alt > 0: 
+                 sun_mag_limit = -8.0
+            elif eff_sun_alt > -6.0:
+                 t = (eff_sun_alt - 0.0) / -6.0
+                 sun_mag_limit = -8.0 + 8.0 * t
+            elif eff_sun_alt > -12.0:
+                 t = (eff_sun_alt + 6.0) / -6.0
+                 sun_mag_limit = 0.0 + 3.0 * t
+            elif eff_sun_alt > -18.0:
+                 t = (eff_sun_alt + 12.0) / -6.0
+                 sun_mag_limit = 3.0 + 3.0 * t
+            else:
+                 sun_mag_limit = self.parent_widget.magnitude_limit
+            
+            eclipse_bonus = (1.0 - eclipse_dimming) * 14.0
+            
+            if getattr(self.parent_widget, 'is_auto_bortle', True):
+                bortle_class = getattr(self.parent_widget, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 4))
+                bortle_limit = 7.6 - 0.5 * (bortle_class - 1)
+                final_mag_limit = min(sun_mag_limit + eclipse_bonus, bortle_limit)
+                ambient_light = 1.0 + (bortle_class - 1) * 0.04
+            else:
+                manual_mag = getattr(self.parent_widget, 'magnitude_limit', 6.0)
+                final_mag_limit = min(sun_mag_limit + eclipse_bonus, manual_mag)
+            
+            # Diagnostic Log for Star Visibility
+            if not hasattr(self, '_last_vis_log_time'): self._last_vis_log_time = 0
+            if current_time_ms - self._last_vis_log_time > 1000:
+                self._last_vis_log_time = current_time_ms
+                mode_str = "Auto" if getattr(self.parent_widget, 'is_auto_bortle', True) else "Manual"
+                bortle_val = getattr(self.parent_widget, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1))
+                print(f"[AstroCanvas] Star Render: {mode_str} Mode | Bortle: {bortle_val} | Mag Limit: {final_mag_limit:.2f}")
+            
+            # Cache Invalidation
+            if not hasattr(self, '_last_mag_limit'): self._last_mag_limit = final_mag_limit
+            if abs(self._last_mag_limit - final_mag_limit) > 0.05:
+                self._cached_star_image = None
+                self._last_mag_limit = final_mag_limit
+            
+            vis_factor = 1.0
+            moon_mask = None
+            if hasattr(self, '_sf_cache') and self._sf_cache.get('data'):
+                md = self._sf_cache['data'].get('moon')
+                if md:
+                    pt_m = self.project_universal_stereo(md['alt'], md['az'])
+                    if pt_m:
+                        R_proj = min(self.width(), self.height()) / 2.0 * self.zoom_level
+                        ppd = R_proj / 90.0
+                        m_rad_deg = md.get('rad_deg', 0.25)
+                        mr_px = m_rad_deg * ppd * 10.0
+                        moon_mask = (pt_m[0], pt_m[1], mr_px)
+    
+            # 4. Stars & Celestial Objects
+            if self.parent_widget.chk_enable_sky.isChecked():
+                self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit, eff_lat=eff_lat)
+            
+            if SKYFIELD_AVAILABLE and hasattr(self.parent_widget, 'eph'):
+                 self.draw_skyfield_objects(painter, ut_hour, day_of_year, ambient_light=ambient_light, mag_limit=final_mag_limit)
+
+            # 5. Horizon / Topography (Drawn on top to mask everything behind mountains)
             show_horizon = True
             if hasattr(self.parent_widget, 'chk_enable_horizon'):
                 show_horizon = self.parent_widget.chk_enable_horizon.isChecked()
             
-            # If "Topography" checkbox exists
             use_detailed_topo = True
             if hasattr(self.parent_widget, 'chk_enable_village'):
                 use_detailed_topo = self.parent_widget.chk_enable_village.isChecked()
 
             if show_horizon:
-                # If topography is Disabled, force Flat Line mode
                 force_flat = not use_detailed_topo
-                
+                dome_callback = None
+                is_auto_bortle = getattr(self.parent_widget, 'is_auto_bortle', getattr(self, 'is_auto_bortle', True))
+                if is_auto_bortle and hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
+                    tw_factor = 1.0
+                    if eff_sun_alt >= 0: tw_factor = 0.0
+                    elif eff_sun_alt > -18.0: tw_factor = (0 - eff_sun_alt) / 18.0
+                    tw_factor *= eclipse_dimming
+                    
+                    if tw_factor > 0.01:
+                        dome_callback = lambda p, idx, dist: self._draw_single_city_dome(p, self.horizon_overlay.profile, idx, dist, tw_factor)
+
                 self.horizon_overlay.draw(
                     painter, self.project_universal_stereo,
                     self.width(), self.height(),
                     self.azimuth_offset, self.zoom_level,
                     self.elevation_angle, ut_hour,
                     draw_flat_line=force_flat,
-                    projection_fn_numpy=self.project_universal_stereo_numpy
+                    projection_fn_numpy=self.project_universal_stereo_numpy,
+                    draw_domes_callback=dome_callback
                 )
-            
-            # === VILLAGE OVERLAY (houses, trees, lanterns) ===
-            # Only show village if Topography is ENABLED (and Horizon is enabled? Usually implied)
-            # Let's say Village requires Topography enabled.
-            # if use_detailed_topo:
-            #     self.village.draw_with_projection(painter, self.project_universal_stereo, self.width(), self.height(), ut_hour, self.azimuth_offset, self.zoom_level, self.elevation_angle)
+                if hasattr(self, '_dome_count') and self._dome_count > 0:
+                    current_time = __import__('time').time()
+                    if current_time - getattr(self, '_last_dome_log_time', 0) > 2.0:
+                        print(f"[AstroCanvas] City Domes Draw Call: {self._dome_count} centers found.")
+                        self._last_dome_log_time = current_time
+
+            # Weather is already drawn once before horizon overlay. 
+            # Sub-components like fog or rain can be layered, but drawing the whole atmosphere twice saturates the screen.
+            # self.weather.draw(painter, w_sun_alt, self.azimuth_offset, self.elevation_angle, current_fov, eclipse_dimming=eclipse_dimming)
 
 
             
@@ -2056,11 +2083,15 @@ class AstroCanvas(QWidget):
             painter.end()
 
     def get_sun_alt_az(self, hour, lat, day_of_year):
-        # Try Cache First
-        if hasattr(self, '_sf_cache') and self._sf_cache['data'] and self._sf_cache['data']['sun'] and SKYFIELD_AVAILABLE:
-            s = self._sf_cache['data']['sun']
-            return s['alt'], s['az']
-            
+        # Try Cache First - MUST validate time match
+        # Note: 'hour' arg is Solar Hour (Approx Local). Cache stores UT Hour.
+        # Difference is approx longitude / 15.0. We use a 0.2h (12m) tolerance.
+        if hasattr(self, '_sf_cache') and self._sf_cache.get('data') and SKYFIELD_AVAILABLE:
+            cache_t = self._sf_cache.get('time', -1.0)
+            if abs(hour - cache_t) < 0.2: 
+                s = self._sf_cache['data']['sun']
+                return s['alt'], s['az']
+        
         # Precise calculation matching draw_sun but returning Azimuth too
         dec_deg = -23.44 * math.cos(math.radians(360/365 * (day_of_year + 10)))
         dec_rad = math.radians(dec_deg)
@@ -2570,7 +2601,7 @@ class AstroCanvas(QWidget):
         sunset = 12.0 + half_day
         return sunrise, sunset
 
-    def sky_color_phys(self, view_alt, view_az, sun_alt, sun_az):
+    def sky_color_phys(self, view_alt, view_az, sun_alt, sun_az, bortle=1, twilight_factor=1.0):
         # 1. Base Gradient Interpolation (Zenith & Horizon)
         # Using the simplified keyframe approach for robust base colors
         
@@ -2585,11 +2616,11 @@ class AstroCanvas(QWidget):
             { 'alt': 0.0,  't': (25, 30, 70),  'b': (255, 70, 10), 'g': (255, 60, 0) },
             # Civil Twilight (The "Magical" Blue/Purple Hour)
             # Reference Image: Dark Purple/Blue Top, Band of Orange/Yellow Horizon
-            { 'alt': -4.0, 't': (10, 15, 50),  'b': (200, 90, 30), 'g': (100, 40, 10) },
+            { 'alt': -4.0, 't': (10, 15, 50),  'b': (120, 60, 20), 'g': (60, 20, 5) },
             # Civil End: Black-Blue / Deep Crimson fade
-            { 'alt': -6.0, 't': (5, 5, 25),    'b': (100, 30, 40), 'g': (40, 10, 5) },
+            { 'alt': -6.0, 't': (5, 5, 25),    'b': (40, 15, 20),  'g': (10, 2, 0) },
             # Nautical: Night / Dark Grey / None
-            { 'alt': -12.0,'t': (2, 2, 10),    'b': (20, 20, 35),  'g': (0, 0, 0) },
+            { 'alt': -12.0,'t': (2, 2, 10),    'b': (10, 10, 25),  'g': (0, 0, 0) },
             # Night
             { 'alt': -18.0,'t': (0, 0, 5),     'b': (5, 5, 15),    'g': (0, 0, 0) }
         ]
@@ -2639,33 +2670,52 @@ class AstroCanvas(QWidget):
         # If facing away -> Use Dark Blue/Grey (Anti-Sun Horizon)
         
         # Only applies when Sun is low or setting (Golden Hour / Sunset / Twilight)
-        # Sun Alt < 15 deg
-        if sun_alt < 15.0:
+        # Sun Alt < 15 deg and Sun Alt > -12 (Nautical End - completely gone)
+        if -12.0 < sun_alt < 15.0:
             # Factor: 1.0 (Facing Sun) ... 0.0 (Facing Away)
-            # Use cos(delta_az_rad) map -1..1 to 0..1
-            # Actually we want smoother falloff.
-            # cos(delta_az) is 1.0 at 0 deg (sun), -1.0 at 180 (anti)
-            
-            # Map -1..1 to 0..1
             az_factor = (math.cos(delta_az_rad) + 1.0) / 2.0 
             # Sharpen the curve so red stays near sun
             az_factor = math.pow(az_factor, 1.5)
+            
+            # STRENGHT FALLOFF: Fade out the azimuthal variation completely after sunset
+            # At -12.0, sun_extinction is 0.0
+            sun_extinction = 1.0
+            if sun_alt < 0:
+                sun_extinction = max(0.0, 1.0 - (abs(sun_alt) / 12.0))
             
             # Define Anti-Sun Horizon Color based on altitude
             if sun_alt > 0:
                 # Day/Golden: Horizon opposite is Blue-ish/Grey
                 anti_hor = (100, 130, 170)
             else:
-                # Twilight: Horizon opposite is Deep Dark Blue/Black
-                anti_hor = (20, 30, 60)
+                # Twilight: Horizon opposite is deep night sky (should NOT be brighter than base)
+                # Night base horizon is (10, 10, 25) for -12. 
+                # Anti-sun should be the darkest part of the horizon.
+                anti_hor = (5, 5, 12)
                 
             # Lerp Current Horizon (Red/Gold) towards Anti-Horizon
-            r_hor = int(c_hor[0] * az_factor + anti_hor[0] * (1-az_factor))
-            g_hor = int(c_hor[1] * az_factor + anti_hor[1] * (1-az_factor))
-            b_hor = int(c_hor[2] * az_factor + anti_hor[2] * (1-az_factor))
+            r_target = int(c_hor[0] * az_factor + anti_hor[0] * (1-az_factor))
+            g_target = int(c_hor[1] * az_factor + anti_hor[1] * (1-az_factor))
+            b_target = int(c_hor[2] * az_factor + anti_hor[2] * (1-az_factor))
+            
+            # Apply Sun Extinction (Night doesn't have azimuthal horizon color differences)
+            r_hor = int(c_hor[0] * (1-sun_extinction) + r_target * sun_extinction)
+            g_hor = int(c_hor[1] * (1-sun_extinction) + g_target * sun_extinction)
+            b_hor = int(c_hor[2] * (1-sun_extinction) + b_target * sun_extinction)
             
             # Update base horizon color for vertical mix
             c_hor = (r_hor, g_hor, b_hor)
+            
+        # STERN NIGHT FILTER: Once Sun is deep underground, zero out all residual glow.
+        if sun_alt <= -12.0:
+            # Force Night Palette (Blue shifts)
+            c_zen = (0, 0, 5)
+            c_hor = (5, 5, 12)
+            c_sun = (0, 0, 0)
+        elif sun_alt <= -18.0:
+            c_zen = (0, 0, 2)
+            c_hor = (2, 2, 8)
+            c_sun = (0, 0, 0)
 
         # 3. Composition
         # Vertical gradient t value (0 at zenith, 1 at horizon)
@@ -2687,6 +2737,14 @@ class AstroCanvas(QWidget):
         if cos_gamma > 0.0:
             # Very wide, very soft lobe
             dir_glow = math.pow(cos_gamma, 4.0) * 0.15 # Max 15% influence
+            
+            # PHYSICAL FALLOFF: After Nautical Twilight, the sun halo should be ZERO.
+            # Ramps from 1.0 (Day/Sunset) to 0.0 at SunAlt = -12.0
+            glow_intensity = 1.0
+            if sun_alt < 0:
+                glow_intensity = max(0.0, 1.0 - (abs(sun_alt) / 12.0))
+            
+            dir_glow *= glow_intensity
             
             # Use Sun Glow Color but heavily blended with Sky
             # We add it additively but very weakly
@@ -2731,9 +2789,29 @@ class AstroCanvas(QWidget):
                 b *= darken
                     
         # Clamp
-        return QColor(min(255, max(0, int(r))), 
-                      min(255, max(0, int(g))), 
-                      min(255, max(0, int(b))))
+        r, g, b = min(255, max(0, int(r))), min(255, max(0, int(g))), min(255, max(0, int(b)))
+        
+        # 4. Integrate Global Sky Glow (Bortle / Light Pollution) directly into physical model
+        # This fixes the "pyramid" shape by curving the glow along with the sky projection
+        if bortle > 2 and twilight_factor > 0.01:
+            glow_val = (bortle - 2) / 7.0 
+            glow_alpha = glow_val * twilight_factor * 0.15 # Max 15% influence to base color
+            
+            # Elevation curve (glow is stronger at horizon, fades to zenith)
+            elev_t = max(0.0, min(1.0, 1.0 - (view_alt / 90.0)))
+            # Exponential fade to avoid plateau
+            elev_falloff = math.pow(elev_t, 2.5) 
+            
+            # Urban Sky Glow color: Desaturated warm grey (Sodium/LED)
+            glow_r, glow_g, glow_b = 140, 130, 110
+            
+            # Apply additive blend based on elevation
+            strength = glow_alpha * elev_falloff
+            r = min(255, int(r + glow_r * strength))
+            g = min(255, int(g + glow_g * strength))
+            b = min(255, int(b + glow_b * strength))
+            
+        return QColor(r, g, b)
 
     def draw_background(self, painter, sun_alt, sun_az, view_az, dimming=1.0):
         rect = self.rect()
@@ -2755,7 +2833,19 @@ class AstroCanvas(QWidget):
         zoom = round(self.zoom_level, 2)
         elev_q = round(self.elevation_angle, 1)
 
-        cache_key = (q_sun_alt, q_sun_az, q_view_az, w_res, h_res, w, h, zoom, elev_q)
+        # Pre-calc Bortle for physical sky
+        is_auto_bortle = getattr(self.parent_widget, 'is_auto_bortle', getattr(self, 'is_auto_bortle', True))
+        bortle = getattr(self.parent_widget, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1)) if is_auto_bortle else 1
+        
+        twilight_factor = 1.0
+        if sun_alt >= 0: twilight_factor = 0.0
+        elif sun_alt > -18.0: twilight_factor = (0 - sun_alt) / 18.0
+        twilight_factor *= dimming
+        
+        # Quantize bortle/twilight to avoid excessive cache misses
+        t_q = round(twilight_factor * 10) / 10.0
+
+        cache_key = (q_sun_alt, q_sun_az, q_view_az, w_res, h_res, w, h, zoom, elev_q, bortle, t_q)
         
         if self._bg_cache_key != cache_key or self._bg_cache_pixmap is None:
             # Regenerate using physics model
@@ -2774,7 +2864,7 @@ class AstroCanvas(QWidget):
                     alt, az = self.unproject_stereo(sx, sy)
                     
                     # Convert to color
-                    col = self.sky_color_phys(alt, az, q_sun_alt, q_sun_az)
+                    col = self.sky_color_phys(alt, az, q_sun_alt, q_sun_az, bortle=bortle, twilight_factor=t_q)
                     img.setPixelColor(x, y, col)
             
             self._bg_cache_pixmap = QPixmap.fromImage(img)
@@ -2837,6 +2927,7 @@ class AstroCanvas(QWidget):
         self._cached_star_image = img
         self.visible_stars = vis_stars # Update interactions
         self.rendering_busy = False
+        self.update() # Force repaint to show new stars immediately
 
     def _on_trail_result(self, img):
         self._cached_trail_image = img
@@ -2877,6 +2968,13 @@ class AstroCanvas(QWidget):
             lst = (100.0 + day_of_year * 0.9856 + hour * 15.0 + pw.longitude) % 360
             lat_rad = math.radians(pw.latitude)
             
+            # LP Params for Worker Extinction
+            bortle = getattr(pw, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1))
+            is_auto = getattr(pw, 'is_auto_bortle', False)
+            horizon_profile = None
+            if hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
+                horizon_profile = self.horizon_overlay.profile
+
             params = {
                 'width': self.width(),
                 'height': self.height(),
@@ -2884,6 +2982,10 @@ class AstroCanvas(QWidget):
                 'vertical_ratio': self.vertical_offset_ratio,
                 'elevation_angle': self.elevation_angle,
                 'azimuth_offset': self.azimuth_offset,
+                
+                'bortle': bortle,
+                'is_auto': is_auto,
+                'horizon_profile': horizon_profile,
                 
                 'ra': pw.np_ra,
                 'dec': pw.np_dec,
@@ -2913,13 +3015,32 @@ class AstroCanvas(QWidget):
         if mag_limit is None: mag_limit = pw.magnitude_limit
         if eff_lat is None: eff_lat = pw.latitude
         
+        # --- GLOBAL STAR KILLER ---
+        # A. Interaction Limit
         is_interacting = self.dragging or getattr(pw, '_dragging_time', False)
         if is_interacting: 
-            mag_limit = min(mag_limit, 5.5) # Fewer stars during interactive movement
+            mag_limit = min(mag_limit, 5.5)
+            
+        # B. Base Global Extinction (Bortle Penalty)
+        # Bortle highly penalizes star counts everywhere. At Bortle 9 it drops limit by ~3.2 magnitudes.
+        bortle = getattr(pw, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1))
+        is_auto = getattr(pw, 'is_auto_bortle', False)
+        
+        if is_auto and bortle > 1:
+            # Naked-Eye Limiting Magnitude (NELM) empirical formula based on Bortle
+            # mlim(B) ~= 7.6 - 0.5(B-1). Resulting in B1=~7.6, B2=~7.1, B9=~3.6.
+            nelm_limit = 7.6 - 0.5 * (bortle - 1)
+            # Re-assign mag_limit entirely to mathematically guarantee the correct max stars
+            mag_limit = min(mag_limit, nelm_limit)
+        
+        # C. Absolute minimum floor to avoid completely empty skies incorrectly
+        mag_limit = max(0.5, mag_limit)
         
         # 1. Filtering (Pre-Math) - OPTIMIZATION
-        # Only process stars within magnitude range to avoid expensive math on 77k+ stars
-        original_idxs = np.where(pw.np_mag < mag_limit + 0.5)[0]
+        # Ensure only the correctly killed catalog goes into physics math
+        # Allow +1.0 magnitudes so that borderline stars have a smooth alpha fade out
+        limit_buffer_pre = mag_limit + 1.0
+        original_idxs = np.where(pw.np_mag < limit_buffer_pre)[0]
         if len(original_idxs) == 0: return
         
         ra = pw.np_ra[original_idxs]
@@ -2975,15 +3096,71 @@ class AstroCanvas(QWidget):
         cos_s = math.cos(s_alt_rad)
         
         # cos_gamma (Star vs Sun)
-        # cos_gamma = sin_alt*sin_s + cos_alt*cos_s*cos(az - s_az)
         az_rad_full = np.radians(az_deg)
         cos_gamma = sin_alt * sin_s + cos_alt * cos_s * np.cos(az_rad_full - s_az_rad)
         
-        dir_modifier = -1.5 * cos_gamma
+        # Només penalitzem estels que estan cap a la direcció del Sol, no "potenciem" mai.
+        # FIX CÍTIC: A la nit profunda (Sol molt sota l'horitzó), el Sol no pot esborrar 
+        # estrelles, la Terra el tapa. Ho limitem al Crepuscle (Twilight).
+        s_alt_deg = math.degrees(s_alt_rad)
+        sun_glare_opacity = 0.0
+        if s_alt_deg > -18.0:
+            twilight_weight = min(1.0, (s_alt_deg + 18.0) / 18.0)
+            sun_glare_opacity = 1.2 * np.clip(cos_gamma, 0.0, 1.0) * twilight_weight
+            
+        dir_modifier = -sun_glare_opacity
         local_limit = mag_limit + dir_modifier
         
+        # Apply Gaussian Angular Light Pollution to Star Mag Limit (Local Extinction)
+        bg_glow = max(0.0, (bortle - 1.0) * 1.0)
+        
+        # 3. MOON EXTINCTION (Fase y separación)
+        if hasattr(self, '_sf_cache') and isinstance(self._sf_cache, dict) and self._sf_cache.get('data') and 'moon' in self._sf_cache.get('data', {}):
+            m_data = self._sf_cache['data']['moon']
+            if m_data['alt'] > -5.0: # Only if above or near horizon
+                m_alt = np.radians(m_data['alt'])
+                m_az = np.radians(m_data['az'])
+                m_illum = m_data.get('illumination', 0.5)
+                
+                # Càlcul vectorial per extingir radialment entorn de la Lluna
+                cos_dist_moon = sin_alt * math.sin(m_alt) + cos_alt * math.cos(m_alt) * np.cos(np.radians(az_deg) - m_az)
+                moon_ang_dist_rad = np.arccos(np.clip(cos_dist_moon, -1.0, 1.0))
+                
+                # Afecta molt al voltant (~0.25 rads = ~15 graus) depenent si és Lluna Plenà, penalitzant magnitud
+                moon_glare = np.exp(-(moon_ang_dist_rad / 0.25)**2) * m_illum * 4.5
+                local_limit -= moon_glare
+        
+        # 4. Local Horizon Extinction (City domes)
+        if is_auto and hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
+             prof = self.horizon_overlay.profile
+             if hasattr(prof, 'light_domes') and len(prof.light_domes) > 0:
+                 # Bortle-based intensity scaling (B1=0%, B5=50%, B9=100%)
+                 lp_intensity_factor = max(0.0, (bortle - 1.0) / 8.0)
+                 
+                 az_indices = (az_deg * 2.0).astype(int) % len(prof.light_domes)
+                 intensity = prof.light_domes[az_indices]
+                 dist = prof.light_peak_distances[az_indices]
+                 
+                 # 1. DYNAMIC RADIUS (a0): Matches visual dome size
+                 # a0 scales with log intensity and decays with distance (35km mean path)
+                 dist_factor = np.exp(-dist / 35000.0)
+                 log_intensity = np.log10(1.0 + intensity)
+                 # Base factor 8.0 maps large cities to ~20-25 deg radius near observer
+                 a0 = log_intensity * 8.0 * dist_factor
+                 # Ensure a sensible minimum a0 to avoid math singularities
+                 a0 = np.maximum(1.0, a0)
+                 
+                 # 2. DYNAMIC PENALTY (i_alpha): Matches visual brightness
+                 # Scales with Bortle selection and exponential falloff with altitude
+                 i_alpha = (intensity**0.40) * lp_intensity_factor * np.exp(-(alt_deg / a0)**2)
+                 
+                 # 3. APPLY EXTINCTION: Drop local magnitude limit
+                 # Factor 0.15 maps high intensity + Bortle 9 to ~3.5-4.0 mag loss
+                 extinction_penalty = i_alpha * 0.15
+                 local_limit = local_limit - extinction_penalty
+        
         # Mask 1: Mag Limit
-        # We allow +2.0 buffer? No, use strict local limit for speed
+        # We allow +1.0 buffer for edge bloom, the strict test is done later or managed by eff_alpha
         limit_buffer = local_limit + 1.0 
         mask = mag < limit_buffer
         
@@ -2998,7 +3175,13 @@ class AstroCanvas(QWidget):
         f_alt = alt_deg[idxs]
         f_az = az_deg[idxs]
         f_mag = mag[idxs]
-        f_ll = local_limit[idxs]
+        
+        # Ensure local_limit is an array if we want to index it, or just a scalar
+        if isinstance(local_limit, np.ndarray):
+            f_ll = local_limit[idxs]
+        else:
+            f_ll = np.full(len(idxs), local_limit)
+            
         f_r = f_r_pre[idxs]
         f_g = f_g_pre[idxs]
         f_b = f_b_pre[idxs]
@@ -3039,6 +3222,8 @@ class AstroCanvas(QWidget):
         sin_az = sin_az[mask_proj]
         
         indices = indices[mask_proj]
+        f_alt = f_alt[mask_proj]
+        f_az = f_az[mask_proj]
         f_mag = f_mag[mask_proj]
         f_ll = f_ll[mask_proj]
         f_r = f_r[mask_proj]
@@ -3068,6 +3253,8 @@ class AstroCanvas(QWidget):
         indices = indices[mask_screen]
         sx = sx[mask_screen]
         sy = sy[mask_screen]
+        f_alt = f_alt[mask_screen]
+        f_az = f_az[mask_screen]
         f_mag = f_mag[mask_screen]
         f_ll = f_ll[mask_screen]
         f_r = f_r[mask_screen]
@@ -3122,11 +3309,15 @@ class AstroCanvas(QWidget):
                  # LEGACY BEHAVIOR
                  if mag > 5.0:
                      size = max(1.0, 1.2 * self.zoom_level * 0.6) * scale
+                     if math.isnan(size) or size <= 0: continue
+                     
                      a_val = 200 - min(150, int((mag - 5.0) * 10))
                      painter.setBrush(QColor(r_val, g_val, b_val, int(max(50, a_val) * alpha_f)))
                      painter.drawEllipse(QPointF(x, y), size, size)
                  else:
                      size = max(1.5, (5.0 - mag) * 0.8 * self.zoom_level) * scale
+                     if math.isnan(size) or size <= 0: continue
+                     
                      painter.setBrush(QColor(r_val, g_val, b_val, int(255 * alpha_f)))
                      painter.drawEllipse(QPointF(x, y), size, size)
             else:
@@ -3145,6 +3336,7 @@ class AstroCanvas(QWidget):
                      
                      final_a = int(max(60, a_val) * alpha_f * 0.7)
                      
+                     if math.isnan(size) or size <= 0: continue
                      painter.setBrush(QColor(r_desat, g_desat, b_desat, final_a))
                      painter.drawEllipse(QPointF(x, y), size, size)
                  else:
@@ -3162,6 +3354,7 @@ class AstroCanvas(QWidget):
                          if mag < 1.0:
                              halo_size = core_radius * 8.0 * self.zoom_level
                              
+                         if math.isnan(halo_size) or halo_size <= 0: continue
                          halo_grad = QRadialGradient(x, y, halo_size)
                          halo_grad.setColorAt(0.0, QColor(r_val, g_val, b_val, int(90 * alpha_f)))
                          halo_grad.setColorAt(0.1, QColor(r_val, g_val, b_val, int(30 * alpha_f)))
@@ -3177,8 +3370,9 @@ class AstroCanvas(QWidget):
                      core_grad.setColorAt(0.6, star_c_intense) # Mantiene el color base más hacia el borde
                      core_grad.setColorAt(1.0, transparent_c)
                      
-                     painter.setBrush(QBrush(core_grad))
-                     painter.drawEllipse(QPointF(x, y), core_radius, core_radius)
+                     if not math.isnan(core_radius) and core_radius > 0:
+                         painter.setBrush(QBrush(core_grad))
+                         painter.drawEllipse(QPointF(x, y), core_radius, core_radius)
                  
                  # Draw diffraction spikes using the slider threshold
                  try:
@@ -3936,6 +4130,128 @@ class AstroCanvas(QWidget):
         scale = max(1.0, min(1.6, 1.0 + illusion_val))
             
         return scale
+
+    def draw_light_domes(self, painter, profile, eff_sun_alt, eclipse_dimming):
+        """Draws only the BACKGROUND atmospheric glows (Moon). City domes are interleaved via callback."""
+        if eff_sun_alt >= 0: return
+        
+        # Diagnostic Log
+        if not hasattr(self, '_last_dome_log_time'): self._last_dome_log_time = 0
+        current_time = __import__('time').time()
+        self._dome_count = 0
+        
+        if eff_sun_alt > -18.0:
+            twilight_factor = (0 - eff_sun_alt) / 18.0
+        else:
+            twilight_factor = 1.0
+        twilight_factor *= eclipse_dimming
+        if twilight_factor <= 0.01: return
+
+        # MOON GLOW (Only)
+        # Global Sky Glow is now handled inside sky_color_phys physically
+        if self._sf_cache and self._sf_cache.get('data'):
+            m_data = self._sf_cache['data'].get('moon')
+            if m_data and m_data['alt'] > -5.0:
+                m_alt, m_az = m_data['alt'], m_data['az']
+                m_illum = m_data.get('illumination', 0.5)
+                m_pt = self.project_universal_stereo(m_alt, m_az)
+                if m_pt:
+                    mx, my = m_pt
+                    m_glow_radius = 150.0 * self.zoom_level * (1.0 + (90.0 - abs(m_alt))/90.0)
+                    m_glow_alpha = int(200 * m_illum * twilight_factor)
+                    if m_glow_alpha > 5:
+                        grad_moon = QRadialGradient(QPointF(mx, my), m_glow_radius)
+                        grad_moon.setColorAt(0.0, QColor(255, 255, 255, m_glow_alpha // 2))
+                        grad_moon.setColorAt(0.5, QColor(255, 255, 255, m_glow_alpha // 4))
+                        grad_moon.setColorAt(1.0, QColor(0, 0, 0, 0))
+                        painter.save()
+                        painter.setBrush(grad_moon)
+                        painter.setPen(Qt.NoPen)
+                        painter.drawEllipse(QPointF(mx, my), m_glow_radius, m_glow_radius)
+                        painter.restore()
+
+    def _draw_single_city_dome(self, painter, profile, idx, dist, twilight_factor):
+        # ... (Physic comments omitted for brevity)
+        import math
+        from PyQt5.QtGui import QRadialGradient, QLinearGradient, QColor, QBrush, QPainter
+        from PyQt5.QtCore import QPointF, Qt
+
+        self._dome_count += 1
+        intensity = profile.light_domes[idx]
+        if intensity < 0.2: return
+        az = profile.azimuths[idx]
+        
+        # Distance attenuation: exponential decaimient I(r) = I0 * e^(-r/R) (35km mean clear air path)
+        dist_factor = math.exp(-dist / 35000.0) 
+        
+        # 2. Obtenció Altitud (Obstacles Topogràfics a l'Azimut)
+        elev_deg = 0.0
+        for b in profile.bands:
+             elev_deg = max(elev_deg, math.degrees(b["angles"][idx]))
+        
+        pt = self.project_universal_stereo(elev_deg, az)
+        if not pt: return
+        x, y = pt
+        
+        # =========================================================================
+        # ALPHA CONFIGURATION: Adjusted to be even more subtle during night
+        CITY_DOME_ALPHA_MULTIPLIER = 1.5
+        # =========================================================================
+
+        # Base Visual intensity mapping
+        visual_intensity = math.pow(intensity, 0.40) * dist_factor
+        
+        # The limit original era ~140 para que en el zenit/horizonte no sature blanco (Screen Mode).
+        alpha_base = min(120, int(visual_intensity * 40 * twilight_factor))
+        
+        # Aplicamos el multiplicador al final de manera estrictamente lineal (0.1 será el 10% real de la opacidad tope)
+        alpha_base = int(alpha_base * CITY_DOME_ALPHA_MULTIPLIER)
+        
+        # Tolera no pintar casi-invisibles
+        if alpha_base <= 2: return
+        
+        # URBAN GLOW PALETTE: Sodium/LED desaturated colors (Warm Grey/Amber)
+        # Saturation reduced from 140 to 60, Lightness from 140 to 100
+        glow_hue = 35 + min(10, intensity/500.0) 
+        c_core = QColor.fromHsl(int(glow_hue), 60, 100, int(alpha_base * 0.35))
+        c_mid  = QColor.fromHsl(int(glow_hue), 40, 80, int(alpha_base * 0.15))
+        c_fringe = QColor.fromHsl(int(glow_hue), 30, 60, int(alpha_base * 0.04))
+        c_edge = QColor(c_fringe.red(), c_fringe.green(), c_fringe.blue(), int(alpha_base * 0.01))
+        c_trans = QColor(0, 0, 0, 0)
+
+        # Base radius on screen: Logarithmic scaling to avoid "muras" of color
+        rad_base = self.width() * 0.6
+        log_intensity = math.log10(1.0 + intensity)
+        rad_x = min(rad_base, log_intensity * 40.0 * self.zoom_level * dist_factor)
+        
+        # Vertical squashing to anchor on horizon
+        rad_y = rad_x * 0.6 # Squashed more to keep it near horizon
+
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode_Screen) 
+        
+        # The center of the gradient is placed ON THE HORIZON.
+        # We draw it at 0,0 and apply a scale transform to squash it, preventing ellipse clipping edges.
+        grad = QRadialGradient(QPointF(0, 0), rad_x)
+        
+        # Colors: simulating I(alpha) = I * e^-(alpha/alpha0)^2
+        grad.setColorAt(0.00, c_core)
+        grad.setColorAt(0.20, c_mid)        
+        grad.setColorAt(0.50, c_fringe)     
+        # Use simple c_edge (can hit real 0 without max(1, ...) trap fixing banding completely)     
+        grad.setColorAt(0.75, c_edge)
+        grad.setColorAt(1.00, c_trans)
+        
+        painter.setBrush(QBrush(grad))
+        painter.setPen(Qt.NoPen)
+        
+        scale_y = rad_y / max(1.0, rad_x)
+        painter.translate(x, y)
+        painter.scale(1.0, scale_y)
+        
+        # Draw a rectangle that spans the entirety of the bounded gradient
+        painter.drawRect(int(-rad_x), int(-rad_x), int(rad_x * 2), int(rad_x * 2))
+        painter.restore()
 
     def draw_skyfield_objects(self, painter, ut_hour, day_of_year, ambient_light=1.0, mag_limit=6.0):
         # USE CACHE if available
@@ -4857,8 +5173,8 @@ class AstronomicalWidget(CustomWidgetBase):
 
     def __init__(self, parent=None, **kwargs):
         # 1. Initialize properties required by UI/Canvas
-        self.latitude = 41.979239
-        self.longitude = 0.750917
+        self.latitude = 41.189795
+        self.longitude = 1.210058
         self.magnitude_limit = 6.0
         self.spike_magnitude_threshold = 2.0
         self.star_scale = 0.5
@@ -4930,7 +5246,9 @@ class AstronomicalWidget(CustomWidgetBase):
         self.horizon_worker.progress_message.connect(self.on_horizon_progress)
         self.request_horizon_bake.connect(self.horizon_worker.request_bake)
         
-        # Start the thread
+        # Start the thread and initialize sampler immediately to avoid UI lag/desync
+        self.horizon_thread.started.connect(self.horizon_worker.initialize)
+        
         print(f"[AstroWidget] Starting Horizon Thread... (Path managed by Worker)")
         self.horizon_thread.start()
         print(f"[AstroWidget] Horizon Thread started. ID: {int(self.horizon_thread.currentThreadId()) if self.horizon_thread.currentThreadId() else 'N/A'}")
@@ -4988,6 +5306,10 @@ class AstronomicalWidget(CustomWidgetBase):
              
         # Refresh the UI altitude label now that the worker has safely initialized the DEM data
         self.update_altitude_label()
+        
+        # Initial Bortle Sync if in Auto mode
+        if getattr(self, 'is_auto_bortle', True):
+            self.reset_lp_to_auto()
              
         self.canvas.update()
 
@@ -5049,6 +5371,7 @@ class AstronomicalWidget(CustomWidgetBase):
             self.np_g = np_g
             self.np_b = np_b
         print(f"[AstroWidget] Star catalog ready: {len(celestial_objects)} stars (async).")
+        self.build_search_index()
         self.canvas.update()
         # Clean up thread
         self._catalog_thread.quit()
@@ -5260,7 +5583,7 @@ class AstronomicalWidget(CustomWidgetBase):
         self.chk_pure_colors.toggled.connect(self.toggle_pure_colors)
         v_sld.addWidget(self.chk_pure_colors)
 
-        def make_sld(layout, label, r, val, cb):
+        def make_sld(layout, label, r, val, cb, with_reset=False):
             h = QHBoxLayout(); h.setSpacing(4)
             l = QLabel(label); l.setStyleSheet("font-style: normal; font-weight: normal; min-width: 65px;")
             h.addWidget(l)
@@ -5277,19 +5600,64 @@ class AstronomicalWidget(CustomWidgetBase):
             l_curr = QLabel(f"[{val}]"); l_curr.setStyleSheet("font-size: 9px; color: #000; min-width: 30px;")
             h.addWidget(l_curr)
             
+            # Attach labels to slider for dynamic updates
+            s._lbl_min = l_min
+            s._lbl_max = l_max
+            s._lbl_curr = l_curr
+            
+            btn_res = None
+            if with_reset:
+                from PyQt5.QtWidgets import QToolButton
+                btn_res = QToolButton()
+                btn_res.setText("↺")
+                btn_res.setStyleSheet("font-size: 14px; border: none; font-weight: bold; color: #333;")
+                btn_res.setCursor(Qt.PointingHandCursor)
+                h.addWidget(btn_res)
+
             def on_changed(new_val):
                 l_curr.setText(f"[{new_val}]")
                 if cb: cb(new_val)
                 
             s.valueChanged.connect(on_changed)
+            
+            def set_silent_value(new_val):
+                s.blockSignals(True)
+                s.setValue(new_val)
+                s.blockSignals(False)
+                l_curr.setText(f"[{new_val}]")
+            s.set_silent_value = set_silent_value
+            
             layout.addLayout(h)
-            return s
+            if with_reset:
+                return s, l, btn_res
+            return s, l
 
-        self.slider_mag = make_sld(v_sld, "Magnitud", (-20, 100), int(self.magnitude_limit*10), self.update_magnitude)
-        self.slider_size = make_sld(v_sld, "Mida", (5, 40), int(self.star_scale*10), self.update_star_scale)
-        self.slider_spikes = make_sld(v_sld, "Puntes", (-30, 70), int(self.spike_magnitude_threshold*10), self.update_spikes)
-        self.slider_light = make_sld(v_sld, "Contaminació\nlluminosa", (0, 100), 0, None)
-        self.slider_light.setEnabled(False) # TODO
+        self.slider_size, _ = make_sld(v_sld, "Mida", (5, 40), int(self.star_scale*10), self.update_star_scale)
+        self.slider_spikes, _ = make_sld(v_sld, "Puntes", (-30, 70), int(self.spike_magnitude_threshold*10), self.update_spikes)
+        
+        # Unified Light Pollution / Magnitude Control
+        l_shared = QVBoxLayout()
+        h_ctrl = QHBoxLayout(); h_ctrl.setSpacing(5)
+        
+        from PyQt5.QtWidgets import QComboBox
+        self.combo_lp_mode = QComboBox()
+        self.combo_lp_mode.addItems(["Automàtic", "Manual"])
+        self.combo_lp_mode.setToolTip("Mode de visibilitat: Automàtic (Bortle satèl·lit) / Manual (Filtre Magnitud)")
+        self.combo_lp_mode.setStyleSheet("font-size: 10px; min-width: 80px; max-width: 100px; height: 22px;")
+        self.combo_lp_mode.currentIndexChanged.connect(self.on_lp_mode_changed)
+        h_ctrl.addWidget(self.combo_lp_mode)
+        
+        self.slider_light, self.lbl_light_text, self.btn_res_lp = make_sld(h_ctrl, "Bortle", (1, 9), 4, self.update_lp_slider, with_reset=True)
+        self.btn_res_lp.setToolTip("Restablir segons ubicació")
+        self.btn_res_lp.clicked.connect(self.reset_lp_to_auto)
+        
+        # Force an initial sync of Bortle if possible
+        QTimer.singleShot(500, self.update_altitude_label) 
+        l_shared.addLayout(h_ctrl)
+        v_sld.addLayout(l_shared)
+        
+        self.is_auto_bortle = True
+        self.ambient_light = 1.0 
         l_sky.addLayout(v_sld)
 
         # Col 3: Circumpolar + Search
@@ -5307,9 +5675,9 @@ class AstronomicalWidget(CustomWidgetBase):
         v_ext.addStretch()
 
         self.txt_search = QLineEdit()
-        self.txt_search.setPlaceholderText("Cercar...")
+        self.txt_search.setPlaceholderText("Cercar astre...")
         self.txt_search.setStyleSheet("font-weight: normal; font-style: normal; border-radius: 4px; padding: 2px;")
-        self.txt_search.setEnabled(False) # TODO
+        self.txt_search.returnPressed.connect(self.on_search_triggered)
         v_ext.addWidget(self.txt_search)
         l_sky.addLayout(v_ext)
 
@@ -5354,7 +5722,9 @@ class AstronomicalWidget(CustomWidgetBase):
         v_earth.addStretch()
         panels_layout.addWidget(gb_earth, 1) # Factor 1 for earth
 
-        frame_layout.addLayout(panels_layout)
+        self.panels_widget = QWidget()
+        self.panels_widget.setLayout(panels_layout)
+        frame_layout.addWidget(self.panels_widget)
 
         # ── KEEP EXISTING VARIABLES FOR COMPATIBILITY (HIDDEN) ───────────
         self.btn_view = QPushButton(); self.btn_view.hide()
@@ -5457,29 +5827,20 @@ class AstronomicalWidget(CustomWidgetBase):
         self.use_real_time = False
         self.btn_realtime.setChecked(False)
         self.manual_hour = val
-        # Suppress async star worker and invalidate cache during dragging
-        # Stars render synchronously via fast numpy path — no lag
-        self._dragging_time = True
-        if hasattr(self.canvas, '_cached_star_image'):
-            self.canvas._cached_star_image = None
-        # Keep cached trail image during dragging to avoid flickering.
-        # Fast-Path will provide feedback.
-        # Temporarily boost FPS during manual time changes
-        if hasattr(self, 'timer') and self.timer.interval() > 33:
-            self.timer.setInterval(33)  # 30 FPS during dragging
-        # Restore normal mode after 500ms of no dragging
-        if not hasattr(self, '_drag_restore_timer'):
-            self._drag_restore_timer = QTimer()
-            self._drag_restore_timer.setSingleShot(True)
-            def _end_drag():
-                self._dragging_time = False
-                self.timer.setInterval(50)
-                # Movement stopped: Invalidate trail cache to trigger high-quality bake
-                if hasattr(self.canvas, '_cached_trail_image'):
-                    self.canvas._cached_trail_image = None
-                self.canvas.update()
-            self._drag_restore_timer.timeout.connect(_end_drag)
-        self._drag_restore_timer.start(500)
+        if hasattr(self, 'chk_trails') and self.chk_trails.isChecked():
+            # If seeking while trails are active, add the time jump to the accumulated counter
+            # One hour = 3600 seconds
+            diff_h = val - getattr(self, '_last_seek_hour', val)
+            time_jump_s = diff_h * 3600.0
+            
+            if not hasattr(self, 'trails_accumulated_seconds'):
+                self.trails_accumulated_seconds = 0.0
+                
+            self.trails_accumulated_seconds += time_jump_s
+            # Clamp to positive? No, if we go backward it should undo simulated exposure if using history
+            # But the UI label usually shows positive exposure duration.
+            
+        self._last_seek_hour = val
         self.canvas.update()
 
         # ─ Toast HUD: mostra hora local i UT durant el drag ─
@@ -5509,7 +5870,20 @@ class AstronomicalWidget(CustomWidgetBase):
             # Update internal params
             self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
             
-            # Emit signal to Horizon Worker
+            # --- Fast Local Lookups for UI Feedback ---
+            if hasattr(self, 'horizon_worker'):
+                # Update Altitude
+                bare = self.horizon_worker.get_bare_elevation(self.latitude, self.longitude)
+                self._last_dem_elevation = bare
+                self.update_altitude_label()
+                
+                # Update Bortle (Automatic Mode)
+                auto_bortle = self.horizon_worker.get_bortle_estimate(self.latitude, self.longitude)
+                self.canvas.auto_bortle_estimate = auto_bortle
+                if self.is_auto_bortle:
+                    self.slider_light.set_silent_value(auto_bortle)
+            
+            # Emit signal to Horizon Worker for heavy bake
             self.request_horizon_bake.emit(self.latitude, self.longitude)
 
             # ─ Toast HUD: mostra nova ubicació i altitud si disponible ─
@@ -5675,9 +6049,13 @@ class AstronomicalWidget(CustomWidgetBase):
             
         # Update trails elapsed time
         if hasattr(self, 'chk_trails') and self.chk_trails.isChecked():
-            if getattr(self, 'trails_real_start_time', None) is None:
-                self.trails_real_start_time = time.time()
-            elapsed = int(time.time() - self.trails_real_start_time)
+            if not hasattr(self, 'trails_accumulated_seconds'):
+                self.trails_accumulated_seconds = 0.0
+            
+            # Increment by real time elapsed (timer interval is 50ms)
+            self.trails_accumulated_seconds += 0.05
+            
+            elapsed = int(abs(self.trails_accumulated_seconds))
             if elapsed < 60:
                 self.lbl_trail_time.setText(f"{elapsed}s")
             elif elapsed < 3600:
@@ -5689,8 +6067,8 @@ class AstronomicalWidget(CustomWidgetBase):
                 m = (elapsed % 3600) // 60
                 self.lbl_trail_time.setText(f"{h}h {m}m")
         else:
-            if hasattr(self, 'trails_real_start_time'):
-                self.trails_real_start_time = None
+            if hasattr(self, 'trails_accumulated_seconds'):
+                delattr(self, 'trails_accumulated_seconds')
             if hasattr(self, 'lbl_trail_time'):
                 self.lbl_trail_time.setText("")
 
@@ -5987,19 +6365,194 @@ class AstronomicalWidget(CustomWidgetBase):
         dlg.move(pos)
         dlg.exec_()
 
+    def on_lp_mode_changed(self, index):
+        """index 0 = Automatic (Bortle), index 1 = Manual (Magnitud)."""
+        self.is_auto_bortle = (index == 0)
+        
+        if self.is_auto_bortle:
+            self.lbl_light_text.setText("Bortle")
+            self.slider_light.setRange(1, 9)
+            if hasattr(self.slider_light, '_lbl_min'):
+                self.slider_light._lbl_min.setText("1")
+                self.slider_light._lbl_max.setText("9")
+            auto_val = getattr(self.canvas, 'auto_bortle_estimate', 4)
+            self.slider_light.set_silent_value(int(auto_val))
+        else:
+            self.lbl_light_text.setText("Magnitud")
+            self.slider_light.setRange(-270, 90) # -27.0 to 9.0
+            if hasattr(self.slider_light, '_lbl_min'):
+                self.slider_light._lbl_min.setText("-27")
+                self.slider_light._lbl_max.setText("9")
+            self.slider_light.set_silent_value(int(self.magnitude_limit * 10))
+            
+        self.canvas.update()
+
+    def reset_lp_to_auto(self):
+        """Action for the reset button: pulls the current satellite estimate."""
+        if not self.horizon_worker: return
+        val = self.horizon_worker.get_bortle_estimate(self.latitude, self.longitude)
+        print(f"[AstroWidget] Resetting LP to auto-estimated Bortle: {val}")
+        self.combo_lp_mode.setCurrentIndex(0) # Switch to Auto mode
+        self.slider_light.set_silent_value(val)
+        self.canvas.auto_bortle_estimate = val
+        self.canvas.update()
+
+    def update_lp_slider(self, val):
+        if self.is_auto_bortle:
+            # We don't usually update TIF data from a slider, 
+            # but maybe user wants to 'tweak' the auto value?
+            # Let's treat it as a manual override of the Bortle value.
+            self.canvas.auto_bortle_estimate = val
+        else:
+            # Manual mode: Sliders acts as Magnitude Filter
+            self.magnitude_limit = val / 10.0
+        self.canvas.update()
+
     def update_magnitude(self, val):
         # Mag slider 10-200 -> 1.0-20.0
         self.magnitude_limit = val / 10.0
         self.canvas.update()
+
+    def build_search_index(self):
+        """Builds a search index of planets and named stars for QCompleter."""
+        self.search_index = {}
+        
+        # 1. PLANETS
+        planets = {
+            "Sol": "sun", "Lluna": "moon", "Mercuri": "mercury", "Venus": "venus",
+            "Mart": "mars", "Júpiter": "jupiter", "Saturn": "saturn", 
+            "Urà": "uranus", "Neptú": "neptune", "Plutó": "pluto"
+        }
+        for cat, key in planets.items():
+            self.search_index[cat] = {"type": "planet", "key": key, "name": cat}
+            
+        # 2. NAMED STARS
+        if hasattr(self, 'celestial_objects'):
+            for star in self.celestial_objects:
+                name = star.get('name', '')
+                if name and not name.startswith('Gaia'):
+                    self.search_index[name] = {"type": "star", "obj": star}
+        
+        # 3. SETUP QCOMPLETER
+        from PyQt5.QtWidgets import QCompleter
+        from PyQt5.QtCore import Qt
+        
+        names = sorted(list(self.search_index.keys()), key=lambda x: x.lower())
+        completer = QCompleter(names, self)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        self.txt_search.setCompleter(completer)
+        self.txt_search.setEnabled(True)
+        print(f"[AstroWidget] Search index built: {len(self.search_index)} objects.")
+
+    def on_search_triggered(self):
+        text = self.txt_search.text().strip()
+        if not text: return
+        
+        info = self.search_index.get(text)
+        if not info:
+            matches = [k for k in self.search_index.keys() if k.lower() == text.lower()]
+            if matches:
+                info = self.search_index[matches[0]]
+        
+        if info:
+            self.center_on_object(info)
+        else:
+            print(f"[AstroWidget] Object '{text}' not found in index.")
+
+    def center_on_object(self, info):
+        """Calculates current Az/Alt for the object and starts animation."""
+        az = alt = None
+        
+        if info["type"] == "star":
+            star = info["obj"]
+            az, alt = self.get_horizontal_coords(star['ra'], star['dec'])
+        elif info["type"] == "planet":
+            if hasattr(self, '_sf_cache') and self._sf_cache['data']:
+                p_key = info.get('key', '').lower()
+                target_name = info.get('name', '').lower()
+                
+                # Check Sun/Moon
+                if p_key == 'sun' or target_name == 'sol':
+                    az = self._sf_cache['data']['sun']['az']
+                    alt = self._sf_cache['data']['sun']['alt']
+                elif p_key == 'moon' or target_name == 'lluna':
+                    az = self._sf_cache['data']['moon']['az']
+                    alt = self._sf_cache['data']['moon']['alt']
+                else:
+                    # Search in planets list (handle "jupiter" matching "jupiter barycenter")
+                    for p in self._sf_cache['data'].get('planets', []):
+                        p_key_low = p.get('key', '').lower()
+                        p_name_low = p.get('name', '').lower()
+                        if p_key_low.startswith(p_key) or p_name_low == target_name:
+                            az = p['az']
+                            alt = p['alt']
+                            break
+
+        if az is not None and alt is not None:
+            # Normalize to current view convention
+            az %= 360
+            self.target_azimuth = az
+            self.target_elevation = alt
+            
+            if alt < -5:
+                if hasattr(self.canvas, 'hint_overlay'):
+                    self.canvas.hint_overlay.show_hint(f"⚠️ Objecte sota l'horitzó ({alt:.1f}°)")
+            
+            self.anim_timer.start(16)
+            self.canvas.update()
+
+    def get_horizontal_coords(self, ra, dec):
+        """Helper to convert RA/Dec to Az/Alt for current time/location."""
+        h = self.time_bar.current_hour 
+        day = self.manual_day
+        lat = self.latitude
+        lon = self.longitude
+        
+        lst = (100.0 + day * 0.9856 + h * 15.0 + lon) % 360
+        ha = (lst - ra)
+        
+        lat_rad = math.radians(lat)
+        ha_rad = math.radians(ha)
+        dec_rad = math.radians(dec)
+        
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        sin_dec = math.sin(dec_rad)
+        cos_dec = math.cos(dec_rad)
+        
+        sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * math.cos(ha_rad)
+        sin_alt = max(-1.0, min(1.0, sin_alt))
+        alt_deg = math.degrees(math.asin(sin_alt))
+        
+        cos_alt = math.cos(math.radians(alt_deg))
+        cos_az_num = sin_dec - sin_alt * sin_lat
+        cos_az_den = cos_alt * cos_lat + 1e-10
+        cos_az = max(-1.0, min(1.0, cos_az_num / cos_az_den))
+        az_deg = math.degrees(math.acos(cos_az))
+        
+        if math.sin(ha_rad) > 0:
+            az_deg = 360.0 - az_deg
+            
+        return az_deg, alt_deg
+
+    def update_star_scale(self, val):
+        self.star_scale = val / 10.0
+        self.canvas.update()
+
+    def update_spikes(self, val):
+        self.spike_magnitude_threshold = val / 10.0
+        self.canvas.update()
     
     def toggle_controls(self):
+        if not hasattr(self, 'panels_widget'): return
+        
         # Current state based on panel visibility
-        is_visible = self.panel_top.isVisible() 
+        is_visible = self.panels_widget.isVisible() 
         should_hide = is_visible # If visible, we want to hide
 
         # Toggle Panels
-        self.panel_top.setVisible(not should_hide)
-        self.panel_bottom.setVisible(not should_hide)
+        self.panels_widget.setVisible(not should_hide)
         
         # Update styling/transparency
         if should_hide:

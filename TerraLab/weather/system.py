@@ -400,9 +400,9 @@ class WeatherSystem:
         tint_gradient = False
         base_tint = None
         
-        if -10 < eff_sun_alt < 10: 
+        if -3.0 < eff_sun_alt < 6.0: 
             tint_gradient = True
-            base_tint = QColor(255, 140, 60, 200) 
+            base_tint = QColor(255, 140, 60, 180) 
         elif eff_sun_alt >= 10: 
             # Check Rain/Storm
             if self.precip_int > 0.1:
@@ -419,8 +419,16 @@ class WeatherSystem:
                 base_tint = None
         else: 
             # NIGHT MODE: Must be VERY DARK to hide white clouds
-            # Alpha high to override white
-            base_tint = QColor(5, 5, 15, 255)
+            # But influenced by Light Pollution (Bortle)
+            bortle = 4 # Default if not passed
+            glow_intensity = (bortle - 1) * 0.1
+            r = int(5 + 25 * glow_intensity)
+            g = int(5 + 15 * glow_intensity)
+            b = int(15 + 5 * glow_intensity)
+            base_tint = QColor(r, g, b, 255)
+            # Cloud Illumination (Bottom-up)
+            if bortle > 3:
+                tint_gradient = True
 
         # --- GLOBAL ECLIPSE DARKENING ---
         # Apply to ANY state (Day/Sunset/Night)
@@ -571,10 +579,11 @@ class WeatherSystem:
                          
                          grad.setColorAt(0.0, c_bottom) 
                          
-                         # Middle Point also needs to respect darkness/alpha
-                         mid_alpha = max(100, c_top.alpha())
-                         grad.setColorAt(0.5, QColor(base_tint.red(), base_tint.green(), base_tint.blue(), mid_alpha))
+                         # MIDDLE: Slightly tinted towards light pollution hue
+                         mid_alpha = max(110, c_top.alpha())
+                         grad.setColorAt(0.3, QColor(base_tint.red(), base_tint.green(), int(min(255, base_tint.blue()*1.2)), mid_alpha))
                          
+                         # TOP: Gaussian-like decay to atmospheric black
                          grad.setColorAt(1.0, c_top)
                          
                          pt.fillRect(QRectF(0, 0, w_px, h_px), QBrush(grad))

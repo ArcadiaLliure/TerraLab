@@ -22,6 +22,7 @@ class HorizonWorker(QObject):
         self.provider = None
         self.observer_offset = 0.0
         self.needs_reload = False
+        self.light_sampler = None
         
         import threading
         self.provider_lock = threading.Lock()
@@ -46,6 +47,9 @@ class HorizonWorker(QObject):
             self.is_initialized = False
             self.provider = None
             self.needs_reload = False
+            if self.light_sampler:
+                self.light_sampler.close()
+                self.light_sampler = None
             
         if self.is_initialized:
             return
@@ -98,6 +102,17 @@ class HorizonWorker(QObject):
             
             with self.provider_lock:
                 self.baker = HorizonBaker(self.provider)
+            
+            # --- Initialize Light Pollution Sampler ---
+            try:
+                from TerraLab.terrain.light_pollution_sampler import LightPollutionSampler
+                tiff_path = os.path.join(os.path.dirname(__file__), "..", "data", "light_pollution", "C_DVNL 2022.tif")
+                ti_sampler = LightPollutionSampler(tiff_path)
+                ti_sampler.initialize()
+                self.light_sampler = ti_sampler
+            except Exception as e:
+                print(f"[HorizonWorker] Warning: Light Pollution Sampler failed to load: {e}")
+                self.light_sampler = None
             self.is_initialized = True
             print(f"[HorizonWorker] Init complete in {time.time()-t0:.2f}s")
         except Exception as e:
@@ -125,6 +140,12 @@ class HorizonWorker(QObject):
             print(f"[HorizonWorker] get_bare_elevation error: {e}")
             return None
 
+    def get_bortle_estimate(self, lat: float, lon: float) -> int:
+        """Fast synchronous lookup for UI. Uses auto-loaded sampler."""
+        if not self.is_initialized or not self.light_sampler:
+            return 4 # Default to decent suburban sky fallback
+        return self.light_sampler.estimate_bortle_from_location(lat, lon)
+
     @pyqtSlot(float, float)
     def request_bake(self, lat: float, lon: float):
         """Slot to trigger a bake for a specific location."""
@@ -138,9 +159,6 @@ class HorizonWorker(QObject):
 
 
         try:
-            print(f"[HorizonWorker] Baking starting for {lat}, {lon}...")
-            t0 = time.time()
-            
             print(f"[HorizonWorker] Baking starting for {lat}, {lon}...")
             t0 = time.time()
             
@@ -158,6 +176,10 @@ class HorizonWorker(QObject):
                 
             with self.provider_lock:
                 self.provider.prepare_region(x_utm, y_utm, vis_radius, progress_callback=region_progress)
+            
+            # Pre-load Light Pollution ROI
+            if self.light_sampler:
+                self.light_sampler.prepare_region(lat, lon, vis_radius, x_utm, y_utm)
             
             self.progress_message.emit(getTraduction("Horizon.CalculatingHorizonGeneric", "⏳ Calculant horitzó..."))
             
@@ -185,14 +207,16 @@ class HorizonWorker(QObject):
                 active_band_defs = generate_bands(n_bands)
                 print(f"[HorizonWorker] Using {n_bands} bands for bake.")
                 
-                azimuths, bands = self.baker.bake(
-                    x_utm, y_utm,
+                azimuths, bands, light_domes, light_peak_distances = self.baker.bake(
+                    obs_x=x_utm,
+                    obs_y=y_utm,
                     obs_h_ground=ground_h + self.observer_offset,
                     step_m=50,       # 50m step
                     d_max=vis_radius,    # 150km visibility
                     delta_az_deg=0.5,
                     band_defs=active_band_defs,
-                    progress_callback=bake_progress
+                    progress_callback=bake_progress,
+                    light_sampler=self.light_sampler
                 )
             print("[HorizonWorker] self.baker.bake returned.")
             
@@ -202,7 +226,9 @@ class HorizonWorker(QObject):
                 azimuths=azimuths,
                 bands=bands,
                 observer_lat=lat,
-                observer_lon=lon
+                observer_lon=lon,
+                light_domes=light_domes,
+                light_peak_distances=light_peak_distances
             )
             
             print(f"[HorizonWorker] Bake finished in {time.time()-t0:.2f}s")

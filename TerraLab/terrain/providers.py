@@ -57,6 +57,22 @@ class RasterProvider(abc.ABC):
         
         return x, y
 
+    def transform_coordinates_inverse(self, x: float, y: float) -> Tuple[float, float]:
+        """Transforms distance meters back to WGS84 Lat/Lon using rasterio.warp."""
+        try:
+            from rasterio.warp import transform
+            # Assuming native is EPSG:25831 (UTM 31N)
+            xs, ys = transform("EPSG:25831", "EPSG:4326", [x], [y])
+            lat, lon = ys[0], xs[0]
+            
+            # Additional sanity check for valid Lat/Lon ranges
+            if math.isnan(lat) or math.isnan(lon) or abs(lat) > 90 or abs(lon) > 180:
+                return 0.0, 0.0
+                
+            return lat, lon
+        except Exception:
+            return 0.0, 0.0
+
 class AscRasterProvider(RasterProvider):
     """
     Legacy implementation: loads ESRI ASCII / NPY tiled directories dynamically 

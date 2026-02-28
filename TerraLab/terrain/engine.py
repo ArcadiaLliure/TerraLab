@@ -134,6 +134,8 @@ class HorizonProfile:
     bands: List[Dict]               # each band: {id, angles, dists, heights}
     observer_lat: float = 0.0
     observer_lon: float = 0.0
+    light_domes: Optional[np.ndarray] = None
+    light_peak_distances: Optional[np.ndarray] = None # Distances of max light source per azimuth
 
     def get_band_points(self, band_id: str):
         """Return list of (az_deg, elevation_deg) for a given band."""
@@ -157,6 +159,8 @@ class HorizonProfile:
             "observer_lat": self.observer_lat,
             "observer_lon": self.observer_lon,
             "n_bands": len(self.bands),
+            "light_domes": self.light_domes,
+            "light_peak_distances": self.light_peak_distances,
         }
         for i, b in enumerate(self.bands):
             data[f"band_{i}_id"] = b["id"]
@@ -179,11 +183,16 @@ class HorizonProfile:
                 "dists": d[f"band_{i}_dists"],
                 "heights": d[f"band_{i}_heights"],
             })
+        light_domes = d.get("light_domes", np.zeros(len(azimuths)))
+        light_peak_distances = d.get("light_peak_distances", np.zeros(len(azimuths)))
+        
         return HorizonProfile(
             azimuths=azimuths,
             bands=bands,
             observer_lat=float(d.get("observer_lat", 0.0)),
             observer_lon=float(d.get("observer_lon", 0.0)),
+            light_domes=light_domes,
+            light_peak_distances=light_peak_distances,
         )
 
 
@@ -198,6 +207,7 @@ class TileIndex:
         self.tiles_dir = tiles_dir
         self.patterns = patterns
         self.tiles: List[Dict] = []
+        self.global_bbox = [np.inf, np.inf, -np.inf, -np.inf]
         self._build_index(callback)
 
     def _build_index(self, callback=None):
@@ -233,6 +243,12 @@ class TileIndex:
                         "header": header,
                         "bbox": bbox,
                     })
+                
+                # Update global bbox
+                self.global_bbox[0] = min(self.global_bbox[0], bbox[0])
+                self.global_bbox[1] = min(self.global_bbox[1], bbox[1])
+                self.global_bbox[2] = max(self.global_bbox[2], bbox[2])
+                self.global_bbox[3] = max(self.global_bbox[3], bbox[3])
                 
                 # Report progress every 50 files
                 if callback and i % 50 == 0:
@@ -317,6 +333,13 @@ class TileIndex:
         return (xmin, ymin, xmax, ymax)
 
     def find_tile(self, x: float, y: float) -> Optional[Dict]:
+        """Returns the first tile containing (x, y)."""
+        # Fast bounds check
+        if x < self.global_bbox[0] or y < self.global_bbox[1] or \
+           x > self.global_bbox[2] or y > self.global_bbox[3]:
+            return None
+
+        # O(N) linear scan (usually fine for ~1000 tiles)
         for t in self.tiles:
             xmin, ymin, xmax, ymax = t["bbox"]
             if xmin <= x < xmax and ymin <= y < ymax:
@@ -481,17 +504,24 @@ class DemSampler:
     def sample(self, x: float, y: float) -> Optional[float]:
         # Spatial coherence optimisation: check last tile first
         tile = None
-        if self.last_tile:
+        # Optimization: Track if we are in a "void" area to avoid searching the index
+        if self.last_tile == "NONE":
+             # We need to know when we exit the void. 
+             # For now, let's just re-find if it's not the last state.
+             pass 
+             
+        if self.last_tile and self.last_tile != "NONE":
             xmin, ymin, xmax, ymax = self.last_tile["bbox"]
             if xmin <= x < xmax and ymin <= y < ymax:
                 tile = self.last_tile
+        
         if tile is None:
             tile = self.index.find_tile(x, y)
-            self.last_tile = tile
+            self.last_tile = tile if tile else "NONE"
 
-        if tile is None:
+        if tile is None or tile == "NONE":
             return None
-
+        
         # Robust unpacking
         res = self.cache.load(tile)
         if res is None:
@@ -613,7 +643,8 @@ class HorizonBaker:
         delta_az_deg: float = 0.5,
         band_defs: Optional[List[Dict]] = None,
         progress_callback=None,
-    ) -> Tuple[np.ndarray, List[Dict]]:
+        light_sampler=None,
+    ) -> Tuple[np.ndarray, List[Dict], np.ndarray]:
         """
         Compute multi-band horizon profile (sequential — CPU-bound under GIL).
 
@@ -637,6 +668,9 @@ class HorizonBaker:
 
         azimuths = np.arange(0, 360, delta_az_deg)
         n_az = len(azimuths)
+        light_domes = np.zeros(n_az, dtype=np.float32)
+        light_peak_distances = np.zeros(n_az, dtype=np.float32)
+        max_rad_per_az = np.zeros(n_az, dtype=np.float32)
 
         if band_defs is None:
             band_defs = DEFAULT_BANDS
@@ -661,26 +695,63 @@ class HorizonBaker:
         last_report = 0
 
         for i in range(n_az):
-            c = sin_az[i]
-            s = cos_az[i]
+            if i % 10 == 0:
+                print(f"[HorizonEngine Debug] Azimuth {i}/{n_az} (ang={azimuths[i]:.1f})", flush=True)
+            
+            try:
+                c = sin_az[i]
+                s = cos_az[i]
 
-            # ── Escombrat adaptatiu: molt fi a l'acostament, groller a la llunyania ──
-            # Creixement geomètric × NEAR_FACTOR fins a assolir step_m,
-            # després pas lineal estàndard. Cost: ~16 mostres extra per azimut (negligible).
-            NEAR_START  = 0.5          # metres — primera mostra (resolució sub-metre)
-            NEAR_FACTOR = 1.50         # factor de creixement geomètric fins a step_m
-            d = NEAR_START
+                # ── Escombrat adaptatiu: molt fi a l'acostament, groller a la llunyania ──
+                # Creixement geomètric × NEAR_FACTOR fins a assolir step_m,
+                NEAR_START  = 0.5          # metres — primera mostra (resolució sub-metre)
+                NEAR_FACTOR = 1.50         # factor de creixement geomètric fins a step_m
+                d = NEAR_START
+                max_ang_so_far = -np.pi / 2.0
 
-            while d < d_max:
-                x = obs_x + d * c
-                y = obs_y + d * s
+                last_light_d = 0.0
 
-                h_terr = self.provider.get_elevation(x, y)
+                while d < d_max:
+                    x = obs_x + d * c
+                    y = obs_y + d * s
 
-                if h_terr is not None:
+                    h_terr = self.provider.get_elevation(x, y)
+                    if h_terr is None:
+                        h_terr = 0.0  # Assume sea level or flat ground for out-of-bounds
+
                     drop = (d * d) / (2.0 * self.R)
                     h_visual = h_terr - drop - h_eye_abs
                     ang = math.atan2(h_visual, d)
+                        
+                    if ang > max_ang_so_far:
+                        max_ang_so_far = ang
+                        
+                    # Light pollution sampling with occlusion checks
+                    # Optimization: To avoid stalling the baker with thousands of small reads, 
+                    # we sample light domes sparsely, at most every 2000m. 
+                    # We only sample if the point is somewhat visible (within 1.5 deg of max horizon)
+                    if light_sampler is not None and (d - last_light_d) >= 2000.0:
+                        last_light_d = d
+                        # Preferred fast path: UTM-based sampling
+                        if hasattr(light_sampler, 'get_radiance_utm'):
+                            rad = light_sampler.get_radiance_utm(x, y)
+                        elif hasattr(self.provider, 'transform_coordinates_inverse'):
+                            # Legacy slow path
+                            lat, lon = self.provider.transform_coordinates_inverse(x, y)
+                            rad = light_sampler.get_radiance(lat, lon)
+                        else:
+                            rad = 0.0
+                            
+                        if rad and rad > 0.1: # Catch everything that glows
+                            # Distance multiplier: Inverse linear law (slower decay for atmospheric glow)
+                            dist_mult = 1.0 / max(1.0, (d / 1000.0))
+                            # Liberal occlusion check: allow up to 10 degrees (-0.17 rad) below horizon
+                            if ang > (max_ang_so_far - 0.17):
+                                # Multiply by 20.0 (balanced gain)
+                                light_domes[i] += float(rad * dist_mult * 20.0)
+                                if rad > max_rad_per_az[i]:
+                                    max_rad_per_az[i] = float(rad)
+                                    light_peak_distances[i] = float(d)
 
                     for b in bands:
                         if b["min"] <= d < b["max"]:
@@ -690,16 +761,20 @@ class HorizonBaker:
                                 b["heights"][i] = h_terr
                             break
 
-                # Creixement adaptatiu del pas
-                if d < step_m:
-                    # Fase geomètrica: sub-metre → step_m (detall de primer pla)
-                    d = min(d * NEAR_FACTOR, step_m)
-                elif d < 3_000:
-                    d += step_m          # Zona propera (fins 3km): pas normal
-                elif d < 15_000:
-                    d += step_m * 2      # Zona mitja (fins 15km): pas doble
-                else:
-                    d += step_m * 4      # Zona llunyana (>15km): pas quadruple
+                    # Creixement adaptatiu del pas
+                    if d < step_m:
+                        d = min(d * NEAR_FACTOR, step_m)
+                    elif d < 3_000:
+                        d += step_m
+                    elif d < 15_000:
+                        d += step_m * 2
+                    else:
+                        d += step_m * 4
+            except Exception as e:
+                print(f"[HorizonEngine] CRITICAL Error at Azimuth {i} (d={d:.1f}): {e}")
+                import traceback
+                traceback.print_exc()
+                raise e
 
             # Progress reporting (every 5%)
             pct = int((i + 1) / n_az * 100)
@@ -713,7 +788,7 @@ class HorizonBaker:
 
         elapsed = time.time() - t0
         print(f"[HorizonEngine] Bake complete in {elapsed:.2f}s.")
-        return azimuths, bands
+        return azimuths, bands, light_domes, light_peak_distances
 
 
 # ─────────────────────────────────────────────
@@ -756,8 +831,9 @@ def bake_and_save(
         print(f"[HorizonEngine] Observer altitude from DEM: {ground_h:.2f}m")
 
     # Bake
-    azimuths, bands = baker.bake(
-        x_utm, y_utm,
+    azimuths, bands, light_domes, light_peak_distances = baker.bake(
+        obs_x=x_utm,
+        obs_y=y_utm,
         obs_h_ground=ground_h,
         step_m=step_m,
         d_max=radius,
@@ -771,6 +847,8 @@ def bake_and_save(
         bands=bands,
         observer_lat=lat,
         observer_lon=lon,
+        light_domes=light_domes,
+        light_peak_distances=light_peak_distances
     )
     profile.save(output_path)
     print(f"[HorizonEngine] Profile saved to {output_path}")
