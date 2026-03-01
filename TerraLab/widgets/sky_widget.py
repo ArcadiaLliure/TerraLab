@@ -1431,6 +1431,7 @@ class AstroCanvas(QWidget):
         self.visible_stars = []
         self.press_pos = QPointF(0,0)
         self.trail_start_hour = None
+        self.ut_hour = 12.0
         
         # Illusion Parameters
         self.illusion_enabled = True
@@ -1837,6 +1838,7 @@ class AstroCanvas(QWidget):
                 dt_utc = (datetime(sim_y, 1, 1) + timedelta(days=sim_d, hours=local_hour-tz_offset)).replace(tzinfo=timezone.utc)
 
             ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
+            self.ut_hour = ut_hour # Store for external access
             # Day of year relative to UTC (Critically avoids the 24h jump at midnight crossings)
             day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
             
@@ -2164,10 +2166,14 @@ class AstroCanvas(QWidget):
             if diff < -12.0: diff += 24.0
             elif diff > 12.0: diff -= 24.0
             
-            if abs(diff) > 0.001:
+            # Exposure must be forward-running (start -> end). 
+            # If diff is negative, it means they moved back beyond the start.
+            if diff > 0.001:
                 # Synchronous call to NumPy renderer with aggressive LOD
-                # We use few steps and only very bright stars for zero-lag feedback
                 self.draw_analytic_trails_numpy(painter, start_hour, end_hour, diff, n_steps=5, limit=3.0, is_moving=True)
+            else:
+                # If negative or zero, we don't draw new trails synchronously
+                pass
         
         # 4. Trigger Worker for NEXT frame (if not busy)
         if np and hasattr(pw, 'np_ra') and not self.trail_rendering_busy:
@@ -2192,10 +2198,20 @@ class AstroCanvas(QWidget):
                 'day_of_year': pw.manual_day,
                 'longitude': pw.longitude,
                 'mag_limit': pw.magnitude_limit,
-                'is_moving': is_moving
+                'is_moving': is_moving,
+                'min_diff': 0.0 # Force forward-only in worker too if needed
             }
             
-            self.request_trails_signal.emit(params)
+            # Recalculate diff for worker limit
+            diff = end_hour - start_hour
+            if diff < -12.0: diff += 24.0
+            elif diff > 12.0: diff -= 24.0
+            
+            if diff > 0.001:
+                 self.request_trails_signal.emit(params)
+            else:
+                 self.trail_rendering_busy = False # Cancel
+                 self._cached_trail_image = None # Clear if going back to start
         
         return
         
@@ -5909,20 +5925,8 @@ class AstronomicalWidget(CustomWidgetBase):
         self.use_real_time = False
         self.btn_realtime.setChecked(False)
         self.manual_hour = val
-        if hasattr(self, 'chk_trails') and self.chk_trails.isChecked():
-            # If seeking while trails are active, add the time jump to the accumulated counter
-            # One hour = 3600 seconds
-            diff_h = val - getattr(self, '_last_seek_hour', val)
-            time_jump_s = diff_h * 3600.0
-            
-            if not hasattr(self, 'trails_accumulated_seconds'):
-                self.trails_accumulated_seconds = 0.0
-                
-            self.trails_accumulated_seconds += time_jump_s
-            # Clamp to positive? No, if we go backward it should undo simulated exposure if using history
-            # But the UI label usually shows positive exposure duration.
-            
         self._last_seek_hour = val
+        self.canvas.update()
         self.canvas.update()
 
         # ─ Toast HUD: mostra hora local i UT durant el drag ─
@@ -6140,15 +6144,22 @@ class AstronomicalWidget(CustomWidgetBase):
                  self.manual_day -= 1
             self.time_bar.set_time(self.manual_hour)
             
-        # Update trails elapsed time
-        if hasattr(self, 'chk_trails') and self.chk_trails.isChecked():
-            if not hasattr(self, 'trails_accumulated_seconds'):
-                self.trails_accumulated_seconds = 0.0
+        # Update trails elapsed time based on simulation time
+        if hasattr(self, 'chk_trails') and self.chk_trails.isChecked() and hasattr(self.canvas, 'trail_start_hour') and \
+           self.canvas.trail_start_hour is not None and hasattr(self.canvas, 'ut_hour'):
+            # Calculate simulation duration between start and current
+            start = self.canvas.trail_start_hour
+            end = self.canvas.ut_hour
             
-            # Increment by real time elapsed (timer interval is 50ms)
-            self.trails_accumulated_seconds += 0.05
+            diff = end - start
+            # Shortest path wrap-around (handles midnight)
+            if diff < -12.0: diff += 24.0
+            elif diff > 12.0: diff -= 24.0
             
-            elapsed = int(abs(self.trails_accumulated_seconds))
+            # Exposure is only positive "forward" from start
+            # If they go back beyond start, we show 0.
+            self.trails_accumulated_seconds = max(0.0, diff * 3600.0)
+            elapsed = int(self.trails_accumulated_seconds)
             if elapsed < 60:
                 self.lbl_trail_time.setText(f"{elapsed}s")
             elif elapsed < 3600:
