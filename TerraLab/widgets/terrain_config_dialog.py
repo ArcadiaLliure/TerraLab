@@ -113,11 +113,27 @@ class TerrainConfigDialog(QDialog):
         layout.addWidget(lbl_rec)
 
         # ── Ruta actual ──────────────────────────────────────────────────────
-        no_path_label = getTraduction("Terrain.CurrentPath", "Ruta actual: (No configurada)")
-        self.lbl_path = QLabel(no_path_label)
+        self.lbl_path = QLabel("")
         self.lbl_path.setStyleSheet("background: #222; padding: 8px; border-radius: 4px; color: #ddd;")
         self.lbl_path.setWordWrap(True)
+        self._update_path_label()
         layout.addWidget(self.lbl_path)
+
+        # ── Contaminació Lumínica (DVNL) ─────────────────────────────────────
+        layout.addWidget(QLabel("<b>" + getTraduction("Terrain.LightPollution", "Contaminació Lumínica (DVNL)") + "</b>"))
+        
+        lp_layout = QHBoxLayout()
+        self.lbl_lp_path = QLabel("")
+        self.lbl_lp_path.setStyleSheet("background: #222; padding: 8px; border-radius: 4px; color: #ddd;")
+        self.lbl_lp_path.setWordWrap(True)
+        self._update_lp_path_label()
+        lp_layout.addWidget(self.lbl_lp_path, 1)
+        
+        btn_select_lp = QPushButton("...")
+        btn_select_lp.setFixedSize(30, 30)
+        btn_select_lp.clicked.connect(self._select_lp_file)
+        lp_layout.addWidget(btn_select_lp)
+        layout.addLayout(lp_layout)
 
         # ── Qualitat de l'horitzó ────────────────────────────────────────────
         quality_row = QHBoxLayout()
@@ -189,23 +205,30 @@ class TerrainConfigDialog(QDialog):
 
     # ── Mètodes privats ──────────────────────────────────────────────────────
 
-    def _open_icgc_link(self):
-        """Obre el portal de descàrregues del MDT de l'ICGC (Catalunya)."""
-        url = QUrl("https://www.icgc.cat/ca/Descarregues/Elevacions/Model-Digital-del-Terreny-MDT")
-        QDesktopServices.openUrl(url)
+    def _update_path_label(self):
+        curr = self.config.get_raster_path()
+        if curr:
+            tpl = getTraduction("Terrain.CurrentPathSet", "Ruta actual: {path}")
+            self.lbl_path.setText(tpl.format(path=curr))
+        else:
+            self.lbl_path.setText(getTraduction("Terrain.CurrentPath", "Ruta actual: (No configurada)"))
 
-    def _open_copernicus_link(self):
-        """Obre el repositori del DEM europeu de Copernicus (GISCO-EU)."""
-        url = QUrl("https://gisco-services.ec.europa.eu/dem/5degree/mosaic/")
-        QDesktopServices.openUrl(url)
+    def _update_lp_path_label(self):
+        # We'll use a custom key for DVNL in ConfigManager
+        curr = self.config.get_value("dvnl_path", "")
+        if curr:
+            self.lbl_lp_path.setText(f"DVNL: {os.path.basename(curr)}")
+        else:
+            self.lbl_lp_path.setText("DVNL: (No configurada - Usant fallback interna)")
 
-    def _on_quality_changed(self, idx):
-        """Desa la nova qualitat de l'horitzó i emet la senyal corresponent."""
-        n = self.combo_quality.itemData(idx)
-        if n is not None:
-            self.config.set_horizon_quality(n)
-            self.quality_changed.emit(n)
-            print(f"[TerrainConfigDialog] Qualitat de l'horitzó establerta a {n} capes.")
+    def _select_lp_file(self):
+        """Obre un diàleg per seleccionar el fitxer GeoTIFF de DVNL."""
+        dialog_title = getTraduction("Terrain.SelectLPFile", "Seleccionar fitxer DVNL (.tif)")
+        file_path, _ = QFileDialog.getOpenFileName(self, dialog_title, "", "GeoTIFF (*.tif *.tiff)")
+        if file_path:
+            self.config.set_value("dvnl_path", file_path)
+            self._update_lp_path_label()
+            print(f"[TerrainConfigDialog] DVNL path set to: {file_path}")
 
     def _select_folder(self):
         """Obre un diàleg per seleccionar la carpeta dels fitxers MDT."""
@@ -229,5 +252,4 @@ class TerrainConfigDialog(QDialog):
                 )
 
             self.config.set_raster_path(folder)
-            tpl = getTraduction("Terrain.CurrentPathSet", "Ruta actual: {path}")
-            self.lbl_path.setText(tpl.format(path=folder))
+            self._update_path_label()

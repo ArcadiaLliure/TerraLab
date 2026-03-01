@@ -23,6 +23,7 @@ class HorizonWorker(QObject):
         self.observer_offset = 0.0
         self.needs_reload = False
         self.light_sampler = None
+        self._abort_requested = False
         
         import threading
         self.provider_lock = threading.Lock()
@@ -106,13 +107,29 @@ class HorizonWorker(QObject):
             # --- Initialize Light Pollution Sampler ---
             try:
                 from TerraLab.terrain.light_pollution_sampler import LightPollutionSampler
-                tiff_path = os.path.join(os.path.dirname(__file__), "..", "data", "light_pollution", "C_DVNL 2022.tif")
-                ti_sampler = LightPollutionSampler(tiff_path)
-                ti_sampler.initialize()
-                self.light_sampler = ti_sampler
+                from TerraLab.config import ConfigManager
+                config = ConfigManager()
+                
+                # Check config first, then absolute default path
+                lp_path = config.get("dvnl_path", "")
+                
+                if not lp_path or not os.path.exists(lp_path):
+                    # Fallback to local data dir
+                    base_dir = os.path.dirname(os.path.dirname(__file__))
+                    local_default = os.path.join(base_dir, "data", "light_pollution", "C_DVNL 2022.tif")
+                    if os.path.exists(local_default):
+                        lp_path = local_default
+                
+                if lp_path and os.path.exists(lp_path):
+                    print(f"[HorizonWorker] Loading Light Pollution Sampler with: {lp_path}")
+                    self.light_sampler = LightPollutionSampler(lp_path)
+                else:
+                    print(f"[HorizonWorker] Warning: DVNL file not found. Using dark-sky fallback.")
+                    self.light_sampler = LightPollutionSampler(None)
             except Exception as e:
                 print(f"[HorizonWorker] Warning: Light Pollution Sampler failed to load: {e}")
                 self.light_sampler = None
+            
             self.is_initialized = True
             print(f"[HorizonWorker] Init complete in {time.time()-t0:.2f}s")
         except Exception as e:
@@ -120,37 +137,67 @@ class HorizonWorker(QObject):
 
     def get_bare_elevation(self, lat: float, lon: float) -> Optional[float]:
         """
-        Fast synchronous lookup for the UI. Initializes the provider if needed,
-        but does NOT trigger a heavy 150km radius load or baking process.
-        Returns the raw DEM altitude for the coordinates, or None.
+        Fast lookup for the UI. Returns the bare terrain elevation.
+        Uses a non-blocking lock check to avoid hanging the UI thread.
         """
-        if not self.is_initialized:
-            # We must not initialize the C-level provider from the main UI thread.
-            # Wait for the worker thread to initialize it during a bake request.
-            return None
-             
         if not self.is_initialized or not self.provider:
             return None
+             
+        # Use a short timeout to avoid freezing the UI if the worker is doing a heavy I/O
+        # If it's busy, we'll return None and the UI will keep showing the old value 
+        # or wait for the next refresh.
+        locked = self.provider_lock.acquire(blocking=True, timeout=0.05) # 50ms max wait
+        if not locked:
+            return None # Worker is busy baking/sampling
             
         try:
-            with self.provider_lock:
-                x_utm, y_utm = self.provider.transform_coordinates(lat, lon)
-                return self.provider.get_elevation(x_utm, y_utm)
+            x_utm, y_utm = self.provider.transform_coordinates(lat, lon)
+            return self.provider.get_elevation(x_utm, y_utm)
         except Exception as e:
             print(f"[HorizonWorker] get_bare_elevation error: {e}")
             return None
+        finally:
+            self.provider_lock.release()
 
     def get_bortle_estimate(self, lat: float, lon: float) -> int:
-        """Fast synchronous lookup for UI. Uses auto-loaded sampler."""
+        """
+        Fast synchronous lookup for UI. Uses auto-loaded sampler.
+        Returns the Bortle class (1-9).
+        """
+        if not self.is_initialized:
+            try:
+                self.initialize()
+            except:
+                pass
+                
         if not self.is_initialized or not self.light_sampler:
-            return 4 # Default to decent suburban sky fallback
-        return self.light_sampler.estimate_bortle_from_location(lat, lon)
+            return 4
+            
+        sqm, bortle = self.light_sampler.estimate_zenith_sqm(lat, lon)
+        return bortle
+        return bortle
+
+    def get_sqm_estimate(self, lat: float, lon: float) -> float:
+        """Returns the estimated zenith SQM."""
+        if not self.is_initialized or not self.light_sampler:
+            return 21.0
+        
+        sqm, _ = self.light_sampler.estimate_zenith_sqm(lat, lon)
+        return sqm
 
     @pyqtSlot(float, float)
     def request_bake(self, lat: float, lon: float):
         """Slot to trigger a bake for a specific location."""
+        # Check if we are already initialized
         if not self.is_initialized:
              self.initialize()
+             
+        # If a bake is already in progress, signal it to abort
+        # Note: Since this is a queued connection, it only runs when thread is free.
+        # But if another bake request arrives while this is WAITING in the queue, 
+        # that's fine. If we want to abort DURING execution, we'd need another mechanism.
+        # However, for now, we'll reset the flag at start.
+        self._abort_requested = False
         
         if not self.is_initialized:
             # If still not initialized, it means config is missing or invalid.
@@ -175,11 +222,13 @@ class HorizonWorker(QObject):
                 self.progress_message.emit(msg)
                 
             with self.provider_lock:
-                self.provider.prepare_region(x_utm, y_utm, vis_radius, progress_callback=region_progress)
+                self.provider.prepare_region(x_utm, y_utm, vis_radius, progress_callback=region_progress, abort_check=lambda: self._abort_requested)
             
             # Pre-load Light Pollution ROI
             if self.light_sampler:
-                self.light_sampler.prepare_region(lat, lon, vis_radius, x_utm, y_utm)
+                print(f"[HorizonWorker] Preparing LP Sampler for {lat}, {lon}...")
+                # We need to tell the sampler about the region in KM
+                self.light_sampler.prepare_region(lat, lon, vis_radius / 1000.0)
             
             self.progress_message.emit(getTraduction("Horizon.CalculatingHorizonGeneric", "⏳ Calculant horitzó..."))
             
@@ -187,7 +236,12 @@ class HorizonWorker(QObject):
             # If valid, use it. If not, fallback.
             print("[HorizonWorker] Sampling ground height...")
             with self.provider_lock:
-                ground_h = self.provider.get_elevation(x_utm, y_utm)
+                try:
+                    ground_h = self.provider.get_elevation(x_utm, y_utm)
+                except Exception as e:
+                    print(f"[HorizonWorker] Error sampling height: {e}")
+                    ground_h = None
+            
             print(f"[HorizonWorker] Ground height: {ground_h}")
             if ground_h is None:
                 print("[HorizonWorker] Observer outside DEM coverage. Using default 200m.")
@@ -216,7 +270,8 @@ class HorizonWorker(QObject):
                     delta_az_deg=0.5,
                     band_defs=active_band_defs,
                     progress_callback=bake_progress,
-                    light_sampler=self.light_sampler
+                    light_sampler=self.light_sampler,
+                    abort_check=lambda: self._abort_requested
                 )
             print("[HorizonWorker] self.baker.bake returned.")
             
@@ -236,8 +291,13 @@ class HorizonWorker(QObject):
             profile._band_defs = active_band_defs
             self.profile_ready.emit(profile)
 
+        except InterruptedError:
+            print("[HorizonWorker] Bake ABORTED by user request.")
         except Exception as e:
+            print(f"[HorizonWorker] CRITICAL ERROR during bake: {e}")
             import traceback
-            print(f"[HorizonWorker] Bake Error: {e}")
             traceback.print_exc()
             self.error_occurred.emit(f"Bake Error: {e}")
+        finally:
+            self._abort_requested = False # Reset for safety
+            self.progress_message.emit("") # Clear progress message

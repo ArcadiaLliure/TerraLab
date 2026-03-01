@@ -312,6 +312,11 @@ class WeatherSystem:
         self.precip_int = 0.0
         self.thunder_prob = 0.0
         self.flash_val = 0.0
+        self.bortle = 4 # Current Bortle class (1-9)
+        
+    def set_bortle(self, bortle_class: int):
+        """Updates the current light pollution level."""
+        self.bortle = max(1, min(9, int(bortle_class)))
         
     def resize(self, w, h):
         self.width = w
@@ -420,14 +425,13 @@ class WeatherSystem:
         else: 
             # NIGHT MODE: Must be VERY DARK to hide white clouds
             # But influenced by Light Pollution (Bortle)
-            bortle = 4 # Default if not passed
-            glow_intensity = (bortle - 1) * 0.1
+            glow_intensity = (self.bortle - 1) * 0.1
             r = int(5 + 25 * glow_intensity)
             g = int(5 + 15 * glow_intensity)
             b = int(15 + 5 * glow_intensity)
             base_tint = QColor(r, g, b, 255)
             # Cloud Illumination (Bottom-up)
-            if bortle > 3:
+            if self.bortle > 3:
                 tint_gradient = True
 
         # --- GLOBAL ECLIPSE DARKENING ---

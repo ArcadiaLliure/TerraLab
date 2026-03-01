@@ -92,7 +92,7 @@ class AscRasterProvider(RasterProvider):
         self.sampler = DemSampler(self.index, self.cache)
         return True
         
-    def prepare_region(self, cx: float, cy: float, radius: float, progress_callback=None):
+    def prepare_region(self, cx: float, cy: float, radius: float, progress_callback=None, abort_check=None):
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from TerraLab.common.utils import getTraduction
         
@@ -110,6 +110,11 @@ class AscRasterProvider(RasterProvider):
         with ThreadPoolExecutor(max_workers=n_tile_workers) as executor:
             futures = {executor.submit(_load_tile, tile): tile for tile in tiles_needed}
             for future in as_completed(futures):
+                if abort_check and abort_check():
+                    # Attempt to cancel pending ones and shutdown immediately
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise InterruptedError("Loading aborted")
+                
                 loaded_count += 1
                 if progress_callback and (loaded_count % 5 == 0 or loaded_count == total_tiles):
                     percent = int(loaded_count / total_tiles * 100)

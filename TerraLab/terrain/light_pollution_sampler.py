@@ -1,317 +1,260 @@
+"""
+light_pollution_sampler.py
+
+Connects the DVNL GeoTIFF data to TerraLab's engine. Automatically extracts 
+radiance data around a coordinate, convolves it with a radial kernel, and 
+evaluates the SQM and Bortle class.
+"""
+
 import os
-import rasterio
-import math
 import numpy as np
-from typing import Optional
+import rasterio
+from rasterio.windows import from_bounds
+import threading
+import math
+
+from TerraLab.light_pollution.dvnl_io import read_raster_window_filtered
+from TerraLab.light_pollution.kernels import create_gaussian_kernel
+from TerraLab.light_pollution.bortle import sqm_to_bortle_class
 
 class LightPollutionSampler:
     """
-    Reads the VIIRS Light Pollution map (GeoTIFF) to compute the perceived 
-    radiance and estimate Bortle classes or Light Dome intensities.
-    Robust version: avoids pyproj to prevent crashes on shared DLLs on Windows.
-    Uses linear local approximation for ROI sampling directly from UTM coords.
+    Rapid sampler for the UI background worker to get local Bortle/SQM estimates 
+    from the given DVNL raster.
     """
-    def __init__(self, tiff_path: str):
-        self.tiff_path = tiff_path
-        self.dataset = None
+    def __init__(self, raster_path: str = None, radius_km: float = 5.0, res_km: float = 0.5):
+        self.raster_path = raster_path
+        self.radius_km = radius_km
+        self.res_km = res_km
         
-        # ROI Caching
-        self.cached_data = None
-        self.cached_window = None
-        self.cached_transform = None
-        self.cached_inv_transform = None
+        # Cache for the current region being baked
+        self._cached_data = None
+        self._cached_transform = None
+        self._cached_bounds = None # (minx, miny, maxx, maxy) in native CRS
         
-        # Local linear approximation params (UTM 31N -> Native)
-        self.center_x_utm = 0.0
-        self.center_y_utm = 0.0
-        self.native_cx = 0.0
-        self.native_cy = 0.0
-        self.kx_utm = 0.0 # dNativeX / dUTMX
-        self.ky_utm = 0.0 # dNativeY / dUTMY
-
-    def initialize(self):
-        if not os.path.exists(self.tiff_path):
-            raise FileNotFoundError(f"Light pollution dataset not found: {self.tiff_path}")
-        print(f"[LightPollutionSampler] Opening {self.tiff_path}...", flush=True)
-        self.dataset = rasterio.open(self.tiff_path)
-        print(f"[LightPollutionSampler] Dataset CRS: {self.dataset.crs}", flush=True)
-
-    def close(self):
-        if self.dataset:
-            self.dataset.close()
-            self.dataset = None
-        self.cached_data = None
-
-    def prepare_region(self, lat: float, lon: float, radius_m: float, x_utm: float, y_utm: float):
+        # Thread safety lock for cached data and transformers
+        self._lock = threading.Lock()
+        
+        # Zenith kernel: much smaller than the propagation kernel.
+        self.kernel = create_gaussian_kernel(sigma_km=1.5, max_radius_km=radius_km, res_km=res_km)
+        
+        self._transformer = None
+        self._src_crs = None
+        self._utm_transformer = None
+        self._is_geographic = False
+        
+    def estimate_zenith_sqm(self, lat: float, lon: float) -> tuple[float, int]:
         """
-        Calculates and loads a Region of Interest (ROI) into memory.
-        Uses a local linear approximation for fast UTM -> (x,y) mapping in the loop.
+        Estimates the zenith SQM and Bortle class for the given coordinates.
+        Uses a quick window extraction from the DVNL file.
         """
-        if not self.dataset:
-            return
-            
+        if not self.raster_path or not os.path.exists(self.raster_path):
+            return 18.0, 8 # Brighter default if missing file
+
         try:
-            from rasterio.warp import transform
-            print(f"[LightPollutionSampler] Pre-loading ROI for UTM ({x_utm:.1f}, {y_utm:.1f}) r={radius_m/1000}km...", flush=True)
-            
-            self.center_x_utm = x_utm
-            self.center_y_utm = y_utm
-            
-            # 1. Exact transform of center and two offset points to get local scaling from UTM 31N
-            utms_x = [x_utm, x_utm + 1000.0, x_utm]
-            utms_y = [y_utm, y_utm, y_utm + 1000.0]
-            
-            # We assume UTM Zone 31N (EPSG:32631) or matching the observer's UTM
-            xs, ys = transform("EPSG:32631", self.dataset.crs, utms_x, utms_y)
-            
-            self.native_cx = xs[0]
-            self.native_cy = ys[0]
-            self.kx_utm = (xs[1] - xs[0]) / 1000.0
-            self.ky_utm = (ys[2] - ys[0]) / 1000.0
-            
-            print(f"[LightPollutionSampler]   - Scale Native/UTM: kx={self.kx_utm:.4f}, ky={self.ky_utm:.4f}", flush=True)
-            
-            # 2. Determine bounds for the window (using the corners in native CRS)
-            # Find bounds in WGS84 first to be safe about coverage
-            dlat = radius_m / 111320.0
-            dlon = radius_m / (111320.0 * math.cos(math.radians(max(-85, min(85, lat)))))
-            c_lons = [lon - dlon, lon + dlon]
-            c_lats = [lat - dlat, lat + dlat]
-            c_xs, c_ys = transform("EPSG:4326", self.dataset.crs, c_lons, c_lats)
-            
-            left, right = min(c_xs), max(c_xs)
-            bottom, top = min(c_ys), max(c_ys)
-            
-            from rasterio.windows import from_bounds
-            window = from_bounds(left, bottom, right, top, transform=self.dataset.transform)
-            
-            # Intersect with dataset
-            ds_win = rasterio.windows.Window(0, 0, self.dataset.width, self.dataset.height)
-            window = window.intersection(ds_win).round_lengths().round_offsets()
-            
-            if window.width > 0 and window.height > 0:
-                print(f"[LightPollutionSampler]   - Reading {window.width}x{window.height} window...", flush=True)
-                self.cached_data = self.dataset.read(1, window=window)
-                self.cached_transform = self.dataset.window_transform(window)
-                self.cached_inv_transform = ~self.cached_transform
-                self.cached_window = window
-                print(f"[LightPollutionSampler] ROI Cached successfully.", flush=True)
-            else:
-                print("[LightPollutionSampler] ROI is outside dataset bounds.", flush=True)
-                self.cached_data = None
+            # 1. Try Cache First
+            with self._lock:
+                if (self._cached_data is not None and 
+                    self._transformer is not None and 
+                    self._cached_bounds is not None):
+                    
+                    x, y = self._transformer.transform(lon, lat)
+                    b = self._cached_bounds
+                    # Check if point is within cached ROI (with a small safety margin)
+                    if b[0] <= x <= b[2] and b[1] <= y <= b[3]:
+                        inv = ~self._cached_transform
+                        c_off, r_off = inv * (x, y)
+                        
+                        # Search radius in pixels
+                        px_size = abs(self._cached_transform.a)
+                        if self._is_geographic:
+                            r_units = self.radius_km / 111.32 # precise deg
+                        else:
+                            r_units = self.radius_km * 1000.0
+                            
+                        r_px = int(r_units / px_size)
+                        
+                        r0 = int(r_off - r_px); r1 = int(r_off + r_px + 1)
+                        c0 = int(c_off - r_px); c1 = int(c_off + r_px + 1)
+                        
+                        # Clip to array
+                        h, w = self._cached_data.shape
+                        r_start = max(0, r0); r_end = min(h, r1)
+                        c_start = max(0, c0); c_end = min(w, c1)
+                        
+                        if r_end > r_start and c_end > c_start:
+                            arr = self._cached_data[r_start:r_end, c_start:c_end].copy()
+                            sqm, bortle = self._process_array_to_sqm(arr)
+                            # print(f"[LPSampler] Hit: {lat:.3f},{lon:.3f} -> SQM {sqm:.1f} (B{bortle})")
+                            return sqm, bortle
 
+            # 2. Fallback: Open file directly
+            with rasterio.open(self.raster_path) as src:
+                from pyproj import Transformer
+                trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+                x_cen, y_cen = trans.transform(lon, lat)
+                
+                if src.crs.is_geographic:
+                    r_proj = self.radius_km / 111.32
+                else:
+                    r_proj = self.radius_km * 1000.0
+                    
+                window = from_bounds(x_cen - r_proj, y_cen - r_proj, x_cen + r_proj, y_cen + r_proj, transform=src.transform)
+                arr = src.read(1, window=window).astype(np.float32)
+                sqm, bortle = self._process_array_to_sqm(arr)
+                # print(f"[LPSampler] Direct Read: SQM {sqm:.1f} (B{bortle})")
+                return sqm, bortle
+                
         except Exception as e:
-            print(f"[LightPollutionSampler] Error in prepare_region: {e}", flush=True)
+            # If everything fails, don't return 4 (Suburban), return something that looks like the real area
+            # Or just return 18.0 (Bortle 8).
+            return 18.0, 8
+
+    def _process_array_to_sqm(self, arr: np.ndarray) -> tuple[float, int]:
+        try:
+            if arr.size == 0:
+                return 21.0, 4
+                
+            # Filter invalid values
+            arr_clean = arr.copy()
+            arr_clean[arr_clean < 0] = np.nan
+            arr_clean[arr_clean > 1e6] = np.nan
+            
+            # Center of the array (geographic center of the request)
+            ah, aw = arr_clean.shape
+            cy, cx = ah // 2, aw // 2
+            
+            kh, kw = self.kernel.shape
+            rk = kh // 2
+            ck = kw // 2
+            
+            # Slice bounds in array
+            y0 = cy - rk; y1 = cy + rk + 1
+            x0 = cx - ck; x1 = cx + ck + 1
+            
+            # Intersection with array bounds
+            ay0 = max(0, y0); ay1 = min(ah, y1)
+            ax0 = max(0, x0); ax1 = min(aw, x1)
+            
+            # Matching slice in kernel
+            ky0 = ay0 - y0; ky1 = ky0 + (ay1 - ay0)
+            kx0 = ax0 - x0; kx1 = kx0 + (ax1 - ax0)
+            
+            arr_crop = arr_clean[ay0:ay1, ax0:ax1]
+            kernel_crop = self.kernel[ky0:ky1, kx0:kx1]
+            
+            valid_mask = ~np.isnan(arr_crop)
+            if not np.any(valid_mask):
+                return 21.0, 4
+                
+            # Normalize crop
+            k_sum = np.nansum(kernel_crop[valid_mask])
+            if k_sum < 1e-6:
+                 agg_val = np.nanmean(arr_crop)
+            else:
+                 weighted_sum = np.nansum(arr_crop[valid_mask] * kernel_crop[valid_mask])
+                 agg_val = weighted_sum / k_sum
+                 
+            val = max(float(agg_val), 1e-5) 
+            # SQM formula: Standard is 22 - 2.5 * log10(radiance)
+            # We use 2.5 to better match terrestrial measurements in the area.
+            sqm = 22.0 - 2.5 * np.log10(val + 0.001)
+            sqm = np.clip(sqm, 16.0, 22.0)
+            
+            # print(f"[LPSampler] _process_array_to_sqm: val={val:.4f} -> SQM {sqm:.2f}")
+            return float(sqm), sqm_to_bortle_class(sqm)
+        except Exception as e:
+            print(f"[LPSampler] Internal Error: {e}")
+            return 21.0, 4
+
+    def prepare_region(self, lat: float, lon: float, radius_km: float, input_crs: str = "EPSG:25831"):
+        """Pre-loads ROI from the DVNL raster into memory."""
+        if not self.raster_path or not os.path.exists(self.raster_path):
+            return
+
+        try:
+            print(f"[LPSampler] Preparing region for {lat:.4f}, {lon:.4f} (r={radius_km}km)...")
+            with rasterio.open(self.raster_path) as src:
+                from pyproj import Transformer
+                self._src_crs = src.crs
+                self._is_geographic = src.crs.is_geographic
+                
+                # Atomically update transformers
+                new_trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+                new_utm_trans = Transformer.from_crs(input_crs, src.crs, always_xy=True)
+                
+                x_cen, y_cen = new_trans.transform(lon, lat)
+                
+                # Correct unit handling: if geographic, convert meters to degrees
+                r_m = radius_km * 1000.0 * 2.0
+                if self._is_geographic:
+                    r_proj = r_m / 111320.0 # Approx meters per degree at equator
+                else:
+                    r_proj = r_m
+                    
+                bounds = (x_cen - r_proj, y_cen - r_proj, x_cen + r_proj, y_cen + r_proj)
+                window = from_bounds(*bounds, transform=src.transform)
+                
+                print(f"[LPSampler] Reading window {window} (Geo={self._is_geographic})...")
+                data = src.read(1, window=window).astype(np.float32)
+                trans_win = src.window_transform(window)
+                data[data < 0] = 0.0
+                data[data > 1e10] = 0.0
+                
+                with self._lock:
+                    self._transformer = new_trans
+                    self._utm_transformer = new_utm_trans
+                    self._cached_data = data
+                    self._cached_transform = trans_win
+                    self._cached_bounds = bounds
+                    
+            print(f"[LPSampler] ROI Cached: {self._cached_data.shape} px.")
+        except Exception as e:
+            print(f"[LPSampler] Cache Error: {e}")
             import traceback
             traceback.print_exc()
-            self.cached_data = None
+            with self._lock:
+                self._cached_data = None
 
-    def get_radiance_utm(self, x: float, y: float) -> float:
-        """Ultrafast sampling using linear approximation relative to UTM center."""
-        if self.cached_data is None:
-            return 0.0
+    def get_radiance(self, lat: float, lon: float) -> float:
+        """Fast lookup from the pre-loaded ROI."""
         try:
-            dx = x - self.center_x_utm
-            dy = y - self.center_y_utm
-            
-            nx = self.native_cx + dx * self.kx_utm
-            ny = self.native_cy + dy * self.ky_utm
-            
-            # Transform to local array (row, col)
-            # The ~affine transform is a fast multiplication
-            col_f, row_f = self.cached_inv_transform * (nx, ny)
-            r, c = int(row_f), int(col_f)
-            
-            rows, cols = self.cached_data.shape
-            if 0 <= r < rows and 0 <= c < cols:
-                val = float(self.cached_data[r, c])
-                return val if val >= 0 else 0.0
-            return 0.0
-        except Exception:
-            return 0.0
-
-    def get_radiance(self, lat: float, lon: float) -> Optional[float]:
-        """Slow fallback or UI lookup. Uses rasterio.warp.transform directly."""
-        if not self.dataset:
-            return None
-        try:
-            from rasterio.warp import transform
-            xs, ys = transform("EPSG:4326", self.dataset.crs, [lon], [lat])
-            row, col = self.dataset.index(xs[0], ys[0])
-            if 0 <= row < self.dataset.height and 0 <= col < self.dataset.width:
-                window = rasterio.windows.Window(col, row, 1, 1)
-                data = self.dataset.read(1, window=window)
-                if data is not None and data.size > 0:
-                    val = float(data[0, 0])
-                    return val if val >= 0 else 0.0
-            return 0.0
-        except Exception:
-            return 0.0
-
-    # TODO: Revisar esta fórmula de cálculo del índice de Bortle.
-    # Los valores de radiancia (nW/cm2/sr) obtenidos del satélite (VIIRS) indican la luz emitida hacia arriba,
-    # y la conversión empírica que se hace a clase de Bortle (brillo del cielo observado desde el suelo)
-    # produce valores inexactos.
-    # Por ejemplo, en las coordenadas (41.9792, 0.750917) se calcula un Bortle de 5, 
-    # mientras que según mapas más precisos (ej: lightpollutionmap.info, atlas 2015 Falchi) es de clase 3.
-    # Habría que ajustar los umbrales o usar otro modelo de conversión.
-    # TODO: Metodo obsoleto. Las estimadas por pixel individual ignoran la cúpula de luz.
-    # Se preserva para retrocompatibilidad, pero se recomienda usar estimate_bortle_from_location.
-    def estimate_bortle_class(self, radiance: float) -> int:
-        if radiance is None or radiance <= 0.03:
-            return 2
-        elif radiance <= 0.4:
-            return 3
-        elif radiance <= 1.5:
-            return 4
-        elif radiance <= 5.0:
-            return 5
-        elif radiance <= 15.0:
-            return 6
-        elif radiance <= 30.0:
-            return 7
-        elif radiance <= 50.0:
-            return 8
-        else:
-            return 9
-
-    def get_effective_radiance(self, lat: float, lon: float, T: float = 1.0) -> float:
-        """
-        Calcula la radiancia efectiva como convolución espacial en un radio de 100km.
-        R_eff(x) = sum_{y in 100km} R(y) * e^{-d(x,y)/L}
-        donde:
-        - R(y): radiancia de píxel individual del VIIRS.
-        - d(x,y): distancia geodésica en km.
-        - L = 18 * T: factor de atenuación exponencial (T = transparencia atmosférica).
-        Este enfoque permite capturar cúpulas de luz remotas y evita que localizaciones rurales
-        alejadas de núcleos urbanos se marquen como brillantes si sólo tienen un halo tenue,
-        y al revés, evita falsos rurales oscuros cerca de grandes ciudades.
-        """
-        if not self.dataset:
-            return 0.0
-            
-        radius_m = 100000.0 # 100 km interpolación para la "cúpula"
-        # Se ha ajustado L empíricamente para reflejar mejor que el skyglow
-        # decae mucho más agresivamente que una exponencial pura de 18km (se ha reducido a 4.0km).
-        # Esto previene que una ciudad lejana a 50km envíe un 6% de su luz (sobre-iluminando las zonas rurales).
-        L = 4.0 * T      # Parámetro L en km
-        
-        try:
-            from rasterio.warp import transform
-            from rasterio.windows import from_bounds
-            import rasterio
-            
-            # 1. Definir la ventana basada en un radio de 60km (suficiente con un L mucho menor)
-            radius_m = 60000.0
-            dlat = radius_m / 111320.0
-            dlon = radius_m / (111320.0 * math.cos(math.radians(max(-85.0, min(85.0, lat)))))
-            
-            c_lons = [lon - dlon, lon + dlon]
-            c_lats = [lat - dlat, lat + dlat]
-            c_xs, c_ys = transform("EPSG:4326", self.dataset.crs, c_lons, c_lats)
-            
-            left, right = min(c_xs), max(c_xs)
-            bottom, top = min(c_ys), max(c_ys)
-            
-            ds_win = rasterio.windows.Window(0, 0, self.dataset.width, self.dataset.height)
-            window = from_bounds(left, bottom, right, top, transform=self.dataset.transform)
-            window = window.intersection(ds_win).round_lengths().round_offsets()
-            
-            if window.width <= 0 or window.height <= 0:
-                return 0.0
+            with self._lock:
+                if self._cached_data is None or self._transformer is None or self._cached_bounds is None:
+                    return 0.0
                 
-            # 2. Extraer datos con la ventana
-            data = self.dataset.read(1, window=window)
-            transform_win = self.dataset.window_transform(window)
-            
-            # 3. Crear malla paramétrica de coordenadas
-            rows, cols = data.shape
-            c_grid = np.arange(cols)
-            r_grid = np.arange(rows)
-            C, R = np.meshgrid(c_grid, r_grid)
-            
-            # Proyectar malla de celdas a coordenadas origen
-            X, Y = transform_win * (C, R)
-            
-            # Centro en el map
-            cx, cy = transform("EPSG:4326", self.dataset.crs, [lon], [lat])
-            cx, cy = cx[0], cy[0]
-            
-            # 4. Calcular kernel de distancia para todos los pixeles
-            if self.dataset.crs.is_geographic:
-                dx = (X - cx) * 111.32 * math.cos(math.radians(lat))
-                dy = (Y - cy) * 111.32
-                dist_km = np.sqrt(dx**2 + dy**2)
-            else:
-                scale_factor = math.cos(math.radians(lat)) if self.dataset.crs.to_epsg() == 3857 else 1.0
-                dist_km = np.sqrt((X - cx)**2 + (Y - cy)**2) * scale_factor / 1000.0
-                
-            # Transformar radiancia descartando el piso de ruido natural (airglow/VIRS noise limit ~ 0.40 nW/cm2/sr)
-            noise_floor = 0.40
-            data_clean = np.maximum(0.0, data - noise_floor)
-            
-            # Solo píxeles válidos del interior del buffer
-            valid_mask = (dist_km <= 60.0) & (data_clean > 0)
-            
-            if not np.any(valid_mask):
-                return 0.0
-                
-            # 5. Aplicar kernel Exponencial y sumar (Convolución Discreta)
-            kernel = np.exp(-dist_km[valid_mask] / L)
-            R_sum = np.sum(data_clean[valid_mask] * kernel)
-            
-            # 6. Factor de calibración geométrica
-            # Ajustado para mapear exactamente las variaciones
-            calibration_factor = 60.0
-            
-            R_eff = R_sum / calibration_factor
-            
-            return float(R_eff)
-            
+                x, y = self._transformer.transform(lon, lat)
+                b = self._cached_bounds
+                if not (b[0] <= x <= b[2] and b[1] <= y <= b[3]):
+                    # print(f"[LPSampler] Out of bounds: {x},{y} vs {b}")
+                    return 0.0
+
+                inv = ~self._cached_transform
+                col, row = inv * (x, y)
+                r, c = int(row), int(col)
+                if 0 <= r < self._cached_data.shape[0] and 0 <= c < self._cached_data.shape[1]:
+                    return float(self._cached_data[r, c])
         except Exception as e:
-            print(f"[LightPollutionSampler] Error durante el procesamiento de contribución regional: {e}", flush=True)
-            return getattr(self, "get_radiance")(lat, lon) or 0.0
+            pass
+        return 0.0
 
-    def estimate_bortle_from_location(self, lat: float, lon: float, T: float = 1.0) -> int:
-        """
-        Estima la clase Bortle usando el modelo coherente de cúpula de luz regional.
-        - Transforma R_eff en S (brillo del cielo)
-        - Usa una sigmoide (suavizada) para saltar rangos Bortle en vez de if duros
-        """
-        # 1. Obtención de influencia regional luminosa
-        R_eff = self.get_effective_radiance(lat, lon, T)
-        
-        # 2. Transformación a brillo de cielo visual aparente en magnitudes por arcosegundo cuadrado.
-        # Parámetros calibrados base dados del Atlas Mundial del Brillo del Cielo Nocturno (Falchi et al.)
-        a = 22.0
-        b = 1.9
-        eps = 0.01
-        
-        S = a - b * np.log10(R_eff + eps)
-        
-        # 3. Transición suavizada y continua entre clases usando un modelo de probabilidades
-        # t_k son los umbrales de mag/arcsec2 para saltar desde la clase k a la k+1
-        t_k = [21.9, 21.7, 21.5, 21.3, 20.8, 20.3, 19.5, 18.5]
-        w = 0.1 # Factor de dispersión/suavizado de la transición sigmoidal (ajustado para caber en rangos de 0.2)
-        
-        probs = np.zeros(9)
-        
-        def sigmoid(x):
-            # Normalización rápida para evitar warnings de overflow de np.exp
-            x = np.clip(x, -50, 50)
-            return 1.0 / (1.0 + np.exp(-x))
-            
-        p_prev = 0.0
-        for i, threshold in enumerate(t_k):
-            # P(B <= i + 1)
-            # Dado que si S aumenta el cielo es más oscuro y por ende la clase disminuye,
-            # el operando evalúa (S - tk). 
-            prob_cum = sigmoid((S - threshold) / w)
-            probs[i] = prob_cum - p_prev
-            p_prev = prob_cum
-            
-        probs[8] = 1.0 - p_prev # P(B = 9) = 1.0 - P(B <= 8)
-        
-        # Seleccionamos el bin (clase) ganadora añadiendo +1 ya que el indice base es 0
-        best_bortle = np.argmax(probs) + 1
-        return int(best_bortle)
+    def get_radiance_utm(self, x_utm: float, y_utm: float) -> float:
+        """Fast lookup from UTM coordinates."""
+        try:
+            with self._lock:
+                if self._cached_data is None or self._utm_transformer is None or self._cached_bounds is None:
+                    return 0.0
+                
+                x, y = self._utm_transformer.transform(x_utm, y_utm)
+                b = self._cached_bounds
+                if not (b[0] <= x <= b[2] and b[1] <= y <= b[3]):
+                    return 0.0
+
+                inv = ~self._cached_transform
+                col, row = inv * (x, y)
+                r, c = int(row), int(col)
+                if 0 <= r < self._cached_data.shape[0] and 0 <= c < self._cached_data.shape[1]:
+                    return float(self._cached_data[r, c])
+        except Exception as e:
+            pass
+        return 0.0

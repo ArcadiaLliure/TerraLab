@@ -213,3 +213,5 @@ tools/TerraLab/data/terrain_cache/*.txt
 #stars
 
 TerraLab/data/stars/*.npy
+/TerraLab/data/terrain_cache
+/TerraLab/data/config.json

@@ -104,6 +104,9 @@ LANGUAGE_OPTIONS: Dict[str, str] = {
 _translations_cache: Optional[Dict[str, Dict[str, str]]] = None
 _config_cache: Optional[Dict[str, Any]] = None
 
+import threading
+_config_lock = threading.Lock()
+
 def _load_translations() -> Dict[str, Dict[str, str]]:
     global _translations_cache
     if _translations_cache is None:
@@ -125,29 +128,32 @@ def getTraduction(key: str, default: str) -> str:
 
 def _load_config() -> Dict[str, Any]:
     global _config_cache
-    if _config_cache is None:
-        path = resource_path("data/config.json")
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    _config_cache = json.load(f)
-            except Exception:
+    with _config_lock:
+        if _config_cache is None:
+            path = resource_path("data/config.json")
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        _config_cache = json.load(f)
+                except Exception:
+                    _config_cache = {}
+            else:
                 _config_cache = {}
-        else:
-            _config_cache = {}
-    return dict(_config_cache)
+        return dict(_config_cache)
 
 def _clear_cache_config():
     global _config_cache
-    _config_cache = None
+    with _config_lock:
+        _config_cache = None
 
 def _save_config(cfg: Dict[str, Any]) -> None:
     global _config_cache
     path = resource_path("data/config.json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    _config_cache = dict(cfg)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(_config_cache, f, ensure_ascii=False, indent=2)
+    with _config_lock:
+        _config_cache = dict(cfg)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(_config_cache, f, ensure_ascii=False, indent=2)
 
 def get_config_value(path: str, default=None, *, refresh: bool = False):
     """

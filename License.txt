@@ -1,5 +1,0 @@
-TerraLab License
-================
-
-This software is provided "as is", without warranty of any kind.
-Copyright (c) 2026 Scriptorium Team.

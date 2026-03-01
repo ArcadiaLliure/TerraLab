@@ -225,14 +225,15 @@ class TileIndex:
             try:
                 if fpath.endswith(".npy"):
                      # Parse bbox from filename: Y_(ymin_ymax)X_(xmin_xmax).npy
-                     # e.g. Y_(4570000.0_4580000.0)X_(418000.0_428000.0).npy
                      basename = os.path.basename(fpath)
                      bbox = self._parse_npy_filename(basename)
                      if bbox:
-                         # Dummy header for compatibility if needed, or minimal dict
+                         # For NPY tiles, we still need a cellulsize to sample.
+                         # Assuming default 5.0m for ICGC tiles if not encoded in filename.
+                         # Real NPY tiles should probably have their own header files.
                          self.tiles.append({
                              "path": fpath,
-                             "header": {"NPY": True}, # Marker
+                             "header": {"NPY": True, "CELLSIZE": 5.0, "NCOLS": 1, "NROWS": 1}, # Minimal
                              "bbox": bbox,
                          })
                 else:
@@ -255,24 +256,19 @@ class TileIndex:
                      callback(i, len(files), f"Indexing tile {i}/{len(files)}")
 
             except Exception as e:
-                pass
                 # print(f"[HorizonEngine] Skipping {fpath}: {e}")
+                pass
         
         if callback:
              callback(len(files), len(files), f"Indexed {len(self.tiles)} tiles.")
 
         print(f"[HorizonEngine] Indexed {len(self.tiles)} valid tiles.")
 
-    # ... (rest of methods)
-
     @staticmethod
-    def _read_header(path: str) -> Dict:
+    def _parse_npy_filename(name: str) -> Optional[Tuple[float, float, float, float]]:
         # Format: Y_(ymin_ymax)X_(xmin_xmax).npy
         try:
-            # Simple parsing strategy
-            # Remove .npy
             base = name.replace(".npy", "")
-            # Split by X_
             parts = base.split("X_")
             if len(parts) != 2: return None
             
@@ -289,29 +285,22 @@ class TileIndex:
     @staticmethod
     def _read_header(path: str) -> Dict:
         header = {}
-        with open(path, "r") as f:
-            for _ in range(6):
-                line = f.readline().strip()
-                if not line:
-                    break
-                parts = line.split()
-                if len(parts) >= 2:
-                    key = parts[0].upper()
-                    val = parts[1]
-                    # Handle typical header keys
-                    if key in ["NCOLS", "NROWS", "XLLCORNER", "YLLCORNER", "XLLCENTER", "YLLCENTER", "CELLSIZE", "NODATA_VALUE"]:
-                        header[key] = float(val)
-        
-        # Ensure essential keys exist or error out
-        if "NCOLS" not in header or "NROWS" not in header:
-             # Try reading more lines if needed? No, standard is top 6.
-             # Actually some formats have blank lines.
-             pass
-             
-        # Normalize integer fields
-        if "NCOLS" in header: header["NCOLS"] = int(header["NCOLS"])
-        if "NROWS" in header: header["NROWS"] = int(header["NROWS"])
-        
+        try:
+            with open(path, "r") as f:
+                for _ in range(6):
+                    line = f.readline().strip()
+                    if not line: break
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        key = parts[0].upper()
+                        val = parts[1]
+                        if key in ["NCOLS", "NROWS", "XLLCORNER", "YLLCORNER", "XLLCENTER", "YLLCENTER", "CELLSIZE", "NODATA_VALUE"]:
+                            header[key] = float(val)
+            
+            if "NCOLS" in header: header["NCOLS"] = int(header["NCOLS"])
+            if "NROWS" in header: header["NROWS"] = int(header["NROWS"])
+        except:
+            pass
         return header
 
     @staticmethod
@@ -420,9 +409,8 @@ class TileCache:
         # Parse text/asc grid
         try:
             # Determine header size
-            header_lines = 6
+            header_lines = 0
             with open(path, "r") as f:
-                header_lines = 0
                 for _ in range(10): 
                     line = f.readline()
                     if not line: break
@@ -433,53 +421,50 @@ class TileCache:
                     else:
                          break
             
-            print(f"[HorizonEngine] Parsing grid with Pandas: {os.path.basename(path)} (skip {header_lines})...")
-            # Pandas C-engine is vastly faster than np.fromfile(text)
+            # Use adjacent folder or packaged folder for saving
+            output_npy = adjacent_npy 
             
-            # Use raw string for sep='\s+' to fix warning
-            df = pd.read_csv(
-                path, 
-                skiprows=header_lines, 
-                sep=r'\s+', 
-                header=None, 
-                dtype=np.float32, 
-                engine='c'
-            )
-            data = df.values.flatten()
+            print(f"[HorizonEngine] Parsing with Pandas: {os.path.basename(path)}...")
+            try:
+                import pandas as pd
+                df = pd.read_csv(
+                    path, 
+                    skiprows=header_lines, 
+                    sep=r'\s+', 
+                    header=None, 
+                    dtype=np.float32, 
+                    engine='c'
+                )
+                data_raw = df.values.flatten()
+            except Exception as e:
+                print(f"[HorizonEngine] Error parsing {path} with Pandas: {e}")
+                return None, None
             
-            # Post-processing
             nodata = header.get("NODATA_VALUE", -9999)
             nrows = int(header["NROWS"])
             ncols = int(header["NCOLS"])
             
-            # Data validation
             expected = nrows * ncols
-            if data.size != expected:
-                 # Fallback: maybe just use what we have or pad
-                 if data.size > expected:
-                     data = data[:expected]
+            if data_raw.size != expected:
+                 if data_raw.size > expected:
+                     data_raw = data_raw[:expected]
                  else:
-                     data = np.pad(data, (0, expected - data.size), constant_values=nodata)
+                     data_raw = np.pad(data_raw, (0, expected - data_raw.size), constant_values=nodata)
 
-            data = data.reshape((nrows, ncols)).astype(np.float32)
+            data = data_raw.reshape((nrows, ncols)).astype(np.float32)
 
-            # Save binary cache
+            # Save binary cache to original location if possible
             try:
-                np.save(npy_path, data)
-                print(f"[HorizonEngine] Saved .npy cache: {os.path.basename(npy_path)}")
-            except Exception as e:
-                print(f"[HorizonEngine] Could not save .npy cache: {e}")
-
-            # Reload as mmap for RAM efficiency if possible, else use memory
-            if os.path.exists(npy_path):
-                 data = np.load(npy_path, mmap_mode="r")
+                np.save(output_npy, data)
+                # print(f"[HorizonEngine] Saved cache: {os.path.basename(output_npy)}")
+            except:
+                pass
 
             with self._lock:
                 self.cache[path] = (data, header)
                 if len(self.cache) > self.capacity:
                     self.cache.popitem(last=False)
             
-            print(f"[HorizonEngine] Parsed & Cached: {os.path.basename(path)}")
             return data, header
 
         except Exception as e:
@@ -500,6 +485,19 @@ class DemSampler:
         self.index = tile_index
         self.cache = tile_cache
         self.last_tile: Optional[Dict] = None
+        self._transformer_inv = None # Lazy loaded if needed
+
+    def get_elevation(self, x: float, y: float) -> Optional[float]:
+        """Alias for sample() to maintain compatibility with HorizonBaker."""
+        return self.sample(x, y)
+
+    def transform_coordinates_inverse(self, x: float, y: float) -> Tuple[float, float]:
+        """Converts UTM 31N back to Lat/Lon."""
+        from pyproj import Transformer
+        if self._transformer_inv is None:
+            self._transformer_inv = Transformer.from_crs("EPSG:25831", "EPSG:4326", always_xy=True)
+        lon, lat = self._transformer_inv.transform(x, y)
+        return lat, lon
 
     def sample(self, x: float, y: float) -> Optional[float]:
         # Spatial coherence optimisation: check last tile first
@@ -534,25 +532,40 @@ class DemSampler:
         if data is None:
             return None
 
-        s = h["CELLSIZE"]
-        if "XLLCENTER" in h:
-            x0 = h["XLLCENTER"]
-            y0 = h["YLLCENTER"]
+        # Handle NPY tiles where LL mapping might be different or missing
+        if h.get("NPY"):
+            # For NPY tiles, we assume bbox is already correct from filename
+            # and it's a regular grid.
+            xmin, ymin, xmax, ymax = tile["bbox"]
+            nrows, ncols = data.shape
+            sx = (xmax - xmin) / max(1, ncols)
+            sy = (ymax - ymin) / max(1, nrows)
+            grid_x = (x - xmin) / sx
+            # Y in arrays is usually top-to-bottom
+            grid_y_from_top = (ymax - y) / sy
+            grid_row = grid_y_from_top
         else:
-            x0 = h["XLLCORNER"] + s / 2
-            y0 = h["YLLCORNER"] + s / 2
+            # Robust header handling: default to 5.0m if missing (standard for ICGC tiles)
+            s = h.get("CELLSIZE", 5.0)
+            if "XLLCENTER" in h:
+                x0 = h["XLLCENTER"]
+                y0 = h["YLLCENTER"]
+            else:
+                x0 = h.get("XLLCORNER", 0.0) + s / 2
+                y0 = h.get("YLLCORNER", 0.0) + s / 2
 
-        grid_x = (x - x0) / s
-        grid_y_from_bottom = (y - y0) / s
-        grid_row = (h["NROWS"] - 1) - grid_y_from_bottom
+            grid_x = (x - x0) / s
+            grid_y_from_bottom = (y - y0) / s
+            grid_row = (h.get("NROWS", data.shape[0]) - 1) - grid_y_from_bottom
 
         c0 = int(math.floor(grid_x))
         r0 = int(math.floor(grid_row))
+        
+        nrows, ncols = data.shape
+        c0 = max(0, min(c0, ncols - 1))
+        r0 = max(0, min(r0, nrows - 1))
 
-        c0 = max(0, min(c0, int(h["NCOLS"]) - 1))
-        r0 = max(0, min(r0, int(h["NROWS"]) - 1))
-
-        if 0 <= r0 < h["NROWS"] - 1 and 0 <= c0 < h["NCOLS"] - 1:
+        if 0 <= r0 < nrows - 1 and 0 <= c0 < ncols - 1:
             dx = grid_x - c0
             dy = grid_row - r0
 
@@ -644,6 +657,7 @@ class HorizonBaker:
         band_defs: Optional[List[Dict]] = None,
         progress_callback=None,
         light_sampler=None,
+        abort_check=None,
     ) -> Tuple[np.ndarray, List[Dict], np.ndarray]:
         """
         Compute multi-band horizon profile (sequential — CPU-bound under GIL).
@@ -697,6 +711,10 @@ class HorizonBaker:
         for i in range(n_az):
             if i % 10 == 0:
                 print(f"[HorizonEngine Debug] Azimuth {i}/{n_az} (ang={azimuths[i]:.1f})", flush=True)
+            
+            if abort_check and abort_check():
+                print("[HorizonEngine] Bake ABORTED by caller request.")
+                raise InterruptedError("Bake aborted")
             
             try:
                 c = sin_az[i]

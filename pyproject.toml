@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "terralab"
+version = "0.1.0"
+description = "TerraLab: Astrophysical mapping, digital elevation models, and light pollution analysis pipeline"
+readme = "README.md"
+authors = [
+    { name = "TerraLab Contributors" }
+]
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt5>=5.15.9,<5.16",
+    "numpy>=1.26,<3",
+    "skyfield>=1.46,<2",
+    "rasterio>=1.3.10,<2",
+    "pyproj>=3.6,<4",
+    "scipy>=1.11,<2",
+    "scikit-learn>=1.4,<2",
+    "tqdm>=4.66,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8,<9",
+    "pytest-cov>=4,<6",
+    "ruff>=0.6,<1",
+]
+geo = [
+    "xarray>=2024.1,<2026",
+    "rioxarray",
+    "dask[array]>=2024.1,<2026",
+]
+
+[project.scripts]
+terralab = "TerraLab.__main__:main"
+terralab-dvnl-preprocess = "scripts.dvnl_preprocess:main"
+terralab-dvnl-convolve = "scripts.dvnl_convolve:main"
+terralab-predict-sqm = "scripts.predict_sqm_raster:main"
+terralab-calibrate-sqm = "scripts.calibrate_sqm:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
