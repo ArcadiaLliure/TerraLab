@@ -1839,6 +1839,53 @@ class AstroCanvas(QWidget):
             return 0.5 / 60.0
         return 0.5
 
+    def _scope_wheel_zoom(self, steps: float) -> None:
+        if not self.scope_mode_enabled():
+            return
+        if abs(steps) < 1e-9:
+            return
+
+        current = max(1.0, float(getattr(self.scope_controller, "focal_mm", 250.0)))
+        factor = 1.12 ** steps  # wheel up => larger focal => narrower FOV
+        new_focal = max(1.0, min(5000.0, current * factor))
+        self.scope_controller.set_focal_mm(new_focal)
+
+        # Keep controls panel in sync with wheel zoom.
+        if hasattr(self.parent_widget, "sync_scope_focal_ui"):
+            self.parent_widget.sync_scope_focal_ui(new_focal)
+
+        if hasattr(self, 'hint_overlay'):
+            fov_w, fov_h = self.scope_controller.current_fov()
+            fov_label = f"{fov_w:.2f}° x {fov_h:.2f}°"
+            txt = getTraduction("Scope.ZoomHint", "Scope {focal} mm  ·  FOV {fov}").format(
+                focal=f"{new_focal:.1f}",
+                fov=fov_label,
+            )
+            self.hint_overlay.show_hint(txt)
+
+        self.update()
+
+    def _camera_wheel_zoom(self, steps: float) -> None:
+        if abs(steps) < 1e-9:
+            return
+        factor = 1.1 ** steps
+        self.zoom_level *= factor
+        # Allow much deep zoom for Eclipse Inspection (0.5 to 50.0)
+        self.zoom_level = max(0.5, min(50.0, self.zoom_level))
+        # Keep cached trail image during movement to avoid flickering
+        # The Fast-Path will draw on top.
+        self.update()
+
+        # Toast HUD: show FOV and 35mm-equivalent focal of current camera zoom.
+        if hasattr(self, 'hint_overlay'):
+            fov_deg = 100.0 / self.zoom_level
+            focal_rad = math.radians(fov_deg)
+            focal_eq = int(round(18.0 / math.tan(focal_rad / 2.0)))
+            txt = getTraduction("HUD.ZoomHint", "FOV {fov}°  ·  {focal}mm").format(
+                fov=f"{fov_deg:.1f}", focal=focal_eq
+            )
+            self.hint_overlay.show_hint(txt)
+
     def keyPressEvent(self, event):
         key = event.key()
 
@@ -2785,30 +2832,21 @@ class AstroCanvas(QWidget):
 # ... (inside AstronomicalWidget)
 
     def wheelEvent(self, event):
+        degrees = event.angleDelta().y() / 8.0
+        steps = degrees / 15.0
+
         if self.scope_mode_enabled():
-            # In scope mode we avoid changing the global camera zoom unexpectedly.
+            # Scope mode mapping:
+            # - Ctrl + wheel => scope size/FOV (focal)
+            # - Wheel only    => global camera zoom
+            if event.modifiers() & Qt.ControlModifier:
+                self._scope_wheel_zoom(steps)
+            else:
+                self._camera_wheel_zoom(steps)
             event.accept()
             return
 
-        degrees = event.angleDelta().y() / 8.0
-        steps = degrees / 15.0
-        factor = 1.1 ** steps
-        self.zoom_level *= factor
-        # Allow much deep zoom for Eclipse Inspection (0.5 to 50.0)
-        self.zoom_level = max(0.5, min(50.0, self.zoom_level))
-        # Keep cached trail image during movement to avoid flickering
-        # The Fast-Path will draw on top.
-        self.update()
-
-        # â”€ Toast HUD: mostra FOV i focal equivalent al zoom actual â”€
-        if hasattr(self, 'hint_overlay'):
-            fov_deg   = 100.0 / self.zoom_level
-            focal_rad = math.radians(fov_deg)
-            focal_eq  = int(round(18.0 / math.tan(focal_rad / 2.0)))
-            txt = getTraduction("HUD.ZoomHint", "FOV {fov}°  ·  {focal}mm").format(
-                fov=f"{fov_deg:.1f}", focal=focal_eq
-            )
-            self.hint_overlay.show_hint(txt)
+        self._camera_wheel_zoom(steps)
 
 
 
@@ -6088,6 +6126,7 @@ class AstronomicalWidget(CustomWidgetBase):
         self.chk_trails.setCheckable(True)
         self.chk_trails.setStyleSheet("font-size: 10px; font-weight: normal; font-style: normal; border-radius: 8px; border: 1px solid #888; padding: 2px;")
         self.chk_trails.toggled.connect(self.on_trails_toggled)
+        self._update_circumpolar_button_text()
         v_ext.addWidget(self.chk_trails)
 
         self.lbl_trail_time = QLabel("")
@@ -6386,6 +6425,15 @@ class AstronomicalWidget(CustomWidgetBase):
                 self.scope_speed_combo.setCurrentIndex(i)
                 self.scope_speed_combo.blockSignals(False)
                 break
+
+    def sync_scope_focal_ui(self, focal_mm: float):
+        if not hasattr(self, 'scope_focal_spin'):
+            return
+        spin = self.scope_focal_spin
+        v = float(max(spin.minimum(), min(spin.maximum(), focal_mm)))
+        spin.blockSignals(True)
+        spin.setValue(v)
+        spin.blockSignals(False)
 
     def activate_scope_mode(self):
         # Scope mode remaps navigation to pointing control.
@@ -6882,6 +6930,7 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.update()
 
     def on_trails_toggled(self, checked):
+        self._update_circumpolar_button_text()
         if checked:
             self.target_azimuth = 0 # Rotate to North
             # Point to Polaris (Altitude = Latitude)
@@ -6891,6 +6940,15 @@ class AstronomicalWidget(CustomWidgetBase):
             self.target_elevation = 40 # Default nice view
             
         self.anim_timer.start(16) # ~60 FPS
+
+    def _update_circumpolar_button_text(self):
+        if not hasattr(self, "chk_trails"):
+            return
+        checked = bool(self.chk_trails.isChecked())
+        if checked:
+            self.chk_trails.setText(getTraduction("Astro.StopCircumpolar", "Aturar circumpolar"))
+        else:
+            self.chk_trails.setText(getTraduction("Astro.StartCircumpolar", "Iniciar circumpolar"))
 
     def get_month_name(self, month_idx):
         # Manual translation since locale might be erratic

@@ -22,13 +22,7 @@ Aquest document recull l'estat actual del projecte i les properes passes, consol
 
 ---
 
-# 🟡 Pendent immediat
-
-- [ ] Tour onboarding explicatiu.
-- [ ] Ajust proporcions panells UI.
-- [ ] Validació manual regressió UI (mira, mesures, cerca).
-
----
+# PENDENT PRIORITARI
 
 # 🔭 Simulador de Telescopi
 
@@ -63,6 +57,28 @@ m_{lim, scope} = m_{lim, eye} + 5 \log_{10}(D/d_{pupil}) - pèrdues
 - [ ] Field stop realista.
 - [ ] Aberracions subtils.
 
+
+La idea és que, a part de la simulació visual (pupil·la segons condicions) que ja hem esmentat, sota del botó "Iniciar circumpolar" TAMBÉ hi ha d'haver un botó de "Iniciar sessió de fotografia" i que surti immediatament i que s'obrin les opcions típiques d'un intervalòmetre. L'usuari pot esperar la simulació per veure com progressa l'aparició d'estels i altres objectes de diferents magnituds o pot resoldre-la instantàniament. Cal tenir en compte que s'han de poder "cremar" si se n'abusa del temps, ISO o de l'exposició els estels, planetes i lluna perquè sigui realista. Com no es té els atributs de totes les càmeres, prendrem com a referència:
+
+- APS-C -> Canon 90D (cercar paràmetres)
+- Full Frame -> Sony A7S (cercar paràmetres)
+- Telescopi -> Refractor, Catadiòptic, Reflector/Newtonià...(així de forma genèrica però distingint el comportament a la llum i visió que té cadascun per separat). Opció de col·locar barlows, calculant els seus efectes.
+
+cadascun amb el seu comportament segons els paràmetres d'obertura, focal, sensibilitat ISO, temps d'exposició, etc...
+
+D'això n'ha de sortir una "foto" que l'usuari podrà emmagatzemar (així la pot comparar) i també en el resultat el nombre de darks i flats que hauria de fer l'usuari per reduir el soroll, etc.
+
+---
+
+# 🎨 Dibuix i Constel·lacions
+
+- [ ] Mode dibuix amb bloqueig de càmera.
+- [ ] Imantació a estrelles visibles.
+- [ ] Constel·lacions com grups independents.
+- [ ] Guardat JSON (nodes, ordre, nom).
+- [ ] Borrador selectiu.
+- [ ] Etiquetes persistents.
+
 ---
 
 # 🌌 Objectes de Cel Profund
@@ -77,27 +93,8 @@ m_{lim, scope} = m_{lim, eye} + 5 \log_{10}(D/d_{pupil}) - pèrdues
 - [ ] Nebulosa planetària (disc/anell difús).
 - [ ] Nebulosa difusa (soroll procedural + difuminat).
 - [ ] Escalat segons zoom i mida angular real.
-- [ ] Estètica coherent sense dependència obligatòria d’imatges externes.
+- [ ] Estètica coherent sense dependència obligatòria d’imatges externes, però escalable perquè algun dia s'hi puguin afegir.
 
----
-
-# 🏔️ Topografia Real i Cims
-
-## Horizon Real
-- [ ] Opció “Color real del terra” (GeoTIFF RGB).
-- [ ] Overlay DEM real.
-- [ ] Mode procedural alternatiu per rendiment.
-
-## Validació de Pics
-- [ ] Comparació DEM vs base de dades externa.
-- [ ] Llindars de distància i diferència d’altitud.
-- [ ] Tooltip amb nom, altitud i distància.
-- [ ] Ajust manual possible.
-- [ ] Vectorització eficient (NumPy).
-
-## Altura Usuari
-- [x] Camp per sumar metres addicionals.
-- [x] Mostrar altitud base automàtica.
 
 ---
 
@@ -116,16 +113,6 @@ m_{lim, scope} = m_{lim, eye} + 5 \log_{10}(D/d_{pupil}) - pèrdues
 - [ ] Historial.
 - [ ] Activació/desactivació categories.
 
----
-
-# 🎨 Dibuix i Constel·lacions
-
-- [ ] Mode dibuix amb bloqueig de càmera.
-- [ ] Imantació a estrelles visibles.
-- [ ] Constel·lacions com grups independents.
-- [ ] Guardat JSON (nodes, ordre, nom).
-- [ ] Borrador selectiu.
-- [ ] Etiquetes persistents.
 
 ---
 
@@ -155,6 +142,32 @@ m_{lim, scope} = m_{lim, eye} + 5 \log_{10}(D/d_{pupil}) - pèrdues
 - [ ] Mode offline robust amb catàlegs empaquetats.
 
 ---
+
+# 🟡 Pendent NO URGENT
+
+## PENDENT NO URGENT
+
+# 🏔️ Topografia Real i Cims
+
+## Horizon Real
+- [ ] Opció “Color real del terra” (GeoTIFF RGB).
+- [ ] Overlay DEM real.
+- [ ] Mode procedural alternatiu per rendiment.
+
+## Validació de Pics
+- [ ] Comparació DEM vs base de dades externa.
+- [ ] Llindars de distància i diferència d’altitud.
+- [ ] Tooltip amb nom, altitud i distància.
+- [ ] Ajust manual possible.
+- [ ] Vectorització eficient (NumPy).
+
+## Altura Usuari
+- [x] Camp per sumar metres addicionals.
+- [x] Mostrar altitud base automàtica.
+
+- [x] Tour onboarding explicatiu.
+- [x] Ajust proporcions panells UI.
+- [ ] Validació manual regressió UI (mira, mesures, cerca).
 
 # 🎯 Objectiu Final
 

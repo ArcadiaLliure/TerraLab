@@ -191,22 +191,23 @@ class TelescopeScopeController:
             hole.lineTo(p)
         hole.closeSubpath()
 
-        mask = QPainterPath()
-        mask.setFillRule(Qt.OddEvenFill)
-        mask.addRect(QRectF(0.0, 0.0, float(width), float(height)))
-        mask.addPath(hole)
+        full = QPainterPath()
+        full.addRect(QRectF(0.0, 0.0, float(width), float(height)))
+        # Keep the interior fully clear: only shade the outside area.
+        # Hook for future magnitude simulation should be applied inside this hole.
+        outside = full.subtracted(hole)
 
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(0, 0, 0, 190))
-        painter.drawPath(mask)
+        painter.drawPath(outside)
 
         # Border + glow
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(QColor(255, 255, 255, 90), 3.0))
+        painter.setPen(QPen(QColor(255, 255, 255, 35), 1.2))
         painter.drawPath(hole)
-        painter.setPen(QPen(QColor(255, 255, 255, 230), 1.0))
+        painter.setPen(QPen(QColor(255, 255, 255, 120), 0.8))
         painter.drawPath(hole)
 
         # Crosshair
@@ -274,30 +275,26 @@ class TelescopeScopeController:
     def _draw_crosshair(self, painter: QPainter, project_fn: Callable) -> None:
         if self.center is None:
             return
-        fov_w, fov_h = self.current_fov()
-        half_w = max(0.05, fov_w * 0.5)
-        half_h = max(0.05, fov_h * 0.5)
+        cpt = project_fn(*self.center)
+        if cpt is None:
+            return
 
-        left = destination_point(self.center, 270.0, half_w)
-        right = destination_point(self.center, 90.0, half_w)
-        top = destination_point(self.center, 0.0, half_h)
-        bottom = destination_point(self.center, 180.0, half_h)
+        cx = float(cpt[0])
+        cy = float(cpt[1])
+        arm = 8.0
 
-        h_arc = slerp_arc_points(left, right, 48)
-        v_arc = slerp_arc_points(top, bottom, 48)
+        # Very subtle compact center reticle.
+        painter.setPen(QPen(QColor(255, 255, 255, 60), 1.4, Qt.SolidLine, Qt.RoundCap))
+        painter.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
+        painter.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
 
-        for arc in (h_arc, v_arc):
-            seg = self._project_valid(arc, project_fn)
-            if len(seg) < 2:
-                continue
-            path = QPainterPath()
-            path.moveTo(seg[0])
-            for p in seg[1:]:
-                path.lineTo(p)
-            painter.setPen(QPen(QColor(255, 255, 255, 90), 2.0))
-            painter.drawPath(path)
-            painter.setPen(QPen(QColor(255, 255, 255, 230), 0.9))
-            painter.drawPath(path)
+        painter.setPen(QPen(QColor(255, 255, 255, 150), 0.8, Qt.SolidLine, Qt.RoundCap))
+        painter.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
+        painter.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
+
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 170))
+        painter.drawEllipse(QPointF(cx, cy), 1.2, 1.2)
 
     def _draw_hud(self, painter: QPainter, project_fn: Callable) -> None:
         if self.center is None:
