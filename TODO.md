@@ -88,6 +88,8 @@ D'això n'ha de sortir una "foto" que l'usuari podrà emmagatzemar (així la pot
 - [ ] Importar tipus, AR/Dec, magnitud, mida angular, angle de posició.
 
 ## Representació Procedural
+- [x] Definida estrategia de fallback: la representacio procedural actual (Sol, Lluna, planetes i futurs objectes) sera el mode de reserva quan hi hagi assets reals a escala.
+- [ ] Integrar imatges reals a escala mantenint fallback procedural automatic.
 - [ ] Galàxia espiral (el·lipse + gradient + braços suaus).
 - [ ] Galàxia el·líptica (difusa amb aplanament).
 - [ ] Nebulosa planetària (disc/anell difús).

@@ -1440,9 +1440,13 @@ class AstroCanvas(QWidget):
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMouseTracking(True)
         self.visible_stars = []
+        self.visible_stars_sx = np.array([], dtype=np.float32) if np is not None else []
+        self.visible_stars_sy = np.array([], dtype=np.float32) if np is not None else []
+        self.visible_sky_objects = []
         self.press_pos = QPointF(0,0)
         self.trail_start_hour = None
         self.ut_hour = 12.0
+        self.selected_target = None
         
         # Illusion Parameters
         self.illusion_enabled = True
@@ -1530,6 +1534,11 @@ class AstroCanvas(QWidget):
         self._scope_move_timer = QTimer(self)
         self._scope_move_timer.setInterval(33)  # ~30Hz
         self._scope_move_timer.timeout.connect(self._scope_move_tick)
+
+        # Pulse repaint for selected-star marker in normal mode.
+        self._selection_pulse_timer = QTimer(self)
+        self._selection_pulse_timer.setInterval(33)
+        self._selection_pulse_timer.timeout.connect(self._selection_pulse_tick)
 
     def reset_zoom_human(self):
         """Reset zoom to human eye equivalent (43mm)."""
@@ -1773,6 +1782,7 @@ class AstroCanvas(QWidget):
             self._scope_pressed_keys.clear()
             self._scope_move_timer.stop()
         self._refresh_overlay_cursor()
+        self._update_selection_pulse_timer()
         self.update()
 
     def set_scope_shape(self, shape: str) -> None:
@@ -1838,6 +1848,356 @@ class AstroCanvas(QWidget):
         if self.scope_controller.speed_mode == TelescopeScopeController.SPEED_SLOW:
             return 0.5 / 60.0
         return 0.5
+
+    def _selection_pulse_tick(self):
+        if self.selected_target is None or self.scope_mode_enabled():
+            if self._selection_pulse_timer.isActive():
+                self._selection_pulse_timer.stop()
+            return
+        self.update()
+
+    def _update_selection_pulse_timer(self):
+        should_run = (self.selected_target is not None) and (not self.scope_mode_enabled())
+        if should_run and (not self._selection_pulse_timer.isActive()):
+            self._selection_pulse_timer.start()
+        elif (not should_run) and self._selection_pulse_timer.isActive():
+            self._selection_pulse_timer.stop()
+
+    def _normalize_planet_key(self, value):
+        return str(value or "").strip().lower().replace(" ", "_")
+
+    def _extract_star_coords(self, star_obj):
+        if not isinstance(star_obj, dict):
+            return None
+        try:
+            ra = float(star_obj.get("ra"))
+            dec = float(star_obj.get("dec"))
+            if math.isnan(ra) or math.isnan(dec):
+                return None
+            return ra, dec
+        except Exception:
+            return None
+
+    def _resolve_star_by_index(self, idx):
+        try:
+            i = int(idx)
+        except Exception:
+            return None
+        cel_objs = getattr(self.parent_widget, "celestial_objects", [])
+        if 0 <= i < len(cel_objs):
+            return cel_objs[i]
+        return None
+
+    def _register_visible_sky_object(self, obj_type, key, name, alt, az, sx, sy, radius_px=0.0, mag=None):
+        try:
+            entry = {
+                "type": str(obj_type or "").lower(),
+                "key": str(key or "").lower(),
+                "name": str(name or ""),
+                "alt": float(alt),
+                "az": float(az) % 360.0,
+                "sx": float(sx),
+                "sy": float(sy),
+                "radius_px": max(0.0, float(radius_px)),
+            }
+            if mag is not None:
+                entry["mag"] = float(mag)
+            self.visible_sky_objects.append(entry)
+        except Exception:
+            pass
+
+    def _lookup_visible_sky_object(self, target):
+        if not isinstance(target, dict) or target.get("kind") != "sky":
+            return None
+        t = str(target.get("type", "")).lower()
+        k = str(target.get("key", "")).lower()
+        best = None
+        for item in getattr(self, "visible_sky_objects", []):
+            if str(item.get("type", "")).lower() != t:
+                continue
+            if t == "planet" and k and str(item.get("key", "")).lower() != k:
+                continue
+            best = item
+            break
+        return best
+
+    def _pick_sky_object_at(self, sx: float, sy: float, click_radius: float = 20.0):
+        x = float(sx)
+        y = float(sy)
+        best = None
+        best_score = float("inf")
+        for item in getattr(self, "visible_sky_objects", []):
+            dx = float(item.get("sx", 0.0)) - x
+            dy = float(item.get("sy", 0.0)) - y
+            d = math.hypot(dx, dy)
+            rr = max(float(click_radius), float(item.get("radius_px", 0.0)) + 5.0)
+            if d > rr:
+                continue
+            score = d / max(1.0, rr)
+            if score < best_score:
+                best = item
+                best_score = score
+
+        if best is None:
+            return None
+
+        obj_type = str(best.get("type", "")).lower()
+        if obj_type in ("sun", "moon"):
+            return {
+                "kind": "sky",
+                "type": obj_type,
+                "key": obj_type,
+                "name": best.get("name", obj_type.title()),
+                "alt": best.get("alt"),
+                "az": best.get("az"),
+            }
+
+        if obj_type == "planet":
+            pkey = self._normalize_planet_key(best.get("key"))
+            if not pkey:
+                pkey = self._normalize_planet_key(best.get("name"))
+            return {
+                "kind": "sky",
+                "type": "planet",
+                "key": pkey,
+                "name": best.get("name", pkey),
+                "alt": best.get("alt"),
+                "az": best.get("az"),
+            }
+        return None
+
+    def _pick_star_at(self, sx: float, sy: float, click_radius: float = 20.0):
+        best_star = None
+        best_dist = float(click_radius)
+        x = float(sx)
+        y = float(sy)
+
+        # Fast path: numpy screen buffers (main thread renderer).
+        try:
+            if np is not None and hasattr(self, "visible_stars_sx") and hasattr(self, "visible_stars_sy"):
+                sx_arr = self.visible_stars_sx
+                sy_arr = self.visible_stars_sy
+                if len(sx_arr) > 0 and len(sy_arr) > 0 and len(getattr(self, "visible_stars", [])) > 0:
+                    dists = np.hypot(sx_arr - x, sy_arr - y)
+                    if len(dists) > 0:
+                        i = int(np.argmin(dists))
+                        d = float(dists[i])
+                        if d <= best_dist:
+                            star = self._resolve_star_by_index(self.visible_stars[i])
+                            if star is not None:
+                                best_star = star
+                                best_dist = d
+        except Exception:
+            pass
+
+        # Worker path: list of tuples (sx, sy, star_obj)
+        vis = getattr(self, "visible_stars", None)
+        if isinstance(vis, list) and vis and isinstance(vis[0], tuple):
+            for item in vis:
+                if len(item) < 3:
+                    continue
+                try:
+                    sx_i = float(item[0])
+                    sy_i = float(item[1])
+                except Exception:
+                    continue
+                d = math.hypot(sx_i - x, sy_i - y)
+                if d > best_dist:
+                    continue
+                star = item[2]
+                if self._extract_star_coords(star) is None:
+                    continue
+                best_star = star
+                best_dist = d
+
+        return best_star
+
+    def _pick_target_at(self, sx: float, sy: float):
+        sky_target = self._pick_sky_object_at(sx, sy)
+        if sky_target is not None:
+            return sky_target
+        star = self._pick_star_at(sx, sy)
+        if star is not None:
+            return {"kind": "star", "star": star}
+        return None
+
+    def _set_selected_target(self, target):
+        if target is None:
+            self.selected_target = None
+            self.lbl_info.hide()
+            self._update_selection_pulse_timer()
+            return
+
+        if isinstance(target, dict) and target.get("kind") == "star":
+            star_obj = target.get("star")
+            if self._extract_star_coords(star_obj) is None:
+                return
+            self.selected_target = {"kind": "star", "star": star_obj}
+            info = (f"ID: {star_obj.get('id', 'N/A')}\n"
+                    f"Mag: {star_obj.get('mag', 0.0):.2f}\n"
+                    f"RA: {star_obj.get('ra', 0.0):.2f}\n"
+                    f"Dec: {star_obj.get('dec', 0.0):.2f}\n"
+                    f"C: {star_obj.get('bp_rp', 0):.2f}")
+        elif isinstance(target, dict) and target.get("kind") == "sky":
+            kind = str(target.get("type", "")).lower()
+            if kind not in ("sun", "moon", "planet"):
+                return
+            self.selected_target = {
+                "kind": "sky",
+                "type": kind,
+                "key": str(target.get("key", kind)).lower(),
+                "name": str(target.get("name", kind.title())),
+                "alt": float(target.get("alt", 0.0)),
+                "az": float(target.get("az", 0.0)) % 360.0,
+            }
+            if kind == "planet":
+                name_txt = self.selected_target["name"]
+            elif kind == "sun":
+                name_txt = getTraduction("Astro.SunName", "Sun")
+            else:
+                name_txt = getTraduction("Astro.MoonName", "Moon")
+            info = (f"{name_txt}\n"
+                    f"Alt: {self.selected_target['alt']:.2f}\n"
+                    f"Az: {self.selected_target['az']:.2f}")
+        else:
+            return
+
+        self.lbl_info.setText(info)
+        self.lbl_info.adjustSize()
+        self.lbl_info.move(self.width() - self.lbl_info.width() - 20, 20)
+        self.lbl_info.show()
+        self.lbl_info.raise_()
+        self._update_selection_pulse_timer()
+
+    def _set_selected_star(self, star_obj):
+        # Backward-compatible wrapper.
+        if star_obj is None:
+            self._set_selected_target(None)
+        else:
+            self._set_selected_target({"kind": "star", "star": star_obj})
+
+    def _selected_target_sky_position(self, ut_hour: float, day_of_year_utc: int):
+        target = self.selected_target
+        if not isinstance(target, dict):
+            return None
+
+        if target.get("kind") == "star":
+            return self._star_alt_az(target.get("star"), ut_hour, day_of_year_utc)
+
+        if target.get("kind") != "sky":
+            return None
+
+        data = getattr(self, "_sf_cache", {}).get("data", None)
+        t = str(target.get("type", "")).lower()
+        if isinstance(data, dict):
+            if t == "sun":
+                s = data.get("sun", {})
+                if isinstance(s, dict) and ("alt" in s) and ("az" in s):
+                    return float(s["alt"]), float(s["az"]) % 360.0
+            elif t == "moon":
+                m = data.get("moon", {})
+                if isinstance(m, dict) and ("alt" in m) and ("az" in m):
+                    return float(m["alt"]), float(m["az"]) % 360.0
+            elif t == "planet":
+                want = self._normalize_planet_key(target.get("key", ""))
+                for p in data.get("planets", []):
+                    key = self._normalize_planet_key(p.get("key", ""))
+                    if key == want or self._normalize_planet_key(p.get("name", "")) == want:
+                        return float(p.get("alt", 0.0)), float(p.get("az", 0.0)) % 360.0
+
+        # Fallback to snapshot at click-time if cache is unavailable.
+        try:
+            return float(target.get("alt")), float(target.get("az")) % 360.0
+        except Exception:
+            return None
+
+    def _star_alt_az(self, star_obj, ut_hour: float, day_of_year_utc: int):
+        coords = self._extract_star_coords(star_obj)
+        if coords is None:
+            return None
+        ra, dec = coords
+
+        lat_rad = math.radians(self.parent_widget.latitude)
+        lst = (100.0 + day_of_year_utc * 0.9856 + ut_hour * 15.0 + self.parent_widget.longitude) % 360.0
+        ha_rad = math.radians(lst - ra)
+        dec_rad = math.radians(dec)
+
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        sin_dec = math.sin(dec_rad)
+        cos_dec = math.cos(dec_rad)
+        sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * math.cos(ha_rad)
+        sin_alt = max(-1.0, min(1.0, sin_alt))
+        alt = math.degrees(math.asin(sin_alt))
+
+        cos_alt = math.cos(math.radians(alt))
+        if abs(cos_alt) < 1e-10:
+            az = self.azimuth_offset % 360.0
+        else:
+            cos_az = (sin_dec - sin_alt * sin_lat) / (cos_alt * cos_lat + 1e-10)
+            cos_az = max(-1.0, min(1.0, cos_az))
+            az = math.degrees(math.acos(cos_az))
+            if math.sin(ha_rad) > 0:
+                az = 360.0 - az
+        return alt, az % 360.0
+
+    def _draw_selected_target_marker(self, painter: QPainter, ut_hour: float, day_of_year_utc: int):
+        if self.scope_mode_enabled() or self.selected_target is None:
+            return
+
+        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc)
+        if sky is None:
+            return
+        pt = self.project_universal_stereo(sky[0], sky[1])
+        if pt is None:
+            return
+
+        target = self.selected_target
+        body_radius = 0.0
+        if isinstance(target, dict) and target.get("kind") == "sky":
+            item = self._lookup_visible_sky_object(target)
+            if isinstance(item, dict):
+                body_radius = float(item.get("radius_px", 0.0))
+
+        cx = float(pt[0])
+        cy = float(pt[1])
+        phase = 0.5 * (math.sin(time.time() * 3.2) + 1.0)
+        base_r = max(8.0, body_radius + 5.0)
+        r = base_r + 3.0 * phase
+        alpha = int(70 + 90 * (1.0 - phase))
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(255, 255, 255, max(20, alpha // 2)), 2.0))
+        painter.drawEllipse(QPointF(cx, cy), r + 2.0, r + 2.0)
+        painter.setPen(QPen(QColor(255, 255, 255, alpha), 1.0))
+        painter.drawEllipse(QPointF(cx, cy), r, r)
+        painter.restore()
+
+    def _draw_selected_star_marker(self, painter: QPainter, ut_hour: float, day_of_year_utc: int):
+        # Backward-compatible wrapper.
+        self._draw_selected_target_marker(painter, ut_hour, day_of_year_utc)
+
+    def _apply_scope_selected_target_tracking(self, ut_hour: float, day_of_year_utc: int):
+        # In scope mode, selected targets are tracked: camera and scope center follow sky motion.
+        if (not self.scope_mode_enabled()) or self.selected_target is None:
+            return
+        if self.dragging:
+            # Respect temporary Ctrl+drag camera motion while dragging.
+            return
+
+        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc)
+        if sky is None:
+            return
+        alt, az = sky
+        self.azimuth_offset = az
+        self.elevation_angle = max(-90.0, min(90.0, alt))
+        self.scope_controller.set_center((alt, az))
+
+    def _apply_scope_selected_star_tracking(self, ut_hour: float, day_of_year_utc: int):
+        # Backward-compatible wrapper.
+        self._apply_scope_selected_target_tracking(ut_hour, day_of_year_utc)
 
     def _scope_wheel_zoom(self, steps: float) -> None:
         if not self.scope_mode_enabled():
@@ -2061,6 +2421,9 @@ class AstroCanvas(QWidget):
             self.ut_hour = ut_hour # Store for external access
             # Day of year relative to UTC (Critically avoids the 24h jump at midnight crossings)
             day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+
+            # Scope tracking for selected stars follows simulated sky time.
+            self._apply_scope_selected_target_tracking(ut_hour, day_of_year_utc)
             
             # Solar Hour (Apparent, Simple) for Sun
             solar_hour = (ut_hour + self.parent_widget.longitude / 15.0) % 24.0
@@ -2227,6 +2590,7 @@ class AstroCanvas(QWidget):
             if self.parent_widget.chk_enable_sky.isChecked():
                 self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit, eff_lat=eff_lat, day_of_year=day_for_astro)
             
+            self.visible_sky_objects = []
             if SKYFIELD_AVAILABLE and hasattr(self.parent_widget, 'eph'):
                  self.draw_skyfield_objects(painter, ut_hour, day_for_astro, ambient_light=ambient_light, mag_limit=final_mag_limit)
 
@@ -2275,6 +2639,9 @@ class AstroCanvas(QWidget):
             
             # 6. Compass
             self.draw_compass(painter)
+
+            # Selected-star marker (hidden in scope mode by design).
+            self._draw_selected_target_marker(painter, ut_hour, day_of_year_utc)
             
             # 7. HUD information
             painter.setPen(QColor(255, 255, 255, 200))
@@ -3195,6 +3562,16 @@ class AstroCanvas(QWidget):
     def _on_star_result(self, img, vis_stars):
         self._cached_star_image = img
         self.visible_stars = vis_stars # Update interactions
+        if np is not None and isinstance(vis_stars, list) and vis_stars and isinstance(vis_stars[0], tuple):
+            try:
+                self.visible_stars_sx = np.array([float(v[0]) for v in vis_stars], dtype=np.float32)
+                self.visible_stars_sy = np.array([float(v[1]) for v in vis_stars], dtype=np.float32)
+            except Exception:
+                self.visible_stars_sx = np.array([], dtype=np.float32)
+                self.visible_stars_sy = np.array([], dtype=np.float32)
+        elif np is not None:
+            self.visible_stars_sx = np.array([], dtype=np.float32)
+            self.visible_stars_sy = np.array([], dtype=np.float32)
         self.rendering_busy = False
         self.update() # Force repaint to show new stars immediately
 
@@ -3283,6 +3660,11 @@ class AstroCanvas(QWidget):
         pw = self.parent_widget
         if mag_limit is None: mag_limit = pw.magnitude_limit
         if eff_lat is None: eff_lat = pw.latitude
+
+        # Reset interactive star buffers each frame to avoid stale click picks.
+        self.visible_stars = np.array([], dtype=np.int32)
+        self.visible_stars_sx = np.array([], dtype=np.float32)
+        self.visible_stars_sy = np.array([], dtype=np.float32)
         
         # --- GLOBAL STAR KILLER ---
         # A. Interaction Limit
@@ -4323,6 +4705,7 @@ class AstroCanvas(QWidget):
     def mousePressEvent(self, event):
         if self.scope_mode_enabled():
             if event.button() == Qt.LeftButton:
+                self.press_pos = event.pos()
                 if event.modifiers() & Qt.ControlModifier:
                     # Scope override: Ctrl + drag keeps normal camera navigation.
                     self.scope_controller.end_drag()
@@ -4339,6 +4722,7 @@ class AstroCanvas(QWidget):
 
         if self.measurement_tool_active():
             if event.button() == Qt.LeftButton:
+                self.press_pos = event.pos()
                 if event.modifiers() & Qt.ControlModifier:
                     # Measurement override: Ctrl + drag keeps normal camera navigation.
                     self.dragging = True
@@ -4427,6 +4811,8 @@ class AstroCanvas(QWidget):
                 event.accept()
                 return
             self.scope_controller.end_drag()
+            if event.button() == Qt.LeftButton and (event.pos() - self.press_pos).manhattanLength() < 5:
+                self._set_selected_target(self._pick_target_at(event.x(), event.y()))
             self.update()
             event.accept()
             return
@@ -4457,34 +4843,7 @@ class AstroCanvas(QWidget):
         
         # Click Detection (Min movement)
         if (event.pos() - self.press_pos).manhattanLength() < 5:
-            click_pt = event.pos()
-            min_dist = 20 # Click Radius
-            selected = None
-            
-            # Use NumPy search for efficiency
-            if hasattr(self, 'visible_stars') and len(self.visible_stars) > 0:
-                dists = np.hypot(self.visible_stars_sx - click_pt.x(), 
-                                 self.visible_stars_sy - click_pt.y())
-                idx_min = np.argmin(dists)
-                if dists[idx_min] < min_dist:
-                    star_idx = self.visible_stars[idx_min]
-                    cel_objs = self.parent_widget.celestial_objects
-                    if star_idx < len(cel_objs):
-                        selected = cel_objs[star_idx]
-            
-            if selected:
-                info = (f"ID: {selected.get('id', 'N/A')}\n"
-                        f"Mag: {selected['mag']:.2f}\n"
-                        f"RA: {selected['ra']:.2f}\n"
-                        f"Dec: {selected['dec']:.2f}\n"
-                        f"C: {selected.get('bp_rp', 0):.2f}")
-                self.lbl_info.setText(info)
-                self.lbl_info.adjustSize()
-                self.lbl_info.move(self.width() - self.lbl_info.width() - 20, 20)
-                self.lbl_info.show()
-                self.lbl_info.raise_()
-            else:
-                self.lbl_info.hide()
+            self._set_selected_target(self._pick_target_at(event.x(), event.y()))
 
     def mouseDoubleClickEvent(self, event):
         if self.scope_mode_enabled() and event.button() == Qt.LeftButton:
@@ -4678,6 +5037,7 @@ class AstroCanvas(QWidget):
 
     def draw_skyfield_objects(self, painter, ut_hour, day_of_year, ambient_light=1.0, mag_limit=None):
         if mag_limit is None: mag_limit = 6.0
+        bortle = getattr(self.parent_widget, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1))
         # USE CACHE if available
         if hasattr(self, '_sf_cache') and self._sf_cache['data']:
             try:
@@ -4854,7 +5214,7 @@ class AstroCanvas(QWidget):
                             p_col = QColor(p['col'])
                             p_col.setAlphaF(fade_in)
                             
-                            self.draw_planet(painter, p['alt'], p['az'], p['name'], p_col, p_rad, mag)
+                            self.draw_planet(painter, p['alt'], p['az'], p['name'], p_col, p_rad, mag, key=p.get('key'))
 
                 return
             except Exception as e:
@@ -5178,7 +5538,7 @@ class AstroCanvas(QWidget):
                                 # Clone color to apply alpha
                                 p_col = QColor(col)
                                 p_col.setAlphaF(fade_in)
-                                self.draw_planet(painter, alt_p.degrees, az_p.degrees, name, p_col, p_rad, mag)
+                                self.draw_planet(painter, alt_p.degrees, az_p.degrees, name, p_col, p_rad, mag, key=key)
                     except: continue
 
             # 4. Satellites
@@ -5257,10 +5617,98 @@ class AstroCanvas(QWidget):
         path.addEllipse(QPointF(0,0), radius, radius)
         return path
 
+    def _draw_scope_solar_disc(self, painter, radius):
+        # Procedural solar-filter look for scope mode: full disk + sunspots.
+        rr = max(2.0, float(radius))
+        painter.save()
+        disk_path = QPainterPath()
+        disk_path.addEllipse(QPointF(0, 0), rr, rr)
+        painter.setClipPath(disk_path)
+        painter.setPen(Qt.NoPen)
+
+        # Base filtered sun disk.
+        base_grad = QRadialGradient(0, 0, rr)
+        base_grad.setColorAt(0.0, QColor(255, 247, 210, 255))
+        base_grad.setColorAt(0.7, QColor(247, 214, 150, 255))
+        base_grad.setColorAt(1.0, QColor(215, 160, 95, 255))
+        painter.setBrush(QBrush(base_grad))
+        painter.drawEllipse(QPointF(0, 0), rr, rr)
+
+        # Gentle texture granulation.
+        seed = int(getattr(self.parent_widget, "manual_year", 2026)) * 1000 + int(getattr(self.parent_widget, "manual_day", 0))
+        rng = random.Random(seed)
+
+        grain_count = max(50, int(rr * 0.7))
+        for _ in range(grain_count):
+            ang = rng.random() * math.tau
+            rad = rr * (0.05 + 0.92 * math.sqrt(rng.random()))
+            gx = math.cos(ang) * rad
+            gy = math.sin(ang) * rad
+            gr = max(0.6, rr * (0.006 + 0.015 * rng.random()))
+            a = int(6 + 18 * rng.random())
+            painter.setBrush(QColor(255, 233, 170, a))
+            painter.drawEllipse(QPointF(gx, gy), gr, gr)
+
+        # Sunspot groups (umbra + penumbra) deterministic per day.
+        spot_groups = max(2, int(rr / 30.0))
+        for _ in range(spot_groups):
+            ang = rng.random() * math.tau
+            rad = rr * (0.10 + 0.70 * rng.random())
+            cx = math.cos(ang) * rad
+            cy = math.sin(ang) * rad
+
+            pen_w = rr * (0.07 + 0.06 * rng.random())
+            pen_h = pen_w * (0.55 + 0.35 * rng.random())
+            umb_w = pen_w * (0.35 + 0.25 * rng.random())
+            umb_h = pen_h * (0.35 + 0.25 * rng.random())
+            rot = rng.uniform(0.0, 180.0)
+
+            painter.save()
+            painter.translate(cx, cy)
+            painter.rotate(rot)
+            painter.setBrush(QColor(95, 70, 45, 140))
+            painter.drawEllipse(QPointF(0, 0), pen_w, pen_h)
+            painter.setBrush(QColor(45, 32, 20, 190))
+            painter.drawEllipse(QPointF(0, 0), umb_w, umb_h)
+            painter.restore()
+
+            # Secondary tiny spots around the main group.
+            n_micro = 1 + int(rng.random() * 3)
+            for _j in range(n_micro):
+                da = rng.random() * math.tau
+                dr = pen_w * (0.7 + 1.3 * rng.random())
+                mx = cx + math.cos(da) * dr
+                my = cy + math.sin(da) * dr
+                mr = max(0.8, pen_w * (0.10 + 0.10 * rng.random()))
+                painter.setBrush(QColor(60, 42, 26, 150))
+                painter.drawEllipse(QPointF(mx, my), mr, mr)
+
+        # Limb darkening.
+        limb_grad = QRadialGradient(0, 0, rr)
+        limb_grad.setColorAt(0.6, QColor(0, 0, 0, 0))
+        limb_grad.setColorAt(0.92, QColor(70, 45, 25, 60))
+        limb_grad.setColorAt(1.0, QColor(60, 35, 20, 120))
+        painter.setBrush(QBrush(limb_grad))
+        painter.drawEllipse(QPointF(0, 0), rr, rr)
+
+        painter.setClipping(False)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(255, 235, 180, 120), 0.8))
+        painter.drawEllipse(QPointF(0, 0), rr, rr)
+        painter.restore()
+
     def draw_sun_skyfield(self, painter, alt, az, radius, color, corona_opacity, pixels_per_deg):
         pt = self.project_universal_stereo(alt, az)
         if not pt: return
         x, y = pt
+        self._register_visible_sky_object("sun", "sun", getTraduction("Astro.SunName", "Sun"), alt, az, x, y, radius)
+
+        if self.scope_mode_enabled():
+            painter.save()
+            painter.translate(x, y)
+            self._draw_scope_solar_disc(painter, radius)
+            painter.restore()
+            return
         
         # 1. Corona (Intense & Sharp)
         if corona_opacity > 0.01:
@@ -5336,6 +5784,7 @@ class AstroCanvas(QWidget):
         pt = self.project_universal_stereo(alt, az)
         if not pt: return
         x, y = pt
+        self._register_visible_sky_object("moon", "moon", getTraduction("Astro.MoonName", "Moon"), alt, az, x, y, radius)
         r = radius
         
         # Default PPD if missing
@@ -5484,10 +5933,12 @@ class AstroCanvas(QWidget):
 
         painter.setOpacity(1.0)
 
-    def draw_planet(self, painter, alt, az, name, col, sz, mag):
+    def draw_planet(self, painter, alt, az, name, col, sz, mag, key=None):
         pt = self.project_universal_stereo(alt, az)
         if not pt: return
         x, y = pt
+        pkey = self._normalize_planet_key(key if key is not None else name)
+        self._register_visible_sky_object("planet", pkey, name, alt, az, x, y, sz, mag=mag)
         painter.setBrush(col)
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(QPointF(x,y), sz, sz)
