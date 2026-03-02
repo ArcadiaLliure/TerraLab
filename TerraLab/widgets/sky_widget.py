@@ -1,8 +1,9 @@
-import math
+﻿import math
 import os
 import random
 import time
 import random
+import unicodedata
 try:
     import numpy as np
 except ImportError:
@@ -20,6 +21,16 @@ from TerraLab.weather.system import (WeatherSystem, WeatherPalette,
                             WeatherControlWidget, Cloud, Particle)
 from TerraLab.layers.village import VillageOverlay
 from TerraLab.terrain.overlay import HorizonOverlay
+from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
+from TerraLab.widgets.measurement_tools import (
+    MeasurementController,
+    TOOL_NONE,
+    TOOL_RULER,
+    TOOL_SQUARE,
+    TOOL_RECTANGLE,
+    TOOL_CIRCLE,
+)
+from TerraLab.widgets.spherical_math import screen_to_sky
 import random
 
 # Skyfield imports
@@ -54,7 +65,7 @@ class AstroEngine:
     
     @staticmethod
     def get_julian_century(dt_utc):
-        # Conversión a JD con corrección Delta T aproximada para 2026 (~72s)
+        # ConversiÃ³n a JD con correcciÃ³n Delta T aproximada para 2026 (~72s)
         # JD Epoch J2000.0 = 2451545.0
         
         # 1. Obtener JD UTC
@@ -65,7 +76,7 @@ class AstroEngine:
         jd = dt_utc.day + ((153 * m + 2) // 5) + 365 * y + y // 4 - y // 100 + y // 400 - 32045
         jd += (dt_utc.hour - 12) / 24.0 + dt_utc.minute / 1440.0 + dt_utc.second / 86400.0
         
-        # 2. Aplicar Delta T (Aprox 72s para 2026 = 0.000833 días)
+        # 2. Aplicar Delta T (Aprox 72s para 2026 = 0.000833 dÃ­as)
         delta_t_days = 72.0 / 86400.0
         jd_tdb = jd + delta_t_days
         
@@ -93,24 +104,24 @@ class AstroEngine:
         # Argumentos Fundamentales (Grados) usando T_eff
         # Longitud Media
         L_prime = AstroEngine.normalize(218.3164477 + 481267.8812542 * T_eff)
-        # Elongación Media
+        # ElongaciÃ³n Media
         D = AstroEngine.normalize(297.8501921 + 445267.1114034 * T_eff)
-        # Anomalía Media Sol
+        # AnomalÃ­a Media Sol
         M = AstroEngine.normalize(357.5291092 + 35999.0502909 * T_eff)
-        # Anomalía Media Luna
+        # AnomalÃ­a Media Luna
         M_prime = AstroEngine.normalize(134.9633964 + 477198.8675055 * T_eff)
         # Argumento Latitud
         F = AstroEngine.normalize(93.2720950 + 483202.0175381 * T_eff)
 
-        # Conversión a radianes para funciones trigonométricas
+        # ConversiÃ³n a radianes para funciones trigonomÃ©tricas
         Dr = D * D2R
         Mr = M * D2R
         Mpr = M_prime * D2R
         Fr = F * D2R
 
-        # --- TÉRMINOS PERIÓDICOS LONGITUD (Sigma l) ---
-        # --- TÉRMINOS PERIÓDICOS LONGITUD (Sigma l) - MEEUS 47 ---
-        # Unidades: Millonésimas de grado
+        # --- TÃ‰RMINOS PERIÃ“DICOS LONGITUD (Sigma l) ---
+        # --- TÃ‰RMINOS PERIÃ“DICOS LONGITUD (Sigma l) - MEEUS 47 ---
+        # Unidades: MillonÃ©simas de grado
         Sl = 0
         Sl += 6288774 * math.sin(2*Dr - Mpr)   # Major Inequality
         Sl -= 1274027 * math.sin(2*Dr - 2*Mpr) # Evection (Corrected to NEGATIVE)
@@ -140,10 +151,10 @@ class AstroEngine:
         # Aligns the corrected Meeus model to target 19:35 First Contact.
         epoch_correction = 0.85
         
-        # Longitud Geocéntrica Eclíptica (Millonésimas de grado -> grados)
+        # Longitud GeocÃ©ntrica EclÃ­ptica (MillonÃ©simas de grado -> grados)
         lon = AstroEngine.normalize(L_prime + Sl / 1000000.0 + epoch_correction)
 
-        # --- TÉRMINOS PERIÓDICOS LATITUD (Sigma b) ---
+        # --- TÃ‰RMINOS PERIÃ“DICOS LATITUD (Sigma b) ---
         Sb = 0
         Sb += 5128122 * math.sin(Fr)
         Sb += 280602  * math.sin(Mpr + Fr)
@@ -153,7 +164,7 @@ class AstroEngine:
         lat = Sb / 1000000.0
 
         # --- DISTANCIA (Sigma r) ---
-        # Vital para el tamaño aparente
+        # Vital para el tamaÃ±o aparente
         dist = 385000.56  # Base km
         dist += -20905.355 * math.cos(Mpr)
         dist += -3699.111  * math.cos(2*Dr - Mpr)
@@ -164,14 +175,14 @@ class AstroEngine:
 
     @staticmethod
     def get_sun_position_vsop(T):
-        # Longitud Media Geométrica
+        # Longitud Media GeomÃ©trica
         L0 = AstroEngine.normalize(280.46646 + 36000.76983 * T)
-        # Anomalía Media
+        # AnomalÃ­a Media
         M = AstroEngine.normalize(357.52911 + 35999.05029 * T)
         # Excentricidad
         e = 0.016708634 - 0.000042037 * T
 
-        # Ecuación del Centro
+        # EcuaciÃ³n del Centro
         Mr = M * AstroEngine.DEG_TO_RAD
         C = (1.914602 - 0.004817 * T) * math.sin(Mr) + \
             (0.019993 - 0.000101 * T) * math.sin(2 * Mr) + \
@@ -208,8 +219,8 @@ class AstroEngine:
     @staticmethod
     def get_topocentric_position(ra_geo, dec_geo, dist_km, obs_lat, obs_lon, jd):
         """
-        CORRECCIÓN CRÍTICA DE PARALAJE.
-        Convierte coordenadas geocéntricas a topocéntricas para el observador.
+        CORRECCION CRITICA DE PARALAJE.
+        Convierte coordenadas geocentricas a topocentricas para el observador.
         """
         D2R = AstroEngine.DEG_TO_RAD
         R2D = AstroEngine.RAD_TO_DEG
@@ -223,20 +234,20 @@ class AstroEngine:
         H = AstroEngine.normalize(lst - ra_geo)
         Hr = H * D2R
         
-        # 3. Latitud Geocéntrica del observador
+        # 3. Latitud GeocÃ©ntrica del observador
         lat_r = obs_lat * D2R
         # Constantes WGS84 simplificadas
         rho_sin_phi = 0.996647 * math.sin(lat_r)
         rho_cos_phi = math.cos(lat_r)
 
-        # 4. Cálculo del Paralaje (Meeus Cap 40 / PDF Rectangular)
+        # 4. CÃ¡lculo del Paralaje (Meeus Cap 40 / PDF Rectangular)
         rar = ra_geo * D2R
         decr = dec_geo * D2R
         
         # Seno del paralaje horizontal ecuatorial
         sin_pi = AstroEngine.EARTH_RADIUS_KM / dist_km
 
-        # Fórmulas rigurosas
+        # FÃ³rmulas rigurosas
         num = -rho_cos_phi * sin_pi * math.sin(Hr)
         den = math.cos(decr) - rho_cos_phi * sin_pi * math.cos(Hr)
         
@@ -1114,7 +1125,7 @@ class StarRenderWorker(QObject):
                 else:
                      # REALISTIC STELLARIUM OPTICS: Bloom, Clamp, Desaturation
                      if mag > 5.0:
-                         # Máximo de 1 píxel real, independientemente del zoom para evitar "bolitas"
+                         # MÃ¡ximo de 1 pÃ­xel real, independientemente del zoom para evitar "bolitas"
                          size = min(1.0, 1.2 * star_scale)
                          a_val = 220 - min(100, int((mag - 5.0) * 15))
                          
@@ -1137,7 +1148,7 @@ class StarRenderWorker(QObject):
                          star_c_intense = QColor(r_val, g_val, b_val, final_a)
                          transparent_c = QColor(r_val, g_val, b_val, 0)
                          
-                         # 1. Halo mucho más centrado y menos opaco para evitar el "velo"
+                         # 1. Halo mucho mÃ¡s centrado y menos opaco para evitar el "velo"
                          if mag < 4.0:
                              halo_size = core_radius * (5.5 - mag) * 1.8 * zoom_level
                              if mag < 1.0:
@@ -1152,10 +1163,10 @@ class StarRenderWorker(QObject):
                              painter.setBrush(QBrush(halo_grad))
                              painter.drawEllipse(QPointF(x, y), halo_size, halo_size)
                          
-                         # 2. Núcleo más brillante y denso
+                         # 2. NÃºcleo mÃ¡s brillante y denso
                          core_grad = QRadialGradient(x, y, core_radius)
                          core_grad.setColorAt(0.0, QColor(255, 255, 255, final_a))
-                         core_grad.setColorAt(0.6, star_c_intense) # Mantiene el color base más hacia el borde
+                         core_grad.setColorAt(0.6, star_c_intense) # Mantiene el color base mÃ¡s hacia el borde
                          core_grad.setColorAt(1.0, transparent_c)
                          
                          painter.setBrush(QBrush(core_grad))
@@ -1181,7 +1192,7 @@ class StarRenderWorker(QObject):
                                  
                                  painter.setPen(Qt.NoPen)
                                  
-                                 # Draw 4 spikes in cross pattern: 0°, 90°, 180°, 270°
+                                 # Draw 4 spikes in cross pattern: 0Â°, 90Â°, 180Â°, 270Â°
                                  for angle_deg in [0, 90, 180, 270]:
                                      painter.save()
                                      painter.translate(x, y)
@@ -1444,16 +1455,16 @@ class AstroCanvas(QWidget):
         # Weather System
         self.weather = WeatherSystem(self.width(), self.height())
         
-        # Horizon Overlay (terrain/mountains — independent from village)
+        # Horizon Overlay (terrain/mountains â€” independent from village)
         _horizon_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'horizon_profile.npz')
         self.horizon_overlay = HorizonOverlay(horizon_profile_path=_horizon_path)
         self.horizon_overlay.request_update.connect(self.update)
         
-        # Village Overlay (houses, trees, lanterns — on top of terrain)
+        # Village Overlay (houses, trees, lanterns â€” on top of terrain)
         self.village = VillageOverlay()
         self.village.request_update.connect(self.update)
 
-        # HintOverlay — toast HUD contextual per a zoom, temps i ubicació
+        # HintOverlay â€” toast HUD contextual per a zoom, temps i ubicaciÃ³
         from TerraLab.widgets.hint_overlay import HintOverlay as _HintOverlay
         self.hint_overlay = _HintOverlay(parent=self)
 
@@ -1508,6 +1519,17 @@ class AstroCanvas(QWidget):
         self._eclipse_cache = {'time': -1, 'value': 1.0}
         self._moon_pos_cache = {}  # Cache for moon calculations
         self._last_skyfield_update = 0  # timestamp in ms
+
+        # Telescope scope mode and spherical measurement overlays.
+        self.scope_controller = TelescopeScopeController()
+        self.measurement_controller = MeasurementController()
+
+        # Continuous key movement for scope mode.
+        self._scope_pressed_keys = set()
+        self._scope_last_tick_ms = int(time.time() * 1000)
+        self._scope_move_timer = QTimer(self)
+        self._scope_move_timer.setInterval(33)  # ~30Hz
+        self._scope_move_timer.timeout.connect(self._scope_move_tick)
 
     def reset_zoom_human(self):
         """Reset zoom to human eye equivalent (43mm)."""
@@ -1737,10 +1759,161 @@ class AstroCanvas(QWidget):
         self.weather.resize(self.width(), self.height())
         super().resizeEvent(event)
 
+    def scope_mode_enabled(self) -> bool:
+        return bool(getattr(self.scope_controller, "enabled", False))
+
+    def measurement_tool_active(self) -> bool:
+        return getattr(self.measurement_controller, "active_tool", TOOL_NONE) != TOOL_NONE
+
+    def set_scope_enabled(self, enabled: bool) -> None:
+        if enabled:
+            self.scope_controller.activate()
+        else:
+            self.scope_controller.deactivate()
+            self._scope_pressed_keys.clear()
+            self._scope_move_timer.stop()
+        self._refresh_overlay_cursor()
+        self.update()
+
+    def set_scope_shape(self, shape: str) -> None:
+        self.scope_controller.set_shape(shape)
+        self.update()
+
+    def set_scope_speed_mode(self, mode: str) -> None:
+        self.scope_controller.set_speed_mode(mode)
+        self.update()
+
+    def set_scope_focal_mm(self, focal_mm: float) -> None:
+        self.scope_controller.set_focal_mm(focal_mm)
+        self.update()
+
+    def set_scope_sensor(self, sensor_key: str) -> None:
+        self.scope_controller.set_sensor_key(sensor_key)
+        self.update()
+
+    def set_measurement_tool(self, tool: str) -> None:
+        self.measurement_controller.set_tool(tool)
+        self._refresh_overlay_cursor()
+        self.update()
+
+    def clear_measurements(self) -> None:
+        self.measurement_controller.clear()
+        self._refresh_overlay_cursor()
+        self.update()
+
+    def _refresh_overlay_cursor(self):
+        if self.scope_mode_enabled() or self.measurement_tool_active():
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.unsetCursor()
+
+    def _scope_move_tick(self):
+        if not self.scope_mode_enabled() or not self._scope_pressed_keys:
+            self._scope_move_timer.stop()
+            return
+        now_ms = int(time.time() * 1000)
+        dt = max(0.001, (now_ms - self._scope_last_tick_ms) / 1000.0)
+        self._scope_last_tick_ms = now_ms
+
+        rate = self.scope_controller.hold_rate_deg_per_s()
+        step = rate * dt
+        d_alt = 0.0
+        d_az = 0.0
+
+        if Qt.Key_Up in self._scope_pressed_keys:
+            d_alt += step
+        if Qt.Key_Down in self._scope_pressed_keys:
+            d_alt -= step
+        if Qt.Key_Left in self._scope_pressed_keys:
+            d_az += step
+        if Qt.Key_Right in self._scope_pressed_keys:
+            d_az -= step
+
+        if d_alt != 0.0 or d_az != 0.0:
+            self.scope_controller.nudge(d_alt, d_az)
+            self.update()
+
+    def _scope_secondary_drag_deg_per_px(self) -> float:
+        # Secondary camera drag sensitivity in scope mode follows scope speed mode.
+        if self.scope_controller.speed_mode == TelescopeScopeController.SPEED_SLOW:
+            return 0.5 / 60.0
+        return 0.5
+
     def keyPressEvent(self, event):
+        key = event.key()
+
+        if self.scope_mode_enabled():
+            if key == Qt.Key_Escape:
+                self.set_scope_enabled(False)
+                if hasattr(self.parent_widget, "sync_scope_ui_state"):
+                    self.parent_widget.sync_scope_ui_state(False)
+                event.accept()
+                return
+
+            if key == Qt.Key_M:
+                new_mode = (
+                    TelescopeScopeController.SPEED_FAST
+                    if self.scope_controller.speed_mode == TelescopeScopeController.SPEED_SLOW
+                    else TelescopeScopeController.SPEED_SLOW
+                )
+                self.scope_controller.set_speed_mode(new_mode)
+                if hasattr(self.parent_widget, "sync_scope_speed_ui"):
+                    self.parent_widget.sync_scope_speed_ui(new_mode)
+                self.update()
+                event.accept()
+                return
+
+            if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+                if event.isAutoRepeat():
+                    event.accept()
+                    return
+                # Discrete tap step
+                self._scope_last_tick_ms = int(time.time() * 1000)
+                step = self.scope_controller.short_step_deg()
+                d_alt = 0.0
+                d_az = 0.0
+                if key == Qt.Key_Up:
+                    d_alt = step
+                elif key == Qt.Key_Down:
+                    d_alt = -step
+                elif key == Qt.Key_Left:
+                    d_az = step
+                elif key == Qt.Key_Right:
+                    d_az = -step
+                self.scope_controller.nudge(d_alt, d_az)
+                self.update()
+                self._scope_pressed_keys.add(key)
+                if not self._scope_move_timer.isActive():
+                    self._scope_move_timer.start()
+                event.accept()
+                return
+
+        if self.measurement_tool_active() and key == Qt.Key_Escape:
+            self.measurement_controller.cancel_current()
+            self.update()
+            event.accept()
+            return
+
+        if self.measurement_tool_active() and key in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.measurement_controller.delete_selected()
+            self.update()
+            event.accept()
+            return
+
         if event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_L:
             self.log_positions()
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        key = event.key()
+        if self.scope_mode_enabled() and key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+            if not event.isAutoRepeat():
+                self._scope_pressed_keys.discard(key)
+                if not self._scope_pressed_keys:
+                    self._scope_move_timer.stop()
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
 
     def log_positions(self):
         try:
@@ -2078,12 +2251,12 @@ class AstroCanvas(QWidget):
             lat = self.parent_widget.latitude
             hemi = "N" if lat >= 0 else "S"
             painter.setFont(QFont("Arial", 10))
-            painter.drawText(20, 80, f"LAT: {abs(lat):.2f}° {hemi}")
+            painter.drawText(20, 80, f"LAT: {abs(lat):.2f}Â° {hemi}")
 
             # Altitude Indicator
             alt = self.elevation_angle
             lbl_alt = "ALT" 
-            painter.drawText(20, 100, f"{lbl_alt}: {alt:.1f}°")
+            painter.drawText(20, 100, f"{lbl_alt}: {alt:.1f}Â°")
             
             # Focal Length Indicator & Human Eye Button
             # Base FOV = 100 deg (Zoom 1.0)
@@ -2103,7 +2276,20 @@ class AstroCanvas(QWidget):
                 self.btn_human_eye.move(140, 105) 
                 if not self.btn_human_eye.isVisible():
                     self.btn_human_eye.show()
-            
+
+            # 8. User overlays (always above stars/planets/trails/terrain)
+            self.measurement_controller.draw(
+                painter,
+                self.project_universal_stereo,
+                formatters={},
+            )
+            self.scope_controller.draw(
+                painter,
+                self.width(),
+                self.height(),
+                self.project_universal_stereo,
+            )
+             
         finally:
             painter.end()
 
@@ -2599,6 +2785,11 @@ class AstroCanvas(QWidget):
 # ... (inside AstronomicalWidget)
 
     def wheelEvent(self, event):
+        if self.scope_mode_enabled():
+            # In scope mode we avoid changing the global camera zoom unexpectedly.
+            event.accept()
+            return
+
         degrees = event.angleDelta().y() / 8.0
         steps = degrees / 15.0
         factor = 1.1 ** steps
@@ -2609,7 +2800,7 @@ class AstroCanvas(QWidget):
         # The Fast-Path will draw on top.
         self.update()
 
-        # ─ Toast HUD: mostra FOV i focal equivalent al zoom actual ─
+        # â”€ Toast HUD: mostra FOV i focal equivalent al zoom actual â”€
         if hasattr(self, 'hint_overlay'):
             fov_deg   = 100.0 / self.zoom_level
             focal_rad = math.radians(fov_deg)
@@ -3145,8 +3336,8 @@ class AstroCanvas(QWidget):
         az_rad_full = np.radians(az_deg)
         cos_gamma = sin_alt * sin_s + cos_alt * cos_s * np.cos(az_rad_full - s_az_rad)
         
-        # Només penalitzem estels que estan cap a la direcció del Sol, no "potenciem" mai.
-        # FIX CÍTIC: A la nit profunda (Sol molt sota l'horitzó), el Sol no pot esborrar 
+        # NomÃ©s penalitzem estels que estan cap a la direcciÃ³ del Sol, no "potenciem" mai.
+        # FIX CÃTIC: A la nit profunda (Sol molt sota l'horitzÃ³), el Sol no pot esborrar 
         # estrelles, la Terra el tapa. Ho limitem al Crepuscle (Twilight).
         s_alt_deg = math.degrees(s_alt_rad)
         sun_glare_opacity = 0.0
@@ -3179,7 +3370,7 @@ class AstroCanvas(QWidget):
         refraction_deg = (1.02 / 60.0) / np.tan(np.radians(h_capped + 10.3 / (h_capped + 5.11)))
         alt_deg_refined = alt_deg + refraction_deg
         
-        # 3. MOON EXTINCTION (Fase y separación)
+        # 3. MOON EXTINCTION (Fase y separaciÃ³n)
         if hasattr(self, '_sf_cache') and isinstance(self._sf_cache, dict) and self._sf_cache.get('data') and 'moon' in self._sf_cache.get('data', {}):
             m_data = self._sf_cache['data']['moon']
             if m_data['alt'] > -5.0: # Only if above or near horizon
@@ -3187,11 +3378,11 @@ class AstroCanvas(QWidget):
                 m_az = np.radians(m_data['az'])
                 m_illum = m_data.get('illumination', 0.5)
                 
-                # Càlcul vectorial per extingir radialment entorn de la Lluna
+                # CÃ lcul vectorial per extingir radialment entorn de la Lluna
                 cos_dist_moon = sin_alt * math.sin(m_alt) + cos_alt * math.cos(m_alt) * np.cos(np.radians(az_deg) - m_az)
                 moon_ang_dist_rad = np.arccos(np.clip(cos_dist_moon, -1.0, 1.0))
                 
-                # Afecta molt al voltant (~0.25 rads = ~15 graus) depenent si és Lluna Plenà, penalitzant magnitud
+                # Afecta molt al voltant (~0.25 rads = ~15 graus) depenent si Ã©s Lluna PlenÃ , penalitzant magnitud
                 moon_glare = np.exp(-(moon_ang_dist_rad / 0.25)**2) * m_illum * 4.5
                 local_limit -= moon_glare
         
@@ -3389,7 +3580,7 @@ class AstroCanvas(QWidget):
                  # REALISTIC STELLARIUM OPTICS: Bloom, Clamp, Desaturation
                  if mag > 5.0:
                      # Estrellas de fondo: un puntito que de verdad sea visible pero sin halo
-                     # Máximo de 1 píxel real, independientemente del zoom para evitar "bolitas"
+                     # MÃ¡ximo de 1 pÃ­xel real, independientemente del zoom para evitar "bolitas"
                      size = min(1.0, 1.2 * scale)
                      a_val = 220 - min(100, int((mag - 5.0) * 15))
                      
@@ -3413,7 +3604,7 @@ class AstroCanvas(QWidget):
                      star_c_intense = QColor(r_val, g_val, b_val, final_a)
                      transparent_c = QColor(r_val, g_val, b_val, 0)
                      
-                     # 1. Halo mucho más centrado y menos opaco para evitar el "velo"
+                     # 1. Halo mucho mÃ¡s centrado y menos opaco para evitar el "velo"
                      if mag < 4.0:
                          halo_size = core_radius * (5.5 - mag) * 1.8 * self.zoom_level
                          if mag < 1.0:
@@ -3429,10 +3620,10 @@ class AstroCanvas(QWidget):
                          painter.setBrush(QBrush(halo_grad))
                          painter.drawEllipse(QPointF(x, y), halo_size, halo_size)
                      
-                     # 2. Núcleo más brillante y denso
+                     # 2. NÃºcleo mÃ¡s brillante y denso
                      core_grad = QRadialGradient(x, y, core_radius)
                      core_grad.setColorAt(0.0, QColor(255, 255, 255, final_a))
-                     core_grad.setColorAt(0.6, star_c_intense) # Mantiene el color base más hacia el borde
+                     core_grad.setColorAt(0.6, star_c_intense) # Mantiene el color base mÃ¡s hacia el borde
                      core_grad.setColorAt(1.0, transparent_c)
                      
                      if not math.isnan(core_radius) and core_radius > 0:
@@ -4092,6 +4283,41 @@ class AstroCanvas(QWidget):
 
 
     def mousePressEvent(self, event):
+        if self.scope_mode_enabled():
+            if event.button() == Qt.LeftButton:
+                if event.modifiers() & Qt.ControlModifier:
+                    # Scope override: Ctrl + drag keeps normal camera navigation.
+                    self.scope_controller.end_drag()
+                    self.dragging = True
+                    self.last_mouse_x = event.x()
+                    self.last_mouse_y = event.y()
+                    self.press_pos = event.pos()
+                else:
+                    self.scope_controller.handle_click(event.x(), event.y(), self.unproject_stereo)
+                    self.scope_controller.start_drag(event.x(), event.y())
+                self.update()
+            event.accept()
+            return
+
+        if self.measurement_tool_active():
+            if event.button() == Qt.LeftButton:
+                if event.modifiers() & Qt.ControlModifier:
+                    # Measurement override: Ctrl + drag keeps normal camera navigation.
+                    self.dragging = True
+                    self.last_mouse_x = event.x()
+                    self.last_mouse_y = event.y()
+                    self.press_pos = event.pos()
+                else:
+                    self.measurement_controller.on_mouse_press(
+                        event.x(),
+                        event.y(),
+                        self.unproject_stereo,
+                        self.project_universal_stereo,
+                    )
+                self.update()
+            event.accept()
+            return
+
         if event.button() == Qt.LeftButton:
             self.dragging = True
             self.last_mouse_x = event.x()
@@ -4099,6 +4325,48 @@ class AstroCanvas(QWidget):
             self.press_pos = event.pos()
     
     def mouseMoveEvent(self, event):
+        if self.scope_mode_enabled():
+            if self.dragging:
+                dx = event.x() - self.last_mouse_x
+                dy = event.y() - self.last_mouse_y
+                sensitivity = self._scope_secondary_drag_deg_per_px()
+                self.azimuth_offset = (self.azimuth_offset - dx * sensitivity)
+                self.elevation_angle += dy * sensitivity
+                self.elevation_angle = max(-90, min(90, self.elevation_angle))
+                self.last_mouse_x = event.x()
+                self.last_mouse_y = event.y()
+                self.update()
+                event.accept()
+                return
+            if self.scope_controller.drag_move(event.x(), event.y(), self.unproject_stereo):
+                self.update()
+            event.accept()
+            return
+
+        if self.measurement_tool_active():
+            if self.dragging:
+                dx = event.x() - self.last_mouse_x
+                dy = event.y() - self.last_mouse_y
+                self.azimuth_offset = (self.azimuth_offset - dx * 0.5)
+                self.elevation_angle += dy * 0.5
+                self.elevation_angle = max(-90, min(90, self.elevation_angle))
+                self.last_mouse_x = event.x()
+                self.last_mouse_y = event.y()
+                self.update()
+                event.accept()
+                return
+            consumed = self.measurement_controller.on_mouse_move(
+                event.x(),
+                event.y(),
+                self.unproject_stereo,
+                self.project_universal_stereo,
+            )
+            if not consumed:
+                self.measurement_controller.update_preview_cursor(event.x(), event.y(), self.unproject_stereo)
+            self.update()
+            event.accept()
+            return
+
         if self.dragging:
             dx = event.x() - self.last_mouse_x
             dy = event.y() - self.last_mouse_y
@@ -4112,6 +4380,38 @@ class AstroCanvas(QWidget):
             self.update()
             
     def mouseReleaseEvent(self, event):
+        if self.scope_mode_enabled():
+            if self.dragging:
+                self.dragging = False
+                # Invalidate trail cache only when movement STOPS to trigger a clean bake.
+                self._cached_trail_image = None
+                self.update()
+                event.accept()
+                return
+            self.scope_controller.end_drag()
+            self.update()
+            event.accept()
+            return
+
+        if self.measurement_tool_active():
+            if self.dragging:
+                self.dragging = False
+                # Invalidate trail cache only when movement STOPS to trigger a clean bake.
+                self._cached_trail_image = None
+                self.update()
+                event.accept()
+                return
+            if event.button() == Qt.LeftButton:
+                self.measurement_controller.on_mouse_release(
+                    event.x(),
+                    event.y(),
+                    self.unproject_stereo,
+                    self.project_universal_stereo,
+                )
+                self.update()
+            event.accept()
+            return
+
         self.dragging = False
         # Invalidate trail cache only when movement STOPS to trigger a clean bake
         self._cached_trail_image = None
@@ -4147,6 +4447,29 @@ class AstroCanvas(QWidget):
                 self.lbl_info.raise_()
             else:
                 self.lbl_info.hide()
+
+    def mouseDoubleClickEvent(self, event):
+        if self.scope_mode_enabled() and event.button() == Qt.LeftButton:
+            sky = screen_to_sky(event.x(), event.y(), self.unproject_stereo)
+            if sky is not None:
+                # Interactive jump: center scope + repoint camera + direct zoom.
+                self.scope_controller.set_center(sky)
+                self.azimuth_offset = sky[1] % 360.0
+                self.elevation_angle = max(-90.0, min(90.0, sky[0]))
+
+                fov_w, fov_h = self.scope_controller.current_fov()
+                target_fov = max(0.2, min(93.9, max(fov_w, fov_h)))
+                self.zoom_level = max(0.5, min(50.0, 93.9 / target_fov))
+
+                # Force redraw paths that depend on camera state.
+                self._cached_star_image = None
+                self._cached_trail_image = None
+
+            self.update()
+            event.accept()
+            return
+
+        super().mouseDoubleClickEvent(event)
 
 
     # --- SKYFIELD INTEGRATION ---
@@ -4249,7 +4572,7 @@ class AstroCanvas(QWidget):
         # Distance attenuation: exponential decaimient I(r) = I0 * e^(-r/R) (35km mean clear air path)
         dist_factor = math.exp(-dist / 35000.0) 
         
-        # 2. Obtenció Altitud (Obstacles Topogràfics a l'Azimut)
+        # 2. ObtenciÃ³ Altitud (Obstacles TopogrÃ fics a l'Azimut)
         elev_deg = 0.0
         for b in profile.bands:
              elev_deg = max(elev_deg, math.degrees(b["angles"][idx]))
@@ -4531,8 +4854,8 @@ class AstroCanvas(QWidget):
             moon = eph['moon']
             obs_loc = earth + observer
             
-            # "No alterar el tamaño más que por el efecto del zoom".
-            # User request: "Me gustaría que, al ampliar, también se ampliara el Sol y la Luna."
+            # "No alterar el tamaÃ±o mÃ¡s que por el efecto del zoom".
+            # User request: "Me gustarÃ­a que, al ampliar, tambiÃ©n se ampliara el Sol y la Luna."
             # Previous logic (12.0 / zoom) kept the size static on screen.
             # We now use a constant scale so it grows naturally with the camera zoom (pixels_per_deg).
             # We use 10.0 as a base "Cinematic Scale" so it looks impressive but not overwhelming.
@@ -4754,8 +5077,8 @@ class AstroCanvas(QWidget):
                 self.last_log_time = now_ts
                 off = self.get_simulated_tz_offset(day_of_year)
                 print(f"SKYFIELD LOG [UTC{off:+.0f}]: "
-                      f"SUN(Alt={alt_s.degrees:.4f}°, Az={az_s.degrees:.4f}°) | "
-                      f"MOON(Alt={alt_m_real.degrees:.4f}°, Az={az_m_real.degrees:.4f}°)")
+                      f"SUN(Alt={alt_s.degrees:.4f}Â°, Az={az_s.degrees:.4f}Â°) | "
+                      f"MOON(Alt={alt_m_real.degrees:.4f}Â°, Az={az_m_real.degrees:.4f}Â°)")
             
             # 3. Planets (All times, visibility depends on Magnitude Limit)
             # The manual check 'if s_alt_deg < -6' prevented Venus/Jupiter from appearing in Civil Twilight.
@@ -5268,7 +5591,7 @@ class AstronomicalWidget(CustomWidgetBase):
         # 2. Init Base Widget (Calls setup_ui -> setup_content)
         super().__init__(title="Astronomy", parent=parent, **kwargs)
         
-        # 3. Post-UI initialization — ASYNC (non-blocking)
+        # 3. Post-UI initialization â€” ASYNC (non-blocking)
         self.show_satellites = False
         self.satellites = []
         
@@ -5528,7 +5851,7 @@ class AstronomicalWidget(CustomWidgetBase):
         frame_layout.setSpacing(5)
         frame_layout.setContentsMargins(5, 5, 5, 5)
 
-        # ── TIME BAR (At the top) ────────────────────────────────────────────
+        # â”€â”€ TIME BAR (At the top) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self.time_bar = RusticTimeBar()
         self.time_bar.valueChanged.connect(self.on_time_bar_change)
         self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
@@ -5542,7 +5865,7 @@ class AstronomicalWidget(CustomWidgetBase):
         self.lbl_loading.move(10, 50)
         self.lbl_loading.resize(200, 30)
 
-        # ── THE 3 BOTTOM PANELS ──────────────────────────────────────────────
+        # â”€â”€ THE 3 BOTTOM PANELS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         panels_layout = QHBoxLayout()
         panels_layout.setSpacing(10)
         panels_layout.setContentsMargins(0, 0, 0, 0)
@@ -5554,7 +5877,7 @@ class AstronomicalWidget(CustomWidgetBase):
             QCheckBox { font-size: 10px; color: #000; font-style: normal; font-weight: normal; }
         """
 
-        # 1. LOCALITZACIÓ =====================================================
+        # 1. LOCALITZACIÃ“ =====================================================
         gb_loc = QGroupBox("Localització")
         gb_loc.setStyleSheet(gb_style)
         l_loc = QHBoxLayout(gb_loc)
@@ -5639,9 +5962,10 @@ class AstronomicalWidget(CustomWidgetBase):
         l_date.addStretch(1)
         l_loc.addLayout(l_date)
         
-        panels_layout.addWidget(gb_loc, 1) # Factor 1 for loc
+        # Balanced distribution: Location / Sky / Ground = 2 / 3 / 1
+        panels_layout.addWidget(gb_loc, 2)
 
-        # 2. VISIÓ DEL CEL ====================================================
+        # 2. VISIÃ“ DEL CEL ====================================================
         gb_sky = QGroupBox("Visió del cel")
         gb_sky.setStyleSheet(gb_style)
         l_sky = QHBoxLayout(gb_sky)
@@ -5760,7 +6084,7 @@ class AstronomicalWidget(CustomWidgetBase):
 
         # Col 3: Circumpolar + Search
         v_ext = QVBoxLayout(); v_ext.setSpacing(4)
-        self.chk_trails = QPushButton("Iniciar circumpolar")
+        self.chk_trails = QPushButton(getTraduction("Astro.StartCircumpolar", "Iniciar circumpolar"))
         self.chk_trails.setCheckable(True)
         self.chk_trails.setStyleSheet("font-size: 10px; font-weight: normal; font-style: normal; border-radius: 8px; border: 1px solid #888; padding: 2px;")
         self.chk_trails.toggled.connect(self.on_trails_toggled)
@@ -5773,15 +6097,129 @@ class AstronomicalWidget(CustomWidgetBase):
         v_ext.addStretch()
 
         self.txt_search = QLineEdit()
-        self.txt_search.setPlaceholderText("Cercar astre...")
+        self.txt_search.setPlaceholderText(getTraduction("Astro.SearchPlaceholder", "Search object..."))
         self.txt_search.setStyleSheet("font-weight: normal; font-style: normal; border-radius: 4px; padding: 2px;")
         self.txt_search.returnPressed.connect(self.on_search_triggered)
         v_ext.addWidget(self.txt_search)
+
+        # Telescope / Tools entry points
+        h_overlays = QHBoxLayout()
+        h_overlays.setSpacing(4)
+        self.btn_scope_panel = QPushButton(getTraduction("Astro.ScopeButton", "Tube / Telescope"))
+        self.btn_scope_panel.setCheckable(True)
+        self.btn_scope_panel.setStyleSheet("font-size: 10px; font-weight: normal;")
+        self.btn_scope_panel.toggled.connect(self.toggle_scope_panel)
+        h_overlays.addWidget(self.btn_scope_panel)
+
+        self.btn_tools_panel = QPushButton(getTraduction("Astro.ToolsButton", "Tools"))
+        self.btn_tools_panel.setCheckable(True)
+        self.btn_tools_panel.setStyleSheet("font-size: 10px; font-weight: normal;")
+        self.btn_tools_panel.toggled.connect(self.toggle_tools_panel)
+        h_overlays.addWidget(self.btn_tools_panel)
+        v_ext.addLayout(h_overlays)
+
+        # Telescope panel
+        self.scope_panel = QFrame()
+        self.scope_panel.setStyleSheet("border: 1px solid #999; border-radius: 4px;")
+        v_scope = QVBoxLayout(self.scope_panel)
+        v_scope.setSpacing(3)
+        v_scope.setContentsMargins(4, 4, 4, 4)
+
+        from PyQt5.QtWidgets import QDoubleSpinBox, QComboBox
+
+        h_focal = QHBoxLayout()
+        h_focal.addWidget(QLabel(getTraduction("Astro.ScopeFocal", "Focal (mm)")))
+        self.scope_focal_spin = QDoubleSpinBox()
+        self.scope_focal_spin.setRange(1.0, 5000.0)
+        self.scope_focal_spin.setDecimals(1)
+        self.scope_focal_spin.setSingleStep(10.0)
+        self.scope_focal_spin.setValue(250.0)
+        self.scope_focal_spin.setFixedWidth(74)
+        self.scope_focal_spin.valueChanged.connect(lambda v: self.canvas.set_scope_focal_mm(v))
+        h_focal.addWidget(self.scope_focal_spin)
+        v_scope.addLayout(h_focal)
+
+        h_shape = QHBoxLayout()
+        h_shape.addWidget(QLabel(getTraduction("Astro.ScopeShape", "Format")))
+        self.scope_shape_combo = QComboBox()
+        self.scope_shape_combo.addItem(getTraduction("Astro.ScopeCircle", "Circle"), TelescopeScopeController.SHAPE_CIRCLE)
+        self.scope_shape_combo.addItem(getTraduction("Astro.ScopeRectangle", "Rectangle"), TelescopeScopeController.SHAPE_RECT)
+        self.scope_shape_combo.currentIndexChanged.connect(self.on_scope_shape_changed)
+        h_shape.addWidget(self.scope_shape_combo)
+        v_scope.addLayout(h_shape)
+
+        h_sensor = QHBoxLayout()
+        h_sensor.addWidget(QLabel(getTraduction("Astro.ScopeSensor", "Sensor")))
+        self.scope_sensor_combo = QComboBox()
+        self.scope_sensor_combo.addItem(getTraduction("Astro.ScopeSensorTiny", "Sensor 1/2.8"), "tiny")
+        self.scope_sensor_combo.addItem(getTraduction("Astro.ScopeSensorAPSC", "APS-C"), "aps_c")
+        self.scope_sensor_combo.addItem(getTraduction("Astro.ScopeSensorFullFrame", "Full Frame"), "full_frame")
+        self.scope_sensor_combo.currentIndexChanged.connect(self.on_scope_sensor_changed)
+        h_sensor.addWidget(self.scope_sensor_combo)
+        v_scope.addLayout(h_sensor)
+
+        h_speed = QHBoxLayout()
+        h_speed.addWidget(QLabel(getTraduction("Astro.ScopeMoveMode", "Movement")))
+        self.scope_speed_combo = QComboBox()
+        self.scope_speed_combo.addItem(getTraduction("Astro.ScopeSlow", "Slow"), TelescopeScopeController.SPEED_SLOW)
+        self.scope_speed_combo.addItem(getTraduction("Astro.ScopeFast", "Fast"), TelescopeScopeController.SPEED_FAST)
+        self.scope_speed_combo.currentIndexChanged.connect(self.on_scope_speed_changed)
+        h_speed.addWidget(self.scope_speed_combo)
+        v_scope.addLayout(h_speed)
+
+        h_scope_actions = QHBoxLayout()
+        self.btn_scope_activate = QPushButton(getTraduction("Astro.ScopeActivate", "Activate scope"))
+        self.btn_scope_activate.clicked.connect(self.activate_scope_mode)
+        h_scope_actions.addWidget(self.btn_scope_activate)
+        self.btn_scope_exit = QPushButton(getTraduction("Astro.ScopeExit", "Exit"))
+        self.btn_scope_exit.clicked.connect(self.exit_scope_mode)
+        h_scope_actions.addWidget(self.btn_scope_exit)
+        v_scope.addLayout(h_scope_actions)
+        self.scope_panel.hide()
+        v_ext.addWidget(self.scope_panel)
+
+        # Measurement tools panel
+        self.tools_panel = QFrame()
+        self.tools_panel.setStyleSheet("border: 1px solid #999; border-radius: 4px;")
+        v_tools = QVBoxLayout(self.tools_panel)
+        v_tools.setSpacing(3)
+        v_tools.setContentsMargins(4, 4, 4, 4)
+
+        h_tool_row_1 = QHBoxLayout()
+        self.btn_tool_ruler = QPushButton(getTraduction("Astro.ToolRuler", "Ruler"))
+        self.btn_tool_ruler.setCheckable(True)
+        self.btn_tool_ruler.clicked.connect(lambda: self.select_measurement_tool(TOOL_RULER))
+        h_tool_row_1.addWidget(self.btn_tool_ruler)
+        self.btn_tool_square = QPushButton(getTraduction("Astro.ToolSquare", "Square"))
+        self.btn_tool_square.setCheckable(True)
+        self.btn_tool_square.clicked.connect(lambda: self.select_measurement_tool(TOOL_SQUARE))
+        h_tool_row_1.addWidget(self.btn_tool_square)
+        v_tools.addLayout(h_tool_row_1)
+
+        h_tool_row_2 = QHBoxLayout()
+        self.btn_tool_rect = QPushButton(getTraduction("Astro.ToolRectangle", "Rectangle"))
+        self.btn_tool_rect.setCheckable(True)
+        self.btn_tool_rect.clicked.connect(lambda: self.select_measurement_tool(TOOL_RECTANGLE))
+        h_tool_row_2.addWidget(self.btn_tool_rect)
+        self.btn_tool_circle = QPushButton(getTraduction("Astro.ToolCircle", "Circle"))
+        self.btn_tool_circle.setCheckable(True)
+        self.btn_tool_circle.clicked.connect(lambda: self.select_measurement_tool(TOOL_CIRCLE))
+        h_tool_row_2.addWidget(self.btn_tool_circle)
+        v_tools.addLayout(h_tool_row_2)
+
+        self.btn_tool_clear = QPushButton(getTraduction("Astro.ToolClear", "Clear"))
+        self.btn_tool_clear.clicked.connect(self.clear_measurement_overlays)
+        v_tools.addWidget(self.btn_tool_clear)
+        self.tools_panel.hide()
+        v_ext.addWidget(self.tools_panel)
+        self.sync_scope_ui_state(False)
+        self._sync_measure_tool_buttons(TOOL_NONE)
+
         l_sky.addLayout(v_ext)
 
-        panels_layout.addWidget(gb_sky, 1) # Factor 1 for sky
+        panels_layout.addWidget(gb_sky, 3)
 
-        # 3. VISIÓ DEL TERRA ================================================
+        # 3. VISIÃ“ DEL TERRA ================================================
         gb_earth = QGroupBox("Visió del terra")
         gb_earth.setStyleSheet(gb_style)
         v_earth = QVBoxLayout(gb_earth)
@@ -5818,13 +6256,13 @@ class AstronomicalWidget(CustomWidgetBase):
         v_earth.addLayout(h_lay)
 
         v_earth.addStretch()
-        panels_layout.addWidget(gb_earth, 1) # Factor 1 for earth
+        panels_layout.addWidget(gb_earth, 1)
 
         self.panels_widget = QWidget()
         self.panels_widget.setLayout(panels_layout)
         frame_layout.addWidget(self.panels_widget)
 
-        # ── KEEP EXISTING VARIABLES FOR COMPATIBILITY (HIDDEN) ───────────
+        # â”€â”€ KEEP EXISTING VARIABLES FOR COMPATIBILITY (HIDDEN) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         self.btn_view = QPushButton(); self.btn_view.hide()
         self.btn_terrain = QPushButton(); self.btn_terrain.hide()
         self.chk_illusion = QCheckBox(); self.chk_illusion.hide()
@@ -5905,6 +6343,107 @@ class AstronomicalWidget(CustomWidgetBase):
                 QPushButton:hover {{ background-color: {bg}; border: 1px solid rgba(255,255,255,200); }}
             """)
 
+    def toggle_scope_panel(self, checked):
+        if checked:
+            if hasattr(self, 'btn_tools_panel'):
+                self.btn_tools_panel.blockSignals(True)
+                self.btn_tools_panel.setChecked(False)
+                self.btn_tools_panel.blockSignals(False)
+            if hasattr(self, 'tools_panel'):
+                self.tools_panel.hide()
+        if hasattr(self, 'scope_panel'):
+            self.scope_panel.setVisible(checked)
+
+    def toggle_tools_panel(self, checked):
+        if checked:
+            if hasattr(self, 'btn_scope_panel'):
+                self.btn_scope_panel.blockSignals(True)
+                self.btn_scope_panel.setChecked(False)
+                self.btn_scope_panel.blockSignals(False)
+            if hasattr(self, 'scope_panel'):
+                self.scope_panel.hide()
+        if hasattr(self, 'tools_panel'):
+            self.tools_panel.setVisible(checked)
+
+    def on_scope_shape_changed(self, index):
+        shape = self.scope_shape_combo.itemData(index)
+        self.canvas.set_scope_shape(shape)
+
+    def on_scope_sensor_changed(self, index):
+        sensor = self.scope_sensor_combo.itemData(index)
+        self.canvas.set_scope_sensor(sensor)
+
+    def on_scope_speed_changed(self, index):
+        mode = self.scope_speed_combo.itemData(index)
+        self.canvas.set_scope_speed_mode(mode)
+
+    def sync_scope_speed_ui(self, mode: str):
+        if not hasattr(self, 'scope_speed_combo'):
+            return
+        for i in range(self.scope_speed_combo.count()):
+            if self.scope_speed_combo.itemData(i) == mode:
+                self.scope_speed_combo.blockSignals(True)
+                self.scope_speed_combo.setCurrentIndex(i)
+                self.scope_speed_combo.blockSignals(False)
+                break
+
+    def activate_scope_mode(self):
+        # Scope mode remaps navigation to pointing control.
+        self.canvas.set_scope_focal_mm(self.scope_focal_spin.value())
+        self.canvas.set_scope_shape(self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex()))
+        self.canvas.set_scope_sensor(self.scope_sensor_combo.itemData(self.scope_sensor_combo.currentIndex()))
+        self.canvas.set_scope_speed_mode(self.scope_speed_combo.itemData(self.scope_speed_combo.currentIndex()))
+        self.canvas.set_scope_enabled(True)
+        self.canvas.setFocus()
+        self.sync_scope_ui_state(True)
+
+        # Optional: deactivate measurement input when entering scope mode.
+        self.canvas.set_measurement_tool(TOOL_NONE)
+        self._sync_measure_tool_buttons(TOOL_NONE)
+
+    def exit_scope_mode(self):
+        self.canvas.set_scope_enabled(False)
+        self.sync_scope_ui_state(False)
+
+    def sync_scope_ui_state(self, enabled: bool):
+        if hasattr(self, 'btn_scope_activate'):
+            self.btn_scope_activate.setEnabled(not enabled)
+        if hasattr(self, 'btn_scope_exit'):
+            self.btn_scope_exit.setEnabled(enabled)
+
+    def _sync_measure_tool_buttons(self, active_tool: str):
+        tool_buttons = [
+            (getattr(self, 'btn_tool_ruler', None), TOOL_RULER),
+            (getattr(self, 'btn_tool_square', None), TOOL_SQUARE),
+            (getattr(self, 'btn_tool_rect', None), TOOL_RECTANGLE),
+            (getattr(self, 'btn_tool_circle', None), TOOL_CIRCLE),
+        ]
+        for btn, key in tool_buttons:
+            if btn is None:
+                continue
+            btn.blockSignals(True)
+            btn.setChecked(active_tool == key)
+            btn.blockSignals(False)
+
+    def select_measurement_tool(self, tool: str):
+        current = self.canvas.measurement_controller.active_tool
+        if current == tool:
+            self.canvas.set_measurement_tool(TOOL_NONE)
+            self._sync_measure_tool_buttons(TOOL_NONE)
+            return
+
+        # Single active tool at a time.
+        self.canvas.set_measurement_tool(tool)
+        self.canvas.setFocus()
+        self._sync_measure_tool_buttons(tool)
+
+        # Measurement and scope mode should not compete for mouse/keys.
+        self.exit_scope_mode()
+
+    def clear_measurement_overlays(self):
+        self.canvas.clear_measurements()
+        self._sync_measure_tool_buttons(self.canvas.measurement_controller.active_tool)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if hasattr(self, 'frame_controls') and hasattr(self, 'btn_collapse'):
@@ -5929,7 +6468,7 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.update()
         self.canvas.update()
 
-        # ─ Toast HUD: mostra hora local i UT durant el drag ─
+        # â”€ Toast HUD: mostra hora local i UT durant el drag â”€
         if hasattr(self.canvas, 'hint_overlay'):
             from datetime import datetime, timezone
             # val is LOCAL time (as it represents the time bar)
@@ -5986,7 +6525,7 @@ class AstronomicalWidget(CustomWidgetBase):
             
             # Heavy bake is triggered by debounce timer to avoid duplicate work.
 
-            # ─ Toast HUD: mostra nova ubicació i altitud si disponible ─
+            # â”€ Toast HUD: mostra nova ubicaciÃ³ i altitud si disponible â”€
             if hasattr(self.canvas, 'hint_overlay'):
                 dem_m  = getattr(self, '_last_dem_elevation', None)
                 offset = getattr(self, '_observer_offset', 0.0)
@@ -6001,7 +6540,7 @@ class AstronomicalWidget(CustomWidgetBase):
                         offset=int(offset)
                     )
                 else:
-                    txt = f"📍 {self.latitude:.4f}°, {self.longitude:.4f}°"
+                    txt = f"ðŸ“ {self.latitude:.4f}Â°, {self.longitude:.4f}Â°"
                 self.canvas.hint_overlay.show_hint(txt)
 
         except ValueError:
@@ -6503,89 +7042,149 @@ class AstronomicalWidget(CustomWidgetBase):
     def build_search_index(self):
         """Builds a search index of planets and named stars for QCompleter."""
         self.search_index = {}
-        
-        # 1. PLANETS
-        planets = {
-            "Sol": "sun", "Lluna": "moon", "Mercuri": "mercury", "Venus": "venus",
-            "Mart": "mars", "Júpiter": "jupiter", "Saturn": "saturn", 
-            "Urà": "uranus", "Neptú": "neptune", "Plutó": "pluto"
+        self.search_lookup = {}
+
+        def register_name(name: str, info: dict) -> None:
+            if not name:
+                return
+            n = str(name).strip()
+            if not n:
+                return
+            self.search_index[n] = info
+            k = self._normalize_search_key(n)
+            if k and k not in self.search_lookup:
+                self.search_lookup[k] = info
+
+        # 1. PLANETS + aliases in supported languages and non-accented variants.
+        planet_aliases = {
+            "sun": ["Sol", "Sun", "Soleil", "Sole"],
+            "moon": ["Lluna", "Luna", "Moon", "Lune"],
+            "mercury": ["Mercuri", "Mercurio", "Mercury", "Mercure"],
+            "venus": ["Venus"],
+            "mars": ["Mart", "Marte", "Mars"],
+            "jupiter": ["Jupiter", "Júpiter"],
+            "saturn": ["Saturn", "Saturno"],
+            "uranus": ["Urà", "Ura", "Urano", "Uranus"],
+            "neptune": ["Neptú", "Neptu", "Neptuno", "Neptune"],
+            "pluto": ["Plutó", "Pluto", "Plutón", "Pluton"],
         }
-        for cat, key in planets.items():
-            self.search_index[cat] = {"type": "planet", "key": key, "name": cat}
-            
+        for key, aliases in planet_aliases.items():
+            canon = aliases[0]
+            info = {"type": "planet", "key": key, "name": canon}
+            for alias in aliases:
+                register_name(alias, info)
+
         # 2. NAMED STARS
         if hasattr(self, 'celestial_objects'):
             for star in self.celestial_objects:
-                name = star.get('name', '')
-                if name and not name.startswith('Gaia'):
-                    self.search_index[name] = {"type": "star", "obj": star}
-        
+                name = str(star.get('name', '')).strip()
+                if name and not name.lower().startswith('gaia'):
+                    register_name(name, {"type": "star", "obj": star})
+
         # 3. SETUP QCOMPLETER
         from PyQt5.QtWidgets import QCompleter
         from PyQt5.QtCore import Qt
-        
+
         names = sorted(list(self.search_index.keys()), key=lambda x: x.lower())
         completer = QCompleter(names, self)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
         self.txt_search.setCompleter(completer)
+        completer.activated[str].connect(self.on_search_triggered)
         self.txt_search.setEnabled(True)
         print(f"[AstroWidget] Search index built: {len(self.search_index)} objects.")
 
-    def on_search_triggered(self):
-        text = self.txt_search.text().strip()
-        if not text: return
-        
+    @staticmethod
+    def _normalize_search_key(text: str) -> str:
+        lowered = (text or "").strip().lower()
+        folded = unicodedata.normalize("NFKD", lowered)
+        return "".join(ch for ch in folded if not unicodedata.combining(ch))
+
+    def _prepare_skyfield_cache_for_search(self):
+        """Force a fresh cache sample so planet search can resolve current Alt/Az."""
+        if not SKYFIELD_AVAILABLE or not hasattr(self, 'canvas') or not hasattr(self, 'eph'):
+            return None
+
+        try:
+            local_hour = float(self.get_current_hour())
+            sim_day = int(self.manual_day)
+            sim_year = int(getattr(self, 'manual_year', datetime.now().year))
+            tz_offset = self.canvas.get_simulated_tz_offset(sim_day)
+            dt_utc = (datetime(sim_year, 1, 1) + timedelta(days=sim_day, hours=local_hour - tz_offset)).replace(tzinfo=timezone.utc)
+            ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
+            day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+            self.canvas.update_skyfield_cache(ut_hour, day_of_year_utc)
+        except Exception as ex:
+            print(f"[AstroWidget] Search cache update failed: {ex}")
+
+        sf_cache = getattr(self.canvas, '_sf_cache', None)
+        if isinstance(sf_cache, dict):
+            return sf_cache.get('data')
+        return None
+
+    def on_search_triggered(self, text_override=None):
+        raw = text_override if isinstance(text_override, str) else self.txt_search.text()
+        text = str(raw).strip()
+        if not text:
+            return
+
         info = self.search_index.get(text)
         if not info:
-            matches = [k for k in self.search_index.keys() if k.lower() == text.lower()]
-            if matches:
-                info = self.search_index[matches[0]]
-        
+            norm = self._normalize_search_key(text)
+            info = getattr(self, 'search_lookup', {}).get(norm)
+            if info is None:
+                for k in sorted(getattr(self, 'search_lookup', {}).keys()):
+                    if norm and norm in k:
+                        info = self.search_lookup[k]
+                        break
+
         if info:
             self.center_on_object(info)
         else:
-            print(f"[AstroWidget] Object '{text}' not found in index.")
+            msg = getTraduction("Astro.SearchNotFound", "Object '{name}' not found in index.").format(name=text)
+            print(f"[AstroWidget] {msg}")
 
     def center_on_object(self, info):
         """Calculates current Az/Alt for the object and starts animation."""
         az = alt = None
-        
+
         if info["type"] == "star":
             star = info["obj"]
             az, alt = self.get_horizontal_coords(star['ra'], star['dec'])
         elif info["type"] == "planet":
-            if hasattr(self, '_sf_cache') and self._sf_cache['data']:
-                p_key = info.get('key', '').lower()
-                target_name = info.get('name', '').lower()
-                
-                # Check Sun/Moon
+            data = self._prepare_skyfield_cache_for_search()
+            if data:
+                p_key = self._normalize_search_key(info.get('key', ''))
+                target_name = self._normalize_search_key(info.get('name', ''))
+
                 if p_key == 'sun' or target_name == 'sol':
-                    az = self._sf_cache['data']['sun']['az']
-                    alt = self._sf_cache['data']['sun']['alt']
-                elif p_key == 'moon' or target_name == 'lluna':
-                    az = self._sf_cache['data']['moon']['az']
-                    alt = self._sf_cache['data']['moon']['alt']
+                    sun = data.get('sun', {})
+                    az = sun.get('az')
+                    alt = sun.get('alt')
+                elif p_key == 'moon' or target_name in ('lluna', 'luna', 'moon'):
+                    moon = data.get('moon', {})
+                    az = moon.get('az')
+                    alt = moon.get('alt')
                 else:
-                    # Search in planets list (handle "jupiter" matching "jupiter barycenter")
-                    for p in self._sf_cache['data'].get('planets', []):
-                        p_key_low = p.get('key', '').lower()
-                        p_name_low = p.get('name', '').lower()
+                    for p in data.get('planets', []):
+                        p_key_low = self._normalize_search_key(p.get('key', ''))
+                        p_name_low = self._normalize_search_key(p.get('name', ''))
                         if p_key_low.startswith(p_key) or p_name_low == target_name:
-                            az = p['az']
-                            alt = p['alt']
+                            az = p.get('az')
+                            alt = p.get('alt')
                             break
 
         if az is not None and alt is not None:
-            # Normalize to current view convention
-            az %= 360
+            az %= 360.0
             self.target_azimuth = az
             self.target_elevation = alt
-            
-            if alt < -5:
-                if hasattr(self.canvas, 'hint_overlay'):
-                    self.canvas.hint_overlay.show_hint(f"⚠️ Objecte sota l'horitzó ({alt:.1f}°)")
-            
+            if self.canvas.scope_mode_enabled():
+                self.canvas.scope_controller.set_center((alt, az))
+
+            if alt < -5 and hasattr(self.canvas, 'hint_overlay'):
+                hint = getTraduction("Astro.ObjectBelowHorizon", "Object below horizon ({alt:.1f} deg)").format(alt=alt)
+                self.canvas.hint_overlay.show_hint(hint)
+
             self.anim_timer.start(16)
             self.canvas.update()
 
