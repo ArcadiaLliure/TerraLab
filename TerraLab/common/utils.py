@@ -120,8 +120,13 @@ def _load_translations() -> Dict[str, Dict[str, str]]:
 def getTraduction(key: str, default: str) -> str:
     try:
         translations = _load_translations()
-        entry = translations.get(key, {}) 
-        literal = entry.get(get_config_value("idioma", "ca"), default)
+        entry = translations.get(key, {})
+        lang = get_language("ca")
+        literal = entry.get(lang)
+        if literal is None:
+            literal = entry.get("ca")
+        if literal is None:
+            literal = default
         return literal
     except Exception:
         return default

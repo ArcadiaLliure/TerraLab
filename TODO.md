@@ -30,8 +30,15 @@ Aquest document recull l'estat actual del projecte i les properes passes, consol
 - [x] Overlay amb forat circular/rectangular real.
 - [x] Retícula minimalista.
 - [x] HUD amb FOV + mode LENT/RÀPID.
+- [x] HUD de mira amb coordenades RA/Dec del centre.
 - [x] Sensibilitat angular precisa (0.5 arcmin/s lent, 0.5°/s ràpid).
 - [x] Bloqueig navegació global (amb excepció `Ctrl` per navegació secundària).
+- [x] Relació d'aspecte flexible per a la mira rectangular.
+- [x] Evitar HUDs superposats en mode mira (toast de zoom només en mode normal).
+- [x] Menú contextual amb `Goto` (clic dret) per activar mira, encarar objecte i seguir-lo.
+- [x] `Goto` aplica zoom automàtic cap al destí per defecte.
+- [x] En moviment manual amb `Ctrl` + arrossegament dins la mira, la càmera queda lliure però la mira manté el seguiment de l'objecte.
+- [x] Sol procedural en mode mira amb taques i granulació estables durant zoom (sense regeneració visual per cada pas de zoom).
 
 ## Motor de Magnitud Visual
 Càlcul físic segons:
@@ -97,6 +104,15 @@ D'això n'ha de sortir una "foto" que l'usuari podrà emmagatzemar (així la pot
 - [ ] Escalat segons zoom i mida angular real.
 - [ ] Estètica coherent sense dependència obligatòria d’imatges externes, però escalable perquè algun dia s'hi puguin afegir.
 
+
+## Clima
+
+- [ ] Cercar una API lliure que no necessiti API per consultar el temps
+- [ ] Actualment tenim una simulació del clima i no és eficient en termes de rendiment
+- [ ] Assegurar-se que: 
+    - Es fa una sola consulta al dia i localització
+    - Es fa una consulta del temps dels propers 14 dies (si és possible), així l'usuari pot navegar per data. -> Això s'ha de persistir.
+    - Cal ser flexibles amb les localitzacions, els diagnòstics del temps tenen certa amplitud.
 
 ---
 

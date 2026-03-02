@@ -11,7 +11,7 @@ except ImportError:
 from datetime import datetime, timedelta, timezone
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QSlider, QLineEdit, QPushButton, QFrame,
-                             QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox)
+                             QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox, QMenu)
 from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, pyqtSlot, QObject, QThread, QLineF, QUrl
 from PyQt5.QtGui import QPainter, QColor, QPen, QRadialGradient, QBrush, QPainterPath, QLinearGradient, QPixmap, QFont, QTransform, QImage, QPolygonF
 
@@ -1447,6 +1447,7 @@ class AstroCanvas(QWidget):
         self.trail_start_hour = None
         self.ut_hour = 12.0
         self.selected_target = None
+        self.scope_camera_lock_to_target = True
         
         # Illusion Parameters
         self.illusion_enabled = True
@@ -1523,6 +1524,9 @@ class AstroCanvas(QWidget):
         self._eclipse_cache = {'time': -1, 'value': 1.0}
         self._moon_pos_cache = {}  # Cache for moon calculations
         self._last_skyfield_update = 0  # timestamp in ms
+        # Scope solar procedural cache (normalized features, stable across zoom).
+        self._scope_solar_pattern_key = None
+        self._scope_solar_pattern = None
 
         # Telescope scope mode and spherical measurement overlays.
         self.scope_controller = TelescopeScopeController()
@@ -1777,6 +1781,8 @@ class AstroCanvas(QWidget):
     def set_scope_enabled(self, enabled: bool) -> None:
         if enabled:
             self.scope_controller.activate()
+            if hasattr(self, "hint_overlay"):
+                self.hint_overlay.hide()
         else:
             self.scope_controller.deactivate()
             self._scope_pressed_keys.clear()
@@ -1799,6 +1805,10 @@ class AstroCanvas(QWidget):
 
     def set_scope_sensor(self, sensor_key: str) -> None:
         self.scope_controller.set_sensor_key(sensor_key)
+        self.update()
+
+    def set_scope_aspect_ratio(self, ratio):
+        self.scope_controller.set_aspect_ratio(ratio)
         self.update()
 
     def set_measurement_tool(self, tool: str) -> None:
@@ -2021,6 +2031,73 @@ class AstroCanvas(QWidget):
             return {"kind": "star", "star": star}
         return None
 
+    def _current_ut_context(self):
+        local_hour = float(self.parent_widget.get_current_hour())
+        sim_y = int(getattr(self.parent_widget, "manual_year", datetime.now().year))
+        sim_d = int(getattr(self.parent_widget, "manual_day", 0))
+        try:
+            dt_base = datetime(sim_y, 1, 1) + timedelta(days=sim_d)
+            dt_local_naive = dt_base + timedelta(hours=local_hour)
+            dt_local = dt_local_naive.astimezone()
+            dt_utc = dt_local.astimezone(timezone.utc)
+        except Exception:
+            tz_offset = datetime.now().astimezone().utcoffset().total_seconds() / 3600.0
+            dt_utc = (datetime(sim_y, 1, 1) + timedelta(days=sim_d, hours=local_hour - tz_offset)).replace(tzinfo=timezone.utc)
+        ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
+        day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+        return ut_hour, day_of_year_utc
+
+    def _goto_target(self, target):
+        if target is None:
+            return
+        self._set_selected_target(target)
+        self.scope_camera_lock_to_target = True
+        ut_hour, day_of_year_utc = self._current_ut_context()
+        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc)
+        if sky is None:
+            return
+
+        # Goto forces scope mode and tracking on this target.
+        self.set_scope_enabled(True)
+        if hasattr(self.parent_widget, "sync_scope_ui_state"):
+            self.parent_widget.sync_scope_ui_state(True)
+
+        if self.measurement_tool_active():
+            self.set_measurement_tool(TOOL_NONE)
+            if hasattr(self.parent_widget, "_sync_measure_tool_buttons"):
+                self.parent_widget._sync_measure_tool_buttons(TOOL_NONE)
+
+        alt, az = sky
+        self.scope_controller.set_center((alt, az))
+        self.azimuth_offset = az % 360.0
+        self.elevation_angle = max(-90.0, min(90.0, alt))
+
+        # Default Goto behavior: zoom towards destination using current scope FOV.
+        fov_w, fov_h = self.scope_controller.current_fov()
+        target_fov = max(0.2, min(93.9, max(fov_w, fov_h)))
+        goto_zoom = max(0.5, min(50.0, 93.9 / target_fov))
+        # Never zoom out on Goto; only keep or increase zoom.
+        self.zoom_level = max(float(self.zoom_level), goto_zoom)
+
+        # Force redraw paths that depend on camera state.
+        self._cached_star_image = None
+        self._cached_trail_image = None
+        self.setFocus()
+        self.update()
+
+    def _show_object_context_menu(self, event):
+        target = self._pick_target_at(event.x(), event.y())
+        if target is None:
+            return False
+
+        menu = QMenu(self)
+        act_goto = menu.addAction(getTraduction("Astro.ContextGoto", "Goto"))
+        chosen = menu.exec_(event.globalPos())
+        if chosen == act_goto:
+            self._goto_target(target)
+            return True
+        return False
+
     def _set_selected_target(self, target):
         if target is None:
             self.selected_target = None
@@ -2067,6 +2144,8 @@ class AstroCanvas(QWidget):
         self.lbl_info.move(self.width() - self.lbl_info.width() - 20, 20)
         self.lbl_info.show()
         self.lbl_info.raise_()
+        # New target selection restores camera lock unless user manually overrides with Ctrl+drag.
+        self.scope_camera_lock_to_target = True
         self._update_selection_pulse_timer()
 
     def _set_selected_star(self, star_obj):
@@ -2141,6 +2220,73 @@ class AstroCanvas(QWidget):
                 az = 360.0 - az
         return alt, az % 360.0
 
+    def _altaz_to_ra_dec(self, alt_deg: float, az_deg: float, ut_hour: float, day_of_year_utc: int):
+        lat = math.radians(self.parent_widget.latitude)
+        alt = math.radians(float(alt_deg))
+        az = math.radians(float(az_deg) % 360.0)
+
+        sin_lat = math.sin(lat)
+        cos_lat = math.cos(lat)
+        sin_alt = math.sin(alt)
+        cos_alt = math.cos(alt)
+
+        sin_dec = sin_alt * sin_lat + cos_alt * cos_lat * math.cos(az)
+        sin_dec = max(-1.0, min(1.0, sin_dec))
+        dec = math.degrees(math.asin(sin_dec))
+        cos_dec = max(1e-10, math.cos(math.radians(dec)))
+
+        cos_ha = (sin_alt - sin_lat * sin_dec) / (cos_lat * cos_dec + 1e-10)
+        cos_ha = max(-1.0, min(1.0, cos_ha))
+        sin_ha = -math.sin(az) * cos_alt / (cos_dec + 1e-10)
+        ha_deg = math.degrees(math.atan2(sin_ha, cos_ha))
+
+        lst = (100.0 + day_of_year_utc * 0.9856 + ut_hour * 15.0 + self.parent_widget.longitude) % 360.0
+        ra = (lst - ha_deg) % 360.0
+        return ra, dec
+
+    def _format_ra_hms(self, ra_deg: float) -> str:
+        h_total = (float(ra_deg) % 360.0) / 15.0
+        h = int(h_total)
+        m_total = (h_total - h) * 60.0
+        m = int(m_total)
+        s = int(round((m_total - m) * 60.0))
+        if s >= 60:
+            s = 0
+            m += 1
+        if m >= 60:
+            m = 0
+            h = (h + 1) % 24
+        return f"{h:02d}h {m:02d}m {s:02d}s"
+
+    def _format_dec_dms(self, dec_deg: float) -> str:
+        sign = "+" if dec_deg >= 0 else "-"
+        v = abs(float(dec_deg))
+        d = int(v)
+        m_total = (v - d) * 60.0
+        m = int(m_total)
+        s = int(round((m_total - m) * 60.0))
+        if s >= 60:
+            s = 0
+            m += 1
+        if m >= 60:
+            m = 0
+            d += 1
+        return f"{sign}{d:02d}d {m:02d}m {s:02d}s"
+
+    def _scope_hud_extra_lines(self, ut_hour: float, day_of_year_utc: int):
+        if not self.scope_mode_enabled():
+            return []
+        center = getattr(self.scope_controller, "center", None)
+        if center is None:
+            return []
+        ra_dec = self._altaz_to_ra_dec(center[0], center[1], ut_hour, day_of_year_utc)
+        if ra_dec is None:
+            return []
+        ra_txt = self._format_ra_hms(ra_dec[0])
+        dec_txt = self._format_dec_dms(ra_dec[1])
+        line = getTraduction("Scope.HudCoords", "RA {ra} | Dec {dec}").format(ra=ra_txt, dec=dec_txt)
+        return [line]
+
     def _draw_selected_target_marker(self, painter: QPainter, ut_hour: float, day_of_year_utc: int):
         if self.scope_mode_enabled() or self.selected_target is None:
             return
@@ -2183,17 +2329,16 @@ class AstroCanvas(QWidget):
         # In scope mode, selected targets are tracked: camera and scope center follow sky motion.
         if (not self.scope_mode_enabled()) or self.selected_target is None:
             return
-        if self.dragging:
-            # Respect temporary Ctrl+drag camera motion while dragging.
-            return
 
         sky = self._selected_target_sky_position(ut_hour, day_of_year_utc)
         if sky is None:
             return
         alt, az = sky
-        self.azimuth_offset = az
-        self.elevation_angle = max(-90.0, min(90.0, alt))
         self.scope_controller.set_center((alt, az))
+        # Camera lock is optional; user can disable it with Ctrl+drag while keeping tracking.
+        if self.scope_camera_lock_to_target and not self.dragging:
+            self.azimuth_offset = az
+            self.elevation_angle = max(-90.0, min(90.0, alt))
 
     def _apply_scope_selected_star_tracking(self, ut_hour: float, day_of_year_utc: int):
         # Backward-compatible wrapper.
@@ -2214,7 +2359,7 @@ class AstroCanvas(QWidget):
         if hasattr(self.parent_widget, "sync_scope_focal_ui"):
             self.parent_widget.sync_scope_focal_ui(new_focal)
 
-        if hasattr(self, 'hint_overlay'):
+        if hasattr(self, 'hint_overlay') and not self.scope_mode_enabled():
             fov_w, fov_h = self.scope_controller.current_fov()
             fov_label = f"{fov_w:.2f}° x {fov_h:.2f}°"
             txt = getTraduction("Scope.ZoomHint", "Scope {focal} mm  ·  FOV {fov}").format(
@@ -2237,7 +2382,7 @@ class AstroCanvas(QWidget):
         self.update()
 
         # Toast HUD: show FOV and 35mm-equivalent focal of current camera zoom.
-        if hasattr(self, 'hint_overlay'):
+        if hasattr(self, 'hint_overlay') and not self.scope_mode_enabled():
             fov_deg = 100.0 / self.zoom_level
             focal_rad = math.radians(fov_deg)
             focal_eq = int(round(18.0 / math.tan(focal_rad / 2.0)))
@@ -2697,11 +2842,13 @@ class AstroCanvas(QWidget):
                 self.project_universal_stereo,
                 formatters={},
             )
+            scope_hud_lines = self._scope_hud_extra_lines(ut_hour, day_of_year_utc)
             self.scope_controller.draw(
                 painter,
                 self.width(),
                 self.height(),
                 self.project_universal_stereo,
+                hud_extra_lines=scope_hud_lines,
             )
              
         finally:
@@ -4708,6 +4855,8 @@ class AstroCanvas(QWidget):
                 self.press_pos = event.pos()
                 if event.modifiers() & Qt.ControlModifier:
                     # Scope override: Ctrl + drag keeps normal camera navigation.
+                    # Disable camera lock but keep target tracking active for the scope itself.
+                    self.scope_camera_lock_to_target = False
                     self.scope_controller.end_drag()
                     self.dragging = True
                     self.last_mouse_x = event.x()
@@ -4803,6 +4952,10 @@ class AstroCanvas(QWidget):
             
     def mouseReleaseEvent(self, event):
         if self.scope_mode_enabled():
+            if event.button() == Qt.RightButton:
+                self._show_object_context_menu(event)
+                event.accept()
+                return
             if self.dragging:
                 self.dragging = False
                 # Invalidate trail cache only when movement STOPS to trigger a clean bake.
@@ -4818,6 +4971,10 @@ class AstroCanvas(QWidget):
             return
 
         if self.measurement_tool_active():
+            if event.button() == Qt.RightButton:
+                self._show_object_context_menu(event)
+                event.accept()
+                return
             if self.dragging:
                 self.dragging = False
                 # Invalidate trail cache only when movement STOPS to trigger a clean bake.
@@ -4833,6 +4990,11 @@ class AstroCanvas(QWidget):
                     self.project_universal_stereo,
                 )
                 self.update()
+            event.accept()
+            return
+
+        if event.button() == Qt.RightButton:
+            self._show_object_context_menu(event)
             event.accept()
             return
 
@@ -5617,6 +5779,70 @@ class AstroCanvas(QWidget):
         path.addEllipse(QPointF(0,0), radius, radius)
         return path
 
+    def _get_scope_solar_pattern(self):
+        """
+        Build (or reuse) a normalized procedural pattern for scope solar rendering.
+        The pattern is keyed by day and independent from pixel radius so zoom only scales,
+        without "jumping" sunspot positions.
+        """
+        key = (
+            int(getattr(self.parent_widget, "manual_year", 2026)),
+            int(getattr(self.parent_widget, "manual_day", 0)),
+        )
+        if self._scope_solar_pattern_key == key and self._scope_solar_pattern is not None:
+            return self._scope_solar_pattern
+
+        seed = key[0] * 1000 + key[1]
+        rng_grain = random.Random(seed + 101)
+        rng_spots = random.Random(seed + 907)
+
+        # Keep counts fixed so zoom changes do not alter RNG phase/order.
+        grain_count = 180
+        grains = []
+        for _ in range(grain_count):
+            ang = rng_grain.random() * math.tau
+            rad_n = 0.05 + 0.92 * math.sqrt(rng_grain.random())
+            radius_n = 0.006 + 0.015 * rng_grain.random()
+            alpha = int(6 + 18 * rng_grain.random())
+            grains.append((ang, rad_n, radius_n, alpha))
+
+        # Day-dependent but zoom-invariant sunspot groups.
+        spot_groups = 3 + int(rng_spots.random() * 5)  # 3..7
+        spots = []
+        for _ in range(spot_groups):
+            ang = rng_spots.random() * math.tau
+            rad_n = 0.10 + 0.70 * rng_spots.random()
+            pen_w_n = 0.07 + 0.06 * rng_spots.random()
+            pen_h_ratio = 0.55 + 0.35 * rng_spots.random()
+            umb_w_ratio = 0.35 + 0.25 * rng_spots.random()
+            umb_h_ratio = 0.35 + 0.25 * rng_spots.random()
+            rot_deg = rng_spots.uniform(0.0, 180.0)
+
+            micro = []
+            n_micro = 1 + int(rng_spots.random() * 3)
+            for _j in range(n_micro):
+                da = rng_spots.random() * math.tau
+                dr_mul = 0.7 + 1.3 * rng_spots.random()
+                mr_mul = 0.10 + 0.10 * rng_spots.random()
+                micro.append((da, dr_mul, mr_mul))
+
+            spots.append(
+                {
+                    "ang": ang,
+                    "rad_n": rad_n,
+                    "pen_w_n": pen_w_n,
+                    "pen_h_ratio": pen_h_ratio,
+                    "umb_w_ratio": umb_w_ratio,
+                    "umb_h_ratio": umb_h_ratio,
+                    "rot_deg": rot_deg,
+                    "micro": micro,
+                }
+            )
+
+        self._scope_solar_pattern_key = key
+        self._scope_solar_pattern = {"grains": grains, "spots": spots}
+        return self._scope_solar_pattern
+
     def _draw_scope_solar_disc(self, painter, radius):
         # Procedural solar-filter look for scope mode: full disk + sunspots.
         rr = max(2.0, float(radius))
@@ -5634,34 +5860,29 @@ class AstroCanvas(QWidget):
         painter.setBrush(QBrush(base_grad))
         painter.drawEllipse(QPointF(0, 0), rr, rr)
 
-        # Gentle texture granulation.
-        seed = int(getattr(self.parent_widget, "manual_year", 2026)) * 1000 + int(getattr(self.parent_widget, "manual_day", 0))
-        rng = random.Random(seed)
+        pattern = self._get_scope_solar_pattern()
 
-        grain_count = max(50, int(rr * 0.7))
-        for _ in range(grain_count):
-            ang = rng.random() * math.tau
-            rad = rr * (0.05 + 0.92 * math.sqrt(rng.random()))
+        # Gentle texture granulation (normalized, zoom-stable).
+        for ang, rad_n, radius_n, a in pattern["grains"]:
+            rad = rr * rad_n
             gx = math.cos(ang) * rad
             gy = math.sin(ang) * rad
-            gr = max(0.6, rr * (0.006 + 0.015 * rng.random()))
-            a = int(6 + 18 * rng.random())
+            gr = max(0.6, rr * radius_n)
             painter.setBrush(QColor(255, 233, 170, a))
             painter.drawEllipse(QPointF(gx, gy), gr, gr)
 
-        # Sunspot groups (umbra + penumbra) deterministic per day.
-        spot_groups = max(2, int(rr / 30.0))
-        for _ in range(spot_groups):
-            ang = rng.random() * math.tau
-            rad = rr * (0.10 + 0.70 * rng.random())
+        # Sunspot groups (umbra + penumbra), stable across zoom for the same day.
+        for group in pattern["spots"]:
+            ang = group["ang"]
+            rad = rr * group["rad_n"]
             cx = math.cos(ang) * rad
             cy = math.sin(ang) * rad
 
-            pen_w = rr * (0.07 + 0.06 * rng.random())
-            pen_h = pen_w * (0.55 + 0.35 * rng.random())
-            umb_w = pen_w * (0.35 + 0.25 * rng.random())
-            umb_h = pen_h * (0.35 + 0.25 * rng.random())
-            rot = rng.uniform(0.0, 180.0)
+            pen_w = rr * group["pen_w_n"]
+            pen_h = pen_w * group["pen_h_ratio"]
+            umb_w = pen_w * group["umb_w_ratio"]
+            umb_h = pen_h * group["umb_h_ratio"]
+            rot = group["rot_deg"]
 
             painter.save()
             painter.translate(cx, cy)
@@ -5673,13 +5894,11 @@ class AstroCanvas(QWidget):
             painter.restore()
 
             # Secondary tiny spots around the main group.
-            n_micro = 1 + int(rng.random() * 3)
-            for _j in range(n_micro):
-                da = rng.random() * math.tau
-                dr = pen_w * (0.7 + 1.3 * rng.random())
+            for da, dr_mul, mr_mul in group["micro"]:
+                dr = pen_w * dr_mul
                 mx = cx + math.cos(da) * dr
                 my = cy + math.sin(da) * dr
-                mr = max(0.8, pen_w * (0.10 + 0.10 * rng.random()))
+                mr = max(0.8, pen_w * mr_mul)
                 painter.setBrush(QColor(60, 42, 26, 150))
                 painter.drawEllipse(QPointF(mx, my), mr, mr)
 
@@ -6451,8 +6670,9 @@ class AstronomicalWidget(CustomWidgetBase):
         l_date.addStretch(1)
         l_loc.addLayout(l_date)
         
-        # Balanced distribution: Location / Sky / Ground = 2 / 3 / 1
-        panels_layout.addWidget(gb_loc, 2)
+        # Proportional distribution by feature density:
+        # Location / Sky / Ground = 1 / 4 / 1
+        panels_layout.addWidget(gb_loc, 1)
 
         # 2. VISIÃ“ DEL CEL ====================================================
         gb_sky = QGroupBox("Visió del cel")
@@ -6648,6 +6868,28 @@ class AstronomicalWidget(CustomWidgetBase):
         h_sensor.addWidget(self.scope_sensor_combo)
         v_scope.addLayout(h_sensor)
 
+        h_aspect = QHBoxLayout()
+        h_aspect.addWidget(QLabel(getTraduction("Astro.ScopeAspect", "Aspect")))
+        self.scope_aspect_combo = QComboBox()
+        self.scope_aspect_combo.addItem(getTraduction("Astro.ScopeAspectAuto", "Auto (sensor)"), None)
+        self.scope_aspect_combo.addItem("1:1", 1.0)
+        self.scope_aspect_combo.addItem("4:3", 4.0 / 3.0)
+        self.scope_aspect_combo.addItem("3:2", 3.0 / 2.0)
+        self.scope_aspect_combo.addItem("16:9", 16.0 / 9.0)
+        self.scope_aspect_combo.addItem("21:9", 21.0 / 9.0)
+        self.scope_aspect_combo.addItem(getTraduction("Astro.ScopeAspectCustom", "Custom"), "custom")
+        self.scope_aspect_combo.currentIndexChanged.connect(self.on_scope_aspect_changed)
+        h_aspect.addWidget(self.scope_aspect_combo)
+        self.scope_aspect_custom_spin = QDoubleSpinBox()
+        self.scope_aspect_custom_spin.setRange(0.2, 5.0)
+        self.scope_aspect_custom_spin.setDecimals(3)
+        self.scope_aspect_custom_spin.setSingleStep(0.05)
+        self.scope_aspect_custom_spin.setValue(1.5)
+        self.scope_aspect_custom_spin.setFixedWidth(68)
+        self.scope_aspect_custom_spin.valueChanged.connect(self.on_scope_aspect_custom_changed)
+        h_aspect.addWidget(self.scope_aspect_custom_spin)
+        v_scope.addLayout(h_aspect)
+
         h_speed = QHBoxLayout()
         h_speed.addWidget(QLabel(getTraduction("Astro.ScopeMoveMode", "Movement")))
         self.scope_speed_combo = QComboBox()
@@ -6665,6 +6907,8 @@ class AstronomicalWidget(CustomWidgetBase):
         self.btn_scope_exit.clicked.connect(self.exit_scope_mode)
         h_scope_actions.addWidget(self.btn_scope_exit)
         v_scope.addLayout(h_scope_actions)
+        self.scope_aspect_custom_spin.setEnabled(False)
+        self._sync_scope_aspect_controls(self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex()))
         self.scope_panel.hide()
         v_ext.addWidget(self.scope_panel)
 
@@ -6707,7 +6951,7 @@ class AstronomicalWidget(CustomWidgetBase):
 
         l_sky.addLayout(v_ext)
 
-        panels_layout.addWidget(gb_sky, 3)
+        panels_layout.addWidget(gb_sky, 4)
 
         # 3. VISIÃ“ DEL TERRA ================================================
         gb_earth = QGroupBox("Visió del terra")
@@ -6858,14 +7102,50 @@ class AstronomicalWidget(CustomWidgetBase):
     def on_scope_shape_changed(self, index):
         shape = self.scope_shape_combo.itemData(index)
         self.canvas.set_scope_shape(shape)
+        self._sync_scope_aspect_controls(shape)
+        self._apply_scope_aspect_from_ui()
 
     def on_scope_sensor_changed(self, index):
         sensor = self.scope_sensor_combo.itemData(index)
         self.canvas.set_scope_sensor(sensor)
+        self._apply_scope_aspect_from_ui()
+
+    def on_scope_aspect_changed(self, index):
+        self._apply_scope_aspect_from_ui()
+
+    def on_scope_aspect_custom_changed(self, value):
+        _ = value
+        self._apply_scope_aspect_from_ui()
 
     def on_scope_speed_changed(self, index):
         mode = self.scope_speed_combo.itemData(index)
         self.canvas.set_scope_speed_mode(mode)
+
+    def _sync_scope_aspect_controls(self, shape: str):
+        is_rect = shape == TelescopeScopeController.SHAPE_RECT
+        if hasattr(self, 'scope_aspect_combo'):
+            self.scope_aspect_combo.setEnabled(is_rect)
+        if hasattr(self, 'scope_aspect_custom_spin') and hasattr(self, 'scope_aspect_combo'):
+            is_custom = self.scope_aspect_combo.itemData(self.scope_aspect_combo.currentIndex()) == "custom"
+            self.scope_aspect_custom_spin.setEnabled(is_rect and is_custom)
+
+    def _apply_scope_aspect_from_ui(self):
+        if not hasattr(self, 'scope_aspect_combo'):
+            return
+        shape = self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex())
+        self._sync_scope_aspect_controls(shape)
+        if shape != TelescopeScopeController.SHAPE_RECT:
+            self.canvas.set_scope_aspect_ratio(None)
+            return
+
+        data = self.scope_aspect_combo.itemData(self.scope_aspect_combo.currentIndex())
+        if data is None:
+            self.canvas.set_scope_aspect_ratio(None)
+            return
+        if data == "custom":
+            self.canvas.set_scope_aspect_ratio(self.scope_aspect_custom_spin.value())
+            return
+        self.canvas.set_scope_aspect_ratio(float(data))
 
     def sync_scope_speed_ui(self, mode: str):
         if not hasattr(self, 'scope_speed_combo'):
@@ -6891,6 +7171,7 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.set_scope_focal_mm(self.scope_focal_spin.value())
         self.canvas.set_scope_shape(self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex()))
         self.canvas.set_scope_sensor(self.scope_sensor_combo.itemData(self.scope_sensor_combo.currentIndex()))
+        self._apply_scope_aspect_from_ui()
         self.canvas.set_scope_speed_mode(self.scope_speed_combo.itemData(self.scope_speed_combo.currentIndex()))
         self.canvas.set_scope_enabled(True)
         self.canvas.setFocus()

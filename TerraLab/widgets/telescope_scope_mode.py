@@ -51,6 +51,7 @@ class TelescopeScopeController:
         self.speed_mode = self.SPEED_SLOW
         self.focal_mm = 250.0
         self.sensor_key = "tiny"
+        self.aspect_ratio_override: Optional[float] = None  # width / height for rectangle mode
         self.center: Optional[SkyCoord] = None
         self.dragging = False
         self.last_mouse = QPointF(0.0, 0.0)
@@ -81,6 +82,16 @@ class TelescopeScopeController:
         if key in SENSOR_PRESETS:
             self.sensor_key = key
 
+    def set_aspect_ratio(self, ratio: Optional[float]) -> None:
+        if ratio is None:
+            self.aspect_ratio_override = None
+            return
+        try:
+            r = float(ratio)
+        except Exception:
+            return
+        self.aspect_ratio_override = max(0.2, min(5.0, r))
+
     def set_manual_fov(self, width_deg: float, height_deg: Optional[float] = None) -> None:
         h = width_deg if height_deg is None else height_deg
         self.manual_override = (max(0.01, float(width_deg)), max(0.01, float(h)))
@@ -90,11 +101,22 @@ class TelescopeScopeController:
 
     def current_fov(self) -> Tuple[float, float]:
         if self.manual_override is not None:
-            return self.manual_override
-        sensor = SENSOR_PRESETS.get(self.sensor_key, SENSOR_PRESETS["tiny"])
-        f = max(1e-3, self.focal_mm)
-        w = math.degrees(2.0 * math.atan(sensor.width_mm / (2.0 * f)))
-        h = math.degrees(2.0 * math.atan(sensor.height_mm / (2.0 * f)))
+            w, h = self.manual_override
+        else:
+            sensor = SENSOR_PRESETS.get(self.sensor_key, SENSOR_PRESETS["tiny"])
+            f = max(1e-3, self.focal_mm)
+            w = math.degrees(2.0 * math.atan(sensor.width_mm / (2.0 * f)))
+            h = math.degrees(2.0 * math.atan(sensor.height_mm / (2.0 * f)))
+
+        # Flexible aspect ratio only affects rectangle format.
+        if self.shape == self.SHAPE_RECT and self.aspect_ratio_override is not None:
+            ar = max(0.2, min(5.0, float(self.aspect_ratio_override)))
+            w = max(0.01, float(w))
+            h = max(0.01, float(h))
+            if w >= h:
+                h = max(0.01, w / ar)
+            else:
+                w = max(0.01, h * ar)
         return max(0.01, w), max(0.01, h)
 
     def short_step_deg(self) -> float:
@@ -159,6 +181,7 @@ class TelescopeScopeController:
         width: int,
         height: int,
         project_fn: Callable[[float, float], Optional[Tuple[float, float]]],
+        hud_extra_lines: Optional[List[str]] = None,
     ) -> None:
         if not self.enabled:
             return
@@ -214,7 +237,14 @@ class TelescopeScopeController:
         self._draw_crosshair(painter, project_fn)
 
         # HUD
-        self._draw_hud(painter, project_fn)
+        self._draw_hud(
+            painter,
+            project_fn,
+            width,
+            height,
+            boundary_screen,
+            hud_extra_lines=hud_extra_lines,
+        )
         painter.restore()
 
     def _normalized_center(self, c: SkyCoord) -> SkyCoord:
@@ -296,7 +326,15 @@ class TelescopeScopeController:
         painter.setBrush(QColor(255, 255, 255, 170))
         painter.drawEllipse(QPointF(cx, cy), 1.2, 1.2)
 
-    def _draw_hud(self, painter: QPainter, project_fn: Callable) -> None:
+    def _draw_hud(
+        self,
+        painter: QPainter,
+        project_fn: Callable,
+        width: int,
+        height: int,
+        boundary_screen: Optional[List[QPointF]] = None,
+        hud_extra_lines: Optional[List[str]] = None,
+    ) -> None:
         if self.center is None:
             return
         cpt = project_fn(*self.center)
@@ -312,13 +350,31 @@ class TelescopeScopeController:
         else:
             text = getTraduction("Scope.HudFovRect", "FOV: {w} x {h}").format(w=fmt_angle(fov_w), h=fmt_angle(fov_h))
         speed = getTraduction("Scope.HudSlow", "LENTO") if self.speed_mode == self.SPEED_SLOW else getTraduction("Scope.HudFast", "RAPIDO")
-        txt = f"{text} | {getTraduction('Scope.HudMove', 'Movimiento')}: {speed} (M)"
+        lines = [f"{text} | {getTraduction('Scope.HudMove', 'Movimiento')}: {speed} (M)"]
+        if hud_extra_lines:
+            for extra in hud_extra_lines:
+                if extra:
+                    lines.append(str(extra))
 
-        x = float(cpt[0]) + 12.0
-        y = float(cpt[1]) + 12.0
-        rect = QRectF(x, y, 240.0, 28.0)
+        line_h = 14.0
+        hud_w = 320.0
+        hud_h = 8.0 + line_h * len(lines)
+
+        if boundary_screen:
+            bottom = max(float(p.y()) for p in boundary_screen)
+            x = float(cpt[0]) - (hud_w * 0.5)
+            y = bottom + 8.0
+        else:
+            x = float(cpt[0]) + 12.0
+            y = float(cpt[1]) + 12.0
+
+        x = max(4.0, min(float(width) - hud_w - 4.0, x))
+        y = max(4.0, min(float(height) - hud_h - 4.0, y))
+        rect = QRectF(x, y, hud_w, hud_h)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(0, 0, 0, 170))
         painter.drawRoundedRect(rect, 5.0, 5.0)
         painter.setPen(QColor(255, 255, 255, 230))
-        painter.drawText(rect.adjusted(8.0, 0.0, -8.0, 0.0), Qt.AlignLeft | Qt.AlignVCenter, txt)
+        for i, line in enumerate(lines):
+            lrect = QRectF(x + 8.0, y + 4.0 + line_h * i, hud_w - 16.0, line_h)
+            painter.drawText(lrect, Qt.AlignLeft | Qt.AlignVCenter, line)
