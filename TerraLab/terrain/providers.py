@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Tuple
 import os
 import math
 import numpy as np
+from TerraLab.common.locks import RASTERIO_LOCK
 
 class RasterProvider(abc.ABC):
     """
@@ -163,7 +164,8 @@ class TiffRasterWindowProvider(RasterProvider):
             raise FileNotFoundError(f"GeoTIFF not found: {self.tiff_path}")
             
         print(f"[TiffRasterWindowProvider] Opening dataset: {self.tiff_path}")
-        self.dataset = rasterio.open(self.tiff_path)
+        with RASTERIO_LOCK:
+            self.dataset = rasterio.open(self.tiff_path)
         print(f"[TiffRasterWindowProvider] CRS: {self.dataset.crs}, Bounds: {self.dataset.bounds}")
         
         # Setup PyProj transformer to convert UTM Zone 31N (EPSG:32631) -> Native CRS of GeoTIFF
@@ -257,7 +259,8 @@ class TiffRasterWindowProvider(RasterProvider):
         if progress_callback:
             progress_callback(50, "⏳ Leyendo porción del GeoTIFF a memoria RAM...")
             
-        self.cached_data = self.dataset.read(1, window=window)
+        with RASTERIO_LOCK:
+            self.cached_data = self.dataset.read(1, window=window)
         self.cached_transform = self.dataset.window_transform(window)
         
         # Cache the inverse affine transform for fast (x,y) -> (r,c) lookups
@@ -309,7 +312,8 @@ class TiffRasterWindowProvider(RasterProvider):
 
     def close(self):
         if self.dataset:
-            self.dataset.close()
+            with RASTERIO_LOCK:
+                self.dataset.close()
             self.dataset = None
             self.cached_data = None
 

@@ -16,6 +16,7 @@ import math
 from TerraLab.light_pollution.dvnl_io import read_raster_window_filtered
 from TerraLab.light_pollution.kernels import create_gaussian_kernel
 from TerraLab.light_pollution.bortle import sqm_to_bortle_class
+from TerraLab.common.locks import RASTERIO_LOCK
 
 class LightPollutionSampler:
     """
@@ -88,22 +89,23 @@ class LightPollutionSampler:
                             # print(f"[LPSampler] Hit: {lat:.3f},{lon:.3f} -> SQM {sqm:.1f} (B{bortle})")
                             return sqm, bortle
 
-            # 2. Fallback: Open file directly
-            with rasterio.open(self.raster_path) as src:
-                from pyproj import Transformer
-                trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-                x_cen, y_cen = trans.transform(lon, lat)
-                
-                if src.crs.is_geographic:
-                    r_proj = self.radius_km / 111.32
-                else:
-                    r_proj = self.radius_km * 1000.0
+            # 2. Fallback: Open file directly (serialized to avoid GDAL races)
+            with RASTERIO_LOCK:
+                with rasterio.open(self.raster_path) as src:
+                    from pyproj import Transformer
+                    trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+                    x_cen, y_cen = trans.transform(lon, lat)
                     
-                window = from_bounds(x_cen - r_proj, y_cen - r_proj, x_cen + r_proj, y_cen + r_proj, transform=src.transform)
-                arr = src.read(1, window=window).astype(np.float32)
-                sqm, bortle = self._process_array_to_sqm(arr)
-                # print(f"[LPSampler] Direct Read: SQM {sqm:.1f} (B{bortle})")
-                return sqm, bortle
+                    if src.crs.is_geographic:
+                        r_proj = self.radius_km / 111.32
+                    else:
+                        r_proj = self.radius_km * 1000.0
+                        
+                    window = from_bounds(x_cen - r_proj, y_cen - r_proj, x_cen + r_proj, y_cen + r_proj, transform=src.transform)
+                    arr = src.read(1, window=window).astype(np.float32)
+                    sqm, bortle = self._process_array_to_sqm(arr)
+                    # print(f"[LPSampler] Direct Read: SQM {sqm:.1f} (B{bortle})")
+                    return sqm, bortle
                 
         except Exception as e:
             # If everything fails, don't return 4 (Suburban), return something that looks like the real area
@@ -174,39 +176,40 @@ class LightPollutionSampler:
 
         try:
             print(f"[LPSampler] Preparing region for {lat:.4f}, {lon:.4f} (r={radius_km}km)...")
-            with rasterio.open(self.raster_path) as src:
-                from pyproj import Transformer
-                self._src_crs = src.crs
-                self._is_geographic = src.crs.is_geographic
-                
-                # Atomically update transformers
-                new_trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-                new_utm_trans = Transformer.from_crs(input_crs, src.crs, always_xy=True)
-                
-                x_cen, y_cen = new_trans.transform(lon, lat)
-                
-                # Correct unit handling: if geographic, convert meters to degrees
-                r_m = radius_km * 1000.0 * 2.0
-                if self._is_geographic:
-                    r_proj = r_m / 111320.0 # Approx meters per degree at equator
-                else:
-                    r_proj = r_m
+            with RASTERIO_LOCK:
+                with rasterio.open(self.raster_path) as src:
+                    from pyproj import Transformer
+                    self._src_crs = src.crs
+                    self._is_geographic = src.crs.is_geographic
                     
-                bounds = (x_cen - r_proj, y_cen - r_proj, x_cen + r_proj, y_cen + r_proj)
-                window = from_bounds(*bounds, transform=src.transform)
-                
-                print(f"[LPSampler] Reading window {window} (Geo={self._is_geographic})...")
-                data = src.read(1, window=window).astype(np.float32)
-                trans_win = src.window_transform(window)
-                data[data < 0] = 0.0
-                data[data > 1e10] = 0.0
-                
-                with self._lock:
-                    self._transformer = new_trans
-                    self._utm_transformer = new_utm_trans
-                    self._cached_data = data
-                    self._cached_transform = trans_win
-                    self._cached_bounds = bounds
+                    # Atomically update transformers
+                    new_trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+                    new_utm_trans = Transformer.from_crs(input_crs, src.crs, always_xy=True)
+                    
+                    x_cen, y_cen = new_trans.transform(lon, lat)
+                    
+                    # Correct unit handling: if geographic, convert meters to degrees
+                    r_m = radius_km * 1000.0 * 2.0
+                    if self._is_geographic:
+                        r_proj = r_m / 111320.0 # Approx meters per degree at equator
+                    else:
+                        r_proj = r_m
+                        
+                    bounds = (x_cen - r_proj, y_cen - r_proj, x_cen + r_proj, y_cen + r_proj)
+                    window = from_bounds(*bounds, transform=src.transform)
+                    
+                    print(f"[LPSampler] Reading window {window} (Geo={self._is_geographic})...")
+                    data = src.read(1, window=window).astype(np.float32)
+                    trans_win = src.window_transform(window)
+                    data[data < 0] = 0.0
+                    data[data > 1e10] = 0.0
+                    
+                    with self._lock:
+                        self._transformer = new_trans
+                        self._utm_transformer = new_utm_trans
+                        self._cached_data = data
+                        self._cached_transform = trans_win
+                        self._cached_bounds = bounds
                     
             print(f"[LPSampler] ROI Cached: {self._cached_data.shape} px.")
         except Exception as e:
@@ -258,3 +261,12 @@ class LightPollutionSampler:
         except Exception as e:
             pass
         return 0.0
+
+    def close(self):
+        """Release in-memory cache so worker reload can safely reset state."""
+        with self._lock:
+            self._cached_data = None
+            self._cached_transform = None
+            self._cached_bounds = None
+            self._transformer = None
+            self._utm_transformer = None

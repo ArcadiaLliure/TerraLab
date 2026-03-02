@@ -85,8 +85,10 @@ def generate_layer_defs(bands: list) -> list:
     result = []
     # Reverse so we draw farthest first
     for i, band in enumerate(reversed(bands)):
-        # t=0 for farthest (i=0 after reverse), t=1 for nearest (i=n-1 after reverse)
-        t = i / max(n - 1, 1)
+        # Use non-linear mapping (square root) to stretch near-colors (green) further
+        # into the distance, as requested by the user.
+        t_linear = i / max(n - 1, 1)
+        t = math.sqrt(t_linear)
         # We want t=0 = farthest color, t=1 = nearest color
         # After reversing bands, i=0 is the farthest, so t=0 → farthest → correct.
         night_c, day_c = _palette_color(t)

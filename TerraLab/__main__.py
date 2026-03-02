@@ -1,6 +1,7 @@
 import sys
 import traceback
 import os
+import faulthandler
 from PyQt5.QtWidgets import QApplication, QDialog
 from TerraLab.widgets.sky_widget import AstronomicalWidget
 
@@ -23,6 +24,14 @@ class StandaloneAstronomicalWidget(AstronomicalWidget):
             super().keyPressEvent(event)
 
 def main():
+    # Persist native crashes (segfault/abort) to file for post-mortem analysis.
+    crash_log = os.path.join(os.getcwd(), "terralab_crash.log")
+    try:
+        faulthandler.enable(open(crash_log, "a", encoding="utf-8"))
+        print(f"[TerraLab] Fault handler enabled: {crash_log}")
+    except Exception as e:
+        print(f"[TerraLab] Warning: could not enable faulthandler: {e}")
+
     app = QApplication(sys.argv)
     
     # Standalone mode

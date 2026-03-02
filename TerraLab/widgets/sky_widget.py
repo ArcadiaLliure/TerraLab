@@ -5947,8 +5947,17 @@ class AstronomicalWidget(CustomWidgetBase):
     def request_relocation(self):
         """User changed location: trigger full bake."""
         try:
-            self.latitude = float(self.txt_lat.text())
-            self.longitude = float(self.txt_lon.text())
+            new_lat = float(self.txt_lat.text())
+            new_lon = float(self.txt_lon.text())
+            
+            # Keep sky orientation stable when crossing hemispheres.
+            old_hemi_n = self.latitude >= 0
+            new_hemi_n = new_lat >= 0
+            if old_hemi_n != new_hemi_n:
+                self.canvas.azimuth_offset = (self.canvas.azimuth_offset + 180) % 360
+            
+            self.latitude = new_lat
+            self.longitude = new_lon
             
             # Use debouncer for location changes too
             self.bake_debounce_timer.start(1500) # 1.5s debounce
@@ -5975,8 +5984,7 @@ class AstronomicalWidget(CustomWidgetBase):
                 if self.is_auto_bortle:
                     self.slider_light.set_silent_value(auto_bortle)
             
-            # Emit signal to Horizon Worker for heavy bake
-            self.request_horizon_bake.emit(self.latitude, self.longitude)
+            # Heavy bake is triggered by debounce timer to avoid duplicate work.
 
             # ─ Toast HUD: mostra nova ubicació i altitud si disponible ─
             if hasattr(self.canvas, 'hint_overlay'):
@@ -6209,35 +6217,6 @@ class AstronomicalWidget(CustomWidgetBase):
         self.btn_view.setText(getTraduction("Astro.ViewHorizontal", "Horizonte"))
         self.canvas.update()
         
-    def update_location(self):
-        try:
-            lat = float(self.txt_lat.text())
-            lon = float(self.txt_lon.text())
-            
-            # Auto-Rotation Check
-            # If hemisphere changed, flip azimuth to keep "Ecliptic" focus
-            old_hemi_n = self.latitude >= 0
-            new_hemi_n = lat >= 0
-            
-            if old_hemi_n != new_hemi_n:
-                 self.canvas.azimuth_offset = (self.canvas.azimuth_offset + 180) % 360
-            
-            self.latitude = lat
-            self.longitude = lon
-            
-            # Update TimeBar Gradient
-            self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
-            
-            # Request new horizon bake
-            if hasattr(self, 'horizon_worker'):
-                 self.update_altitude_label()
-                 self.request_horizon_bake.emit(self.latitude, self.longitude)
-            
-            self.canvas.update()
-            print(f"Location updated: {lat}, {lon}")
-        except ValueError:
-            print("Invalid location format")
-
     def on_extra_height_changed(self, val):
         # Update worker state immediately for synchronous altitude label feedback
         if hasattr(self, 'horizon_worker'):

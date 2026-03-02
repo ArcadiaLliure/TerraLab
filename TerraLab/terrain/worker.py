@@ -23,6 +23,9 @@ class HorizonWorker(QObject):
         self.observer_offset = 0.0
         self.needs_reload = False
         self.light_sampler = None
+        # Safety switch: LP preload has shown native crashes on some Windows/GDAL setups.
+        # Enable explicitly with TL_LP_PRELOAD=1.
+        self.lp_preload_enabled = os.environ.get("TL_LP_PRELOAD", "0") == "1"
         self._abort_requested = False
         
         import threading
@@ -224,11 +227,13 @@ class HorizonWorker(QObject):
             with self.provider_lock:
                 self.provider.prepare_region(x_utm, y_utm, vis_radius, progress_callback=region_progress, abort_check=lambda: self._abort_requested)
             
-            # Pre-load Light Pollution ROI
-            if self.light_sampler:
+            # Pre-load Light Pollution ROI (optional safety mode)
+            if self.light_sampler and self.lp_preload_enabled:
                 print(f"[HorizonWorker] Preparing LP Sampler for {lat}, {lon}...")
                 # We need to tell the sampler about the region in KM
                 self.light_sampler.prepare_region(lat, lon, vis_radius / 1000.0)
+            elif self.light_sampler:
+                print("[HorizonWorker] LP preload disabled (set TL_LP_PRELOAD=1 to enable).")
             
             self.progress_message.emit(getTraduction("Horizon.CalculatingHorizonGeneric", "⏳ Calculant horitzó..."))
             
