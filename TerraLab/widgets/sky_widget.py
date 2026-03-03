@@ -11,12 +11,17 @@ except ImportError:
 from datetime import datetime, timedelta, timezone
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QSlider, QLineEdit, QPushButton, QFrame,
-                             QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox, QMenu)
+                             QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox, QMenu, QMessageBox, QInputDialog)
 from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, pyqtSlot, QObject, QThread, QLineF, QUrl
-from PyQt5.QtGui import QPainter, QColor, QPen, QRadialGradient, QBrush, QPainterPath, QLinearGradient, QPixmap, QFont, QTransform, QImage, QPolygonF
+from PyQt5.QtGui import QPainter, QColor, QPen, QRadialGradient, QBrush, QPainterPath, QLinearGradient, QPixmap, QFont, QTransform, QImage, QPolygonF, QDesktopServices
 
 from TerraLab.common.custom_widget_base import CustomWidgetBase
-from TerraLab.common.utils import resource_path, getTraduction
+from TerraLab.common.utils import (
+    resource_path,
+    getTraduction,
+    get_config_value,
+    set_config_value,
+)
 from TerraLab.weather.system import (WeatherSystem, WeatherPalette, 
                             WeatherControlWidget, Cloud, Particle)
 from TerraLab.layers.village import VillageOverlay
@@ -31,6 +36,16 @@ from TerraLab.widgets.measurement_tools import (
     TOOL_CIRCLE,
 )
 from TerraLab.widgets.spherical_math import screen_to_sky
+from TerraLab.widgets.visual_magnitude_engine import (
+    VisualMagnitudeEngine,
+    VisualMagnitudeInputs,
+)
+from TerraLab.widgets.telescope_runtime import (
+    update_telescope_hud,
+    on_telescope_view_enabled,
+    on_resize as telescope_on_resize,
+    update_star_rendering_params,
+)
 import random
 
 # Skyfield imports
@@ -963,7 +978,7 @@ class StarRenderWorker(QObject):
             # --- ATMOSPHERIC EXTINCTION (AIRMASS) ---
             h_capped = np.maximum(0.1, alt_deg)
             airmass = 1.0 / (np.sin(np.radians(h_capped)) + 0.15 * (h_capped + 3.885)**-1.253)
-            k_ext = 0.20 + 0.04 * np.clip(bortle - 1, 0, 8)
+            k_ext = float(params.get('extinction_coeff', 0.20))
             airmass_penalty = k_ext * (airmass - 1.0)
             local_limit = local_limit - airmass_penalty
 
@@ -2285,7 +2300,47 @@ class AstroCanvas(QWidget):
         ra_txt = self._format_ra_hms(ra_dec[0])
         dec_txt = self._format_dec_dms(ra_dec[1])
         line = getTraduction("Scope.HudCoords", "RA {ra} | Dec {dec}").format(ra=ra_txt, dec=dec_txt)
-        return [line]
+        lines = [line]
+        vm_state = getattr(self.parent_widget, "visual_magnitude_result", None)
+        if vm_state is not None:
+            lines.append(
+                getTraduction(
+                    "Scope.HudMagModel",
+                    "mLim {mlim:.2f} | M {magx:.1f}x",
+                ).format(
+                    mlim=float(vm_state.scope_limit_mag),
+                    magx=float(vm_state.magnification),
+                )
+            )
+        metrics = getattr(self.parent_widget, "scope_atmo_metrics", {}).get("hud_metrics", {})
+        if isinstance(metrics, dict):
+            exit_p = metrics.get("exit_pupil_mm")
+            x_air = metrics.get("airmass_x")
+            k_ext = metrics.get("extinction_k")
+            loss_mag = metrics.get("loss_mag")
+            trans = metrics.get("transmission")
+
+            if exit_p is not None:
+                lines.append(
+                    getTraduction("Scope.HudExitPupil", "Exit pupil: {v:.2f} mm").format(v=float(exit_p))
+                )
+            if x_air is not None:
+                lines.append(
+                    getTraduction("Scope.HudAirmass", "Airmass X: {v:.3f}").format(v=float(x_air))
+                )
+            if k_ext is not None:
+                lines.append(
+                    getTraduction("Scope.HudExtinctionK", "Extinction k: {v:.3f}").format(v=float(k_ext))
+                )
+            if loss_mag is not None:
+                lines.append(
+                    getTraduction("Scope.HudLossMag", "Loss: {v:.3f} mag").format(v=float(loss_mag))
+                )
+            if trans is not None:
+                lines.append(
+                    getTraduction("Scope.HudTransmission", "Transmission: {v:.3f}").format(v=float(trans))
+                )
+        return lines
 
     def _draw_selected_target_marker(self, painter: QPainter, ut_hour: float, day_of_year_utc: int):
         if self.scope_mode_enabled() or self.selected_target is None:
@@ -2668,6 +2723,11 @@ class AstroCanvas(QWidget):
                 base_light = max(0.0, min(1.0, base_light))
             
             ambient_light = base_light * eclipse_dimming
+            vm_state = self.parent_widget.recompute_visual_magnitude_model(
+                target_alt_deg=self.elevation_angle,
+                sun_alt_deg=eff_sun_alt,
+                now_utc=dt_utc,
+            )
             
             # Dynamic Magnitude Limit
             # Daytime: Stars must be brighter than Sun's glare to be seen (basically only Sun/Moon)
@@ -2684,33 +2744,33 @@ class AstroCanvas(QWidget):
             elif eff_sun_alt > -18.0:
                  # Astronomical Twilight: Fine tuning
                  t = (eff_sun_alt + 12.0) / -6.0
-                 target_mag = getattr(self.parent_widget, 'magnitude_limit', 6.0)
+                 target_mag = float(vm_state.scope_limit_mag)
                  sun_mag_limit = 3.0 + (target_mag - 3.0) * t
             else:
-                 sun_mag_limit = getattr(self.parent_widget, 'magnitude_limit', 6.0)
+                 sun_mag_limit = float(vm_state.scope_limit_mag)
             
             eclipse_bonus = (1.0 - eclipse_dimming) * 14.0
-            
-            if getattr(self.parent_widget, 'is_auto_bortle', True):
-                bortle_class = getattr(self.parent_widget, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1))
-                # Bortle 1: 7.6, Bortle 9: 3.6
-                bortle_limit = 7.6 - 0.5 * (bortle_class - 1)
-                
-                # We want to use the full Bortle visibility if we are in absolute darkness (Astronomical Twilight)
-                # Ensure the cap doesn't artificially flatten Bortle 1 to 6.0
-                final_mag_limit = min(sun_mag_limit + eclipse_bonus, bortle_limit)
-                ambient_light = 1.0 + (bortle_class - 1) * 0.04
+
+            auto_bortle = bool(getattr(self.parent_widget, "is_auto_bortle", True))
+            if auto_bortle:
+                bortle_class = max(1.0, min(9.0, float(getattr(self.parent_widget, "auto_bortle_estimate", 1))))
             else:
-                manual_mag = getattr(self.parent_widget, 'magnitude_limit', 6.0)
-                final_mag_limit = min(sun_mag_limit + eclipse_bonus, manual_mag)
-            
-            # Diagnostic Log for Star Visibility
-            if not hasattr(self, '_last_vis_log_time'): self._last_vis_log_time = 0
-            if current_time_ms - self._last_vis_log_time > 1000:
-                self._last_vis_log_time = current_time_ms
-                mode_str = "Auto" if getattr(self.parent_widget, 'is_auto_bortle', True) else "Manual"
-                bortle_val = getattr(self.parent_widget, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1))
-                print(f"[AstroCanvas] Star Render: {mode_str} Mode | Bortle: {bortle_val} | Mag Limit: {final_mag_limit:.2f}")
+                bortle_class = max(1.0, min(9.0, 1.0 + (7.6 - float(self.parent_widget.magnitude_limit)) / 0.5))
+
+            render_state = {
+                "scope_enabled": bool(self.scope_mode_enabled()),
+                "auto_bortle": auto_bortle,
+                "bortle": bortle_class,
+                "scope_mlim": float(vm_state.scope_limit_mag),
+                "manual_mlim": float(self.parent_widget.magnitude_limit),
+            }
+            update_star_rendering_params(render_state)
+            view_mag_limit = float(render_state.get("render_mag_limit", vm_state.scope_limit_mag))
+            final_mag_limit = min(sun_mag_limit + eclipse_bonus, view_mag_limit)
+
+            if not self.scope_mode_enabled():
+                self.parent_widget.auto_star_scale_multiplier = 1.0
+            ambient_light = base_light * (1.0 + (bortle_class - 1.0) * 0.04)
             
             # Cache Invalidation
             if not hasattr(self, '_last_mag_limit'): self._last_mag_limit = final_mag_limit
@@ -2925,6 +2985,25 @@ class AstroCanvas(QWidget):
         # 4. Trigger Worker for NEXT frame (if not busy)
         if np and hasattr(pw, 'np_ra') and not self.trail_rendering_busy:
             self.trail_rendering_busy = True
+
+            vm_trail = pw.recompute_visual_magnitude_model(
+                target_alt_deg=self.elevation_angle,
+                sun_alt_deg=-18.0,
+            )
+            auto_bortle = bool(getattr(pw, "is_auto_bortle", True))
+            if auto_bortle:
+                bortle_class = max(1.0, min(9.0, float(getattr(pw, "auto_bortle_estimate", 1))))
+            else:
+                bortle_class = max(1.0, min(9.0, 1.0 + (7.6 - float(pw.magnitude_limit)) / 0.5))
+            trail_state = {
+                "scope_enabled": bool(self.scope_mode_enabled()),
+                "auto_bortle": auto_bortle,
+                "bortle": bortle_class,
+                "scope_mlim": float(vm_trail.scope_limit_mag),
+                "manual_mlim": float(pw.magnitude_limit),
+            }
+            update_star_rendering_params(trail_state)
+            trail_mag_limit = float(trail_state.get("render_mag_limit", vm_trail.scope_limit_mag))
             
             params = {
                 'width': self.width(),
@@ -2944,7 +3023,7 @@ class AstroCanvas(QWidget):
                 'lat_rad': math.radians(pw.latitude),
                 'day_of_year': pw.manual_day,
                 'longitude': pw.longitude,
-                'mag_limit': pw.magnitude_limit,
+                'mag_limit': trail_mag_limit,
                 'is_moving': is_moving,
                 'min_diff': 0.0 # Force forward-only in worker too if needed
             }
@@ -2997,7 +3076,24 @@ class AstroCanvas(QWidget):
         cos_lat = math.cos(lat_rad)
         
         # Effective limit is visual limit capped by performance cap
-        limit = min(self.parent_widget.magnitude_limit, mag_cap)
+        vm_trail = self.parent_widget.recompute_visual_magnitude_model(
+            target_alt_deg=self.elevation_angle,
+            sun_alt_deg=-18.0,
+        )
+        auto_bortle = bool(getattr(self.parent_widget, "is_auto_bortle", True))
+        if auto_bortle:
+            bortle_class = max(1.0, min(9.0, float(getattr(self.parent_widget, "auto_bortle_estimate", 1))))
+        else:
+            bortle_class = max(1.0, min(9.0, 1.0 + (7.6 - float(self.parent_widget.magnitude_limit)) / 0.5))
+        trail_state = {
+            "scope_enabled": bool(self.scope_mode_enabled()),
+            "auto_bortle": auto_bortle,
+            "bortle": bortle_class,
+            "scope_mlim": float(vm_trail.scope_limit_mag),
+            "manual_mlim": float(self.parent_widget.magnitude_limit),
+        }
+        update_star_rendering_params(trail_state)
+        limit = min(float(trail_state.get("render_mag_limit", vm_trail.scope_limit_mag)), mag_cap)
         
         # NumPy Vectorization
         if np and hasattr(self.parent_widget, 'np_ra'):
@@ -3791,7 +3887,8 @@ class AstroCanvas(QWidget):
                 'lst': lst,
                 'lat_rad': lat_rad,
                 'mag_limit': mag_limit if mag_limit is not None else pw.magnitude_limit,
-                'star_scale': pw.star_scale,
+                'star_scale': pw.star_scale * getattr(pw, 'auto_star_scale_multiplier', 1.0),
+                'extinction_coeff': getattr(pw, 'scope_k_fallback', 0.20),
                 'spike_threshold': getattr(pw, 'spike_magnitude_threshold', 2.0),
                 'pure_colors': pw.pure_colors
             }
@@ -3819,17 +3916,9 @@ class AstroCanvas(QWidget):
         if is_interacting: 
             mag_limit = min(mag_limit, 5.5)
             
-        # B. Base Global Extinction (Bortle Penalty)
-        # Bortle highly penalizes star counts everywhere. At Bortle 9 it drops limit by ~3.2 magnitudes.
+        # B. Keep only local modifiers here. Global NTL is handled by the visual magnitude engine.
         bortle = getattr(pw, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1))
         is_auto = getattr(pw, 'is_auto_bortle', False)
-        
-        if is_auto and bortle > 1:
-            # Naked-Eye Limiting Magnitude (NELM) empirical formula based on Bortle
-            # mlim(B) ~= 7.6 - 0.5(B-1). Resulting in B1=~7.6, B2=~7.1, B9=~3.6.
-            nelm_limit = 7.6 - 0.5 * (bortle - 1)
-            # Re-assign mag_limit entirely to mathematically guarantee the correct max stars
-            mag_limit = min(mag_limit, nelm_limit)
         
         # C. Absolute minimum floor to avoid completely empty skies incorrectly
         mag_limit = max(-12.0, mag_limit)
@@ -3920,9 +4009,8 @@ class AstroCanvas(QWidget):
         h_capped = np.maximum(0.1, alt_deg)
         airmass = 1.0 / (np.sin(np.radians(h_capped)) + 0.15 * (h_capped + 3.885)**-1.253)
         
-        # Extinction coefficient k: 0.2 (Clear) up to 0.5 (City Smog)
-        # We scale k slightly with Bortle to reflect aerosol load in high LP areas.
-        k_ext = 0.20 + 0.04 * np.clip(bortle - 1, 0, 8)
+        # Extinction coefficient k configured in the visual magnitude model.
+        k_ext = float(getattr(pw, 'scope_k_fallback', 0.20))
         
         # Magnitude drop = k * (X - 1). Penalty is 0 at Zenith (X=1).
         airmass_penalty = k_ext * (airmass - 1.0)
@@ -4088,7 +4176,7 @@ class AstroCanvas(QWidget):
         diff = f_ll - f_mag
         fade_in = np.clip(diff * 2.0, 0.0, 1.0)
         
-        scale = self.parent_widget.star_scale
+        scale = self.parent_widget.star_scale * getattr(self.parent_widget, 'auto_star_scale_multiplier', 1.0)
         
         painter.setPen(Qt.NoPen)
         
@@ -5356,7 +5444,7 @@ class AstroCanvas(QWidget):
                         # Airmass Extinction for Planets
                         h_p = max(0.1, p['alt'])
                         airmass_p = 1.0 / (math.sin(math.radians(h_p)) + 0.15 * (h_p + 3.885)**-1.253)
-                        k_p = 0.20 + 0.04 * (bortle - 1)
+                        k_p = float(getattr(self.parent_widget, "scope_k_fallback", 0.20))
                         p_ext = k_p * (airmass_p - 1.0)
                         
                         local_limit = mag_limit + dir_modifier - p_ext
@@ -5685,8 +5773,13 @@ class AstroCanvas(QWidget):
                             # Reverting to strict penalty as per user request.
                             # Even bright planets are lost in the sun's glare if too close.
                             dir_modifier = -1.5 * cos_gamma
-                            
-                            local_limit = mag_limit + dir_modifier
+
+                            h_p = max(0.1, alt_p.degrees)
+                            airmass_p = 1.0 / (math.sin(math.radians(h_p)) + 0.15 * (h_p + 3.885)**-1.253)
+                            k_p = float(getattr(self.parent_widget, "scope_k_fallback", 0.20))
+                            p_ext = k_p * (airmass_p - 1.0)
+
+                            local_limit = mag_limit + dir_modifier - p_ext
                             
                             # NO HARD CUTOFF
                             # Rely purely on the Star-Like Visibility Algorithm
@@ -6274,11 +6367,35 @@ class AstronomicalWidget(CustomWidgetBase):
 
     def __init__(self, parent=None, **kwargs):
         # 1. Initialize properties required by UI/Canvas
-        self.latitude = 41.189795
-        self.longitude = 1.210058
-        self.magnitude_limit = 8.0
+        self.latitude = float(get_config_value("observer_lat", 41.189795))
+        self.longitude = float(get_config_value("observer_lon", 1.210058))
+        # Manual naked-eye limit used in manual LP mode.
+        self.magnitude_limit = float(get_config_value("manual_eye_limit_mag", 8.0))
         self.spike_magnitude_threshold = 2.0
         self.star_scale = 0.5
+        self.auto_star_scale_multiplier = 1.0
+
+        # Visual magnitude engine parameters.
+        self.scope_aperture_mm = float(get_config_value("scope_aperture_mm", 80.0))
+        self.scope_aperture_f_number = float(get_config_value("scope_aperture_f_number", 4.0))
+        self.scope_aperture_input_mode = str(
+            get_config_value("scope_aperture_input_mode", "diameter_mm")
+        )
+        if self.scope_aperture_input_mode not in ("diameter_mm", "f_number"):
+            self.scope_aperture_input_mode = "diameter_mm"
+        self.scope_instrument_profile = str(
+            get_config_value("scope_instrument_profile", "telescope")
+        )
+        if self.scope_instrument_profile not in ("telescope", "camera_aps_c", "camera_full_frame"):
+            self.scope_instrument_profile = "telescope"
+        self.scope_eyepiece_mm = float(get_config_value("scope_eyepiece_mm", 20.0))
+        self.scope_iso = int(get_config_value("scope_iso", 800))
+        self.scope_exposure_s = float(get_config_value("scope_exposure_s", 2.0))
+        self.scope_k_fallback = float(get_config_value("scope_k_fallback", 0.20))
+        self.scope_eye_pupil_dark_mm = 6.5
+        self.scope_atmo_metrics = {}
+        self.visual_magnitude_engine = VisualMagnitudeEngine()
+        self.visual_magnitude_result = None
         
         self.celestial_objects = []
         self.use_real_time = True
@@ -6286,8 +6403,8 @@ class AstronomicalWidget(CustomWidgetBase):
         self.pure_colors = False
         
         # Light Pollution state
-        self.is_auto_bortle = True
-        self.auto_bortle_estimate = 1
+        self.is_auto_bortle = bool(get_config_value("is_auto_bortle", True))
+        self.auto_bortle_estimate = int(get_config_value("auto_bortle_estimate", 1))
         
         now = datetime.now()
         self.manual_year = now.year
@@ -6340,7 +6457,6 @@ class AstronomicalWidget(CustomWidgetBase):
         self.horizon_worker = HorizonWorker() # Config handles path
         
         # Hydrate saved offset into worker before moving thread
-        from TerraLab.common.utils import get_config_value
         saved_offset = float(get_config_value("observer_offset", 0.0))
         self.horizon_worker.set_observer_offset(saved_offset)
         
@@ -6682,11 +6798,11 @@ class AstronomicalWidget(CustomWidgetBase):
 
         # Col 1: Checks
         v_chk = QVBoxLayout(); v_chk.setSpacing(1)
-        self.chk_clima = QCheckBox("Clima"); self.chk_clima.setEnabled(True)
+        self.chk_clima = QCheckBox(getTraduction("Astro.Climate", "Climate")); self.chk_clima.setEnabled(True)
         self.chk_clima.setChecked(False) # Clima OFF per defecte
         # Set state initially
         setattr(self.canvas.weather, 'enabled', False)
-        self.chk_clima.toggled.connect(lambda checked: [setattr(self.canvas.weather, 'enabled', checked), self.canvas.update()])
+        self.chk_clima.toggled.connect(self.on_climate_toggled)
         
         self.chk_planets = QCheckBox("Planetes")
         self.chk_planets.setEnabled(True)
@@ -6772,14 +6888,29 @@ class AstronomicalWidget(CustomWidgetBase):
         
         from PyQt5.QtWidgets import QComboBox
         self.combo_lp_mode = QComboBox()
-        self.combo_lp_mode.addItems(["Automàtic", "Manual"])
-        self.combo_lp_mode.setToolTip("Mode de visibilitat: Automàtic (Bortle satèl·lit) / Manual (Filtre Magnitud)")
+        self.combo_lp_mode.addItems([
+            getTraduction("Astro.AutoMode", "Automatic"),
+            getTraduction("Astro.ManualMode", "Manual"),
+        ])
+        self.combo_lp_mode.setToolTip(
+            getTraduction(
+                "Astro.LPModeTooltip",
+                "Visibility mode: Automatic (satellite Bortle) / Manual (eye limiting magnitude)",
+            )
+        )
         self.combo_lp_mode.setStyleSheet("font-size: 10px; min-width: 80px; max-width: 100px; height: 22px;")
         self.combo_lp_mode.currentIndexChanged.connect(self.on_lp_mode_changed)
         h_ctrl.addWidget(self.combo_lp_mode)
         
-        self.slider_light, self.lbl_light_text, self.btn_res_lp = make_sld(h_ctrl, "Bortle", (1, 9), 1, self.update_lp_slider, with_reset=True)
-        self.btn_res_lp.setToolTip("Restablir segons ubicació")
+        self.slider_light, self.lbl_light_text, self.btn_res_lp = make_sld(
+            h_ctrl,
+            getTraduction("Astro.BortleLabel", "Bortle"),
+            (1, 9),
+            1,
+            self.update_lp_slider,
+            with_reset=True,
+        )
+        self.btn_res_lp.setToolTip(getTraduction("Astro.ResetByLocation", "Reset by location"))
         self.btn_res_lp.clicked.connect(self.reset_lp_to_auto)
         
         # Force an initial sync of Bortle if possible
@@ -6787,7 +6918,10 @@ class AstronomicalWidget(CustomWidgetBase):
         l_shared.addLayout(h_ctrl)
         v_sld.addLayout(l_shared)
         
-        self.is_auto_bortle = True
+        self.combo_lp_mode.blockSignals(True)
+        self.combo_lp_mode.setCurrentIndex(0 if self.is_auto_bortle else 1)
+        self.combo_lp_mode.blockSignals(False)
+        self.on_lp_mode_changed(self.combo_lp_mode.currentIndex())
         self.ambient_light = 1.0 
         l_sky.addLayout(v_sld)
 
@@ -6835,7 +6969,7 @@ class AstronomicalWidget(CustomWidgetBase):
         v_scope.setSpacing(3)
         v_scope.setContentsMargins(4, 4, 4, 4)
 
-        from PyQt5.QtWidgets import QDoubleSpinBox, QComboBox
+        from PyQt5.QtWidgets import QDoubleSpinBox, QComboBox, QSpinBox
 
         h_focal = QHBoxLayout()
         h_focal.addWidget(QLabel(getTraduction("Astro.ScopeFocal", "Focal (mm)")))
@@ -6848,6 +6982,96 @@ class AstronomicalWidget(CustomWidgetBase):
         self.scope_focal_spin.valueChanged.connect(lambda v: self.canvas.set_scope_focal_mm(v))
         h_focal.addWidget(self.scope_focal_spin)
         v_scope.addLayout(h_focal)
+
+        h_instrument = QHBoxLayout()
+        self.scope_instrument_label = QLabel(getTraduction("Astro.ScopeInstrumentProfile", "Instrument"))
+        h_instrument.addWidget(self.scope_instrument_label)
+        self.scope_instrument_combo = QComboBox()
+        self.scope_instrument_combo.addItem(
+            getTraduction("Astro.ScopeInstrumentTelescope", "Telescope"),
+            "telescope",
+        )
+        self.scope_instrument_combo.addItem(
+            getTraduction("Astro.ScopeInstrumentAPSC", "APS-C"),
+            "camera_aps_c",
+        )
+        self.scope_instrument_combo.addItem(
+            getTraduction("Astro.ScopeInstrumentFullFrame", "Full Frame"),
+            "camera_full_frame",
+        )
+        instrument_index = 0
+        for i in range(self.scope_instrument_combo.count()):
+            if self.scope_instrument_combo.itemData(i) == self.scope_instrument_profile:
+                instrument_index = i
+                break
+        self.scope_instrument_combo.setCurrentIndex(instrument_index)
+        self.scope_instrument_combo.currentIndexChanged.connect(self.on_scope_instrument_changed)
+        h_instrument.addWidget(self.scope_instrument_combo)
+        v_scope.addLayout(h_instrument)
+
+        h_aperture_mode = QHBoxLayout()
+        self.scope_aperture_mode_label = QLabel(getTraduction("Astro.ScopeApertureInput", "Aperture input"))
+        h_aperture_mode.addWidget(self.scope_aperture_mode_label)
+        self.scope_aperture_mode_combo = QComboBox()
+        self.scope_aperture_mode_combo.addItem(
+            getTraduction("Astro.ScopeApertureModeMM", "Diameter (mm)"),
+            "diameter_mm",
+        )
+        self.scope_aperture_mode_combo.addItem(
+            getTraduction("Astro.ScopeApertureModeF", "f/ number"),
+            "f_number",
+        )
+        mode_index = 0 if self.scope_aperture_input_mode == "diameter_mm" else 1
+        self.scope_aperture_mode_combo.setCurrentIndex(mode_index)
+        self.scope_aperture_mode_combo.currentIndexChanged.connect(self.on_scope_aperture_mode_changed)
+        h_aperture_mode.addWidget(self.scope_aperture_mode_combo)
+        v_scope.addLayout(h_aperture_mode)
+
+        h_aperture = QHBoxLayout()
+        self.scope_aperture_label = QLabel(getTraduction("Astro.ScopeAperture", "Aperture (mm)"))
+        h_aperture.addWidget(self.scope_aperture_label)
+        self.scope_aperture_spin = QDoubleSpinBox()
+        self.scope_aperture_spin.setFixedWidth(74)
+        self.scope_aperture_spin.valueChanged.connect(self._on_scope_aperture_changed)
+        h_aperture.addWidget(self.scope_aperture_spin)
+        v_scope.addLayout(h_aperture)
+        self._sync_scope_aperture_controls()
+
+        h_eyepiece = QHBoxLayout()
+        self.scope_eyepiece_label = QLabel(getTraduction("Astro.ScopeEyepiece", "Eyepiece (mm)"))
+        h_eyepiece.addWidget(self.scope_eyepiece_label)
+        self.scope_eyepiece_spin = QDoubleSpinBox()
+        self.scope_eyepiece_spin.setRange(2.0, 80.0)
+        self.scope_eyepiece_spin.setDecimals(1)
+        self.scope_eyepiece_spin.setSingleStep(0.5)
+        self.scope_eyepiece_spin.setValue(self.scope_eyepiece_mm)
+        self.scope_eyepiece_spin.setFixedWidth(74)
+        self.scope_eyepiece_spin.valueChanged.connect(self._on_scope_eyepiece_changed)
+        h_eyepiece.addWidget(self.scope_eyepiece_spin)
+        v_scope.addLayout(h_eyepiece)
+
+        h_iso = QHBoxLayout()
+        h_iso.addWidget(QLabel(getTraduction("Astro.ScopeISO", "ISO")))
+        self.scope_iso_spin = QSpinBox()
+        self.scope_iso_spin.setRange(100, 51200)
+        self.scope_iso_spin.setSingleStep(100)
+        self.scope_iso_spin.setValue(int(self.scope_iso))
+        self.scope_iso_spin.setFixedWidth(74)
+        self.scope_iso_spin.valueChanged.connect(self._on_scope_iso_changed)
+        h_iso.addWidget(self.scope_iso_spin)
+        v_scope.addLayout(h_iso)
+
+        h_exp = QHBoxLayout()
+        h_exp.addWidget(QLabel(getTraduction("Astro.ScopeExposure", "Exposure (s)")))
+        self.scope_exposure_spin = QDoubleSpinBox()
+        self.scope_exposure_spin.setRange(0.1, 600.0)
+        self.scope_exposure_spin.setDecimals(1)
+        self.scope_exposure_spin.setSingleStep(0.5)
+        self.scope_exposure_spin.setValue(self.scope_exposure_s)
+        self.scope_exposure_spin.setFixedWidth(74)
+        self.scope_exposure_spin.valueChanged.connect(self._on_scope_exposure_changed)
+        h_exp.addWidget(self.scope_exposure_spin)
+        v_scope.addLayout(h_exp)
 
         h_shape = QHBoxLayout()
         h_shape.addWidget(QLabel(getTraduction("Astro.ScopeShape", "Format")))
@@ -6867,6 +7091,7 @@ class AstronomicalWidget(CustomWidgetBase):
         self.scope_sensor_combo.currentIndexChanged.connect(self.on_scope_sensor_changed)
         h_sensor.addWidget(self.scope_sensor_combo)
         v_scope.addLayout(h_sensor)
+        self._sync_scope_instrument_controls()
 
         h_aspect = QHBoxLayout()
         h_aspect.addWidget(QLabel(getTraduction("Astro.ScopeAspect", "Aspect")))
@@ -7087,6 +7312,7 @@ class AstronomicalWidget(CustomWidgetBase):
                 self.tools_panel.hide()
         if hasattr(self, 'scope_panel'):
             self.scope_panel.setVisible(checked)
+        QTimer.singleShot(0, self._update_button_pos)
 
     def toggle_tools_panel(self, checked):
         if checked:
@@ -7098,12 +7324,80 @@ class AstronomicalWidget(CustomWidgetBase):
                 self.scope_panel.hide()
         if hasattr(self, 'tools_panel'):
             self.tools_panel.setVisible(checked)
+        QTimer.singleShot(0, self._update_button_pos)
 
     def on_scope_shape_changed(self, index):
         shape = self.scope_shape_combo.itemData(index)
         self.canvas.set_scope_shape(shape)
         self._sync_scope_aspect_controls(shape)
         self._apply_scope_aspect_from_ui()
+
+    def on_scope_instrument_changed(self, index):
+        mode = self.scope_instrument_combo.itemData(index)
+        if mode not in ("telescope", "camera_aps_c", "camera_full_frame"):
+            mode = "telescope"
+        self.scope_instrument_profile = str(mode)
+        self._sync_scope_instrument_controls()
+        self._persist_visual_magnitude_settings()
+        self._apply_scope_aspect_from_ui()
+        self.canvas.update()
+
+    def _set_scope_sensor_key(self, sensor_key: str):
+        if not hasattr(self, "scope_sensor_combo"):
+            return
+        idx = -1
+        for i in range(self.scope_sensor_combo.count()):
+            if self.scope_sensor_combo.itemData(i) == sensor_key:
+                idx = i
+                break
+        if idx < 0:
+            return
+        self.scope_sensor_combo.blockSignals(True)
+        self.scope_sensor_combo.setCurrentIndex(idx)
+        self.scope_sensor_combo.blockSignals(False)
+        self.canvas.set_scope_sensor(sensor_key)
+        self._apply_scope_aspect_from_ui()
+
+    def _sync_scope_instrument_controls(self):
+        profile = str(getattr(self, "scope_instrument_profile", "telescope"))
+        is_telescope = profile == "telescope"
+
+        if hasattr(self, "scope_eyepiece_label"):
+            self.scope_eyepiece_label.setVisible(is_telescope)
+        if hasattr(self, "scope_eyepiece_spin"):
+            self.scope_eyepiece_spin.setVisible(is_telescope)
+
+        if is_telescope:
+            if hasattr(self, "scope_aperture_mode_label"):
+                self.scope_aperture_mode_label.setVisible(True)
+            if hasattr(self, "scope_aperture_mode_combo"):
+                self.scope_aperture_mode_combo.setVisible(True)
+                self.scope_aperture_mode_combo.setEnabled(True)
+        else:
+            # Camera profiles use f/ input and do not use eyepiece magnification.
+            self.scope_aperture_input_mode = "f_number"
+            if hasattr(self, "scope_aperture_mode_combo"):
+                self.scope_aperture_mode_combo.blockSignals(True)
+                for i in range(self.scope_aperture_mode_combo.count()):
+                    if self.scope_aperture_mode_combo.itemData(i) == "f_number":
+                        self.scope_aperture_mode_combo.setCurrentIndex(i)
+                        break
+                self.scope_aperture_mode_combo.blockSignals(False)
+                self.scope_aperture_mode_combo.setEnabled(False)
+                self.scope_aperture_mode_combo.setVisible(False)
+            if hasattr(self, "scope_aperture_mode_label"):
+                self.scope_aperture_mode_label.setVisible(False)
+
+        if profile == "camera_aps_c":
+            self._set_scope_sensor_key("aps_c")
+            self.scope_sensor_combo.setEnabled(False)
+        elif profile == "camera_full_frame":
+            self._set_scope_sensor_key("full_frame")
+            self.scope_sensor_combo.setEnabled(False)
+        else:
+            self.scope_sensor_combo.setEnabled(True)
+
+        self._sync_scope_aperture_controls()
 
     def on_scope_sensor_changed(self, index):
         sensor = self.scope_sensor_combo.itemData(index)
@@ -7120,6 +7414,166 @@ class AstronomicalWidget(CustomWidgetBase):
     def on_scope_speed_changed(self, index):
         mode = self.scope_speed_combo.itemData(index)
         self.canvas.set_scope_speed_mode(mode)
+
+    def on_scope_aperture_mode_changed(self, index):
+        if str(getattr(self, "scope_instrument_profile", "telescope")) != "telescope":
+            self.scope_aperture_input_mode = "f_number"
+            self._sync_scope_aperture_controls()
+            self._persist_visual_magnitude_settings()
+            self.canvas.update()
+            return
+        mode = self.scope_aperture_mode_combo.itemData(index)
+        if mode not in ("diameter_mm", "f_number"):
+            mode = "diameter_mm"
+        self.scope_aperture_input_mode = str(mode)
+        self._sync_scope_aperture_controls()
+        self._persist_visual_magnitude_settings()
+        self.canvas.update()
+
+    def _sync_scope_aperture_controls(self):
+        if not hasattr(self, "scope_aperture_spin") or not hasattr(self, "scope_aperture_label"):
+            return
+        mode = str(getattr(self, "scope_aperture_input_mode", "diameter_mm"))
+        spin = self.scope_aperture_spin
+        if mode == "f_number":
+            self.scope_aperture_label.setText(getTraduction("Astro.ScopeFNumber", "f/"))
+            spin.blockSignals(True)
+            spin.setRange(0.7, 64.0)
+            spin.setDecimals(1)
+            spin.setSingleStep(0.1)
+            spin.setValue(float(getattr(self, "scope_aperture_f_number", 4.0)))
+            spin.blockSignals(False)
+        else:
+            self.scope_aperture_label.setText(getTraduction("Astro.ScopeAperture", "Aperture (mm)"))
+            spin.blockSignals(True)
+            spin.setRange(10.0, 2000.0)
+            spin.setDecimals(1)
+            spin.setSingleStep(5.0)
+            spin.setValue(float(getattr(self, "scope_aperture_mm", 80.0)))
+            spin.blockSignals(False)
+
+    def _effective_scope_aperture_mm(self, focal_mm: float = None) -> float:
+        mode = str(getattr(self, "scope_aperture_input_mode", "diameter_mm"))
+        if focal_mm is None:
+            if hasattr(self, "scope_focal_spin"):
+                focal_mm = float(self.scope_focal_spin.value())
+            else:
+                focal_mm = 250.0
+        focal_mm = max(1.0, float(focal_mm))
+        if mode == "f_number":
+            f_number = max(0.7, float(getattr(self, "scope_aperture_f_number", 4.0)))
+            return max(1.0, focal_mm / f_number)
+        return max(1.0, float(getattr(self, "scope_aperture_mm", 80.0)))
+
+    def _persist_visual_magnitude_settings(self):
+        set_config_value("manual_eye_limit_mag", float(self.magnitude_limit))
+        set_config_value("scope_instrument_profile", str(self.scope_instrument_profile))
+        set_config_value("scope_aperture_mm", float(self.scope_aperture_mm))
+        set_config_value("scope_aperture_f_number", float(self.scope_aperture_f_number))
+        set_config_value("scope_aperture_input_mode", str(self.scope_aperture_input_mode))
+        set_config_value("scope_eyepiece_mm", float(self.scope_eyepiece_mm))
+        set_config_value("scope_iso", int(self.scope_iso))
+        set_config_value("scope_exposure_s", float(self.scope_exposure_s))
+
+    def _on_scope_aperture_changed(self, value):
+        if str(getattr(self, "scope_aperture_input_mode", "diameter_mm")) == "f_number":
+            self.scope_aperture_f_number = float(value)
+        else:
+            self.scope_aperture_mm = float(value)
+        self._persist_visual_magnitude_settings()
+        self.canvas.update()
+
+    def _on_scope_eyepiece_changed(self, value):
+        self.scope_eyepiece_mm = float(value)
+        self._persist_visual_magnitude_settings()
+        self.canvas.update()
+
+    def _on_scope_iso_changed(self, value):
+        self.scope_iso = int(value)
+        self._persist_visual_magnitude_settings()
+        self.canvas.update()
+
+    def _on_scope_exposure_changed(self, value):
+        self.scope_exposure_s = float(value)
+        self._persist_visual_magnitude_settings()
+        self.canvas.update()
+
+    def _estimate_eye_pupil_mm(self, sun_alt_deg: float) -> float:
+        if sun_alt_deg >= 0.0:
+            return 2.2
+        if sun_alt_deg <= -18.0:
+            return float(self.scope_eye_pupil_dark_mm)
+        t = (0.0 - sun_alt_deg) / 18.0
+        return 2.2 + (float(self.scope_eye_pupil_dark_mm) - 2.2) * t
+
+    def recompute_visual_magnitude_model(self, target_alt_deg=None, sun_alt_deg=-18.0, now_utc=None):
+        if target_alt_deg is None:
+            target_alt_deg = getattr(self.canvas, "elevation_angle", 40.0)
+
+        if self.is_auto_bortle:
+            bortle_class = float(self.auto_bortle_estimate)
+        else:
+            # Approximate inverse mapping from naked-eye limit to Bortle class.
+            bortle_class = 1.0 + (7.6 - float(self.magnitude_limit)) / 0.5
+        bortle_class = max(1.0, min(9.0, bortle_class))
+
+        focal_mm = float(getattr(self.canvas.scope_controller, "focal_mm", 250.0))
+        if hasattr(self, "scope_focal_spin"):
+            try:
+                focal_mm = float(self.scope_focal_spin.value())
+            except Exception:
+                pass
+        aperture_mm_effective = self._effective_scope_aperture_mm(focal_mm)
+        instrument_profile = str(getattr(self, "scope_instrument_profile", "telescope"))
+        eyepiece_mm = float(self.scope_eyepiece_mm if instrument_profile == "telescope" else focal_mm)
+
+        scope_enabled = bool(getattr(self.canvas, "scope_mode_enabled", lambda: False)())
+        runtime_state = {
+            "scope_enabled": scope_enabled,
+            "lat": float(self.latitude),
+            "lon": float(self.longitude),
+            "h_deg": float(target_alt_deg),
+            "focal_mm": float(focal_mm),
+            "aperture_mm": float(aperture_mm_effective),
+            "ocular_mm": eyepiece_mm,
+            "instrument_profile": instrument_profile,
+            "k_fallback": float(self.scope_k_fallback),
+            "weather_enabled": bool(getattr(self.canvas.weather, "enabled", False)),
+            "copernicus_api_key": str(get_config_value("copernicus_api_key", "") or ""),
+            "copernicus_api_url": str(get_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api") or ""),
+            "now_utc": now_utc,
+            "_wx_cache": self.scope_atmo_metrics.get("_wx_cache", {}),
+        }
+        if scope_enabled:
+            update_telescope_hud(runtime_state)
+            self.scope_atmo_metrics = dict(runtime_state)
+            hud_metrics = runtime_state.get("hud_metrics", {})
+            atmo_loss = hud_metrics.get("loss_mag")
+        else:
+            hud_metrics = self.scope_atmo_metrics.get("hud_metrics", {})
+            atmo_loss = None
+
+        if atmo_loss is None:
+            atmo_loss = 0.0
+
+        inputs = VisualMagnitudeInputs(
+            aperture_mm=aperture_mm_effective,
+            telescope_focal_mm=focal_mm,
+            eyepiece_focal_mm=eyepiece_mm,
+            eye_pupil_mm=self._estimate_eye_pupil_mm(float(sun_alt_deg)),
+            atmospheric_loss_mag=float(atmo_loss),
+            auto_bortle=bool(self.is_auto_bortle),
+            bortle_class=bortle_class,
+            manual_eye_limit_mag=float(self.magnitude_limit),
+            exposure_seconds=float(self.scope_exposure_s),
+            iso=float(self.scope_iso),
+            instrument_profile=instrument_profile,
+            sensor_profile=str(self.scope_sensor_combo.itemData(self.scope_sensor_combo.currentIndex())),
+        )
+        result = self.visual_magnitude_engine.compute(inputs)
+        self.visual_magnitude_result = result
+        self.auto_star_scale_multiplier = float(result.star_scale_factor) if scope_enabled else 1.0
+        return result
 
     def _sync_scope_aspect_controls(self, shape: str):
         is_rect = shape == TelescopeScopeController.SHAPE_RECT
@@ -7174,16 +7628,37 @@ class AstronomicalWidget(CustomWidgetBase):
         self._apply_scope_aspect_from_ui()
         self.canvas.set_scope_speed_mode(self.scope_speed_combo.itemData(self.scope_speed_combo.currentIndex()))
         self.canvas.set_scope_enabled(True)
+        instrument_profile = str(getattr(self, "scope_instrument_profile", "telescope"))
+        eyepiece_mm = float(self.scope_eyepiece_mm if instrument_profile == "telescope" else self.scope_focal_spin.value())
+        aperture_mm_effective = self._effective_scope_aperture_mm(self.scope_focal_spin.value())
+        on_telescope_view_enabled(
+            {
+                "scope_enabled": True,
+                "lat": float(self.latitude),
+                "lon": float(self.longitude),
+                "h_deg": float(self.canvas.elevation_angle),
+                "focal_mm": float(self.scope_focal_spin.value()),
+                "aperture_mm": float(aperture_mm_effective),
+                "ocular_mm": eyepiece_mm,
+                "instrument_profile": instrument_profile,
+                "k_fallback": float(self.scope_k_fallback),
+                "weather_enabled": bool(getattr(self.canvas.weather, "enabled", False)),
+                "copernicus_api_key": str(get_config_value("copernicus_api_key", "") or ""),
+                "copernicus_api_url": str(get_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api") or ""),
+            }
+        )
         self.canvas.setFocus()
         self.sync_scope_ui_state(True)
 
         # Optional: deactivate measurement input when entering scope mode.
         self.canvas.set_measurement_tool(TOOL_NONE)
         self._sync_measure_tool_buttons(TOOL_NONE)
+        QTimer.singleShot(0, self._update_button_pos)
 
     def exit_scope_mode(self):
         self.canvas.set_scope_enabled(False)
         self.sync_scope_ui_state(False)
+        QTimer.singleShot(0, self._update_button_pos)
 
     def sync_scope_ui_state(self, enabled: bool):
         if hasattr(self, 'btn_scope_activate'):
@@ -7224,22 +7699,6 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.clear_measurements()
         self._sync_measure_tool_buttons(self.canvas.measurement_controller.active_tool)
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if hasattr(self, 'frame_controls') and hasattr(self, 'btn_collapse'):
-            # Manually position the button relative to the frame
-            rect = self.frame_controls.geometry()
-            # If layout isn't updated, this might be stale.
-            # But frame_controls is in a QVBoxLayout at bottom. 
-            # Usually rect updates during resize of parent.
-            
-            bx = rect.right() - self.btn_collapse.width() - 20
-            # Sits on top edge
-            by = rect.top() - self.btn_collapse.height() + 2 # Overlap
-            
-            self.btn_collapse.move(bx, by)
-            self.btn_collapse.raise_()
-    
     def on_time_bar_change(self, val):
         self.use_real_time = False
         self.btn_realtime.setChecked(False)
@@ -7781,9 +8240,10 @@ class AstronomicalWidget(CustomWidgetBase):
     def on_lp_mode_changed(self, index):
         """index 0 = Automatic (Bortle), index 1 = Manual (Magnitud)."""
         self.is_auto_bortle = (index == 0)
+        set_config_value("is_auto_bortle", bool(self.is_auto_bortle))
         
         if self.is_auto_bortle:
-            self.lbl_light_text.setText("Bortle")
+            self.lbl_light_text.setText(getTraduction("Astro.BortleLabel", "Bortle"))
             self.slider_light.setRange(1, 9)
             if hasattr(self.slider_light, '_lbl_min'):
                 self.slider_light._lbl_min.setText("1")
@@ -7791,7 +8251,7 @@ class AstronomicalWidget(CustomWidgetBase):
             auto_val = getattr(self.canvas, 'auto_bortle_estimate', 4)
             self.slider_light.set_silent_value(int(auto_val))
         else:
-            self.lbl_light_text.setText("Magnitud")
+            self.lbl_light_text.setText(getTraduction("Astro.MagnitudeLabel", "Magnitude"))
             self.slider_light.setRange(-270, 100) # -27.0 to 10.0
             if hasattr(self.slider_light, '_lbl_min'):
                 self.slider_light._lbl_min.setText("-27")
@@ -7799,6 +8259,61 @@ class AstronomicalWidget(CustomWidgetBase):
             self.slider_light.set_silent_value(int(self.magnitude_limit * 10))
             
         self.canvas.update()
+
+    def on_climate_toggled(self, checked):
+        checked = bool(checked)
+        if hasattr(self.canvas, "weather"):
+            self.canvas.weather.enabled = checked
+        if checked:
+            self._ensure_copernicus_credentials_prompt()
+        self.canvas.update()
+
+    def _ensure_copernicus_credentials_prompt(self):
+        if bool(get_config_value("copernicus_informed", False)):
+            return
+
+        title = getTraduction("Astro.CopernicusDialogTitle", "Copernicus Climate setup")
+        intro = getTraduction(
+            "Astro.CopernicusDialogIntro",
+            "To enable online climate and aerosol data, create a free CDS account and generate your API key.",
+        )
+        url_text = getTraduction("Astro.CopernicusDialogUrl", "Open guide")
+        key_prompt = getTraduction("Astro.CopernicusDialogKeyPrompt", "Paste your CDS API key")
+        key_ok = getTraduction("Astro.CopernicusDialogSaved", "API key saved in local config.")
+        key_empty = getTraduction("Astro.CopernicusDialogEmpty", "No key entered. Offline fallback will be used.")
+        copernicus_url = "https://cds.climate.copernicus.eu/how-to-api"
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle(title)
+        msg.setText(intro)
+        msg.setInformativeText(copernicus_url)
+        open_btn = msg.addButton(url_text, QMessageBox.ActionRole)
+        enter_btn = msg.addButton(getTraduction("Astro.CopernicusDialogEnterKey", "Enter API key"), QMessageBox.AcceptRole)
+        skip_btn = msg.addButton(getTraduction("Astro.CopernicusDialogSkip", "Skip"), QMessageBox.RejectRole)
+        msg.exec_()
+
+        clicked = msg.clickedButton()
+        if clicked is open_btn:
+            QDesktopServices.openUrl(QUrl(copernicus_url))
+            clicked = enter_btn
+
+        if clicked is enter_btn:
+            current_key = str(get_config_value("copernicus_api_key", "") or "")
+            key, ok = QInputDialog.getText(self, title, key_prompt, text=current_key)
+            key = str(key or "").strip()
+            if ok and key:
+                set_config_value("copernicus_api_key", key)
+                set_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api")
+                QMessageBox.information(self, title, key_ok)
+            else:
+                QMessageBox.information(self, title, key_empty)
+        elif clicked is skip_btn:
+            # Keep offline fallback mode until user enters the key manually.
+            pass
+
+        # The user has already been informed at least once.
+        set_config_value("copernicus_informed", True)
 
     def reset_lp_to_auto(self):
         """Action for the reset button: pulls the current satellite estimate."""
@@ -7809,6 +8324,7 @@ class AstronomicalWidget(CustomWidgetBase):
         self.slider_light.set_silent_value(val)
         self.auto_bortle_estimate = val
         self.canvas.auto_bortle_estimate = val
+        set_config_value("auto_bortle_estimate", int(val))
         if hasattr(self.canvas, 'weather'):
             self.canvas.weather.set_bortle(val)
         self.canvas.update()
@@ -7817,16 +8333,19 @@ class AstronomicalWidget(CustomWidgetBase):
         if self.is_auto_bortle:
             self.auto_bortle_estimate = val
             self.canvas.auto_bortle_estimate = val
+            set_config_value("auto_bortle_estimate", int(val))
             if hasattr(self.canvas, 'weather'):
                 self.canvas.weather.set_bortle(val)
         else:
             # Manual mode: Sliders acts as Magnitude Filter
             self.magnitude_limit = val / 10.0
+            set_config_value("manual_eye_limit_mag", float(self.magnitude_limit))
         self.canvas.update()
 
     def update_magnitude(self, val):
         # Mag slider 10-200 -> 1.0-20.0
         self.magnitude_limit = val / 10.0
+        set_config_value("manual_eye_limit_mag", float(self.magnitude_limit))
         self.canvas.update()
 
     def build_search_index(self):
@@ -8052,9 +8571,17 @@ class AstronomicalWidget(CustomWidgetBase):
     def _update_button_pos(self):
         if hasattr(self, 'frame_controls') and hasattr(self, 'btn_collapse'):
             rect = self.frame_controls.geometry()
-            # Position: Right aligned (minus margin), Top aligned (overlapping)
-            bx = rect.right() - self.btn_collapse.width() - 20
-            by = rect.top() - self.btn_collapse.height() + 1
+            state = {
+                "panel_x": int(rect.x()),
+                "panel_y": int(rect.y()),
+                "panel_w": int(rect.width()),
+                "button_w": int(self.btn_collapse.width()),
+                "button_h": int(self.btn_collapse.height()),
+                "margin_right": 20,
+                "overlap_top": 1,
+            }
+            telescope_on_resize(state)
+            bx, by = state.get("collapse_button_pos", (rect.right(), rect.top()))
             self.btn_collapse.move(bx, by)
             self.btn_collapse.raise_()
 

@@ -1,4 +1,4 @@
-import math
+﻿import math
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -350,31 +350,57 @@ class TelescopeScopeController:
         else:
             text = getTraduction("Scope.HudFovRect", "FOV: {w} x {h}").format(w=fmt_angle(fov_w), h=fmt_angle(fov_h))
         speed = getTraduction("Scope.HudSlow", "LENTO") if self.speed_mode == self.SPEED_SLOW else getTraduction("Scope.HudFast", "RAPIDO")
-        lines = [f"{text} | {getTraduction('Scope.HudMove', 'Movimiento')}: {speed} (M)"]
+        base_line = f"{text} | {getTraduction('Scope.HudMove', 'Movimiento')}: {speed} (M)"
+        extras: List[str] = []
         if hud_extra_lines:
-            for extra in hud_extra_lines:
-                if extra:
-                    lines.append(str(extra))
+            extras = [str(extra) for extra in hud_extra_lines if extra]
 
-        line_h = 14.0
-        hud_w = 320.0
-        hud_h = 8.0 + line_h * len(lines)
+        # Split HUD into two side panels:
+        # left panel = core scope info + RA/Dec
+        # right panel = optical/atmospheric telemetry
+        left_lines = [base_line]
+        if extras:
+            left_lines.append(extras[0])
+        right_lines = extras[1:] if len(extras) > 1 else []
 
-        if boundary_screen:
-            bottom = max(float(p.y()) for p in boundary_screen)
-            x = float(cpt[0]) - (hud_w * 0.5)
-            y = bottom + 8.0
-        else:
-            x = float(cpt[0]) + 12.0
-            y = float(cpt[1]) + 12.0
+        fm = painter.fontMetrics()
+        line_h = float(fm.lineSpacing())
 
-        x = max(4.0, min(float(width) - hud_w - 4.0, x))
-        y = max(4.0, min(float(height) - hud_h - 4.0, y))
-        rect = QRectF(x, y, hud_w, hud_h)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 170))
-        painter.drawRoundedRect(rect, 5.0, 5.0)
-        painter.setPen(QColor(255, 255, 255, 230))
-        for i, line in enumerate(lines):
-            lrect = QRectF(x + 8.0, y + 4.0 + line_h * i, hud_w - 16.0, line_h)
-            painter.drawText(lrect, Qt.AlignLeft | Qt.AlignVCenter, line)
+        def panel_size(lines: List[str]) -> Tuple[float, float]:
+            if not lines:
+                return 0.0, 0.0
+            text_w = max(float(fm.horizontalAdvance(line)) for line in lines)
+            # Ajust minim: caixa tan compacta com permet el text.
+            w = max(1.0, min(360.0, text_w + 12.0))
+            h = 8.0 + line_h * len(lines)
+            return w, h
+
+        left_w, left_h = panel_size(left_lines)
+        right_w, right_h = panel_size(right_lines)
+
+        def draw_panel(x: float, y: float, w: float, h: float, lines: List[str]) -> None:
+            if not lines:
+                return
+            x = max(4.0, min(float(width) - w - 4.0, x))
+            y = max(4.0, min(float(height) - h - 4.0, y))
+            rect = QRectF(x, y, w, h)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 170))
+            painter.drawRoundedRect(rect, 5.0, 5.0)
+            painter.setPen(QColor(255, 255, 255, 230))
+            for i, line in enumerate(lines):
+                lrect = QRectF(x + 8.0, y + 4.0 + line_h * i, w - 16.0, line_h)
+                painter.drawText(lrect, Qt.AlignLeft | Qt.AlignVCenter, line)
+
+        side_gap = 12.0
+        y_center = float(cpt[1])
+
+        # Keep HUD strictly on viewport lateral sides, never under the scope.
+        left_x = side_gap
+        right_x = float(width) - right_w - side_gap
+        y_left = y_center - (left_h * 0.5)
+        y_right = y_center - (right_h * 0.5)
+
+        draw_panel(left_x, y_left, left_w, left_h, left_lines)
+        draw_panel(right_x, y_right, right_w, right_h, right_lines)
+

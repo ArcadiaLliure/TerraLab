@@ -316,16 +316,30 @@ class MeasurementController:
 
     def _draw_label(self, painter: QPainter, x: float, y: float, txt: str, alpha: int) -> None:
         painter.save()
-        rect = QRectF(x + 8.0, y + 8.0, 320.0, 70.0)
+        # Mida del HUD ajustada al text real per evitar caixes sobredimensionades.
+        lines = [line for line in str(txt).split("\n") if line != ""]
+        if not lines:
+            lines = [""]
+        fm = painter.fontMetrics()
+        line_h = float(fm.lineSpacing())
+        max_line_w = max(float(fm.horizontalAdvance(line)) for line in lines)
+
+        pad_x = 6.0
+        pad_y = 4.0
+        content_w = max_line_w
+        content_h = line_h * len(lines)
+        box_w = min(320.0, max(1.0, content_w + 2.0 * pad_x))
+        box_h = max(1.0, content_h + 2.0 * pad_y)
+        rect = QRectF(x + 8.0, y + 8.0, box_w, box_h)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(0, 0, 0, min(205, alpha)))
         painter.drawRoundedRect(rect, 5.0, 5.0)
         painter.setPen(QColor(255, 255, 255, alpha))
-        painter.drawText(
-            rect.adjusted(8.0, 6.0, -8.0, -6.0),
-            Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap,
-            txt,
-        )
+        text_x = rect.left() + pad_x
+        text_y = rect.top() + pad_y
+        for i, line in enumerate(lines):
+            y_baseline = text_y + line_h * i + fm.ascent()
+            painter.drawText(QPointF(text_x, y_baseline), line)
         painter.restore()
 
     def _pick_item(
