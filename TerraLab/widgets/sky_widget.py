@@ -4,6 +4,7 @@ import random
 import time
 import random
 import unicodedata
+from typing import Optional
 try:
     import numpy as np
 except ImportError:
@@ -11,8 +12,8 @@ except ImportError:
 from datetime import datetime, timedelta, timezone
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QSlider, QLineEdit, QPushButton, QFrame,
-                             QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox, QMenu, QMessageBox, QInputDialog)
-from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, pyqtSlot, QObject, QThread, QLineF, QUrl
+                             QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox, QMenu, QMessageBox, QInputDialog, QShortcut)
+from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, pyqtSlot, QObject, QThread, QLineF, QUrl, QEvent
 from PyQt5.QtGui import QPainter, QColor, QPen, QRadialGradient, QBrush, QPainterPath, QLinearGradient, QPixmap, QFont, QTransform, QImage, QPolygonF, QDesktopServices
 
 from TerraLab.common.custom_widget_base import CustomWidgetBase
@@ -21,6 +22,7 @@ from TerraLab.common.utils import (
     getTraduction,
     get_config_value,
     set_config_value,
+    get_base_dir,
 )
 from TerraLab.weather.system import (WeatherSystem, WeatherPalette, 
                             WeatherControlWidget, Cloud, Particle)
@@ -35,6 +37,7 @@ from TerraLab.widgets.measurement_tools import (
     TOOL_RECTANGLE,
     TOOL_CIRCLE,
 )
+from TerraLab.widgets.constellation_drawing import ConstellationDrawingController
 from TerraLab.widgets.spherical_math import screen_to_sky
 from TerraLab.widgets.visual_magnitude_engine import (
     VisualMagnitudeEngine,
@@ -69,7 +72,7 @@ class AstroEngine:
     """
     Motor de alta precisión basado en Meeus/ELP 2000-82.
     Resuelve el error de 15:02 mediante la inclusión correcta de términos periódicos mayores.
-    Integrado para Scriptorium.
+    Integrado para TerraLab.
     """
     
     # Constantes
@@ -1459,10 +1462,16 @@ class AstroCanvas(QWidget):
         self.visible_stars_sy = np.array([], dtype=np.float32) if np is not None else []
         self.visible_sky_objects = []
         self.press_pos = QPointF(0,0)
+        self._drawing_ctrl_pan_started = False
+        self._drawing_ctrl_click_pending = False
+        self._scope_camera_pan_started = False
+        self._scope_camera_click_pending = False
+        self._suppress_constellation_release_click = False
         self.trail_start_hour = None
         self.ut_hour = 12.0
         self.selected_target = None
         self.scope_camera_lock_to_target = True
+        self.scope_reticle_lock_to_target = True
         
         # Illusion Parameters
         self.illusion_enabled = True
@@ -1473,7 +1482,14 @@ class AstroCanvas(QWidget):
         self.eclipse_lock_mode = True
         
         # Weather System
-        self.weather = WeatherSystem(self.width(), self.height())
+        self.weather = WeatherSystem(
+            self.width(),
+            self.height(),
+            latitude=float(getattr(parent, "latitude", 0.0)),
+            longitude=float(getattr(parent, "longitude", 0.0)),
+            use_remote_weather=bool(getattr(parent, "weather_use_remote_metno", True)),
+            cache_enabled=bool(getattr(parent, "weather_cache_enabled", True)),
+        )
         
         # Horizon Overlay (terrain/mountains â€” independent from village)
         _horizon_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'horizon_profile.npz')
@@ -1546,6 +1562,11 @@ class AstroCanvas(QWidget):
         # Telescope scope mode and spherical measurement overlays.
         self.scope_controller = TelescopeScopeController()
         self.measurement_controller = MeasurementController()
+        self.constellation_controller = ConstellationDrawingController(
+            os.path.join(get_base_dir(), "terralab_constellations.json")
+        )
+        self._constellation_rename_editor = None
+        self._constellation_rename_group_index = None
 
         # Continuous key movement for scope mode.
         self._scope_pressed_keys = set()
@@ -1793,7 +1814,14 @@ class AstroCanvas(QWidget):
     def measurement_tool_active(self) -> bool:
         return getattr(self.measurement_controller, "active_tool", TOOL_NONE) != TOOL_NONE
 
+    def drawing_mode_enabled(self) -> bool:
+        return bool(getattr(self.constellation_controller, "enabled", False))
+
+    def constellation_visible(self) -> bool:
+        return bool(getattr(self.constellation_controller, "visible", True))
+
     def set_scope_enabled(self, enabled: bool) -> None:
+        self.finish_inline_constellation_rename(apply=True)
         if enabled:
             self.scope_controller.activate()
             if hasattr(self, "hint_overlay"):
@@ -1827,9 +1855,135 @@ class AstroCanvas(QWidget):
         self.update()
 
     def set_measurement_tool(self, tool: str) -> None:
+        self.finish_inline_constellation_rename(apply=True)
         self.measurement_controller.set_tool(tool)
         self._refresh_overlay_cursor()
         self.update()
+
+    def set_constellation_draw_mode(self, enabled: bool) -> None:
+        self.finish_inline_constellation_rename(apply=True)
+        if bool(enabled) and (not self.constellation_visible()):
+            self.constellation_controller.set_visible(True)
+        self.constellation_controller.set_enabled(bool(enabled))
+        # Eraser mode is deprecated in UI; keep it hard-disabled to avoid stale runtime states.
+        self.constellation_controller.set_eraser_mode(False)
+        self._refresh_overlay_cursor()
+        self.update()
+
+    def set_constellation_visible(self, visible: bool) -> None:
+        self.finish_inline_constellation_rename(apply=True)
+        self.constellation_controller.set_visible(bool(visible))
+        if not bool(visible):
+            self.constellation_controller.set_enabled(False)
+            self.constellation_controller.set_eraser_mode(False)
+        self._refresh_overlay_cursor()
+        self.update()
+
+    def set_constellation_eraser_mode(self, enabled: bool) -> None:
+        self.constellation_controller.set_eraser_mode(bool(enabled))
+        self.update()
+
+    def create_constellation_group(self, name: Optional[str] = None) -> None:
+        self.constellation_controller.create_group(name=name)
+        self.update()
+
+    def rename_active_constellation(self, name: str) -> bool:
+        ok = self.constellation_controller.rename_active(name)
+        if ok:
+            self.update()
+        return ok
+
+    def begin_inline_constellation_rename(self, group_index: Optional[int] = None, label_rect: Optional[QRectF] = None) -> bool:
+        ctrl = self.constellation_controller
+        gi = ctrl.active_group_index if group_index is None else int(group_index)
+        if gi is None or not (0 <= int(gi) < len(ctrl.groups)):
+            return False
+        gi = int(gi)
+
+        self.finish_inline_constellation_rename(apply=True)
+
+        if label_rect is None:
+            label_rect = ctrl.get_label_rect(gi)
+        if label_rect is not None:
+            rect = QRectF(label_rect)
+            box_w = max(120, int(rect.width() + 12.0))
+            box_h = max(24, int(rect.height()))
+            x = int(round(rect.left() - 6.0))
+            y = int(round(rect.top()))
+        else:
+            box_w = 180
+            box_h = 24
+            x = int((self.width() - box_w) * 0.5)
+            y = max(22, int(self.height() - 120))
+
+        x = max(4, min(max(4, self.width() - box_w - 4), x))
+        y = max(4, min(max(4, self.height() - box_h - 4), y))
+
+        editor = QLineEdit(self)
+        editor.setGeometry(x, y, box_w, box_h)
+        editor.setText(str(ctrl.groups[gi].name))
+        editor.selectAll()
+        editor.setFocus(Qt.MouseFocusReason)
+        editor.setStyleSheet(
+            "QLineEdit {"
+            "background: rgba(10, 14, 28, 230);"
+            "color: #f5faff;"
+            "border: 1px solid rgba(140, 205, 255, 220);"
+            "border-radius: 5px;"
+            "padding: 2px 6px;"
+            "}"
+        )
+        editor.installEventFilter(self)
+        editor.returnPressed.connect(lambda: self.finish_inline_constellation_rename(apply=True))
+        editor.editingFinished.connect(lambda: self.finish_inline_constellation_rename(apply=True))
+        editor.show()
+
+        self._constellation_rename_editor = editor
+        self._constellation_rename_group_index = gi
+        return True
+
+    def finish_inline_constellation_rename(self, apply: bool = True) -> bool:
+        editor = self._constellation_rename_editor
+        gi = self._constellation_rename_group_index
+        if editor is None:
+            return False
+
+        self._constellation_rename_editor = None
+        self._constellation_rename_group_index = None
+
+        text = str(editor.text() or "").strip()
+        try:
+            editor.removeEventFilter(self)
+        except Exception:
+            pass
+        editor.hide()
+        editor.deleteLater()
+
+        renamed = False
+        if apply and text and gi is not None:
+            ctrl = self.constellation_controller
+            if 0 <= int(gi) < len(ctrl.groups):
+                ctrl.active_group_index = int(gi)
+                ctrl.selected_group_index = int(gi)
+                ctrl.selected_node_index = None
+                ctrl.selected_segment_index = None
+                renamed = bool(self.rename_active_constellation(text))
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+
+        self.setFocus(Qt.MouseFocusReason)
+        self.update()
+        return renamed
+
+    def eventFilter(self, obj, event):
+        if obj is self._constellation_rename_editor:
+            if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                self.finish_inline_constellation_rename(apply=False)
+                return True
+            if event.type() == QEvent.FocusOut:
+                self.finish_inline_constellation_rename(apply=True)
+                return True
+        return super().eventFilter(obj, event)
 
     def clear_measurements(self) -> None:
         self.measurement_controller.clear()
@@ -1837,7 +1991,7 @@ class AstroCanvas(QWidget):
         self.update()
 
     def _refresh_overlay_cursor(self):
-        if self.scope_mode_enabled() or self.measurement_tool_active():
+        if self.scope_mode_enabled() or self.measurement_tool_active() or self.drawing_mode_enabled():
             self.setCursor(Qt.CrossCursor)
         else:
             self.unsetCursor()
@@ -1873,6 +2027,19 @@ class AstroCanvas(QWidget):
         if self.scope_controller.speed_mode == TelescopeScopeController.SPEED_SLOW:
             return 0.5 / 60.0
         return 0.5
+
+    def _scope_reticle_drag_active(self) -> bool:
+        return bool(
+            self.scope_mode_enabled()
+            and hasattr(self, "scope_controller")
+            and bool(getattr(self.scope_controller, "dragging", False))
+        )
+
+    def _camera_interaction_active(self, include_time_drag: bool = True, include_animation: bool = False) -> bool:
+        # Scope-reticle drag is an overlay interaction; it must not trigger camera/star LOD degradation.
+        dragging_time = bool(getattr(self.parent_widget, "_dragging_time", False)) if include_time_drag else False
+        anim_active = bool(hasattr(self, "anim_timer") and self.anim_timer.isActive()) if include_animation else False
+        return bool((self.dragging or dragging_time or anim_active) and (not self._scope_reticle_drag_active()))
 
     def _selection_pulse_tick(self):
         if self.selected_target is None or self.scope_mode_enabled():
@@ -2046,6 +2213,84 @@ class AstroCanvas(QWidget):
             return {"kind": "star", "star": star}
         return None
 
+    def _visible_star_count_raw(self) -> int:
+        vis = getattr(self, "visible_stars", None)
+        if vis is None:
+            return 0
+        try:
+            return int(len(vis))
+        except Exception:
+            return 0
+
+    def _scope_hud_star_count(self) -> int:
+        """
+        Count stars visible inside the scope aperture only.
+        This is used for HUD display while scope mode is active.
+        """
+        if not self.scope_mode_enabled() or not hasattr(self, "scope_controller"):
+            return self._visible_star_count_raw()
+
+        ctrl = self.scope_controller
+        if (not getattr(ctrl, "enabled", False)) or getattr(ctrl, "center", None) is None or getattr(ctrl, "awaiting_center_click", False):
+            return self._visible_star_count_raw()
+
+        try:
+            boundary_sky = ctrl._boundary_points()
+            boundary_screen = ctrl._project_valid(boundary_sky, self.project_universal_stereo)
+        except Exception:
+            return self._visible_star_count_raw()
+
+        if not boundary_screen or len(boundary_screen) < 8:
+            return self._visible_star_count_raw()
+
+        hole = QPainterPath()
+        hole.moveTo(boundary_screen[0])
+        for p in boundary_screen[1:]:
+            hole.lineTo(p)
+        hole.closeSubpath()
+        rect = hole.boundingRect()
+
+        count = 0
+
+        # Fast path: numpy screen buffers.
+        try:
+            if np is not None and hasattr(self, "visible_stars_sx") and hasattr(self, "visible_stars_sy"):
+                sx_arr = np.asarray(self.visible_stars_sx)
+                sy_arr = np.asarray(self.visible_stars_sy)
+                if sx_arr.size > 0 and sy_arr.size > 0:
+                    mask = (
+                        (sx_arr >= rect.left())
+                        & (sx_arr <= rect.right())
+                        & (sy_arr >= rect.top())
+                        & (sy_arr <= rect.bottom())
+                    )
+                    idx = np.where(mask)[0]
+                    for i in idx:
+                        if hole.contains(QPointF(float(sx_arr[i]), float(sy_arr[i]))):
+                            count += 1
+                    return int(count)
+        except Exception:
+            pass
+
+        # Worker fallback: list of tuples (sx, sy, star_obj)
+        vis = getattr(self, "visible_stars", None)
+        if isinstance(vis, list) and vis and isinstance(vis[0], tuple):
+            for item in vis:
+                if len(item) < 2:
+                    continue
+                try:
+                    sx_i = float(item[0])
+                    sy_i = float(item[1])
+                except Exception:
+                    continue
+                if sx_i < rect.left() or sx_i > rect.right() or sy_i < rect.top() or sy_i > rect.bottom():
+                    continue
+                if hole.contains(QPointF(sx_i, sy_i)):
+                    count += 1
+            return int(count)
+
+        return self._visible_star_count_raw()
+
     def _current_ut_context(self):
         local_hour = float(self.parent_widget.get_current_hour())
         sim_y = int(getattr(self.parent_widget, "manual_year", datetime.now().year))
@@ -2062,6 +2307,43 @@ class AstroCanvas(QWidget):
         day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
         return ut_hour, day_of_year_utc
 
+    def _ensure_scope_mode_for_shortcut(self):
+        if self.scope_mode_enabled():
+            return
+        # Reuse the same activation entry point used by the scope panel.
+        if hasattr(self.parent_widget, "activate_scope_mode"):
+            self.parent_widget.activate_scope_mode()
+            return
+
+        # Fallback path for safety if parent widget helper is unavailable.
+        self.set_scope_enabled(True)
+        if hasattr(self.parent_widget, "sync_scope_ui_state"):
+            self.parent_widget.sync_scope_ui_state(True)
+        if self.measurement_tool_active():
+            self.set_measurement_tool(TOOL_NONE)
+            if hasattr(self.parent_widget, "_sync_measure_tool_buttons"):
+                self.parent_widget._sync_measure_tool_buttons(TOOL_NONE)
+
+    def _scope_jump_to_sky(self, sky):
+        if sky is None:
+            return False
+        alt, az = float(sky[0]), float(sky[1])
+        self.scope_controller.set_center((alt, az))
+        self.azimuth_offset = az % 360.0
+        self.elevation_angle = max(-90.0, min(90.0, alt))
+
+        # Keep "zoom towards target" behavior: never zoom out.
+        fov_w, fov_h = self.scope_controller.current_fov()
+        target_fov = max(0.2, min(93.9, max(fov_w, fov_h)))
+        goto_zoom = max(0.5, min(50.0, 93.9 / target_fov))
+        self.zoom_level = max(float(self.zoom_level), goto_zoom)
+
+        self._cached_star_image = None
+        self._cached_trail_image = None
+        self.setFocus()
+        self.update()
+        return True
+
     def _goto_target(self, target):
         if target is None:
             return
@@ -2072,33 +2354,9 @@ class AstroCanvas(QWidget):
         if sky is None:
             return
 
-        # Goto forces scope mode and tracking on this target.
-        self.set_scope_enabled(True)
-        if hasattr(self.parent_widget, "sync_scope_ui_state"):
-            self.parent_widget.sync_scope_ui_state(True)
-
-        if self.measurement_tool_active():
-            self.set_measurement_tool(TOOL_NONE)
-            if hasattr(self.parent_widget, "_sync_measure_tool_buttons"):
-                self.parent_widget._sync_measure_tool_buttons(TOOL_NONE)
-
-        alt, az = sky
-        self.scope_controller.set_center((alt, az))
-        self.azimuth_offset = az % 360.0
-        self.elevation_angle = max(-90.0, min(90.0, alt))
-
-        # Default Goto behavior: zoom towards destination using current scope FOV.
-        fov_w, fov_h = self.scope_controller.current_fov()
-        target_fov = max(0.2, min(93.9, max(fov_w, fov_h)))
-        goto_zoom = max(0.5, min(50.0, 93.9 / target_fov))
-        # Never zoom out on Goto; only keep or increase zoom.
-        self.zoom_level = max(float(self.zoom_level), goto_zoom)
-
-        # Force redraw paths that depend on camera state.
-        self._cached_star_image = None
-        self._cached_trail_image = None
-        self.setFocus()
-        self.update()
+        # Goto is just a shortcut into the same scope-jump flow.
+        self._ensure_scope_mode_for_shortcut()
+        self._scope_jump_to_sky(sky)
 
     def _show_object_context_menu(self, event):
         target = self._pick_target_at(event.x(), event.y())
@@ -2117,6 +2375,7 @@ class AstroCanvas(QWidget):
         if target is None:
             self.selected_target = None
             self.lbl_info.hide()
+            self.scope_reticle_lock_to_target = False
             self._update_selection_pulse_timer()
             return
 
@@ -2161,6 +2420,7 @@ class AstroCanvas(QWidget):
         self.lbl_info.raise_()
         # New target selection restores camera lock unless user manually overrides with Ctrl+drag.
         self.scope_camera_lock_to_target = True
+        self.scope_reticle_lock_to_target = True
         self._update_selection_pulse_timer()
 
     def _set_selected_star(self, star_obj):
@@ -2210,11 +2470,13 @@ class AstroCanvas(QWidget):
         if coords is None:
             return None
         ra, dec = coords
+        return self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc)
 
+    def _ra_dec_to_alt_az(self, ra_deg: float, dec_deg: float, ut_hour: float, day_of_year_utc: int):
         lat_rad = math.radians(self.parent_widget.latitude)
-        lst = (100.0 + day_of_year_utc * 0.9856 + ut_hour * 15.0 + self.parent_widget.longitude) % 360.0
-        ha_rad = math.radians(lst - ra)
-        dec_rad = math.radians(dec)
+        lst = (100.0 + float(day_of_year_utc) * 0.9856 + float(ut_hour) * 15.0 + self.parent_widget.longitude) % 360.0
+        ha_rad = math.radians(lst - float(ra_deg))
+        dec_rad = math.radians(float(dec_deg))
 
         sin_lat = math.sin(lat_rad)
         cos_lat = math.cos(lat_rad)
@@ -2234,6 +2496,28 @@ class AstroCanvas(QWidget):
             if math.sin(ha_rad) > 0:
                 az = 360.0 - az
         return alt, az % 360.0
+
+    def _get_current_utc_context(self):
+        local_hour = self.parent_widget.get_current_hour()
+        sim_y = int(self.parent_widget.manual_year)
+        sim_d = int(self.parent_widget.manual_day)
+        try:
+            dt_base = datetime(sim_y, 1, 1) + timedelta(days=sim_d)
+            dt_local = (dt_base + timedelta(hours=float(local_hour))).astimezone()
+            dt_utc = dt_local.astimezone(timezone.utc)
+        except Exception:
+            tz_offset = datetime.now().astimezone().utcoffset().total_seconds() / 3600.0
+            dt_utc = (datetime(sim_y, 1, 1) + timedelta(days=sim_d, hours=float(local_hour) - tz_offset)).replace(tzinfo=timezone.utc)
+        ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
+        day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+        return ut_hour, day_of_year_utc, int(dt_utc.year), dt_utc
+
+    def _screen_to_ra_dec(self, sx: float, sy: float):
+        sky = screen_to_sky(float(sx), float(sy), self.unproject_stereo)
+        if sky is None:
+            return None
+        ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+        return self._altaz_to_ra_dec(sky[0], sky[1], ut_hour, day_of_year_utc)
 
     def _altaz_to_ra_dec(self, alt_deg: float, az_deg: float, ut_hour: float, day_of_year_utc: int):
         lat = math.radians(self.parent_widget.latitude)
@@ -2389,7 +2673,8 @@ class AstroCanvas(QWidget):
         if sky is None:
             return
         alt, az = sky
-        self.scope_controller.set_center((alt, az))
+        if self.scope_reticle_lock_to_target:
+            self.scope_controller.set_center((alt, az))
         # Camera lock is optional; user can disable it with Ctrl+drag while keeping tracking.
         if self.scope_camera_lock_to_target and not self.dragging:
             self.azimuth_offset = az
@@ -2449,6 +2734,36 @@ class AstroCanvas(QWidget):
     def keyPressEvent(self, event):
         key = event.key()
 
+        if self.drawing_mode_enabled():
+            if (event.modifiers() & Qt.ControlModifier) and key == Qt.Key_Z:
+                if self.constellation_controller.undo():
+                    if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                        self.parent_widget._sync_constellation_controls()
+                    self.update()
+                event.accept()
+                return
+            if key == Qt.Key_Escape:
+                self.set_constellation_draw_mode(False)
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+                event.accept()
+                return
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                self.constellation_controller.finish_active_group()
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+                self.update()
+                event.accept()
+                return
+            if key in (Qt.Key_Delete, Qt.Key_Backspace):
+                if self.constellation_controller.has_deletable_selection():
+                    self.constellation_controller.delete_selected()
+                    if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                        self.parent_widget._sync_constellation_controls()
+                    self.update()
+                event.accept()
+                return
+
         if self.scope_mode_enabled():
             if key == Qt.Key_Escape:
                 self.set_scope_enabled(False)
@@ -2498,6 +2813,12 @@ class AstroCanvas(QWidget):
         if self.measurement_tool_active() and key == Qt.Key_Escape:
             self.measurement_controller.cancel_current()
             self.update()
+            event.accept()
+            return
+
+        if self.measurement_tool_active() and (event.modifiers() & Qt.ControlModifier) and key == Qt.Key_Z:
+            if self.measurement_controller.undo():
+                self.update()
             event.accept()
             return
 
@@ -2694,14 +3015,12 @@ class AstroCanvas(QWidget):
             if hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
                 self.draw_light_domes(painter, self.horizon_overlay.profile, eff_sun_alt, eclipse_dimming)
     
-            # === WEATHER SYSTEM (Background clouds) ===
-            self.weather.update_weather(day_of_year, local_hour)
+            # === WEATHER SYSTEM ===
+            # IMPORTANT: forecast/cache keys are indexed in UTC slots.
+            # We keep ephemerides untouched and only map weather indexing to UTC
+            # so manual/local timeline changes match cached forecast rows.
+            self.weather.update_weather(day_of_year_utc, ut_hour, year=dt_utc.year)
             self.weather.update_thunder()
-            
-            w_sun_alt = eff_sun_alt
-            base_fov = 100.0
-            current_fov = base_fov / self.zoom_level
-            self.weather.draw(painter, w_sun_alt, self.azimuth_offset, self.elevation_angle, current_fov, eclipse_dimming=eclipse_dimming)
 
             # 3. Trails
             checked = self.parent_widget.chk_trails.isChecked()
@@ -2778,9 +3097,14 @@ class AstroCanvas(QWidget):
                 self._cached_star_image = None
                 self._last_mag_limit = final_mag_limit
             
+            show_sun_moon_effects = True
+            if hasattr(self.parent_widget, 'chk_sun_moon'):
+                show_sun_moon_effects = self.parent_widget.chk_sun_moon.isChecked()
+
             vis_factor = 1.0
             moon_mask = None
-            if hasattr(self, '_sf_cache') and self._sf_cache.get('data'):
+            # If "Sun & Moon" is hidden, suppress all lunar visual side-effects too.
+            if show_sun_moon_effects and hasattr(self, '_sf_cache') and self._sf_cache.get('data'):
                 md = self._sf_cache['data'].get('moon')
                 if md:
                     pt_m = self.project_universal_stereo(md['alt'], md['az'])
@@ -2798,6 +3122,28 @@ class AstroCanvas(QWidget):
             self.visible_sky_objects = []
             if SKYFIELD_AVAILABLE and hasattr(self.parent_widget, 'eph'):
                  self.draw_skyfield_objects(painter, ut_hour, day_for_astro, ambient_light=ambient_light, mag_limit=final_mag_limit)
+
+            # Constellations are part of sky content, so they must be occluded by terrain.
+            self.constellation_controller.draw(
+                painter,
+                self.project_universal_stereo,
+                lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+            )
+
+            # Weather cloud layer goes above stars/sun/moon so overcast can occlude them.
+            # Horizon/topography will still be painted after this and remain in front.
+            w_sun_alt = eff_sun_alt
+            base_fov = 100.0
+            current_fov = base_fov / self.zoom_level
+            self.weather.draw(
+                painter,
+                w_sun_alt,
+                self.azimuth_offset,
+                self.elevation_angle,
+                current_fov,
+                eclipse_dimming=eclipse_dimming,
+                project_fn=self.project_universal_stereo,
+            )
 
             # 5. Horizon / Topography (Drawn on top to mask everything behind mountains)
             show_horizon = True
@@ -2836,9 +3182,7 @@ class AstroCanvas(QWidget):
                         print(f"[AstroCanvas] City Domes Draw Call: {self._dome_count} centers found.")
                         self._last_dome_log_time = current_time
 
-            # Weather is already drawn once before horizon overlay. 
-            # Sub-components like fog or rain can be layered, but drawing the whole atmosphere twice saturates the screen.
-            # self.weather.draw(painter, w_sun_alt, self.azimuth_offset, self.elevation_angle, current_fov, eclipse_dimming=eclipse_dimming)
+            # Weather already rendered once (above celestial objects, below terrain).
 
 
             
@@ -2851,7 +3195,8 @@ class AstroCanvas(QWidget):
             # 7. HUD information
             painter.setPen(QColor(255, 255, 255, 200))
             lbl_stars = getTraduction("Astro.Stars", "STARS")
-            painter.drawText(20, 30, f"{lbl_stars}: {len(self.visible_stars)}")
+            stars_count = self._scope_hud_star_count() if self.scope_mode_enabled() else self._visible_star_count_raw()
+            painter.drawText(20, 30, f"{lbl_stars}: {stars_count}")
             
             # Direction HUD
             az = self.azimuth_offset % 360
@@ -2896,7 +3241,7 @@ class AstroCanvas(QWidget):
                 if not self.btn_human_eye.isVisible():
                     self.btn_human_eye.show()
 
-            # 8. User overlays (always above stars/planets/trails/terrain)
+            # 8. User overlays above terrain
             self.measurement_controller.draw(
                 painter,
                 self.project_universal_stereo,
@@ -2961,7 +3306,7 @@ class AstroCanvas(QWidget):
     def draw_analytic_trails(self, painter, start_hour, end_hour):
         # 1. Determine interaction state
         pw = self.parent_widget
-        is_moving = self.dragging or getattr(pw, '_dragging_time', False) or (hasattr(self, 'anim_timer') and self.anim_timer.isActive())
+        is_moving = self._camera_interaction_active(include_time_drag=True, include_animation=True)
         
         # 2. Draw Cached Trail Image if available
         if self._cached_trail_image and not self._cached_trail_image.isNull():
@@ -3053,7 +3398,7 @@ class AstroCanvas(QWidget):
         
         # Dynamic LOD (Level of Detail) Optimization
         # If dragging or animating, reduce quality drastically for performance
-        is_moving = self.dragging or (hasattr(self, 'anim_timer') and self.anim_timer.isActive())
+        is_moving = self._camera_interaction_active(include_time_drag=False, include_animation=True)
         
         if is_moving:
              # Low Quality: Only bright stars, few steps
@@ -3695,8 +4040,9 @@ class AstroCanvas(QWidget):
     def draw_background(self, painter, sun_alt, sun_az, view_az, dimming=1.0):
         rect = self.rect()
         
-        # Interactive state (mouse dragging or time bar dragging)
-        is_interacting = self.dragging or getattr(self.parent_widget, '_dragging_time', False)
+        # Interactive state (camera dragging or time bar dragging).
+        # Scope-reticle drag does not affect sky background quality.
+        is_interacting = self._camera_interaction_active(include_time_drag=True, include_animation=False)
         
         # Reduced Resolution for performance during dragging
         # (4096 pixels -> 1024 pixels, 75% less physical sky model calculation)
@@ -3824,6 +4170,10 @@ class AstroCanvas(QWidget):
 
     def draw_stars(self, painter, hour, sun_alt, sun_az, for_trails=False, visibility_factor=1.0, moon_mask=None, mag_limit=None, eff_lat=None, day_of_year=None):
         if np and hasattr(self.parent_widget, 'np_ra'):
+            # During scope-reticle drag we force immediate full render (no interaction LOD via stale cache).
+            if self._scope_reticle_drag_active():
+                self.draw_stars_numpy(painter, hour, sun_alt, sun_az, mag_limit=mag_limit, eff_lat=eff_lat, day_of_year=day_of_year)
+                return
             self.draw_stars_numpy(painter, hour, sun_alt, sun_az, mag_limit=mag_limit, eff_lat=eff_lat, day_of_year=day_of_year)
             return
 
@@ -3912,7 +4262,11 @@ class AstroCanvas(QWidget):
         
         # --- GLOBAL STAR KILLER ---
         # A. Interaction Limit
-        is_interacting = self.dragging or getattr(pw, '_dragging_time', False)
+        # In scope mode, only camera drag should trigger star culling LOD.
+        # Scope reticle movement must keep full stellar depth.
+        is_interacting = self._camera_interaction_active(include_time_drag=True, include_animation=False)
+        if self.scope_mode_enabled() and (not self.dragging):
+            is_interacting = False
         if is_interacting: 
             mag_limit = min(mag_limit, 5.5)
             
@@ -4026,7 +4380,10 @@ class AstroCanvas(QWidget):
         alt_deg_refined = alt_deg + refraction_deg
         
         # 3. MOON EXTINCTION (Fase y separaciÃ³n)
-        if hasattr(self, '_sf_cache') and isinstance(self._sf_cache, dict) and self._sf_cache.get('data') and 'moon' in self._sf_cache.get('data', {}):
+        show_sun_moon_effects = True
+        if hasattr(self.parent_widget, 'chk_sun_moon'):
+            show_sun_moon_effects = self.parent_widget.chk_sun_moon.isChecked()
+        if show_sun_moon_effects and hasattr(self, '_sf_cache') and isinstance(self._sf_cache, dict) and self._sf_cache.get('data') and 'moon' in self._sf_cache.get('data', {}):
             m_data = self._sf_cache['data']['moon']
             if m_data['alt'] > -5.0: # Only if above or near horizon
                 m_alt = np.radians(m_data['alt'])
@@ -4174,9 +4531,44 @@ class AstroCanvas(QWidget):
         
         # 4. Drawing (Batch)
         diff = f_ll - f_mag
+
+        # Scope photometric rendering response:
+        # ISO/exposure/aperture should affect not only detection depth but also
+        # apparent brightness/size, including a soft "burn" on bright stars.
+        scope_active = self.scope_mode_enabled()
+        scope_photometric_gain_mag = 0.0
+        scope_alpha_gain = 1.0
+        scope_size_gain = 1.0
+        scope_burn_strength = 0.0
+        scope_faint_size_gain = 1.0
+        scope_faint_alpha_gain = 1.0
+        if scope_active:
+            vm_state = getattr(self.parent_widget, "visual_magnitude_result", None)
+            if vm_state is not None:
+                exposure_gain_mag = max(0.0, float(getattr(vm_state, "exposure_gain_mag", 0.0)))
+                aperture_gain_mag = max(0.0, float(getattr(vm_state, "aperture_gain_mag", 0.0)))
+                # Exposure dominates burn perception; aperture contributes more softly.
+                scope_photometric_gain_mag = max(0.0, exposure_gain_mag + 0.25 * aperture_gain_mag)
+                scope_alpha_gain = min(3.0, 1.0 + 0.16 * scope_photometric_gain_mag)
+                scope_size_gain = min(2.8, 1.0 + 0.10 * scope_photometric_gain_mag)
+                scope_burn_strength = max(0.0, min(1.0, (scope_photometric_gain_mag - 1.0) / 6.0))
+                # Faint stars should also react to long exposures in scope mode.
+                # Keep it intentionally modest to avoid turning all background stars
+                # into "big dots" while still making low-SNR stars easier to perceive.
+                scope_faint_size_gain = min(2.2, 1.0 + 0.07 * exposure_gain_mag)
+                scope_faint_alpha_gain = min(1.8, 1.0 + 0.06 * exposure_gain_mag)
+
+        # Slight detection extension in scope mode so exposure changes are visible
+        # even near threshold stars.
+        if scope_photometric_gain_mag > 0.0:
+            diff = diff + 0.12 * scope_photometric_gain_mag
         fade_in = np.clip(diff * 2.0, 0.0, 1.0)
         
-        scale = self.parent_widget.star_scale * getattr(self.parent_widget, 'auto_star_scale_multiplier', 1.0)
+        scale = (
+            self.parent_widget.star_scale
+            * getattr(self.parent_widget, 'auto_star_scale_multiplier', 1.0)
+            * scope_size_gain
+        )
         
         painter.setPen(Qt.NoPen)
         
@@ -4190,6 +4582,8 @@ class AstroCanvas(QWidget):
 
         # Pre-calc sizes and alphas vectorily
         eff_alpha = np.where(f_mag < 2.0, np.sqrt(fade_in), fade_in)
+        if scope_alpha_gain > 1.0:
+            eff_alpha = np.clip(eff_alpha * scope_alpha_gain, 0.0, 1.0)
         
         # Filter invisible
         mask_vis = eff_alpha > 0.01
@@ -4214,85 +4608,124 @@ class AstroCanvas(QWidget):
             
             # Color
             r_val, g_val, b_val = int(f_r[i]), int(f_g[i]), int(f_b[i])
+            burn_local = 0.0
+            if scope_burn_strength > 0.0 and mag < 3.5:
+                bright_norm = max(0.0, min(1.0, (3.5 - float(mag)) / 3.5))
+                burn_local = scope_burn_strength * bright_norm
+                if burn_local > 0.0:
+                    white_mix = max(0.0, min(1.0, burn_local * 0.90))
+                    r_val = int(r_val * (1.0 - white_mix) + 255.0 * white_mix)
+                    g_val = int(g_val * (1.0 - white_mix) + 255.0 * white_mix)
+                    b_val = int(b_val * (1.0 - white_mix) + 255.0 * white_mix)
             
             # Use QRadialGradient for realistic star blur/bloom
             if getattr(self.parent_widget, 'pure_colors', False):
-                 # LEGACY BEHAVIOR
-                 if mag > 5.0:
-                     size = max(1.0, 1.2 * self.zoom_level * 0.6) * scale
-                     if math.isnan(size) or size <= 0: continue
-                     
-                     a_val = 200 - min(150, int((mag - 5.0) * 10))
-                     painter.setBrush(QColor(r_val, g_val, b_val, int(max(50, a_val) * alpha_f)))
-                     painter.drawEllipse(QPointF(x, y), size, size)
-                 else:
-                     size = max(1.5, (5.0 - mag) * 0.8 * self.zoom_level) * scale
-                     if math.isnan(size) or size <= 0: continue
-                     
-                     painter.setBrush(QColor(r_val, g_val, b_val, int(255 * alpha_f)))
-                     painter.drawEllipse(QPointF(x, y), size, size)
+                # LEGACY BEHAVIOR
+                if mag > 5.0:
+                    size = max(1.0, 1.2 * self.zoom_level * 0.6) * scale
+                    if scope_active:
+                        faintness = max(0.0, min(1.0, (float(mag) - 5.0) / 4.0))
+                        local_faint_gain = 1.0 + (scope_faint_size_gain - 1.0) * (0.45 + 0.55 * faintness)
+                        size = min(2.4, size * local_faint_gain)
+                    if math.isnan(size) or size <= 0:
+                        continue
+
+                    a_val = 200 - min(150, int((mag - 5.0) * 10))
+                    faint_alpha_boost = scope_faint_alpha_gain if scope_active else 1.0
+                    col_alpha = int(max(50, a_val) * alpha_f * faint_alpha_boost)
+                    painter.setBrush(QColor(r_val, g_val, b_val, max(30, min(235, col_alpha))))
+                    painter.drawEllipse(QPointF(x, y), size, size)
+                else:
+                    size = max(1.5, (5.0 - mag) * 0.8 * self.zoom_level) * scale
+                    if math.isnan(size) or size <= 0:
+                        continue
+
+                    painter.setBrush(QColor(r_val, g_val, b_val, int(255 * alpha_f)))
+                    painter.drawEllipse(QPointF(x, y), size, size)
             else:
-                 # REALISTIC STELLARIUM OPTICS: Bloom, Clamp, Desaturation
-                 if mag > 5.0:
-                     # Estrellas de fondo: un puntito que de verdad sea visible pero sin halo
-                     # MÃ¡ximo de 1 pÃ­xel real, independientemente del zoom para evitar "bolitas"
-                     size = min(1.0, 1.2 * scale)
-                     a_val = 220 - min(100, int((mag - 5.0) * 15))
-                     
-                     # Faint stars lose color saturation to the eye; pull them towards white/grey
-                     desat = 0.5
-                     r_desat = int(r_val * (1-desat) + 200 * desat)
-                     g_desat = int(g_val * (1-desat) + 200 * desat)
-                     b_desat = int(b_val * (1-desat) + 220 * desat)
-                     
-                     final_a = int(max(60, a_val) * alpha_f * 0.7)
-                     
-                     if math.isnan(size) or size <= 0: continue
-                     painter.setBrush(QColor(r_desat, g_desat, b_desat, final_a))
-                     painter.drawEllipse(QPointF(x, y), size, size)
-                 else:
-                     # Estrellas principales
-                     size = max(1.5, (5.0 - mag) * 0.7 * scale)
-                     core_radius = min(4.0, size)
-                     
-                     final_a = int(255 * alpha_f)
-                     star_c_intense = QColor(r_val, g_val, b_val, final_a)
-                     transparent_c = QColor(r_val, g_val, b_val, 0)
-                     
-                     # 1. Halo mucho mÃ¡s centrado y menos opaco para evitar el "velo"
-                     if mag < 4.0:
-                         halo_size = core_radius * (5.5 - mag) * 1.8 * self.zoom_level
-                         if mag < 1.0:
-                             halo_size = core_radius * 8.0 * self.zoom_level
-                             
-                         if math.isnan(halo_size) or halo_size <= 0: continue
-                         halo_grad = QRadialGradient(x, y, halo_size)
-                         halo_grad.setColorAt(0.0, QColor(r_val, g_val, b_val, int(90 * alpha_f)))
-                         halo_grad.setColorAt(0.1, QColor(r_val, g_val, b_val, int(30 * alpha_f)))
-                         halo_grad.setColorAt(0.3, QColor(r_val, g_val, b_val, int(5 * alpha_f)))
-                         halo_grad.setColorAt(1.0, transparent_c)
-                         
-                         painter.setBrush(QBrush(halo_grad))
-                         painter.drawEllipse(QPointF(x, y), halo_size, halo_size)
-                     
-                     # 2. NÃºcleo mÃ¡s brillante y denso
-                     core_grad = QRadialGradient(x, y, core_radius)
-                     core_grad.setColorAt(0.0, QColor(255, 255, 255, final_a))
-                     core_grad.setColorAt(0.6, star_c_intense) # Mantiene el color base mÃ¡s hacia el borde
-                     core_grad.setColorAt(1.0, transparent_c)
-                     
-                     if not math.isnan(core_radius) and core_radius > 0:
-                         painter.setBrush(QBrush(core_grad))
-                         painter.drawEllipse(QPointF(x, y), core_radius, core_radius)
-                 
-                 # Draw diffraction spikes using the slider threshold
-                 try:
-                     spike_threshold = getattr(self.parent_widget, 'spike_magnitude_threshold', 2.0)
-                     if mag < spike_threshold:
-                         self.draw_spikes(painter, x, y, mag, spike_threshold, final_a)
-                         painter.setPen(Qt.NoPen)  # Reset pen after spikes
-                 except Exception:
-                     pass  # Silently skip spikes if there's an error
+                # REALISTIC STELLARIUM OPTICS: Bloom, Clamp, Desaturation
+                if mag > 5.0:
+                    # Estrellas de fondo: un puntito que de verdad sea visible pero sin halo
+                    # En vista normal se mantiene muy contenido para evitar "bolitas".
+                    # En modo mira se permite crecimiento suave con exposiciones largas.
+                    if scope_active:
+                        faintness = max(0.0, min(1.0, (float(mag) - 5.0) / 4.0))
+                        local_faint_gain = 1.0 + (scope_faint_size_gain - 1.0) * (0.45 + 0.55 * faintness)
+                        size = min(2.2, max(0.9, 1.2 * scale * local_faint_gain))
+                    else:
+                        # MÃ¡ximo de 1 pÃ­xel real, independientemente del zoom.
+                        size = min(1.0, 1.2 * scale)
+                    a_val = 220 - min(100, int((mag - 5.0) * 15))
+
+                    # Faint stars lose color saturation to the eye; pull them towards white/grey
+                    desat = 0.5
+                    r_desat = int(r_val * (1 - desat) + 200 * desat)
+                    g_desat = int(g_val * (1 - desat) + 200 * desat)
+                    b_desat = int(b_val * (1 - desat) + 220 * desat)
+
+                    faint_alpha_boost = scope_faint_alpha_gain if scope_active else 1.0
+                    final_a = int(max(60, a_val) * alpha_f * 0.7 * faint_alpha_boost)
+                    final_a = max(30, min(235, final_a))
+                    if math.isnan(size) or size <= 0:
+                        continue
+                    painter.setBrush(QColor(r_desat, g_desat, b_desat, final_a))
+                    painter.drawEllipse(QPointF(x, y), size, size)
+                else:
+                    # Estrellas principales
+                    size = max(1.5, (5.0 - mag) * 0.7 * scale)
+                    core_radius = min(6.5, size * (1.0 + 0.55 * burn_local))
+
+                    final_a = int(min(255, 255 * alpha_f * (1.0 + 0.40 * burn_local)))
+                    star_c_intense = QColor(r_val, g_val, b_val, final_a)
+                    transparent_c = QColor(r_val, g_val, b_val, 0)
+
+                    # 1. Halo mucho mÃ¡s centrado y menos opaco para evitar el "velo"
+                    if mag < 4.0:
+                        halo_size = core_radius * (5.5 - mag) * 1.8 * self.zoom_level
+                        if mag < 1.0:
+                            halo_size = core_radius * 8.0 * self.zoom_level
+                        if burn_local > 0.0:
+                            halo_size *= (1.0 + 0.80 * burn_local)
+
+                        if math.isnan(halo_size) or halo_size <= 0:
+                            continue
+                        halo_grad = QRadialGradient(x, y, halo_size)
+                        halo_grad.setColorAt(0.0, QColor(r_val, g_val, b_val, int(90 * alpha_f)))
+                        halo_grad.setColorAt(0.1, QColor(r_val, g_val, b_val, int(30 * alpha_f)))
+                        halo_grad.setColorAt(0.3, QColor(r_val, g_val, b_val, int(5 * alpha_f)))
+                        halo_grad.setColorAt(1.0, transparent_c)
+
+                        painter.setBrush(QBrush(halo_grad))
+                        painter.drawEllipse(QPointF(x, y), halo_size, halo_size)
+
+                    if burn_local > 0.05:
+                        burn_radius = core_radius * (2.0 + 2.5 * burn_local)
+                        burn_grad = QRadialGradient(x, y, burn_radius)
+                        burn_alpha = int(min(220, (120 + 120 * burn_local)) * alpha_f)
+                        burn_grad.setColorAt(0.0, QColor(255, 255, 255, burn_alpha))
+                        burn_grad.setColorAt(0.35, QColor(255, 255, 255, burn_alpha // 3))
+                        burn_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+                        painter.setBrush(QBrush(burn_grad))
+                        painter.drawEllipse(QPointF(x, y), burn_radius, burn_radius)
+
+                    # 2. NÃºcleo mÃ¡s brillante y denso
+                    core_grad = QRadialGradient(x, y, core_radius)
+                    core_grad.setColorAt(0.0, QColor(255, 255, 255, final_a))
+                    core_grad.setColorAt(0.6, star_c_intense)  # Mantiene el color base mÃ¡s hacia el borde
+                    core_grad.setColorAt(1.0, transparent_c)
+
+                    if not math.isnan(core_radius) and core_radius > 0:
+                        painter.setBrush(QBrush(core_grad))
+                        painter.drawEllipse(QPointF(x, y), core_radius, core_radius)
+
+                # Draw diffraction spikes using the slider threshold
+                try:
+                    spike_threshold = getattr(self.parent_widget, 'spike_magnitude_threshold', 2.0)
+                    if mag < spike_threshold:
+                        self.draw_spikes(painter, x, y, mag, spike_threshold, final_a)
+                        painter.setPen(Qt.NoPen)  # Reset pen after spikes
+                except Exception:
+                    pass  # Silently skip spikes if there's an error
                      
         # Update visible stars for click detection
         self.visible_stars = indices
@@ -4938,19 +5371,70 @@ class AstroCanvas(QWidget):
 
 
     def mousePressEvent(self, event):
+        if self.drawing_mode_enabled():
+            if event.button() == Qt.LeftButton:
+                self.setFocus()
+                self.press_pos = event.pos()
+                if event.modifiers() & Qt.ControlModifier:
+                    # Drawing override: Ctrl + drag keeps normal camera navigation.
+                    self.dragging = True
+                    self.last_mouse_x = event.x()
+                    self.last_mouse_y = event.y()
+                    self._drawing_ctrl_pan_started = False
+                    self._drawing_ctrl_click_pending = True
+                else:
+                    self._drawing_ctrl_pan_started = False
+                    self._drawing_ctrl_click_pending = False
+                    ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+                    self.constellation_controller.on_left_click(
+                        event.x(),
+                        event.y(),
+                        self.project_universal_stereo,
+                        lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                        self._pick_star_at,
+                        force_add=bool(event.modifiers() & Qt.ShiftModifier),
+                        additive_select=False,
+                    )
+                    if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                        self.parent_widget._sync_constellation_controls()
+                    self.update()
+            elif event.button() == Qt.RightButton:
+                self.setFocus()
+                ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+                self.constellation_controller.on_right_click(
+                    event.x(),
+                    event.y(),
+                    self.project_universal_stereo,
+                    lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                )
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+                self.update()
+            event.accept()
+            return
+
         if self.scope_mode_enabled():
             if event.button() == Qt.LeftButton:
                 self.press_pos = event.pos()
                 if event.modifiers() & Qt.ControlModifier:
-                    # Scope override: Ctrl + drag keeps normal camera navigation.
+                    # Ctrl + drag: move camera.
                     # Disable camera lock but keep target tracking active for the scope itself.
                     self.scope_camera_lock_to_target = False
                     self.scope_controller.end_drag()
                     self.dragging = True
                     self.last_mouse_x = event.x()
                     self.last_mouse_y = event.y()
-                    self.press_pos = event.pos()
+                    self._scope_camera_pan_started = False
+                    self._scope_camera_click_pending = True
                 else:
+                    # Drag without Ctrl: move scope reticle.
+                    # Manual reticle movement unlocks reticle tracking from current Goto target.
+                    self.scope_reticle_lock_to_target = False
+                    self.dragging = False
+                    self._scope_camera_pan_started = False
+                    self._scope_camera_click_pending = False
+                    # Avoid reusing a previously camera-throttled star frame while starting reticle drag.
+                    self._cached_star_image = None
                     self.scope_controller.handle_click(event.x(), event.y(), self.unproject_stereo)
                     self.scope_controller.start_drag(event.x(), event.y())
                 self.update()
@@ -4984,14 +5468,41 @@ class AstroCanvas(QWidget):
             self.press_pos = event.pos()
     
     def mouseMoveEvent(self, event):
+        if self.drawing_mode_enabled():
+            if self.dragging:
+                dx = event.x() - self.last_mouse_x
+                dy = event.y() - self.last_mouse_y
+                if self._drawing_ctrl_click_pending and (abs(dx) + abs(dy) >= 3):
+                    self._drawing_ctrl_pan_started = True
+                if self._drawing_ctrl_pan_started:
+                    self.azimuth_offset = (self.azimuth_offset - dx * 0.5)
+                    self.elevation_angle += dy * 0.5
+                    self.elevation_angle = max(-90, min(90, self.elevation_angle))
+                self.last_mouse_x = event.x()
+                self.last_mouse_y = event.y()
+            else:
+                self.setFocus()
+                self.constellation_controller.on_mouse_move(
+                    event.x(),
+                    event.y(),
+                    self._pick_star_at,
+                    self._screen_to_ra_dec,
+                )
+            self.update()
+            event.accept()
+            return
+
         if self.scope_mode_enabled():
             if self.dragging:
                 dx = event.x() - self.last_mouse_x
                 dy = event.y() - self.last_mouse_y
-                sensitivity = self._scope_secondary_drag_deg_per_px()
-                self.azimuth_offset = (self.azimuth_offset - dx * sensitivity)
-                self.elevation_angle += dy * sensitivity
-                self.elevation_angle = max(-90, min(90, self.elevation_angle))
+                if self._scope_camera_click_pending and (abs(dx) + abs(dy) >= 3):
+                    self._scope_camera_pan_started = True
+                if self._scope_camera_pan_started:
+                    sensitivity = self._scope_secondary_drag_deg_per_px()
+                    self.azimuth_offset = (self.azimuth_offset - dx * sensitivity)
+                    self.elevation_angle += dy * sensitivity
+                    self.elevation_angle = max(-90, min(90, self.elevation_angle))
                 self.last_mouse_x = event.x()
                 self.last_mouse_y = event.y()
                 self.update()
@@ -5039,15 +5550,44 @@ class AstroCanvas(QWidget):
             self.update()
             
     def mouseReleaseEvent(self, event):
+        if self.drawing_mode_enabled():
+            if self.dragging:
+                was_ctrl_click = bool(self._drawing_ctrl_click_pending and (not self._drawing_ctrl_pan_started))
+                self.dragging = False
+                self._drawing_ctrl_pan_started = False
+                self._drawing_ctrl_click_pending = False
+                self._cached_trail_image = None
+                if was_ctrl_click and event.button() == Qt.LeftButton:
+                    ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+                    self.constellation_controller.on_left_click(
+                        event.x(),
+                        event.y(),
+                        self.project_universal_stereo,
+                        lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                        self._pick_star_at,
+                        force_add=False,
+                        additive_select=True,
+                    )
+                    if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                        self.parent_widget._sync_constellation_controls()
+                self.update()
+            event.accept()
+            return
+
         if self.scope_mode_enabled():
             if event.button() == Qt.RightButton:
                 self._show_object_context_menu(event)
                 event.accept()
                 return
             if self.dragging:
+                was_scope_click = bool(self._scope_camera_click_pending and (not self._scope_camera_pan_started))
                 self.dragging = False
+                self._scope_camera_pan_started = False
+                self._scope_camera_click_pending = False
                 # Invalidate trail cache only when movement STOPS to trigger a clean bake.
                 self._cached_trail_image = None
+                if was_scope_click and event.button() == Qt.LeftButton and (event.pos() - self.press_pos).manhattanLength() < 5:
+                    self._set_selected_target(self._pick_target_at(event.x(), event.y()))
                 self.update()
                 event.accept()
                 return
@@ -5090,29 +5630,113 @@ class AstroCanvas(QWidget):
         # Invalidate trail cache only when movement STOPS to trigger a clean bake
         self._cached_trail_image = None
         self.update()
+
+        if event.button() == Qt.LeftButton and bool(getattr(self, "_suppress_constellation_release_click", False)):
+            self._suppress_constellation_release_click = False
+            event.accept()
+            return
         
         # Click Detection (Min movement)
         if (event.pos() - self.press_pos).manhattanLength() < 5:
+            if (
+                event.button() == Qt.LeftButton
+                and self.constellation_visible()
+                and (not self.scope_mode_enabled())
+                and (not self.measurement_tool_active())
+            ):
+                ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+                consumed = self.constellation_controller.on_left_click(
+                    event.x(),
+                    event.y(),
+                    self.project_universal_stereo,
+                    lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                    self._pick_star_at,
+                    force_add=False,
+                    additive_select=bool(event.modifiers() & Qt.ControlModifier),
+                    allow_when_disabled=True,
+                )
+                if consumed:
+                    if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                        self.parent_widget._sync_constellation_controls()
+                    self.update()
+                    event.accept()
+                    return
             self._set_selected_target(self._pick_target_at(event.x(), event.y()))
 
     def mouseDoubleClickEvent(self, event):
+        if self.drawing_mode_enabled():
+            if event.button() == Qt.LeftButton:
+                self.setFocus()
+                ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+                action = self.constellation_controller.on_double_click(
+                    event.x(),
+                    event.y(),
+                    self.project_universal_stereo,
+                    lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                    additive_select=bool(event.modifiers() & Qt.ControlModifier),
+                )
+                if isinstance(action, dict) and action.get("action") == "rename_group":
+                    if hasattr(self.parent_widget, "rename_constellation_group_by_index"):
+                        rect = action.get("label_rect")
+                        label_rect = None
+                        if isinstance(rect, (tuple, list)) and len(rect) == 4:
+                            try:
+                                label_rect = QRectF(float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+                            except Exception:
+                                label_rect = None
+                        self.parent_widget.rename_constellation_group_by_index(
+                            int(action.get("group_index", -1)),
+                            label_rect=label_rect,
+                        )
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+                self.update()
+            event.accept()
+            return
+
+        # Constellation label/segment interactions are available outside draw mode:
+        # - double click label -> rename
+        # - double click segment -> select full constellation segments
+        if (
+            event.button() == Qt.LeftButton
+            and self.constellation_visible()
+            and (not self.scope_mode_enabled())
+            and (not self.measurement_tool_active())
+        ):
+            self.setFocus()
+            ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+            action = self.constellation_controller.on_double_click(
+                event.x(),
+                event.y(),
+                self.project_universal_stereo,
+                lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                additive_select=bool(event.modifiers() & Qt.ControlModifier),
+                allow_when_disabled=True,
+            )
+            if isinstance(action, dict) and action.get("action") != "none":
+                self._suppress_constellation_release_click = True
+                if action.get("action") == "rename_group":
+                    if hasattr(self.parent_widget, "rename_constellation_group_by_index"):
+                        rect = action.get("label_rect")
+                        label_rect = None
+                        if isinstance(rect, (tuple, list)) and len(rect) == 4:
+                            try:
+                                label_rect = QRectF(float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+                            except Exception:
+                                label_rect = None
+                        self.parent_widget.rename_constellation_group_by_index(
+                            int(action.get("group_index", -1)),
+                            label_rect=label_rect,
+                        )
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+                self.update()
+                event.accept()
+                return
+
         if self.scope_mode_enabled() and event.button() == Qt.LeftButton:
             sky = screen_to_sky(event.x(), event.y(), self.unproject_stereo)
-            if sky is not None:
-                # Interactive jump: center scope + repoint camera + direct zoom.
-                self.scope_controller.set_center(sky)
-                self.azimuth_offset = sky[1] % 360.0
-                self.elevation_angle = max(-90.0, min(90.0, sky[0]))
-
-                fov_w, fov_h = self.scope_controller.current_fov()
-                target_fov = max(0.2, min(93.9, max(fov_w, fov_h)))
-                self.zoom_level = max(0.5, min(50.0, 93.9 / target_fov))
-
-                # Force redraw paths that depend on camera state.
-                self._cached_star_image = None
-                self._cached_trail_image = None
-
-            self.update()
+            self._scope_jump_to_sky(sky)
             event.accept()
             return
 
@@ -5182,9 +5806,13 @@ class AstroCanvas(QWidget):
         twilight_factor *= eclipse_dimming
         if twilight_factor <= 0.01: return
 
+        show_sun_moon_effects = True
+        if hasattr(self.parent_widget, 'chk_sun_moon'):
+            show_sun_moon_effects = self.parent_widget.chk_sun_moon.isChecked()
+
         # MOON GLOW (Only)
         # Global Sky Glow is now handled inside sky_color_phys physically
-        if self._sf_cache and self._sf_cache.get('data'):
+        if show_sun_moon_effects and self._sf_cache and self._sf_cache.get('data'):
             m_data = self._sf_cache['data'].get('moon')
             if m_data and m_data['alt'] > -5.0:
                 m_alt, m_az = m_data['alt'], m_data['az']
@@ -5285,6 +5913,26 @@ class AstroCanvas(QWidget):
         painter.drawRect(int(-rad_x), int(-rad_x), int(rad_x * 2), int(rad_x * 2))
         painter.restore()
 
+    def _sun_weather_dim_factor(self) -> float:
+        w = None
+        if hasattr(self.parent_widget, 'weather'):
+            w = self.parent_widget.weather
+        elif hasattr(self, 'weather'):
+            w = self.weather
+        if w is None:
+            return 0.0
+        try:
+            cover = max(0.0, min(1.0, float(getattr(w, 'current_cover', 0.0))))
+            precip = max(0.0, min(1.0, float(getattr(w, 'precip_int', 0.0))))
+            fog = max(0.0, min(1.0, float(getattr(w, 'fog_cover', 0.0))))
+            humidity = max(0.0, min(1.0, float(getattr(w, 'humidity', 0.0))))
+            dim_cover = max(0.0, (cover - 0.55) / 0.45)
+            dim_fog = min(1.0, fog * 1.10 + max(0.0, humidity - 0.80) * 0.85)
+            dim = max(dim_cover, precip * 1.20, dim_fog)
+            return max(0.0, min(1.0, dim ** 1.15))
+        except Exception:
+            return 0.0
+
     def draw_skyfield_objects(self, painter, ut_hour, day_of_year, ambient_light=1.0, mag_limit=None):
         if mag_limit is None: mag_limit = 6.0
         bortle = getattr(self.parent_widget, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1))
@@ -5378,16 +6026,11 @@ class AstroCanvas(QWidget):
                 # Weather Dimming
                 eff_sun_color = QColor(sun_color)
                 eff_corona_opacity = corona_opacity
-                if hasattr(self.parent_widget, 'weather'):
-                    w = self.parent_widget.weather
-                    dim_factor = 0.0
-                    if w.precip_int > 0.1: dim_factor = min(1.0, w.precip_int * 1.2)
-                    elif w.current_cover > 0.6: dim_factor = (w.current_cover - 0.6) * 2.5
-                    dim_factor = max(0.0, min(1.0, dim_factor))
-                    if dim_factor > 0.01:
-                        original_alpha = eff_sun_color.alpha()
-                        eff_sun_color.setAlpha(int(original_alpha * (1.0 - dim_factor * 0.98)))
-                        eff_corona_opacity *= (1.0 - dim_factor)
+                dim_factor = self._sun_weather_dim_factor()
+                if dim_factor > 0.01:
+                    original_alpha = eff_sun_color.alpha()
+                    eff_sun_color.setAlpha(int(original_alpha * (1.0 - dim_factor * 0.995)))
+                    eff_corona_opacity *= (1.0 - dim_factor)
                 
                 visual_ppd = pixels_per_deg * celestial_scale
                 
@@ -5644,27 +6287,12 @@ class AstroCanvas(QWidget):
             # Weather Dimming (Clouds/Rain obscuring Sun)
             eff_sun_color = QColor(sun_color)
             eff_corona_opacity = corona_opacity
-            
-            if hasattr(self.parent_widget, 'weather'):
-                w = self.parent_widget.weather
-                # Dim Sun if Raining or Cloudy
-                # Factor 0.0 (Clear) to 1.0 (Totally Obscured)
-                dim_factor = 0.0
-                if w.precip_int > 0.1:
-                    dim_factor = min(1.0, w.precip_int * 1.2)
-                elif w.current_cover > 0.6:
-                    dim_factor = (w.current_cover - 0.6) * 2.5 # 0.6->0.0, 1.0->1.0
-                
-                dim_factor = max(0.0, min(1.0, dim_factor))
-                
-                if dim_factor > 0.01:
-                    # Reduce Alpha and Corona
-                    # We keep a tiny bit of visibility (0.05) or fully hide?
-                    # User said "tapado por una capa de nubes bajas"
-                    original_alpha = eff_sun_color.alpha()
-                    new_alpha = int(original_alpha * (1.0 - dim_factor * 0.98)) 
-                    eff_sun_color.setAlpha(new_alpha)
-                    eff_corona_opacity *= (1.0 - dim_factor)
+            dim_factor = self._sun_weather_dim_factor()
+            if dim_factor > 0.01:
+                original_alpha = eff_sun_color.alpha()
+                new_alpha = int(original_alpha * (1.0 - dim_factor * 0.995))
+                eff_sun_color.setAlpha(new_alpha)
+                eff_corona_opacity *= (1.0 - dim_factor)
 
             self.draw_sun_skyfield(painter, alt_s.degrees, az_s.degrees, sun_radius_px, eff_sun_color, eff_corona_opacity, visual_ppd)
             
@@ -6021,15 +6649,20 @@ class AstroCanvas(QWidget):
             self._draw_scope_solar_disc(painter, radius)
             painter.restore()
             return
+
+        sun_alpha_factor = max(0.0, min(1.0, QColor(color).alphaF()))
+        if sun_alpha_factor <= 0.01:
+            return
         
         # 1. Corona (Intense & Sharp)
-        if corona_opacity > 0.01:
+        if corona_opacity > 0.01 and sun_alpha_factor > 0.04:
             painter.setBrush(Qt.NoBrush)
             grad = QRadialGradient(x, y, radius * 12.0) # Larger 12x
             # Very Punchy
-            grad.setColorAt(0.0, QColor(255, 255, 255, int(255 * corona_opacity))) # Solid Center
-            grad.setColorAt(0.1, QColor(200, 220, 255, int(220 * corona_opacity)))
-            grad.setColorAt(0.25, QColor(100, 100, 255, int(100 * corona_opacity)))
+            c_scale = sun_alpha_factor * sun_alpha_factor
+            grad.setColorAt(0.0, QColor(255, 255, 255, int(255 * corona_opacity * c_scale))) # Solid Center
+            grad.setColorAt(0.1, QColor(200, 220, 255, int(220 * corona_opacity * c_scale)))
+            grad.setColorAt(0.25, QColor(100, 100, 255, int(100 * corona_opacity * c_scale)))
             grad.setColorAt(1.0, QColor(0, 0, 50, 0))
             painter.setBrush(QBrush(grad))
             painter.setPen(Qt.NoPen)
@@ -6046,16 +6679,19 @@ class AstroCanvas(QWidget):
         body_grad = QRadialGradient(0, 0, radius)
         
         # Core stays white-ish unless VERY low
-        core_col = QColor(255, 255, 255)
+        alpha_core = int(255 * sun_alpha_factor)
+        core_col = QColor(255, 255, 255, alpha_core)
         if alt < 5.0:
             # At sunset, even the core gets tinted
             t_set = (5.0 - alt) / 5.0 # 0..1
             # Blend White -> Yellow/Red
-            core_col = QColor(255, 255 - int(50*t_set), 255 - int(100*t_set))
+            core_col = QColor(255, 255 - int(50*t_set), 255 - int(100*t_set), alpha_core)
             
         body_grad.setColorAt(0.0, core_col)
         # Push the core further out (0.85) for a more "Solid Disk" look
-        body_grad.setColorAt(0.85, QColor(255, 255, 240) if alt > 10 else color.lighter(120)) 
+        body_mid = QColor(255, 255, 240, alpha_core) if alt > 10 else QColor(color.lighter(120))
+        body_mid.setAlpha(alpha_core)
+        body_grad.setColorAt(0.85, body_mid)
         body_grad.setColorAt(1.0, color) # Limb color matches atmosphere
         
         painter.setBrush(QBrush(body_grad))
@@ -6069,7 +6705,7 @@ class AstroCanvas(QWidget):
         painter.setOpacity(1.0) # Ensure full opacity for glow logic
         
         # 3. Stellarium-style Bloom/Glow (Only if not in Totality)
-        if corona_opacity < 0.9:
+        if corona_opacity < 0.9 and sun_alpha_factor > 0.05:
              # Huge, smooth radial gradient (No discrete rings)
              glow_radius = radius * 15.0 
              glow_grad = QRadialGradient(0, 0, glow_radius)
@@ -6078,10 +6714,11 @@ class AstroCanvas(QWidget):
              # Alpha is kept somewhat high at core to simulate brightness
              base_alpha = 180 if alt > 10 else 100
              
-             glow_grad.setColorAt(0.0, QColor(255, 255, 255, 255)) # Blind white
-             glow_grad.setColorAt(0.05, QColor(color.red(), color.green(), color.blue(), 200)) # Very bright aura
-             glow_grad.setColorAt(0.1, QColor(color.red(), color.green(), color.blue(), 100)) # Aura
-             glow_grad.setColorAt(0.4, QColor(color.red(), color.green(), color.blue(), 30))  # General glow
+             g_scale = sun_alpha_factor * sun_alpha_factor
+             glow_grad.setColorAt(0.0, QColor(255, 255, 255, int(255 * g_scale))) # Blind white
+             glow_grad.setColorAt(0.05, QColor(color.red(), color.green(), color.blue(), int(200 * g_scale))) # Very bright aura
+             glow_grad.setColorAt(0.1, QColor(color.red(), color.green(), color.blue(), int(100 * g_scale))) # Aura
+             glow_grad.setColorAt(0.4, QColor(color.red(), color.green(), color.blue(), int(30 * g_scale)))  # General glow
              glow_grad.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))   # Fade out
              
              painter.setBrush(QBrush(glow_grad))
@@ -6409,9 +7046,22 @@ class AstronomicalWidget(CustomWidgetBase):
         now = datetime.now()
         self.manual_year = now.year
         self.manual_day = (now - datetime(now.year, 1, 1)).days
+
+        # Weather runtime flags (persisted in config).
+        # - weather_use_remote_metno: enables/disables real forecast provider.
+        # - weather_cache_enabled: enables/disables disk cache reuse for weather data.
+        self.weather_use_remote_metno = bool(get_config_value("weather_use_remote_metno", True))
+        self.weather_cache_enabled = bool(get_config_value("weather_cache_enabled", True))
         
         # Weather needs to exist before setup_content -> AstroCanvas -> WeatherControlWidget
-        self.weather = WeatherSystem(800, 600)
+        self.weather = WeatherSystem(
+            800,
+            600,
+            latitude=self.latitude,
+            longitude=self.longitude,
+            use_remote_weather=self.weather_use_remote_metno,
+            cache_enabled=self.weather_cache_enabled,
+        )
 
         # 2. Init Base Widget (Calls setup_ui -> setup_content)
         super().__init__(title="Astronomy", parent=parent, **kwargs)
@@ -6664,6 +7314,18 @@ class AstronomicalWidget(CustomWidgetBase):
         
         self.canvas = AstroCanvas(self)
         layout.addWidget(self.canvas, 1)
+        self._shortcut_delete_constellation = QShortcut(Qt.Key_Delete, self)
+        self._shortcut_delete_constellation.setContext(Qt.WidgetWithChildrenShortcut)
+        self._shortcut_delete_constellation.activated.connect(self._delete_constellation_shortcut)
+        self._shortcut_backspace_constellation = QShortcut(Qt.Key_Backspace, self)
+        self._shortcut_backspace_constellation.setContext(Qt.WidgetWithChildrenShortcut)
+        self._shortcut_backspace_constellation.activated.connect(self._delete_constellation_shortcut)
+        self._shortcut_finish_constellation = QShortcut(Qt.Key_Return, self)
+        self._shortcut_finish_constellation.setContext(Qt.WidgetWithChildrenShortcut)
+        self._shortcut_finish_constellation.activated.connect(self._finish_constellation_shortcut)
+        self._shortcut_finish_constellation_enter = QShortcut(Qt.Key_Enter, self)
+        self._shortcut_finish_constellation_enter.setContext(Qt.WidgetWithChildrenShortcut)
+        self._shortcut_finish_constellation_enter.activated.connect(self._finish_constellation_shortcut)
              
         # === Compact Layout ===
         
@@ -6803,6 +7465,18 @@ class AstronomicalWidget(CustomWidgetBase):
         # Set state initially
         setattr(self.canvas.weather, 'enabled', False)
         self.chk_clima.toggled.connect(self.on_climate_toggled)
+        self.lbl_climate_fallback = QLabel(getTraduction("Astro.ClimateFallbackActive", "Real weather unavailable (fallback)"))
+        self.lbl_climate_fallback.setVisible(False)
+        self.lbl_climate_fallback.setStyleSheet(
+            "font-size: 9px; color: #8a3b00; background: rgba(255, 208, 140, 165); "
+            "border: 1px solid #a06a2f; border-radius: 6px; padding: 1px 6px;"
+        )
+        # Anti-flicker state for climate fallback badge:
+        # show only after fallback persists, hide only after remote is stable.
+        self._climate_fallback_since = None
+        self._climate_remote_since = None
+        self._climate_fallback_show_delay_s = 2.5
+        self._climate_remote_hide_delay_s = 1.2
         
         self.chk_planets = QCheckBox("Planetes")
         self.chk_planets.setEnabled(True)
@@ -6820,6 +7494,7 @@ class AstronomicalWidget(CustomWidgetBase):
         for c in (self.chk_clima, self.chk_planets, self.chk_sun_moon, self.chk_enable_sky, self.chk_deep_space):
             c.setStyleSheet(c.styleSheet() + "; font-style: normal; font-weight: normal; color: #666;" if not c.isEnabled() else "; font-style: normal; font-weight: normal; color: #000;")
             v_chk.addWidget(c)
+        v_chk.addWidget(self.lbl_climate_fallback)
             
         l_sky.addLayout(v_chk)
 
@@ -7064,7 +7739,7 @@ class AstronomicalWidget(CustomWidgetBase):
         h_exp = QHBoxLayout()
         h_exp.addWidget(QLabel(getTraduction("Astro.ScopeExposure", "Exposure (s)")))
         self.scope_exposure_spin = QDoubleSpinBox()
-        self.scope_exposure_spin.setRange(0.1, 600.0)
+        self.scope_exposure_spin.setRange(0.1, 60000.0)
         self.scope_exposure_spin.setDecimals(1)
         self.scope_exposure_spin.setSingleStep(0.5)
         self.scope_exposure_spin.setValue(self.scope_exposure_s)
@@ -7144,6 +7819,10 @@ class AstronomicalWidget(CustomWidgetBase):
         v_tools.setSpacing(3)
         v_tools.setContentsMargins(4, 4, 4, 4)
 
+        self.lbl_measure_section = QLabel(getTraduction("Astro.MeasureToolsSection", "Measurement tools"))
+        self.lbl_measure_section.setStyleSheet("font-size: 9px; font-weight: bold; color: #4a3a20;")
+        v_tools.addWidget(self.lbl_measure_section)
+
         h_tool_row_1 = QHBoxLayout()
         self.btn_tool_ruler = QPushButton(getTraduction("Astro.ToolRuler", "Ruler"))
         self.btn_tool_ruler.setCheckable(True)
@@ -7169,10 +7848,56 @@ class AstronomicalWidget(CustomWidgetBase):
         self.btn_tool_clear = QPushButton(getTraduction("Astro.ToolClear", "Clear"))
         self.btn_tool_clear.clicked.connect(self.clear_measurement_overlays)
         v_tools.addWidget(self.btn_tool_clear)
+
+        sep_tools = QFrame()
+        sep_tools.setFrameShape(QFrame.HLine)
+        sep_tools.setFrameShadow(QFrame.Sunken)
+        sep_tools.setStyleSheet("color: rgba(106, 82, 48, 120);")
+        v_tools.addWidget(sep_tools)
+
+        self.lbl_const_section = QLabel(getTraduction("Astro.ConstellationToolsSection", "Constellation tools"))
+        self.lbl_const_section.setStyleSheet("font-size: 9px; font-weight: bold; color: #4a3a20;")
+        v_tools.addWidget(self.lbl_const_section)
+
+        h_const_vis = QHBoxLayout()
+        self.btn_const_visibility = QPushButton(getTraduction("Astro.ConstellationVisibility", "Show constellations"))
+        self.btn_const_visibility.setCheckable(True)
+        self.btn_const_visibility.setChecked(True)
+        self.btn_const_visibility.setStyleSheet(
+            "QPushButton { color: #2f2515; }"
+            "QPushButton:checked { color: #2f2515; }"
+        )
+        self.btn_const_visibility.toggled.connect(self.toggle_constellation_visibility)
+        h_const_vis.addWidget(self.btn_const_visibility)
+        v_tools.addLayout(h_const_vis)
+
+        h_const_row_1 = QHBoxLayout()
+        self.btn_const_draw = QPushButton(getTraduction("Astro.ConstellationDrawMode", "Draw mode"))
+        self.btn_const_draw.setCheckable(True)
+        self.btn_const_draw.toggled.connect(self.toggle_constellation_draw_mode)
+        h_const_row_1.addWidget(self.btn_const_draw)
+        self.btn_const_new = QPushButton(getTraduction("Astro.ConstellationNew", "New constellation"))
+        self.btn_const_new.clicked.connect(self.constellation_primary_action)
+        h_const_row_1.addWidget(self.btn_const_new)
+        v_tools.addLayout(h_const_row_1)
+
+        h_const_row_2 = QHBoxLayout()
+        self.btn_const_eraser = QPushButton(getTraduction("Astro.ConstellationDeleteAll", "Delete all"))
+        self.btn_const_eraser.clicked.connect(self.delete_constellation_action)
+        h_const_row_2.addWidget(self.btn_const_eraser)
+        self.btn_const_rename = QPushButton(getTraduction("Astro.ConstellationRename", "Rename"))
+        self.btn_const_rename.clicked.connect(self.rename_constellation_group)
+        h_const_row_2.addWidget(self.btn_const_rename)
+        v_tools.addLayout(h_const_row_2)
+
+        self.lbl_constellation_state = QLabel("")
+        self.lbl_constellation_state.setStyleSheet("font-size: 9px; color: #6a5738;")
+        v_tools.addWidget(self.lbl_constellation_state)
         self.tools_panel.hide()
         v_ext.addWidget(self.tools_panel)
         self.sync_scope_ui_state(False)
         self._sync_measure_tool_buttons(TOOL_NONE)
+        self._sync_constellation_controls()
 
         l_sky.addLayout(v_ext)
 
@@ -7653,6 +8378,8 @@ class AstronomicalWidget(CustomWidgetBase):
         # Optional: deactivate measurement input when entering scope mode.
         self.canvas.set_measurement_tool(TOOL_NONE)
         self._sync_measure_tool_buttons(TOOL_NONE)
+        self.canvas.set_constellation_draw_mode(False)
+        self._sync_constellation_controls()
         QTimer.singleShot(0, self._update_button_pos)
 
     def exit_scope_mode(self):
@@ -7680,6 +8407,165 @@ class AstronomicalWidget(CustomWidgetBase):
             btn.setChecked(active_tool == key)
             btn.blockSignals(False)
 
+    def _sync_constellation_controls(self):
+        if not hasattr(self, "canvas"):
+            return
+        ctrl = self.canvas.constellation_controller
+        draw_enabled = bool(getattr(ctrl, "enabled", False))
+        visible_enabled = bool(getattr(ctrl, "visible", True))
+        drawing_active = bool(getattr(ctrl, "group_drawing_active", False)) and draw_enabled
+        selected_groups = len(getattr(ctrl, "selected_group_indices", set()) or set())
+
+        if hasattr(self, "btn_const_visibility"):
+            self.btn_const_visibility.blockSignals(True)
+            self.btn_const_visibility.setChecked(visible_enabled)
+            self.btn_const_visibility.blockSignals(False)
+
+        if hasattr(self, "btn_const_draw"):
+            self.btn_const_draw.blockSignals(True)
+            self.btn_const_draw.setChecked(draw_enabled)
+            self.btn_const_draw.setEnabled(visible_enabled)
+            self.btn_const_draw.blockSignals(False)
+        if hasattr(self, "btn_const_eraser"):
+            if selected_groups > 1:
+                self.btn_const_eraser.setText(
+                    getTraduction("Astro.ConstellationDeleteSelected", "Delete selected ({n})").format(
+                        n=selected_groups
+                    )
+                )
+            else:
+                self.btn_const_eraser.setText(getTraduction("Astro.ConstellationDeleteAll", "Delete all"))
+            self.btn_const_eraser.setEnabled(visible_enabled and (len(getattr(ctrl, "groups", [])) > 0))
+        if hasattr(self, "btn_const_new"):
+            self.btn_const_new.setText(
+                getTraduction("Astro.ConstellationFinish", "Finish constellation")
+                if drawing_active
+                else getTraduction("Astro.ConstellationNew", "New constellation")
+            )
+            self.btn_const_new.setEnabled(visible_enabled)
+        if hasattr(self, "btn_const_rename"):
+            self.btn_const_rename.setEnabled(visible_enabled)
+
+        if hasattr(self, "lbl_constellation_state"):
+            total = len(getattr(ctrl, "groups", []))
+            active = getattr(ctrl, "active_group_index", None)
+            active_txt = "-"
+            if active is not None and 0 <= active < total:
+                active_txt = str(ctrl.groups[active].name)
+            self.lbl_constellation_state.setText(
+                getTraduction("Astro.ConstellationStatus", "Groups: {n} | Active: {name}").format(
+                    n=total,
+                    name=active_txt,
+                )
+            )
+
+    def _delete_constellation_shortcut(self):
+        if not hasattr(self, "canvas"):
+            return
+        if not self.canvas.drawing_mode_enabled():
+            return
+        ctrl = self.canvas.constellation_controller
+        if not ctrl.has_deletable_selection():
+            return
+        deleted = ctrl.delete_selected()
+        if deleted:
+            self.canvas.update()
+            self._sync_constellation_controls()
+
+    def _finish_constellation_shortcut(self):
+        if not hasattr(self, "canvas"):
+            return
+        if not self.canvas.drawing_mode_enabled():
+            return
+        self.finish_constellation_group()
+
+    def toggle_constellation_visibility(self, checked: bool):
+        visible = bool(checked)
+        self.canvas.set_constellation_visible(visible)
+        if not visible:
+            self.canvas.set_constellation_draw_mode(False)
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def toggle_constellation_draw_mode(self, checked: bool):
+        enabled = bool(checked)
+        if enabled:
+            self.exit_scope_mode()
+            self.canvas.set_measurement_tool(TOOL_NONE)
+            self._sync_measure_tool_buttons(TOOL_NONE)
+        self.canvas.set_constellation_draw_mode(enabled)
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def delete_constellation_action(self):
+        ctrl = self.canvas.constellation_controller
+        deleted = False
+        selected_groups = len(getattr(ctrl, "selected_group_indices", set()) or set())
+        if selected_groups > 1:
+            deleted = ctrl.delete_selected_groups() > 0
+        else:
+            if len(getattr(ctrl, "groups", [])) > 0:
+                ctrl.clear_all()
+                deleted = True
+        if deleted:
+            self.canvas.update()
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def toggle_constellation_eraser_mode(self, checked: bool):
+        # Legacy no-op: eraser mode has been replaced by selection + delete actions.
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def constellation_primary_action(self):
+        ctrl = self.canvas.constellation_controller
+        if bool(getattr(ctrl, "group_drawing_active", False)):
+            self.finish_constellation_group()
+            return
+        self.create_constellation_group()
+
+    def create_constellation_group(self):
+        default_name = self.canvas.constellation_controller.next_default_name()
+        title = getTraduction("Astro.ConstellationDialogTitle", "Constellation")
+        prompt = getTraduction("Astro.ConstellationNamePrompt", "Name")
+        name, ok = QInputDialog.getText(self, title, prompt, text=default_name)
+        if not ok:
+            return
+        final_name = str(name or "").strip() or default_name
+        self.canvas.create_constellation_group(final_name)
+        self.canvas.set_constellation_draw_mode(True)
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def finish_constellation_group(self):
+        ctrl = self.canvas.constellation_controller
+        if not bool(getattr(ctrl, "group_drawing_active", False)):
+            return
+        ctrl.finish_active_group()
+        self.canvas.update()
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def rename_constellation_group(self):
+        ctrl = self.canvas.constellation_controller
+        gi = getattr(ctrl, "active_group_index", None)
+        if gi is None or not (0 <= gi < len(ctrl.groups)):
+            return
+        self.canvas.begin_inline_constellation_rename(group_index=int(gi))
+        self._sync_constellation_controls()
+
+    def rename_constellation_group_by_index(self, group_index: int, label_rect: Optional[QRectF] = None):
+        ctrl = self.canvas.constellation_controller
+        gi = int(group_index)
+        if not (0 <= gi < len(ctrl.groups)):
+            return
+        ctrl.active_group_index = gi
+        ctrl.selected_group_index = gi
+        ctrl.selected_node_index = None
+        ctrl.selected_segment_index = None
+        self.canvas.begin_inline_constellation_rename(group_index=gi, label_rect=label_rect)
+        self._sync_constellation_controls()
+
     def select_measurement_tool(self, tool: str):
         current = self.canvas.measurement_controller.active_tool
         if current == tool:
@@ -7694,6 +8580,8 @@ class AstronomicalWidget(CustomWidgetBase):
 
         # Measurement and scope mode should not compete for mouse/keys.
         self.exit_scope_mode()
+        self.canvas.set_constellation_draw_mode(False)
+        self._sync_constellation_controls()
 
     def clear_measurement_overlays(self):
         self.canvas.clear_measurements()
@@ -7736,6 +8624,11 @@ class AstronomicalWidget(CustomWidgetBase):
             
             self.latitude = new_lat
             self.longitude = new_lon
+
+            if hasattr(self, "weather"):
+                self.weather.set_location(self.latitude, self.longitude)
+            if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+                self.canvas.weather.set_location(self.latitude, self.longitude)
             
             # Use debouncer for location changes too
             self.bake_debounce_timer.start(1500) # 1.5s debounce
@@ -7962,6 +8855,7 @@ class AstronomicalWidget(CustomWidgetBase):
             if hasattr(self, 'lbl_trail_time'):
                 self.lbl_trail_time.setText("")
 
+        self._refresh_climate_status_indicator()
         self.canvas.update()
 
     def toggle_realtime(self, checked):
@@ -8266,7 +9160,87 @@ class AstronomicalWidget(CustomWidgetBase):
             self.canvas.weather.enabled = checked
         if checked:
             self._ensure_copernicus_credentials_prompt()
+        self._refresh_climate_status_indicator()
         self.canvas.update()
+
+    def set_weather_remote_metno_enabled(self, enabled: bool):
+        enabled = bool(enabled)
+        self.weather_use_remote_metno = enabled
+        set_config_value("weather_use_remote_metno", enabled)
+        if hasattr(self, "weather"):
+            self.weather.set_remote_weather_enabled(enabled)
+        if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+            self.canvas.weather.set_remote_weather_enabled(enabled)
+        self._refresh_climate_status_indicator()
+
+    def set_weather_cache_enabled(self, enabled: bool):
+        enabled = bool(enabled)
+        self.weather_cache_enabled = enabled
+        set_config_value("weather_cache_enabled", enabled)
+        if hasattr(self, "weather"):
+            self.weather.set_cache_enabled(enabled)
+        if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+            self.canvas.weather.set_cache_enabled(enabled)
+        self._refresh_climate_status_indicator()
+
+    def _active_weather_system(self):
+        if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+            return self.canvas.weather
+        if hasattr(self, "weather"):
+            return self.weather
+        return None
+
+    def _refresh_climate_status_indicator(self):
+        if not hasattr(self, "lbl_climate_fallback") or not hasattr(self, "chk_clima"):
+            return
+        if not bool(self.chk_clima.isChecked()):
+            self.lbl_climate_fallback.hide()
+            self._climate_fallback_since = None
+            self._climate_remote_since = None
+            return
+
+        weather = self._active_weather_system()
+        source = "fallback"
+        reason = ""
+        if weather is not None and hasattr(weather, "get_runtime_status"):
+            try:
+                status = weather.get_runtime_status()
+                source = str(status.get("source", "fallback"))
+                reason = str(status.get("reason", "") or "")
+            except Exception:
+                source = "fallback"
+                reason = "status_error"
+        elif weather is None:
+            reason = "weather_missing"
+
+        now_m = time.monotonic()
+        is_remote = source == "remote"
+
+        if is_remote:
+            self._climate_fallback_since = None
+            if self._climate_remote_since is None:
+                self._climate_remote_since = now_m
+            remote_stable_s = now_m - self._climate_remote_since
+            if remote_stable_s >= float(getattr(self, "_climate_remote_hide_delay_s", 1.2)):
+                self.lbl_climate_fallback.hide()
+            return
+
+        # Fallback branch.
+        self._climate_remote_since = None
+        if self._climate_fallback_since is None:
+            self._climate_fallback_since = now_m
+        fallback_stable_s = now_m - self._climate_fallback_since
+        if fallback_stable_s >= float(getattr(self, "_climate_fallback_show_delay_s", 2.5)):
+            self.lbl_climate_fallback.setText(getTraduction("Astro.ClimateFallbackActive", "Real weather unavailable (fallback)"))
+            self.lbl_climate_fallback.setToolTip(reason)
+            self.lbl_climate_fallback.show()
+
+    def get_weather_cache_path(self):
+        if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+            return self.canvas.weather.get_cache_path()
+        if hasattr(self, "weather"):
+            return self.weather.get_cache_path()
+        return None
 
     def _ensure_copernicus_credentials_prompt(self):
         if bool(get_config_value("copernicus_informed", False)):

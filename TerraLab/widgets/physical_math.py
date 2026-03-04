@@ -284,7 +284,10 @@ class VisualPhotometryMath:
             + float(exposure_gain_mag)
             + float(sensor_bonus_mag)
         )
-        return VisualPhotometryMath.clamp(result, -12.0, 12.0)
+        # El limit superior de 12.0 era massa restrictiu per a configuracions
+        # de camera/exposicio alta, i feia que ISO/temps no tinguessin efecte
+        # visible un cop assolit el sostre.
+        return VisualPhotometryMath.clamp(result, -12.0, 18.0)
 
     @staticmethod
     def star_scale_factor(scope_limit_mag, eye_limit_mag, exposure_gain_mag):
@@ -296,8 +299,10 @@ class VisualPhotometryMath:
         - mes guany d'exposicio reforca lleugerament aquest efecte
         """
         depth_bonus_mag = max(0.0, float(scope_limit_mag) - float(eye_limit_mag))
-        factor = 0.90 + 0.06 * depth_bonus_mag + 0.04 * max(0.0, float(exposure_gain_mag))
-        return VisualPhotometryMath.clamp(factor, 0.70, 1.90)
+        # A la mira telescopica, l'escala visual de les estrelles ha de reflectir
+        # millor el guany fotometric per obertura+exposicio.
+        factor = 0.90 + 0.08 * depth_bonus_mag + 0.08 * max(0.0, float(exposure_gain_mag))
+        return VisualPhotometryMath.clamp(factor, 0.70, 3.50)
 
     @staticmethod
     def general_render_limit_mag(bortle_class, render_compensation_mag=0.0):

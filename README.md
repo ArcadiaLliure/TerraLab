@@ -1,6 +1,5 @@
 # 🌌 TerraLab: Anàlisi Topogràfica i Astrofísica
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 **TerraLab** és un motor d'anàlisi i visualització avançada que uneix la **topografia terrestre** amb el **renderitzat astronòmic de precisió**. A diferència dels planetaris convencionals, TerraLab calcula l'**horitzó real** basat en Models Digitals de Terreny (DEM) i estima la **visibilitat estel·lar dinàmica** mitjançant dades satel·litàries de contaminació lluminosa (DVNL).
@@ -84,6 +83,27 @@ graph TD
 * **Estrelles**: Missió Gaia de l'ESA (European Space Agency).
 * **Efemèrides**: NASA/JPL (Jet Propulsion Laboratory).
 * **Contaminació Lluminosa**: Earth Observation Group (Payne Institute for Public Policy).
+* **Clima**: *Copernicus Atmosphere Monitoring Service (CAMS) i MET Norway WeatherAPI.
+
+**APIs externes utilitzades actualment:**
+
+- **Copernicus Atmosphere Monitoring Service (CAMS)** via **Copernicus Climate Data Store (CDS / ECMWF)**.
+  - Finalitat: mètriques atmosfèriques per al mode telescòpic (AOD i pressió superficial).
+  - Accés: `cdsapi` amb credencials d'usuari.
+  - Documentació: https://cds.climate.copernicus.eu/how-to-api
+  - Llicència i termes: https://cds.climate.copernicus.eu/licences/licence-to-use-copernicus-products
+  - Avís d'atribució utilitzat pel projecte:
+    - `Generated using Copernicus Atmosphere Monitoring Service information [Year]`
+  - Nota: l'ús està subjecte als termes del CDS i a les condicions del compte.
+
+- **MET Norway WeatherAPI** (`api.met.no`).
+  - Finalitat: integració de previsió meteorològica al mòdul de clima.
+  - Documentació del producte: https://api.met.no/weatherapi/locationforecast/2.0/documentation
+  - Termes del servei: https://docs.api.met.no/doc/TermsOfService.html
+  - Base de llicència i atribució (CC BY 4.0): https://api.met.no/.License
+  - Avís d'atribució utilitzat pel projecte:
+    - `Weather data from MET Norway`
+  - Nota: les peticions han d'incloure un `User-Agent` vàlid i complir els termes de MET Norway.
 
 ---
 

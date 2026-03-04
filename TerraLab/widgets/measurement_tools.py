@@ -62,12 +62,73 @@ class MeasurementController:
 
     handle_hit_px: float = 12.0
     shape_hit_px: float = 8.0
+    _undo_stack: List[dict] = field(default_factory=list)
+    _max_undo_states: int = 256
+    _drag_undo_pushed: bool = False
+
+    @staticmethod
+    def _clone_items(items: List[MeasurementItem]) -> List[MeasurementItem]:
+        return [
+            MeasurementItem(
+                tool=str(it.tool),
+                a=(float(it.a[0]), float(it.a[1])),
+                b=(float(it.b[0]), float(it.b[1])),
+                rotation_deg=float(it.rotation_deg),
+            )
+            for it in items
+        ]
+
+    def _snapshot_state(self) -> dict:
+        return {
+            "items": self._clone_items(self.items),
+            "selected_index": self.selected_index,
+            "current_start": tuple(self.current_start) if self.current_start is not None else None,
+            "current_cursor": tuple(self.current_cursor) if self.current_cursor is not None else None,
+            "ruler_first_point": tuple(self.ruler_first_point) if self.ruler_first_point is not None else None,
+            "drag_mode": str(self.drag_mode),
+            "resize_handle": self.resize_handle,
+            "last_drag_sky": tuple(self.last_drag_sky) if self.last_drag_sky is not None else None,
+            "active_tool": str(self.active_tool),
+        }
+
+    def _restore_snapshot(self, snap: dict) -> None:
+        self.items = self._clone_items(list(snap.get("items", [])))
+        self.selected_index = snap.get("selected_index")
+        cs = snap.get("current_start")
+        cc = snap.get("current_cursor")
+        rf = snap.get("ruler_first_point")
+        ld = snap.get("last_drag_sky")
+        self.current_start = (float(cs[0]), float(cs[1])) if isinstance(cs, (tuple, list)) and len(cs) == 2 else None
+        self.current_cursor = (float(cc[0]), float(cc[1])) if isinstance(cc, (tuple, list)) and len(cc) == 2 else None
+        self.ruler_first_point = (float(rf[0]), float(rf[1])) if isinstance(rf, (tuple, list)) and len(rf) == 2 else None
+        self.last_drag_sky = (float(ld[0]), float(ld[1])) if isinstance(ld, (tuple, list)) and len(ld) == 2 else None
+        self.drag_mode = str(snap.get("drag_mode", DRAG_NONE))
+        self.resize_handle = snap.get("resize_handle")
+        self.active_tool = str(snap.get("active_tool", self.active_tool))
+        self._drag_undo_pushed = False
+
+    def _push_undo_state(self) -> None:
+        snap = self._snapshot_state()
+        if self._undo_stack and self._undo_stack[-1] == snap:
+            return
+        self._undo_stack.append(snap)
+        if len(self._undo_stack) > int(self._max_undo_states):
+            self._undo_stack = self._undo_stack[-int(self._max_undo_states) :]
+
+    def undo(self) -> bool:
+        if not self._undo_stack:
+            return False
+        snap = self._undo_stack.pop()
+        self._restore_snapshot(snap)
+        return True
 
     def set_tool(self, tool: str) -> None:
         self.active_tool = tool
         self.cancel_current()
 
     def clear(self) -> None:
+        if self.items:
+            self._push_undo_state()
         self.items.clear()
         self.cancel_current()
         self.selected_index = None
@@ -78,11 +139,13 @@ class MeasurementController:
         if not (0 <= self.selected_index < len(self.items)):
             self.selected_index = None
             return False
+        self._push_undo_state()
         del self.items[self.selected_index]
         self.selected_index = None
         self.drag_mode = DRAG_NONE
         self.resize_handle = None
         self.last_drag_sky = None
+        self._drag_undo_pushed = False
         return True
 
     def cancel_current(self) -> None:
@@ -126,9 +189,11 @@ class MeasurementController:
             if handle is not None:
                 self.drag_mode = DRAG_RESIZING
                 self.resize_handle = handle
+                self._drag_undo_pushed = False
             else:
                 self.drag_mode = DRAG_MOVING
                 self.last_drag_sky = sky
+                self._drag_undo_pushed = False
             return True
 
         self.selected_index = None
@@ -138,6 +203,7 @@ class MeasurementController:
                 self.ruler_first_point = sky
                 self.current_cursor = sky
             else:
+                self._push_undo_state()
                 it = MeasurementItem(tool=TOOL_RULER, a=self.ruler_first_point, b=sky)
                 self.items.append(it)
                 self.selected_index = len(self.items) - 1
@@ -148,6 +214,7 @@ class MeasurementController:
         self.current_start = sky
         self.current_cursor = sky
         self.drag_mode = DRAG_CREATING
+        self._drag_undo_pushed = False
         return True
 
     def on_mouse_move(
@@ -169,6 +236,9 @@ class MeasurementController:
             return True
 
         if self.drag_mode == DRAG_MOVING and self.selected_index is not None and self.last_drag_sky is not None:
+            if not self._drag_undo_pushed:
+                self._push_undo_state()
+                self._drag_undo_pushed = True
             d_alt = sky[0] - self.last_drag_sky[0]
             d_az = angular_delta_signed(self.last_drag_sky[1], sky[1])
             self._translate_item(self.selected_index, d_alt, d_az)
@@ -176,6 +246,9 @@ class MeasurementController:
             return True
 
         if self.drag_mode == DRAG_RESIZING and self.selected_index is not None and self.resize_handle:
+            if not self._drag_undo_pushed:
+                self._push_undo_state()
+                self._drag_undo_pushed = True
             self._resize_item(self.selected_index, self.resize_handle, sky)
             return True
 
@@ -200,6 +273,7 @@ class MeasurementController:
             self.current_cursor = sky
 
         if self.drag_mode == DRAG_CREATING and self.current_start is not None and self.current_cursor is not None:
+            self._push_undo_state()
             it = MeasurementItem(tool=self.active_tool, a=self.current_start, b=self.current_cursor)
             self.items.append(it)
             self.selected_index = len(self.items) - 1
@@ -210,6 +284,7 @@ class MeasurementController:
         self.drag_mode = DRAG_NONE
         self.resize_handle = None
         self.last_drag_sky = None
+        self._drag_undo_pushed = False
         return consumed
 
     def draw(
@@ -406,10 +481,8 @@ class MeasurementController:
             return
 
         # Rectangle / square
-        if handle == "origin":
-            it.a = self._norm(sky)
-        elif handle == "corner":
-            it.b = self._norm(sky)
+        if handle in ("origin", "corner"):
+            self._resize_rect_from_corner(it, handle, self._norm(sky), force_square=(it.tool == TOOL_SQUARE))
         elif handle == "rotate" and it.tool == TOOL_RECTANGLE:
             center, _, _, _, sign_alt, _ = self._rect_params(it, force_square=False)
             x, y = self._sky_to_local(center, self._norm(sky))
@@ -420,6 +493,86 @@ class MeasurementController:
             raw_ang = math.atan2(y, x)
             rot_deg = math.degrees(raw_ang - base_ang)
             it.rotation_deg = ((rot_deg + 180.0) % 360.0) - 180.0
+
+    def _resize_rect_from_corner(
+        self,
+        it: MeasurementItem,
+        handle: str,
+        dragged: SkyCoord,
+        force_square: bool,
+    ) -> None:
+        """
+        Corner resize based on current geometry, not from scratch.
+        Keeps the opposite corner fixed, preserves current rotation and
+        updates width/height (or side for square) from the live drag.
+        """
+        center, width, height, sign_az, sign_alt, rot_deg = self._rect_params(it, force_square=force_square)
+        p00, _, p11, _, _, _ = self._rect_corners(
+            center=center,
+            width=width,
+            height=height,
+            sign_az=sign_az,
+            sign_alt=sign_alt,
+            rot_deg=rot_deg,
+        )
+        fixed = p11 if handle == "origin" else p00
+
+        # First-order midpoint on local tangent frame.
+        d_alt = dragged[0] - fixed[0]
+        d_az = angular_delta_signed(fixed[1], dragged[1])
+        center_guess = self._norm((fixed[0] + 0.5 * d_alt, fixed[1] + 0.5 * d_az))
+
+        rot_rad = math.radians(rot_deg)
+        fx, fy = self._sky_to_local(center_guess, fixed)
+        dx, dy = self._sky_to_local(center_guess, dragged)
+        fx_u, fy_u = self._rotate_local(fx, fy, -rot_rad)
+        dx_u, dy_u = self._rotate_local(dx, dy, -rot_rad)
+
+        full_w = max(1e-6, abs(dx_u - fx_u))
+        full_h = max(1e-6, abs(dy_u - fy_u))
+        if force_square:
+            side = max(full_w, full_h)
+            full_w = side
+            full_h = side
+
+        sign_az_new = 1.0 if (dx_u - fx_u) >= 0.0 else -1.0
+        sign_alt_new = 1.0 if (dy_u - fy_u) >= 0.0 else -1.0
+
+        cx_u = 0.5 * (fx_u + dx_u)
+        cy_u = 0.5 * (fy_u + dy_u)
+        cx, cy = self._rotate_local(cx_u, cy_u, rot_rad)
+        center_new = self._local_to_sky(center_guess, cx, cy)
+
+        self._set_rect_from_params(
+            it=it,
+            center=center_new,
+            width=full_w,
+            height=full_h,
+            sign_az=sign_az_new,
+            sign_alt=sign_alt_new,
+        )
+
+    def _set_rect_from_params(
+        self,
+        it: MeasurementItem,
+        center: SkyCoord,
+        width: float,
+        height: float,
+        sign_az: float,
+        sign_alt: float,
+    ) -> None:
+        width = max(1e-6, float(width))
+        height = max(1e-6, float(height))
+        c_alt, c_az = self._norm(center)
+        half_h = 0.5 * height
+        alt0 = c_alt - sign_alt * half_h
+        alt1 = c_alt + sign_alt * half_h
+        cos_lat = max(0.05, math.cos(math.radians(c_alt)))
+        half_daz = (0.5 * width) / cos_lat
+        az0 = c_az - sign_az * half_daz
+        az1 = c_az + sign_az * half_daz
+        it.a = self._norm((alt0, az0))
+        it.b = self._norm((alt1, az1))
 
     def _render_item(self, it: MeasurementItem) -> RenderInfo:
         if it.tool == TOOL_RULER:

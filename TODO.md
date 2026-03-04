@@ -19,6 +19,31 @@ Aquest document recull l'estat actual del projecte i les properes passes, consol
 - [x] Sistema de mesures avançat (selecció, moure, redimensionar, rotar, eliminar).
 - [x] Cerca amb recenter automàtic (càmera i mira) i coincidència tolerant.
 - [x] Correccions de compatibilitat i encoding UI.
+- [x] Motor de magnitud visual implementat amb separacio clara entre vista general i vista telescopica.
+- [x] HUD de mira amb valors automatics de pupil·la de sortida, airmass, extincio, perdua i transmissio.
+- [x] Botó collapse/expand reposicionat de forma desacoblada pero sincronitzada amb la geometria del panell.
+- [x] Correccio de densitat estel·lar en vista general per Bortle alt (8-9) sense spillover de la mira.
+- [x] Reajust del model de densitat estel·lar: mLim de vista general recalibrat (B1~7.6, B9~3.6) per evitar una retallada excessiva.
+- [x] HUD de mira dividit en dos panells laterals (info principal a l'esquerra, telemetria optica/atmosferica a la dreta).
+- [x] HUD de mira reanclat estrictament als costats externs de la mirilla (no posicionat a la part inferior).
+- [x] Reequilibri de la corba mLim de vista general (B1~7.7, B9~4.1) per evitar infradensitat d'estrelles.
+- [x] HUD de mesures i HUD de mira compactats amb mida dinamica segons text (sense caixes fixes sobredimensionades).
+- [x] Refactor dels calculs fisics en metodes atomics documentats (airmass, extincio, obertura efectiva, guanys/perdues i mLim).
+- [x] Compensacio de render mLim fixada a 0.0 per defecte (prioritzant realisme fisic), mantenint variable i descripcio per calibracio futura.
+- [x] Unificacio de calcul fisic en un modul dedicat `physical_math.py` amb classes per responsabilitat (`AtmosphericMath`, `InstrumentOpticsMath`, `VisualPhotometryMath`).
+- [x] Integracio Copernicus CDS (CAMS) per AOD + pressio atmosferica en el runtime de la mira telescopica (sense Open-Meteo).
+- [x] Cache de metriques atmosferiques de la mira amb TTL ampliat i fallback local.
+- [x] Flux de primer us en activar `Clima`: dialeg amb guia de registre Copernicus i entrada de l'API key a configuracio local.
+- [x] En desactivar `Clima`, el calcul d'extincio de la mira forca `k_fallback` offline (sense crides de xarxa).
+- [x] Integracio de clima real del widget amb MET Norway (`api.met.no`) i cache per cobertura temporal amb fallback procedural.
+- [x] Documentacio de `README.md` actualitzada en catala amb atribucions oficials per a Copernicus CAMS/CDS i MET Norway.
+- [x] Update de la ubicacio de clima en canvis de lat/lon (sincronitzat amb relocalitzacio).
+- [x] Unificacio real de flux entre `Goto` i mira telescopica (Goto com a drecera del mateix comportament).
+- [x] Gestos de mira restaurats i consistents: `Ctrl+clic+drag` mou camera, `clic+drag` mou mira.
+- [x] Quan `Sol i Lluna` esta ocult, desapareix tambe el halo lunar i el seu impacte de visibilitat.
+- [x] En mode mira, la resposta fotometrica de la imatge d'estrelles ara reflecteix ISO/exposicio/obertura (visibilitat + saturacio/cremat).
+- [x] En mode mira, els estels febles tambe creixen lleugerament amb exposicions llargues (mida/alpha suaus, sense convertir-los en boles artificials).
+- [x] El comptador `STARS` en mode mira ara nomes compta estels dins la mirilla (cercle/rectangle), no tot el viewport.
 
 ---
 
@@ -39,23 +64,29 @@ Aquest document recull l'estat actual del projecte i les properes passes, consol
 - [x] `Goto` aplica zoom automàtic cap al destí per defecte.
 - [x] En moviment manual amb `Ctrl` + arrossegament dins la mira, la càmera queda lliure però la mira manté el seguiment de l'objecte.
 - [x] Sol procedural en mode mira amb taques i granulació estables durant zoom (sense regeneració visual per cada pas de zoom).
+- [x] `Goto` reutilitza exactament el mateix pipeline de mira telescopica (sense via paral·lela de gestos o centrament).
+- [x] Arrossegament manual de la mira desactiva el lock de reticle al target per evitar recenter forcat.
 
 ## Motor de Magnitud Visual
 Càlcul físic segons:
-- [ ] Obertura
-- [ ] Magnificació
-- [ ] Pupil·la de sortida
-- [ ] Pèrdues òptiques
-- [ ] Extinció atmosfèrica
-- [ ] Contaminació lumínica (NTL)
+- [x] Obertura
+- [x] Magnificació
+- [x] Pupil·la de sortida
+- [x] Pèrdues òptiques
+- [x] Extinció atmosfèrica
+- [x] Contaminació lumínica (NTL)
 
 \[
 m_{lim, scope} = m_{lim, eye} + 5 \log_{10}(D/d_{pupil}) - pèrdues
 \]
 
-- [ ] Recalcul dinàmic.
-- [ ] Interdependència magnitud ↔ exposició.
-- [ ] Ajust visual automàtic d’estrelles.
+- [x] Recalcul dinàmic.
+- [x] Interdependència magnitud ↔ exposició.
+- [x] Ajust visual automàtic d’estrelles.
+- [x] Entrada d'obertura dual: diàmetre (mm) o número f/ (mode càmera), amb conversió interna automàtica a obertura efectiva en mm (`D = focal / f`).
+- [x] Perfil d'instrument amb `Telescopi`, `APS-C` i `Full Frame`, mostrant camps segons perfil (ocular només en telescopi) i amb càlcul de magnitud diferenciat per telescopi/càmera.
+- [x] Topall de `scope_limit_mag` ampliat per evitar saturacio prematura del model (ISO/exposicio amb efecte real a la profunditat).
+- [x] Render en mode mira amb guany fotometric visual: increment d'alpha/mida i bloom de saturacio ("cremat") en estrelles brillants segons parametres de captura.
 
 ## Configurador d’Instrument
 - [ ] Selector telescopi.
@@ -79,12 +110,12 @@ D'això n'ha de sortir una "foto" que l'usuari podrà emmagatzemar (així la pot
 
 # 🎨 Dibuix i Constel·lacions
 
-- [ ] Mode dibuix amb bloqueig de càmera.
-- [ ] Imantació a estrelles visibles.
-- [ ] Constel·lacions com grups independents.
-- [ ] Guardat JSON (nodes, ordre, nom).
-- [ ] Borrador selectiu.
-- [ ] Etiquetes persistents.
+- [x] Mode dibuix amb bloqueig de càmera.
+- [x] Imantació a estrelles visibles.
+- [x] Constel·lacions com grups independents.
+- [x] Guardat JSON (nodes, ordre, nom).
+- [x] Borrador selectiu.
+- [x] Etiquetes persistents.
 
 ---
 
@@ -107,12 +138,18 @@ D'això n'ha de sortir una "foto" que l'usuari podrà emmagatzemar (així la pot
 
 ## Clima
 
-- [ ] Cercar una API lliure que no necessiti API per consultar el temps
-- [ ] Actualment tenim una simulació del clima i no és eficient en termes de rendiment
+- [x] El modul de la mira telescopica ja no depen d'Open-Meteo per aerosols/pressio (migrat a Copernicus CDS).
+- [x] Cache de dades atmosferiques de la mira amb reutilitzacio temporal (evita peticions repetides).
+- [x] Integrar clima operatiu del widget amb API noruega (`api.met.no`) + cache per cobertura de rang i fallback procedural fora de rang.
+- [x] Integracio del fetch de clima en un procés separat (worker de `ProcessPoolExecutor`) per no bloquejar render/UI.
+- [x] Reduccio de la sobreexposicio de nuvols de proves (`DEBUG_CLOUD_DENSITY` -> 1.0) i ajust de spawn.
+- [x] Ajust de pluja/neu per emissio mes realista i limit de particules en pantalla.
+- [x] Flags de runtime per activar/desactivar clima remot i cache (`weather_use_remote_metno`, `weather_cache_enabled`) persistits a configuracio.
 - [ ] Assegurar-se que: 
-    - Es fa una sola consulta al dia i localització
-    - Es fa una consulta del temps dels propers 14 dies (si és possible), així l'usuari pot navegar per data. -> Això s'ha de persistir.
-    - Cal ser flexibles amb les localitzacions, els diagnòstics del temps tenen certa amplitud.
+    - [x] Es fa una sola consulta per rang en una crida (`api.met.no` compact) i es reutilitza cache mentre el rang cobreix el dia seleccionat i no expira TTL.
+    - [ ] Es fa una consulta del temps dels propers 14 dies (si és possible), així l'usuari pot navegar per data. -> Actualment limitat al rang que publica `api.met.no` en `locationforecast` (normalment ~10 dies).
+    - [x] Si el dia seleccionat queda fora del rang remot, no es fa crida i s'aplica fallback procedural local.
+    - [x] Cal ser flexibles amb les localitzacions, els diagnòstics del temps tenen certa amplitud.
 
 ---
 
@@ -183,7 +220,7 @@ D'això n'ha de sortir una "foto" que l'usuari podrà emmagatzemar (així la pot
 - [x] Camp per sumar metres addicionals.
 - [x] Mostrar altitud base automàtica.
 
-- [x] Tour onboarding explicatiu.
+- [ ] Tour onboarding explicatiu. -> Pendent encara a la UI
 - [x] Ajust proporcions panells UI.
 - [ ] Validació manual regressió UI (mira, mesures, cerca).
 

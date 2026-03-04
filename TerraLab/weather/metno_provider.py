@@ -47,6 +47,9 @@ def _extract_precip_rate_mm_h(data):
 
 
 def _compact_metno_payload(payload):
+    # Compacts hourly forecast into renderer-oriented fields.
+    # This keeps the painter step deterministic and cheap:
+    # cloud fractions, precipitation rate/type, wind, fog and humidity.
     props = payload.get("properties", {}) if isinstance(payload, dict) else {}
     timeseries = props.get("timeseries", []) if isinstance(props, dict) else []
 
@@ -69,6 +72,14 @@ def _compact_metno_payload(payload):
 
         cloud_area_fraction = _to_float(details.get("cloud_area_fraction"), 0.0)
         cloud_cover = _clamp(cloud_area_fraction / 100.0, 0.0, 1.0)
+        cloud_low = _clamp(_to_float(details.get("cloud_area_fraction_low"), cloud_area_fraction) / 100.0, 0.0, 1.0)
+        cloud_mid = _clamp(_to_float(details.get("cloud_area_fraction_medium"), cloud_area_fraction) / 100.0, 0.0, 1.0)
+        cloud_high = _clamp(_to_float(details.get("cloud_area_fraction_high"), cloud_area_fraction) / 100.0, 0.0, 1.0)
+        fog_cover = _clamp(_to_float(details.get("fog_area_fraction"), 0.0) / 100.0, 0.0, 1.0)
+        relative_humidity = _clamp(_to_float(details.get("relative_humidity"), 75.0) / 100.0, 0.0, 1.0)
+        wind_speed_ms = _clamp(_to_float(details.get("wind_speed"), 2.0), 0.0, 60.0)
+        wind_direction_deg = _clamp(_to_float(details.get("wind_from_direction"), 0.0), 0.0, 360.0)
+        pressure_hpa = _to_float(details.get("air_pressure_at_sea_level"), None)
 
         air_temperature = _to_float(details.get("air_temperature"), None)
         precip_rate_mm_h, symbol = _extract_precip_rate_mm_h(data)
@@ -91,6 +102,16 @@ def _compact_metno_payload(payload):
         key = f"{dt.year}:{day_index}:{dt.hour}"
         records[key] = {
             "cloud_cover": cloud_cover,
+            "cloud_low": cloud_low,
+            "cloud_mid": cloud_mid,
+            "cloud_high": cloud_high,
+            "fog_cover": fog_cover,
+            "humidity": relative_humidity,
+            "wind_speed_ms": wind_speed_ms,
+            "wind_direction_deg": wind_direction_deg,
+            "pressure_hpa": pressure_hpa,
+            "temperature_c": air_temperature,
+            "precip_rate_mm_h": precip_rate_mm_h,
             "precipitation_type": precipitation_type,
             "precipitation_intensity": precipitation_intensity,
             "thunder_probability": thunder_probability,
@@ -127,18 +148,53 @@ def _fetch_metno_compact(lat, lon, timeout_s, user_agent):
 
 
 class MetNoWeatherProvider:
-    def __init__(self, latitude=0.0, longitude=0.0):
+    def __init__(self, latitude=0.0, longitude=0.0, use_remote=True, cache_enabled=True):
         self.latitude = float(latitude)
         self.longitude = float(longitude)
+        self.use_remote = bool(use_remote)
+        self.cache_enabled = bool(cache_enabled)
         self._executor = ProcessPoolExecutor(max_workers=1)
         self._future = None
         self._last_attempt_monotonic = 0.0
         self._attempt_backoff_seconds = 20.0
         self._cache = {}
+        self.last_status = "init"
+        # Disk cache used for reproducible testing and avoiding repeated API traffic.
         self._cache_path = os.path.join(get_base_dir(), "terralab_metno_weather_cache.json")
         self._load_cache()
 
+    def get_cache_path(self):
+        return self._cache_path
+
+    def get_last_status(self):
+        return str(self.last_status or "init")
+
+    def set_remote_enabled(self, enabled):
+        self.use_remote = bool(enabled)
+        if not self.use_remote:
+            self._future = None
+            self.last_status = "remote_disabled"
+
+    def set_cache_enabled(self, enabled):
+        self.cache_enabled = bool(enabled)
+        if not self.cache_enabled:
+            self._cache = {}
+            self._future = None
+            self.last_status = "cache_disabled"
+        else:
+            self._load_cache()
+
+    def clear_cache_file(self):
+        self._cache = {}
+        self.last_status = "cache_cleared"
+        try:
+            if os.path.exists(self._cache_path):
+                os.remove(self._cache_path)
+        except Exception:
+            pass
+
     def shutdown(self):
+        self.last_status = "shutdown"
         try:
             if self._future is not None:
                 self._future.cancel()
@@ -153,16 +209,22 @@ class MetNoWeatherProvider:
         self.shutdown()
 
     def _load_cache(self):
+        if not self.cache_enabled:
+            self._cache = {}
+            return
         try:
             if os.path.exists(self._cache_path):
                 with open(self._cache_path, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
                 if isinstance(data, dict):
                     self._cache = data
+                    self.last_status = "cache_loaded"
         except Exception:
             self._cache = {}
 
     def _save_cache(self):
+        if not self.cache_enabled:
+            return
         try:
             os.makedirs(os.path.dirname(self._cache_path), exist_ok=True)
             with open(self._cache_path, "w", encoding="utf-8") as fh:
@@ -178,9 +240,11 @@ class MetNoWeatherProvider:
         self.latitude = latitude
         self.longitude = longitude
         self._cache = {}
-        self._save_cache()
+        if self.cache_enabled:
+            self._save_cache()
         self._future = None
         self._last_attempt_monotonic = 0.0
+        self.last_status = "location_changed"
 
     def _cache_fresh(self):
         fetched = _parse_iso_utc(self._cache.get("fetched_utc") if isinstance(self._cache, dict) else None)
@@ -213,11 +277,14 @@ class MetNoWeatherProvider:
 
     def _start_background_fetch(self):
         if self._future is not None and not self._future.done():
+            self.last_status = "fetching"
             return
         now_m = time.monotonic()
         if now_m - self._last_attempt_monotonic < self._attempt_backoff_seconds:
+            self.last_status = "fetch_backoff"
             return
         self._last_attempt_monotonic = now_m
+        self.last_status = "fetching"
         self._future = self._executor.submit(
             _fetch_metno_compact,
             self.latitude,
@@ -239,6 +306,9 @@ class MetNoWeatherProvider:
             result["lon"] = self.longitude
             self._cache = result
             self._save_cache()
+            self.last_status = "cache_updated"
+            return
+        self.last_status = "fetch_failed"
 
     @staticmethod
     def _target_date_from_year_day(year, day_of_year):
@@ -247,6 +317,8 @@ class MetNoWeatherProvider:
         return (datetime(year_i, 1, 1) + timedelta(days=day_i)).date()
 
     def _should_fetch(self, target_date):
+        if not self.use_remote:
+            return False
         if not self._within_remote_range(target_date):
             return False
         if not self._cache_matches_location():
@@ -256,20 +328,39 @@ class MetNoWeatherProvider:
         return not self._cache_fresh()
 
     def get_weather(self, year, day_of_year, hour):
+        if not self.use_remote:
+            self.last_status = "remote_disabled"
+            return None
+        # Fetch policy:
+        # - one compact request covers the API forecast horizon in a single call.
+        # - if the requested day is out of provider range, return None (procedural fallback upstream).
         target_date = self._target_date_from_year_day(year, day_of_year)
+        if not self._within_remote_range(target_date):
+            self.last_status = "out_of_range"
+            return None
         self._consume_ready_future()
 
         if self._should_fetch(target_date):
             self._start_background_fetch()
 
         if not self._cache_matches_location():
+            if self._future is not None:
+                self.last_status = "fetching"
+            else:
+                self.last_status = "cache_miss"
             return None
         if not self._coverage_contains(target_date):
+            if self._future is not None:
+                self.last_status = "fetching"
+            else:
+                self.last_status = "coverage_miss"
             return None
 
         records = self._cache.get("records", {}) if isinstance(self._cache, dict) else {}
         key = f"{int(year)}:{int(day_of_year)}:{int(hour) % 24}"
         item = records.get(key)
         if isinstance(item, dict):
+            self.last_status = "remote_ok"
             return item
+        self.last_status = "slot_miss"
         return None
