@@ -1,5 +1,6 @@
 ﻿import math
 import os
+import re
 import random
 import time
 import random
@@ -60,6 +61,198 @@ try:
 except ImportError:
     SKYFIELD_AVAILABLE = False
     print("WARNING: Skyfield not available. Install with: pip install skyfield")
+
+
+STAR_CATALOG_NAKED_EYE_MAX_MAG = 8.0
+STAR_CATALOG_FILE_RE = re.compile(
+    r"^MAGNITUD_(-?\d+(?:\.\d+)?)_(-?\d+(?:\.\d+)?)_(\d+)\.npz$",
+    re.IGNORECASE,
+)
+
+
+def _parse_star_catalog_npz_name(file_name):
+    m = STAR_CATALOG_FILE_RE.match(str(file_name or "").strip())
+    if not m:
+        return None
+    try:
+        return float(m.group(1)), float(m.group(2)), int(m.group(3))
+    except Exception:
+        return None
+
+
+def _discover_star_catalog_npz_entries(stars_dir):
+    out = []
+    if not os.path.isdir(stars_dir):
+        return out
+    for name in os.listdir(stars_dir):
+        parsed = _parse_star_catalog_npz_name(name)
+        if not parsed:
+            continue
+        fmin, fmax, rows_hint = parsed
+        path = os.path.join(stars_dir, name)
+        if not os.path.isfile(path):
+            continue
+        out.append(
+            {
+                "path": path,
+                "name": name,
+                "min_mag": float(fmin),
+                "max_mag": float(fmax),
+                "rows_hint": int(rows_hint),
+            }
+        )
+    out.sort(key=lambda e: (e["min_mag"], e["max_mag"], e["name"]))
+    return out
+
+
+def _select_base_star_catalog_entry(entries, max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG):
+    if not entries:
+        return None
+    eps = 1e-6
+    exact = [e for e in entries if abs(float(e["max_mag"]) - float(max_mag)) <= eps and float(e["min_mag"]) <= float(max_mag) + eps]
+    if exact:
+        exact.sort(key=lambda e: (e["min_mag"], e["name"]))
+        return exact[0]
+
+    bounded = [e for e in entries if float(e["max_mag"]) <= float(max_mag) + eps]
+    if bounded:
+        bounded.sort(key=lambda e: (e["max_mag"], -e["min_mag"], e["name"]))
+        return bounded[-1]
+
+    for e in entries:
+        if float(e["min_mag"]) <= float(max_mag) <= float(e["max_mag"]):
+            return e
+    return entries[0]
+
+
+def _npz_get_first(npz_obj, keys):
+    for k in keys:
+        if k in npz_obj:
+            return npz_obj[k]
+    return None
+
+
+def _load_star_npz_arrays(npz_path, max_mag=None, min_mag_exclusive=None):
+    if np is None:
+        raise RuntimeError("NumPy is required to load star NPZ catalogs.")
+
+    with np.load(npz_path, allow_pickle=False) as data:
+        ra_raw = _npz_get_first(data, ("ra", "RA"))
+        dec_raw = _npz_get_first(data, ("dec", "DEC"))
+        mag_raw = _npz_get_first(data, ("mag", "phot_g_mean_mag", "g_mag"))
+        bprp_raw = _npz_get_first(data, ("bp_rp", "bprp"))
+        sid_raw = _npz_get_first(data, ("source_id", "source_ids", "id", "ids"))
+
+        if ra_raw is None or dec_raw is None or mag_raw is None:
+            raise ValueError(f"NPZ missing required arrays (ra/dec/mag): {npz_path}")
+
+        ra = np.asarray(ra_raw, dtype=np.float32)
+        dec = np.asarray(dec_raw, dtype=np.float32)
+        mag = np.asarray(mag_raw, dtype=np.float32)
+        if not (len(ra) == len(dec) == len(mag)):
+            raise ValueError(f"NPZ array length mismatch in {npz_path}")
+
+        if bprp_raw is None:
+            bp_rp = np.full(len(mag), 0.8, dtype=np.float32)
+        else:
+            bp_rp = np.asarray(bprp_raw, dtype=np.float32)
+            if len(bp_rp) != len(mag):
+                bp_rp = np.full(len(mag), 0.8, dtype=np.float32)
+        bp_rp = np.nan_to_num(bp_rp, nan=0.8, posinf=2.0, neginf=-0.5).astype(np.float32, copy=False)
+
+        source_id = None
+        if sid_raw is not None:
+            try:
+                sid_arr = np.asarray(sid_raw)
+                if len(sid_arr) == len(mag):
+                    source_id = sid_arr.astype(np.int64, copy=False)
+            except Exception:
+                source_id = None
+
+    mask = np.isfinite(ra) & np.isfinite(dec) & np.isfinite(mag)
+    if max_mag is not None:
+        mask &= mag <= float(max_mag) + 1e-6
+    if min_mag_exclusive is not None:
+        mask &= mag > float(min_mag_exclusive) + 1e-6
+
+    if not np.all(mask):
+        ra = ra[mask]
+        dec = dec[mask]
+        mag = mag[mask]
+        bp_rp = bp_rp[mask]
+        if source_id is not None and len(source_id) == len(mask):
+            source_id = source_id[mask]
+
+    return {
+        "ra": ra,
+        "dec": dec,
+        "mag": mag,
+        "bp_rp": bp_rp,
+        "source_id": source_id,
+    }
+
+
+def _bp_rp_to_rgb_arrays(bp_rp):
+    if np is None:
+        return None, None, None
+    v = np.asarray(bp_rp, dtype=np.float32)
+    v = np.nan_to_num(v, nan=0.8, posinf=2.0, neginf=-0.5)
+    n = len(v)
+    r = np.empty(n, dtype=np.uint8)
+    g = np.empty(n, dtype=np.uint8)
+    b = np.empty(n, dtype=np.uint8)
+
+    m0 = v < 0.0
+    m1 = (v >= 0.0) & (v < 0.5)
+    m2 = (v >= 0.5) & (v < 1.0)
+    m3 = (v >= 1.0) & (v < 2.0)
+    m4 = ~(m0 | m1 | m2 | m3)
+
+    r[m0], g[m0], b[m0] = 160, 190, 255
+
+    if np.any(m1):
+        t = (v[m1] - 0.0) / 0.5
+        r[m1] = np.clip(160 + (95.0 * t), 0, 255).astype(np.uint8)
+        g[m1] = np.clip(190 + (65.0 * t), 0, 255).astype(np.uint8)
+        b[m1] = 255
+
+    if np.any(m2):
+        t = (v[m2] - 0.5) / 0.5
+        r[m2] = 255
+        g[m2] = 255
+        b[m2] = np.clip(255 - (55.0 * t), 0, 255).astype(np.uint8)
+
+    if np.any(m3):
+        t = (v[m3] - 1.0) / 1.0
+        r[m3] = 255
+        g[m3] = np.clip(255 - (80.0 * t), 0, 255).astype(np.uint8)
+        b[m3] = np.clip(200 - (100.0 * t), 0, 255).astype(np.uint8)
+
+    r[m4], g[m4], b[m4] = 255, 175, 100
+    return r, g, b
+
+
+def _build_celestial_objects_from_arrays(ra, dec, mag, bp_rp, source_id=None):
+    out = []
+    n = len(ra)
+    for i in range(n):
+        sid_val = i
+        if source_id is not None and i < len(source_id):
+            try:
+                sid_val = int(source_id[i])
+            except Exception:
+                sid_val = i
+        out.append(
+            {
+                "id": str(sid_val),
+                "name": "",
+                "ra": float(ra[i]),
+                "dec": float(dec[i]),
+                "mag": float(mag[i]),
+                "bp_rp": float(bp_rp[i]),
+            }
+        )
+    return out
 
 class ClickableLabel(QLabel):
     clicked = pyqtSignal()
@@ -608,171 +801,134 @@ class CatalogLoaderWorker(QObject):
     """Background worker to load star catalog without freezing UI."""
     catalog_ready = pyqtSignal(list, object, object, object, object, object, object)
     # (celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b)
+    scope_extension_ready = pyqtSignal(object, object, object, object, object, object, float)
+    # (np_ra, np_dec, np_mag, np_r, np_g, np_b, loaded_max_mag)
 
     @pyqtSlot(str)
-    def load(self, json_path):
+    def load(self, stars_dir):
         import time
         t0 = time.time()
 
         celestial_objects = []
         np_ra = np_dec = np_mag = np_r = np_g = np_b = None
 
-        # --- Binary NPY cache path ---
-        cache_dir = os.path.dirname(json_path)
-        npy_ra_path = os.path.join(cache_dir, 'gaia_cache_ra.npy')
-        npy_dec_path = os.path.join(cache_dir, 'gaia_cache_dec.npy')
-        npy_mag_path = os.path.join(cache_dir, 'gaia_cache_mag.npy')
-        npy_r_path = os.path.join(cache_dir, 'gaia_cache_r.npy')
-        npy_g_path = os.path.join(cache_dir, 'gaia_cache_g.npy')
-        npy_b_path = os.path.join(cache_dir, 'gaia_cache_b.npy')
-        npy_ids_path = os.path.join(cache_dir, 'gaia_cache_ids.npy')
-        npy_names_path = os.path.join(cache_dir, 'gaia_cache_names.npy')
-        npy_bprp_path = os.path.join(cache_dir, 'gaia_cache_bprp.npy')
+        entries = _discover_star_catalog_npz_entries(stars_dir)
+        base_entry = _select_base_star_catalog_entry(entries, max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG)
 
-        # Check if binary cache exists and is newer than JSON
-        use_cache = False
-        if np and os.path.exists(npy_ra_path) and os.path.exists(json_path):
+        if np is not None and base_entry is not None:
             try:
-                cache_mtime = os.path.getmtime(npy_ra_path)
-                json_mtime = os.path.getmtime(json_path)
-                if cache_mtime >= json_mtime:
-                    use_cache = True
-            except:
-                pass
+                base = _load_star_npz_arrays(
+                    base_entry["path"],
+                    max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                )
+                if len(base["ra"]) > 0:
+                    order = np.argsort(base["mag"], kind="mergesort")
+                    ra = base["ra"][order]
+                    dec = base["dec"][order]
+                    mag = base["mag"][order]
+                    bp_rp = base["bp_rp"][order]
+                    source_id = base["source_id"][order] if base["source_id"] is not None else None
 
-        if use_cache:
-            try:
-                np_ra = np.load(npy_ra_path)
-                np_dec = np.load(npy_dec_path)
-                np_mag = np.load(npy_mag_path)
-                np_r = np.load(npy_r_path)
-                np_g = np.load(npy_g_path)
-                np_b = np.load(npy_b_path)
-                ids_arr = np.load(npy_ids_path, allow_pickle=True)
-                names_arr = np.load(npy_names_path, allow_pickle=True) if os.path.exists(npy_names_path) else None
-                bprp_arr = np.load(npy_bprp_path)
-
-                # Rebuild celestial_objects list from cached arrays
-                for i in range(len(np_ra)):
-                    celestial_objects.append({
-                        'id': str(ids_arr[i]),
-                        'name': str(names_arr[i]) if names_arr is not None else "",
-                        'ra': float(np_ra[i]),
-                        'dec': float(np_dec[i]),
-                        'mag': float(np_mag[i]),
-                        'bp_rp': float(bprp_arr[i])
-                    })
-                print(f"[CatalogLoader] Loaded {len(celestial_objects)} stars from NPY cache in {time.time()-t0:.3f}s")
-                self.catalog_ready.emit(celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b)
-                return
+                    np_ra = np.asarray(ra, dtype=np.float32)
+                    np_dec = np.asarray(dec, dtype=np.float32)
+                    np_mag = np.asarray(mag, dtype=np.float32)
+                    np_r, np_g, np_b = _bp_rp_to_rgb_arrays(bp_rp)
+                    celestial_objects = _build_celestial_objects_from_arrays(
+                        np_ra, np_dec, np_mag, bp_rp, source_id=source_id
+                    )
+                    print(
+                        f"[CatalogLoader] Loaded base NPZ '{os.path.basename(base_entry['path'])}' "
+                        f"({len(np_ra)} stars) in {time.time()-t0:.3f}s"
+                    )
             except Exception as e:
-                print(f"[CatalogLoader] NPY cache invalid, falling back to JSON: {e}")
-                celestial_objects = []
-
-        # --- Parse JSON (slow path) ---
-        if os.path.exists(json_path):
-            import json
-            try:
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-
-                source_list = []
-                if isinstance(data, dict) and 'data' in data:
-                    source_list = data['data']
-                elif isinstance(data, list):
-                    source_list = data
-
-                for s in source_list:
-                    try:
-                        if isinstance(s, list):
-                            star_id = str(s[0])
-                            name = str(s[1]) if len(s) > 1 and s[1] else ""
-                            ra = float(s[2])
-                            dec = float(s[3])
-                            mag = float(s[4])
-                            bp_rp = 0.8
-                            if len(s) > 7 and s[7] is not None:
-                                bp_rp = float(s[7])
-                        elif isinstance(s, dict):
-                            star_id = str(s.get('source_id', 'Unknown'))
-                            name = str(s.get('designation', ''))
-                            ra = float(s.get('ra', 0))
-                            dec = float(s.get('dec', 0))
-                            mag = float(s.get('phot_g_mean_mag', 10))
-                            bp_rp = float(s.get('bp_rp', 0.8))
-                        else:
-                            continue
-                        celestial_objects.append({
-                            'id': star_id, 'name': name, 'ra': ra, 'dec': dec, 'mag': mag, 'bp_rp': bp_rp
-                        })
-                    except:
-                        continue
-                print(f"[CatalogLoader] Parsed {len(celestial_objects)} stars from JSON in {time.time()-t0:.3f}s")
-            except Exception as e:
-                print(f"[CatalogLoader] Error loading JSON: {e}")
+                print(f"[CatalogLoader] Error loading base NPZ: {e}")
+        elif base_entry is None:
+            print(f"[CatalogLoader] No MAGNITUD_*.npz found in: {stars_dir}")
 
         if not celestial_objects:
             print("[CatalogLoader] Fallback to random stars")
             import random as _rnd
             for _ in range(500):
-                celestial_objects.append({
-                    'ra': _rnd.uniform(0, 360), 'dec': _rnd.uniform(-90, 90),
-                    'mag': _rnd.uniform(1.0, 6.0), 'bp_rp': _rnd.uniform(-0.5, 2.0)
-                })
-
-        # Sort by magnitude
-        celestial_objects.sort(key=lambda x: x['mag'])
-
-        # Build numpy arrays
-        if np:
-            try:
-                np_ra = np.array([s['ra'] for s in celestial_objects], dtype=np.float32)
-                np_dec = np.array([s['dec'] for s in celestial_objects], dtype=np.float32)
-                np_mag = np.array([s['mag'] for s in celestial_objects], dtype=np.float32)
-
-                def get_rgb(s):
-                    bp_rp = s.get('bp_rp', 0.8)
-                    if bp_rp < 0.0: return (160, 190, 255)
-                    elif bp_rp < 0.5:
-                        t = (bp_rp - 0.0) / 0.5
-                        return (160 + int(95*t), 190 + int(65*t), 255)
-                    elif bp_rp < 1.0:
-                        t = (bp_rp - 0.5) / 0.5
-                        return (255, 255, 255 - int(55*t))
-                    elif bp_rp < 2.0:
-                        t = (bp_rp - 1.0) / 1.0
-                        return (255, 255 - int(80*t), 200 - int(100*t))
-                    else: return (255, 175, 100)
-
-                cols = [get_rgb(s) for s in celestial_objects]
-                np_r = np.array([c[0] for c in cols], dtype=np.uint8)
-                np_g = np.array([c[1] for c in cols], dtype=np.uint8)
-                np_b = np.array([c[2] for c in cols], dtype=np.uint8)
-
-                # Save binary cache for next startup
-                try:
-                    ids_arr = np.array([s['id'] for s in celestial_objects], dtype=object)
-                    names_arr = np.array([s['name'] for s in celestial_objects], dtype=object)
-                    bprp_arr = np.array([s['bp_rp'] for s in celestial_objects], dtype=np.float32)
-                    np.save(npy_ra_path, np_ra)
-                    np.save(npy_dec_path, np_dec)
-                    np.save(npy_mag_path, np_mag)
-                    np.save(npy_r_path, np_r)
-                    np.save(npy_g_path, np_g)
-                    np.save(npy_b_path, np_b)
-                    np.save(npy_ids_path, ids_arr)
-                    np.save(npy_names_path, names_arr)
-                    np.save(npy_bprp_path, bprp_arr)
-                    print(f"[CatalogLoader] Saved NPY cache ({len(np_ra)} stars)")
-                except Exception as e:
-                    print(f"[CatalogLoader] Could not save NPY cache: {e}")
-
-                print(f"[CatalogLoader] NumPy arrays ready: {len(np_ra)} stars in {time.time()-t0:.3f}s")
-            except Exception as e:
-                print(f"[CatalogLoader] NumPy error: {e}")
-                np_ra = np_dec = np_mag = np_r = np_g = np_b = None
+                celestial_objects.append(
+                    {
+                        "id": "rnd",
+                        "name": "",
+                        "ra": _rnd.uniform(0, 360),
+                        "dec": _rnd.uniform(-90, 90),
+                        "mag": _rnd.uniform(1.0, 6.0),
+                        "bp_rp": _rnd.uniform(-0.5, 2.0),
+                    }
+                )
+            celestial_objects.sort(key=lambda x: x["mag"])
+            if np is not None:
+                np_ra = np.array([s["ra"] for s in celestial_objects], dtype=np.float32)
+                np_dec = np.array([s["dec"] for s in celestial_objects], dtype=np.float32)
+                np_mag = np.array([s["mag"] for s in celestial_objects], dtype=np.float32)
+                np_r, np_g, np_b = _bp_rp_to_rgb_arrays(np.array([s["bp_rp"] for s in celestial_objects], dtype=np.float32))
 
         self.catalog_ready.emit(celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b)
+
+    @pyqtSlot(str, float)
+    def load_scope_extensions(self, stars_dir, loaded_max_mag):
+        import time
+        t0 = time.time()
+
+        np_ra = np_dec = np_mag = np_r = np_g = np_b = None
+        max_loaded = float(loaded_max_mag)
+        if np is None:
+            self.scope_extension_ready.emit(None, None, None, None, None, None, max_loaded)
+            return
+
+        entries = _discover_star_catalog_npz_entries(stars_dir)
+        eps = 1e-6
+        targets = [e for e in entries if float(e["max_mag"]) > float(loaded_max_mag) + eps]
+        if not targets:
+            self.scope_extension_ready.emit(None, None, None, None, None, None, max_loaded)
+            return
+
+        chunks_ra = []
+        chunks_dec = []
+        chunks_mag = []
+        chunks_r = []
+        chunks_g = []
+        chunks_b = []
+
+        for entry in targets:
+            try:
+                arr = _load_star_npz_arrays(
+                    entry["path"],
+                    min_mag_exclusive=float(loaded_max_mag),
+                )
+                if len(arr["ra"]) == 0:
+                    continue
+                rr, gg, bb = _bp_rp_to_rgb_arrays(arr["bp_rp"])
+                chunks_ra.append(np.asarray(arr["ra"], dtype=np.float32))
+                chunks_dec.append(np.asarray(arr["dec"], dtype=np.float32))
+                chunks_mag.append(np.asarray(arr["mag"], dtype=np.float32))
+                chunks_r.append(rr)
+                chunks_g.append(gg)
+                chunks_b.append(bb)
+                max_loaded = max(max_loaded, float(entry.get("max_mag", loaded_max_mag)))
+                print(
+                    f"[CatalogLoader] Scope chunk '{os.path.basename(entry['path'])}' "
+                    f"loaded ({len(arr['ra'])} stars)"
+                )
+            except Exception as e:
+                print(f"[CatalogLoader] Scope chunk load error '{entry.get('name', '')}': {e}")
+
+        if chunks_ra:
+            np_ra = np.concatenate(chunks_ra)
+            np_dec = np.concatenate(chunks_dec)
+            np_mag = np.concatenate(chunks_mag)
+            np_r = np.concatenate(chunks_r)
+            np_g = np.concatenate(chunks_g)
+            np_b = np.concatenate(chunks_b)
+            print(
+                f"[CatalogLoader] Scope extension ready: {len(np_ra)} stars "
+                f"in {time.time()-t0:.3f}s (max mag {max_loaded:.2f})"
+            )
+
+        self.scope_extension_ready.emit(np_ra, np_dec, np_mag, np_r, np_g, np_b, float(max_loaded))
 
 
 class SkyfieldLoaderWorker(QObject):
@@ -2078,6 +2234,20 @@ class AstroCanvas(QWidget):
         cel_objs = getattr(self.parent_widget, "celestial_objects", [])
         if 0 <= i < len(cel_objs):
             return cel_objs[i]
+        pw = self.parent_widget
+        if np is not None and hasattr(pw, "np_ra") and hasattr(pw, "np_dec") and hasattr(pw, "np_mag"):
+            try:
+                if 0 <= i < len(pw.np_ra):
+                    return {
+                        "id": str(i),
+                        "name": "",
+                        "ra": float(pw.np_ra[i]),
+                        "dec": float(pw.np_dec[i]),
+                        "mag": float(pw.np_mag[i]),
+                        "bp_rp": 0.8,
+                    }
+            except Exception:
+                return None
         return None
 
     def _register_visible_sky_object(self, obj_type, key, name, alt, az, sx, sy, radius_px=0.0, mag=None):
@@ -2291,6 +2461,46 @@ class AstroCanvas(QWidget):
 
         return self._visible_star_count_raw()
 
+    def _scope_contains_alt_az_mask(self, alt_deg_arr, az_deg_arr):
+        if not self.scope_mode_enabled() or not hasattr(self, "scope_controller") or np is None:
+            return None
+
+        ctrl = self.scope_controller
+        if (
+            (not getattr(ctrl, "enabled", False))
+            or getattr(ctrl, "center", None) is None
+            or getattr(ctrl, "awaiting_center_click", False)
+        ):
+            return None
+
+        try:
+            center_alt = float(ctrl.center[0])
+            center_az = float(ctrl.center[1]) % 360.0
+            fov_w, fov_h = ctrl.current_fov()
+        except Exception:
+            return None
+
+        alt = np.asarray(alt_deg_arr, dtype=np.float32)
+        az = np.asarray(az_deg_arr, dtype=np.float32) % 360.0
+
+        if getattr(ctrl, "shape", TelescopeScopeController.SHAPE_CIRCLE) == TelescopeScopeController.SHAPE_RECT:
+            half_h = 0.5 * float(fov_h)
+            half_w = 0.5 * float(fov_w)
+            cos_lat = max(0.05, math.cos(math.radians(center_alt)))
+            daz_lim = half_w / cos_lat
+            d_az = ((az - center_az + 180.0) % 360.0) - 180.0
+            return (np.abs(alt - center_alt) <= half_h) & (np.abs(d_az) <= daz_lim)
+
+        radius_deg = 0.5 * min(float(fov_w), float(fov_h))
+        c_alt = math.radians(center_alt)
+        sin_c = math.sin(c_alt)
+        cos_c = math.cos(c_alt)
+        alt_r = np.radians(alt)
+        d_az_r = np.radians(((az - center_az + 180.0) % 360.0) - 180.0)
+        cos_dist = np.sin(alt_r) * sin_c + np.cos(alt_r) * cos_c * np.cos(d_az_r)
+        cos_dist = np.clip(cos_dist, -1.0, 1.0)
+        return cos_dist >= math.cos(math.radians(radius_deg))
+
     def _current_ut_context(self):
         local_hour = float(self.parent_widget.get_current_hour())
         sim_y = int(getattr(self.parent_widget, "manual_year", datetime.now().year))
@@ -2335,7 +2545,7 @@ class AstroCanvas(QWidget):
         # Keep "zoom towards target" behavior: never zoom out.
         fov_w, fov_h = self.scope_controller.current_fov()
         target_fov = max(0.2, min(93.9, max(fov_w, fov_h)))
-        goto_zoom = max(0.5, min(50.0, 93.9 / target_fov))
+        goto_zoom = max(0.5, min(140.0, 93.9 / target_fov))
         self.zoom_level = max(float(self.zoom_level), goto_zoom)
 
         self._cached_star_image = None
@@ -2692,7 +2902,7 @@ class AstroCanvas(QWidget):
 
         current = max(1.0, float(getattr(self.scope_controller, "focal_mm", 250.0)))
         factor = 1.12 ** steps  # wheel up => larger focal => narrower FOV
-        new_focal = max(1.0, min(5000.0, current * factor))
+        new_focal = max(1.0, min(20000.0, current * factor))
         self.scope_controller.set_focal_mm(new_focal)
 
         # Keep controls panel in sync with wheel zoom.
@@ -2715,8 +2925,8 @@ class AstroCanvas(QWidget):
             return
         factor = 1.1 ** steps
         self.zoom_level *= factor
-        # Allow much deep zoom for Eclipse Inspection (0.5 to 50.0)
-        self.zoom_level = max(0.5, min(50.0, self.zoom_level))
+        # Allow deeper zoom for high-focal framing and dense star fields.
+        self.zoom_level = max(0.5, min(140.0, self.zoom_level))
         # Keep cached trail image during movement to avoid flickering
         # The Fast-Path will draw on top.
         self.update()
@@ -4282,12 +4492,61 @@ class AstroCanvas(QWidget):
             # Daytime limiting magnitude (Sirius is -1.4 and barely visible with perfect conditions)
             # We set a hard ceiling of -4.0 for daytime to ensure only Sun/Moon/Planets show up.
             mag_limit = min(mag_limit, -4.0)
+
+        if day_of_year is None:
+            day_of_year = pw.manual_day
+
+        naked_eye_cap = min(
+            float(getattr(pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+            float(STAR_CATALOG_NAKED_EYE_MAX_MAG),
+        )
         
         # 1. Filtering (Pre-Math) - OPTIMIZATION
-        # Ensure only the correctly killed catalog goes into physics math
-        # Allow +1.0 magnitudes so that borderline stars have a smooth alpha fade out
+        # Scope mode:
+        # - all-sky always includes only naked-eye stars
+        # - deep stars are only considered around the scope center
+        # This keeps the visual style clean outside the reticle and avoids full-sky
+        # processing of millions of faint stars.
         limit_buffer_pre = mag_limit + 1.0
-        original_idxs = np.where(pw.np_mag < limit_buffer_pre)[0]
+        if self.scope_mode_enabled():
+            eye_buffer_limit = naked_eye_cap + 1.0
+            mag_all = pw.np_mag
+            base_mask = mag_all <= eye_buffer_limit
+            deep_mask = (mag_all < limit_buffer_pre) & (mag_all > eye_buffer_limit)
+            deep_scope_candidates = np.zeros_like(base_mask, dtype=bool)
+
+            ctrl = getattr(self, "scope_controller", None)
+            if (
+                ctrl is not None
+                and getattr(ctrl, "enabled", False)
+                and getattr(ctrl, "center", None) is not None
+                and (not getattr(ctrl, "awaiting_center_click", False))
+            ):
+                try:
+                    fov_w, fov_h = ctrl.current_fov()
+                    center_alt = float(ctrl.center[0])
+                    center_az = float(ctrl.center[1]) % 360.0
+                    center_ra_dec = self._altaz_to_ra_dec(center_alt, center_az, hour, int(day_of_year))
+                    if center_ra_dec is not None:
+                        center_ra = float(center_ra_dec[0])
+                        center_dec = float(center_ra_dec[1])
+                        max_fov = max(float(fov_w), float(fov_h))
+                        dec_pad = min(90.0, max_fov * 1.4 + 2.0)
+                        ra_pad = min(
+                            180.0,
+                            dec_pad / max(0.10, math.cos(math.radians(center_dec))) + 2.0,
+                        )
+                        d_dec = np.abs(pw.np_dec - center_dec)
+                        d_ra = np.abs(((pw.np_ra - center_ra + 180.0) % 360.0) - 180.0)
+                        deep_scope_candidates = (d_dec <= dec_pad) & (d_ra <= ra_pad)
+                except Exception:
+                    pass
+
+            original_idxs = np.where(base_mask | (deep_mask & deep_scope_candidates))[0]
+        else:
+            # Ensure only the correctly killed catalog goes into physics math
+            # Allow +1.0 magnitudes so that borderline stars have a smooth alpha fade out
+            original_idxs = np.where(pw.np_mag < limit_buffer_pre)[0]
         if len(original_idxs) == 0: return
         
         ra = pw.np_ra[original_idxs]
@@ -4299,7 +4558,6 @@ class AstroCanvas(QWidget):
 
         # 2. Physics (Vectorized)
         lat_rad = math.radians(eff_lat)
-        if day_of_year is None: day_of_year = pw.manual_day
         lst = (100.0 + day_of_year * 0.9856 + hour * 15.0 + pw.longitude) % 360
         
         # HA
@@ -4426,6 +4684,20 @@ class AstroCanvas(QWidget):
                  # Factor 0.15 maps high intensity + Bortle 9 to ~3.5-4.0 mag loss
                  extinction_penalty = i_alpha * 0.15
                  local_limit = local_limit - extinction_penalty
+
+        # Scope aperture behavior:
+        # outside the reticle, keep only naked-eye depth regardless of scope exposure.
+        if self.scope_mode_enabled():
+            scope_inside_mask = self._scope_contains_alt_az_mask(alt_deg_refined, az_deg)
+            if scope_inside_mask is not None:
+                if isinstance(local_limit, np.ndarray):
+                    local_limit = np.where(
+                        scope_inside_mask,
+                        local_limit,
+                        np.minimum(local_limit, naked_eye_cap),
+                    )
+                else:
+                    local_limit = min(float(local_limit), naked_eye_cap)
         
         # Mask 1: Mag Limit
         # We allow +1.0 buffer for edge bloom, the strict test is done later or managed by eff_alpha
@@ -4608,6 +4880,12 @@ class AstroCanvas(QWidget):
             
             # Color
             r_val, g_val, b_val = int(f_r[i]), int(f_g[i]), int(f_b[i])
+            # A small chroma lift gives richer stellar color without cartoon oversaturation.
+            lum = (r_val + g_val + b_val) / 3.0
+            sat_boost = 1.42 if mag < 4.5 else 1.28
+            r_val = int(max(0, min(255, lum + (r_val - lum) * sat_boost)))
+            g_val = int(max(0, min(255, lum + (g_val - lum) * sat_boost)))
+            b_val = int(max(0, min(255, lum + (b_val - lum) * sat_boost)))
             burn_local = 0.0
             if scope_burn_strength > 0.0 and mag < 3.5:
                 bright_norm = max(0.0, min(1.0, (3.5 - float(mag)) / 3.5))
@@ -4651,20 +4929,20 @@ class AstroCanvas(QWidget):
                     if scope_active:
                         faintness = max(0.0, min(1.0, (float(mag) - 5.0) / 4.0))
                         local_faint_gain = 1.0 + (scope_faint_size_gain - 1.0) * (0.45 + 0.55 * faintness)
-                        size = min(2.2, max(0.9, 1.2 * scale * local_faint_gain))
+                        size = min(1.6, max(0.60, 0.95 * scale * local_faint_gain))
                     else:
-                        # MÃ¡ximo de 1 pÃ­xel real, independientemente del zoom.
-                        size = min(1.0, 1.2 * scale)
-                    a_val = 220 - min(100, int((mag - 5.0) * 15))
+                        # Keep faint field stars tiny and crisp.
+                        size = min(0.82, 0.95 * scale)
+                    a_val = 235 - min(100, int((mag - 5.0) * 14))
 
                     # Faint stars lose color saturation to the eye; pull them towards white/grey
-                    desat = 0.5
+                    desat = min(0.26, max(0.08, 0.10 + 0.05 * max(0.0, float(mag) - 5.0)))
                     r_desat = int(r_val * (1 - desat) + 200 * desat)
                     g_desat = int(g_val * (1 - desat) + 200 * desat)
                     b_desat = int(b_val * (1 - desat) + 220 * desat)
 
                     faint_alpha_boost = scope_faint_alpha_gain if scope_active else 1.0
-                    final_a = int(max(60, a_val) * alpha_f * 0.7 * faint_alpha_boost)
+                    final_a = int(max(70, a_val) * alpha_f * 0.90 * faint_alpha_boost)
                     final_a = max(30, min(235, final_a))
                     if math.isnan(size) or size <= 0:
                         continue
@@ -4672,27 +4950,27 @@ class AstroCanvas(QWidget):
                     painter.drawEllipse(QPointF(x, y), size, size)
                 else:
                     # Estrellas principales
-                    size = max(1.5, (5.0 - mag) * 0.7 * scale)
-                    core_radius = min(6.5, size * (1.0 + 0.55 * burn_local))
+                    size = max(0.95, (4.8 - mag) * 0.50 * scale)
+                    core_radius = min(3.6, size * (0.86 + 0.35 * burn_local))
 
-                    final_a = int(min(255, 255 * alpha_f * (1.0 + 0.40 * burn_local)))
+                    final_a = int(min(255, 255 * alpha_f * (1.08 + 0.45 * burn_local)))
                     star_c_intense = QColor(r_val, g_val, b_val, final_a)
                     transparent_c = QColor(r_val, g_val, b_val, 0)
 
                     # 1. Halo mucho mÃ¡s centrado y menos opaco para evitar el "velo"
                     if mag < 4.0:
-                        halo_size = core_radius * (5.5 - mag) * 1.8 * self.zoom_level
+                        halo_size = core_radius * (5.3 - mag) * 0.92 * self.zoom_level
                         if mag < 1.0:
-                            halo_size = core_radius * 8.0 * self.zoom_level
+                            halo_size = core_radius * 3.8 * self.zoom_level
                         if burn_local > 0.0:
-                            halo_size *= (1.0 + 0.80 * burn_local)
+                            halo_size *= (1.0 + 0.28 * burn_local)
 
                         if math.isnan(halo_size) or halo_size <= 0:
                             continue
                         halo_grad = QRadialGradient(x, y, halo_size)
-                        halo_grad.setColorAt(0.0, QColor(r_val, g_val, b_val, int(90 * alpha_f)))
-                        halo_grad.setColorAt(0.1, QColor(r_val, g_val, b_val, int(30 * alpha_f)))
-                        halo_grad.setColorAt(0.3, QColor(r_val, g_val, b_val, int(5 * alpha_f)))
+                        halo_grad.setColorAt(0.0, QColor(r_val, g_val, b_val, int(48 * alpha_f)))
+                        halo_grad.setColorAt(0.10, QColor(r_val, g_val, b_val, int(15 * alpha_f)))
+                        halo_grad.setColorAt(0.32, QColor(r_val, g_val, b_val, int(2 * alpha_f)))
                         halo_grad.setColorAt(1.0, transparent_c)
 
                         painter.setBrush(QBrush(halo_grad))
@@ -4711,7 +4989,8 @@ class AstroCanvas(QWidget):
                     # 2. NÃºcleo mÃ¡s brillante y denso
                     core_grad = QRadialGradient(x, y, core_radius)
                     core_grad.setColorAt(0.0, QColor(255, 255, 255, final_a))
-                    core_grad.setColorAt(0.6, star_c_intense)  # Mantiene el color base mÃ¡s hacia el borde
+                    core_grad.setColorAt(0.22, QColor(255, 255, 255, int(final_a * 0.70)))
+                    core_grad.setColorAt(0.62, star_c_intense)  # Mantiene el color base mÃ¡s hacia el borde
                     core_grad.setColorAt(1.0, transparent_c)
 
                     if not math.isnan(core_radius) and core_radius > 0:
@@ -4722,7 +5001,7 @@ class AstroCanvas(QWidget):
                 try:
                     spike_threshold = getattr(self.parent_widget, 'spike_magnitude_threshold', 2.0)
                     if mag < spike_threshold:
-                        self.draw_spikes(painter, x, y, mag, spike_threshold, final_a)
+                        self.draw_spikes(painter, x, y, mag, spike_threshold, final_a, (r_val, g_val, b_val))
                         painter.setPen(Qt.NoPen)  # Reset pen after spikes
                 except Exception:
                     pass  # Silently skip spikes if there's an error
@@ -4779,20 +5058,28 @@ class AstroCanvas(QWidget):
         else:
             return QColor(255, 175, 100) # Red
 
-    def draw_spikes(self, painter, x, y, mag, threshold, alpha):
+    def draw_spikes(self, painter, x, y, mag, threshold, alpha, rgb=None):
         # Calculate factor: how much brighter than threshold?
         factor = (threshold - mag)
         if factor <= 0: return
 
-        # Realism tweaks: thinner, sharper, less "glowy"
-        length = factor * 20 * self.zoom_level
-        width = max(0.5, factor * 0.4 * self.zoom_level) # Much thinner
+        # Sharp but lightweight diffraction profile (good "picudita" look).
+        length = factor * 24 * self.zoom_level
+        width = max(0.35, factor * 0.24 * self.zoom_level)
         
         if length < 4: return
 
-        # Subtle alpha
-        c_center = QColor(255, 255, 255, min(255, int(alpha * 0.6)))
-        c_tip = QColor(255, 255, 255, 0)
+        if rgb is None:
+            rr = gg = bb = 255
+        else:
+            try:
+                rr, gg, bb = int(rgb[0]), int(rgb[1]), int(rgb[2])
+            except Exception:
+                rr = gg = bb = 255
+
+        # Keep spikes slightly tinted by the star color.
+        c_center = QColor(rr, gg, bb, min(255, int(alpha * 0.72)))
+        c_tip = QColor(rr, gg, bb, 0)
 
         painter.setPen(Qt.NoPen)
         
@@ -4819,11 +5106,11 @@ class AstroCanvas(QWidget):
             painter.drawPath(path)
             painter.restore()
 
-        # Just standard 4-spike Newtonian diffraction (Realism)
-        # Rotated 45 deg usually looks better/more typical unless spider is aligned 0-90
-        # Let's stick to 0-90 as standard cross, or maybe 45-135 for aesthetics
+        # Primary spikes + softer diagonal secondary spikes.
         for angle in [0, 90, 180, 270]:
             draw_ray(angle, length, width)
+        for angle in [45, 135, 225, 315]:
+            draw_ray(angle, length * 0.62, width * 0.78)
 
     # draw_sun removed (Legacy)
 
@@ -7008,7 +7295,7 @@ class AstronomicalWidget(CustomWidgetBase):
         self.longitude = float(get_config_value("observer_lon", 1.210058))
         # Manual naked-eye limit used in manual LP mode.
         self.magnitude_limit = float(get_config_value("manual_eye_limit_mag", 8.0))
-        self.spike_magnitude_threshold = 2.0
+        self.spike_magnitude_threshold = 3.2
         self.star_scale = 0.5
         self.auto_star_scale_multiplier = 1.0
 
@@ -7086,9 +7373,13 @@ class AstronomicalWidget(CustomWidgetBase):
         self._catalog_worker.moveToThread(self._catalog_thread)
         self._catalog_worker.catalog_ready.connect(self._on_catalog_ready)
         local_dir = os.path.dirname(os.path.abspath(__file__))
-        json_path = os.path.join(local_dir, '..', 'data', 'stars', 'gaia_stars.json')
+        self._stars_catalog_dir = os.path.normpath(os.path.join(local_dir, '..', 'data', 'stars'))
+        self._scope_catalog_loading = False
+        self._scope_catalog_loaded_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
+        self._scope_catalog_thread = None
+        self._scope_catalog_worker = None
         # Use lambda to pass argument when thread starts
-        self._catalog_thread.started.connect(lambda: self._catalog_worker.load(json_path))
+        self._catalog_thread.started.connect(lambda: self._catalog_worker.load(self._stars_catalog_dir))
         self._catalog_thread.start()
         print("[AstroWidget] Star catalog loading in background...")
 
@@ -7265,11 +7556,95 @@ class AstronomicalWidget(CustomWidgetBase):
             self.np_r = np_r
             self.np_g = np_g
             self.np_b = np_b
+            try:
+                self._scope_catalog_loaded_max_mag = max(
+                    float(self._scope_catalog_loaded_max_mag),
+                    float(STAR_CATALOG_NAKED_EYE_MAX_MAG),
+                )
+            except Exception:
+                pass
         print(f"[AstroWidget] Star catalog ready: {len(celestial_objects)} stars (async).")
         self.build_search_index()
         self.canvas.update()
         # Clean up thread
         self._catalog_thread.quit()
+
+    def _ensure_scope_catalog_loaded(self):
+        if np is None:
+            return
+        if getattr(self, "_scope_catalog_loading", False):
+            return
+        stars_dir = getattr(self, "_stars_catalog_dir", "")
+        if not stars_dir or not os.path.isdir(stars_dir):
+            return
+
+        loaded_max_mag = float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG))
+        self._scope_catalog_loading = True
+
+        thread = QThread()
+        worker = CatalogLoaderWorker()
+        worker.moveToThread(thread)
+        worker.scope_extension_ready.connect(self._on_scope_extension_ready)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(
+            lambda w=worker, s=stars_dir, m=loaded_max_mag: w.load_scope_extensions(s, m)
+        )
+        self._scope_catalog_thread = thread
+        self._scope_catalog_worker = worker
+        thread.start()
+        print(f"[AstroWidget] Scope catalog extension loading from > {loaded_max_mag:.2f} mag...")
+
+    def _cleanup_scope_catalog_loader(self):
+        thread = getattr(self, "_scope_catalog_thread", None)
+        if thread is not None:
+            try:
+                thread.quit()
+            except Exception:
+                pass
+            try:
+                thread.wait(3000)
+            except Exception:
+                pass
+        self._scope_catalog_worker = None
+        self._scope_catalog_thread = None
+
+    def _on_scope_extension_ready(self, np_ra, np_dec, np_mag, np_r, np_g, np_b, loaded_max_mag):
+        self._scope_catalog_loading = False
+
+        try:
+            if np_ra is not None and len(np_ra) > 0:
+                if hasattr(self, "np_ra") and self.np_ra is not None:
+                    self.np_ra = np.concatenate((self.np_ra, np_ra))
+                    self.np_dec = np.concatenate((self.np_dec, np_dec))
+                    self.np_mag = np.concatenate((self.np_mag, np_mag))
+                    self.np_r = np.concatenate((self.np_r, np_r))
+                    self.np_g = np.concatenate((self.np_g, np_g))
+                    self.np_b = np.concatenate((self.np_b, np_b))
+                else:
+                    self.np_ra = np_ra
+                    self.np_dec = np_dec
+                    self.np_mag = np_mag
+                    self.np_r = np_r
+                    self.np_g = np_g
+                    self.np_b = np_b
+                print(f"[AstroWidget] Scope extension appended: +{len(np_ra)} stars.")
+                self.canvas._cached_star_image = None
+                self.canvas._cached_trail_image = None
+                self.canvas.update()
+            else:
+                print("[AstroWidget] Scope extension already up to date.")
+        except Exception as e:
+            print(f"[AstroWidget] Scope extension merge error: {e}")
+        finally:
+            try:
+                self._scope_catalog_loaded_max_mag = max(
+                    float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                    float(loaded_max_mag),
+                )
+            except Exception:
+                pass
+            self._cleanup_scope_catalog_loader()
 
     def init_skyfield(self):
         """Legacy synchronous init. Kept for compatibility."""
@@ -7649,7 +8024,7 @@ class AstronomicalWidget(CustomWidgetBase):
         h_focal = QHBoxLayout()
         h_focal.addWidget(QLabel(getTraduction("Astro.ScopeFocal", "Focal (mm)")))
         self.scope_focal_spin = QDoubleSpinBox()
-        self.scope_focal_spin.setRange(1.0, 5000.0)
+        self.scope_focal_spin.setRange(1.0, 20000.0)
         self.scope_focal_spin.setDecimals(1)
         self.scope_focal_spin.setSingleStep(10.0)
         self.scope_focal_spin.setValue(250.0)
@@ -8347,6 +8722,7 @@ class AstronomicalWidget(CustomWidgetBase):
 
     def activate_scope_mode(self):
         # Scope mode remaps navigation to pointing control.
+        self._ensure_scope_catalog_loaded()
         self.canvas.set_scope_focal_mm(self.scope_focal_spin.value())
         self.canvas.set_scope_shape(self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex()))
         self.canvas.set_scope_sensor(self.scope_sensor_combo.itemData(self.scope_sensor_combo.currentIndex()))
@@ -8696,105 +9072,71 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.update()
 
     def load_catalog(self):
-        # Load ONLY Gaia Stars (JSON)
-        # Path relative to TerraLab/widgets/sky_widget.py -> ../data/stars/gaia_stars.json
         local_dir = os.path.dirname(os.path.abspath(__file__))
-        json_path = os.path.join(local_dir, '..', 'data', 'stars', 'gaia_stars.json')
-        
-        self.celestial_objects = []
-        if os.path.exists(json_path):
-            import json
-            try:
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-                    
-                    source_list = []
-                    # Gaia JSON usually has 'data' as list of lists
-                    if isinstance(data, dict) and 'data' in data:
-                        source_list = data['data']
-                    elif isinstance(data, list):
-                        source_list = data
-                    
-                    count = 0
-                    for s in source_list:
-                        try:
-                            # If list of lists (Metadata order: 2=RA, 3=DEC, 4=G_MAG, 7=BP_RP)
-                            if isinstance(s, list):
-                                star_id = str(s[0])
-                                ra = float(s[2])
-                                dec = float(s[3])
-                                mag = float(s[4])
-                                bp_rp = 0.8
-                                if len(s) > 7 and s[7] is not None:
-                                    bp_rp = float(s[7])
-                            # Fallback if list of dicts (unlikely for this file but safe)
-                            elif isinstance(s, dict):
-                                star_id = str(s.get('source_id', 'Unknown'))
-                                ra = float(s.get('ra', 0))
-                                dec = float(s.get('dec', 0))
-                                mag = float(s.get('phot_g_mean_mag', 10))
-                                bp_rp = float(s.get('bp_rp', 0.8))
-                            else:
-                                continue
+        stars_dir = os.path.normpath(os.path.join(local_dir, '..', 'data', 'stars'))
 
-                            self.celestial_objects.append({
-                                'id': star_id, 'ra': ra, 'dec': dec, 'mag': mag, 'bp_rp': bp_rp
-                            })
-                            count += 1
-                        except: continue
-                        
-                print(f"Loaded {count} Gaia stars from JSON.")
+        self.celestial_objects = []
+        if np is not None:
+            try:
+                entries = _discover_star_catalog_npz_entries(stars_dir)
+                base_entry = _select_base_star_catalog_entry(entries, max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG)
+                if base_entry is not None:
+                    base = _load_star_npz_arrays(
+                        base_entry["path"],
+                        max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                    )
+                    if len(base["ra"]) > 0:
+                        order = np.argsort(base["mag"], kind="mergesort")
+                        ra = base["ra"][order]
+                        dec = base["dec"][order]
+                        mag = base["mag"][order]
+                        bp_rp = base["bp_rp"][order]
+                        sid = base["source_id"][order] if base["source_id"] is not None else None
+                        self.celestial_objects = _build_celestial_objects_from_arrays(
+                            ra,
+                            dec,
+                            mag,
+                            bp_rp,
+                            source_id=sid,
+                        )
+                        self.np_ra = np.asarray(ra, dtype=np.float32)
+                        self.np_dec = np.asarray(dec, dtype=np.float32)
+                        self.np_mag = np.asarray(mag, dtype=np.float32)
+                        self.np_r, self.np_g, self.np_b = _bp_rp_to_rgb_arrays(bp_rp)
+                        self._scope_catalog_loaded_max_mag = max(
+                            float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                            float(STAR_CATALOG_NAKED_EYE_MAX_MAG),
+                        )
+                        print(
+                            f"Loaded base NPZ catalog: {len(self.np_ra)} stars "
+                            f"from {os.path.basename(base_entry['path'])}."
+                        )
             except Exception as e:
-                print(f"Error loading Gaia JSON: {e}")
-        
+                print(f"Error loading base NPZ catalog: {e}")
+
         if not self.celestial_objects:
             print("Fallback to Random Stars")
             import random
             for _ in range(500):
-                 self.celestial_objects.append({
+                self.celestial_objects.append({
+                    'id': 'rnd',
                     'ra': random.uniform(0, 360), 'dec': random.uniform(-90, 90), 
                     'mag': random.uniform(1.0, 6.0), 'bp_rp': random.uniform(-0.5, 2.0)
                 })
                 
-        # OPTIMIZATION: Sort by magnitude for fast rendering (Early Exit)
         self.celestial_objects.sort(key=lambda x: x['mag'])
-        
-        # NumPy Vectorization (If available)
+
         if np:
             try:
                 self.np_ra = np.array([s['ra'] for s in self.celestial_objects], dtype=np.float32)
                 self.np_dec = np.array([s['dec'] for s in self.celestial_objects], dtype=np.float32)
                 self.np_mag = np.array([s['mag'] for s in self.celestial_objects], dtype=np.float32)
-                
-                # Precompute color arrays (R, G, B) to avoid object overhead
-                # Logic copies get_star_color
-                def get_rgb(s):
-                    bp_rp = s.get('bp_rp', 0.8)
-                    if bp_rp < 0.0: return (160, 190, 255)
-                    elif bp_rp < 0.5:
-                         t = (bp_rp - 0.0) / 0.5
-                         return (160 + int(95*t), 190 + int(65*t), 255)
-                    elif bp_rp < 1.0:
-                         t = (bp_rp - 0.5) / 0.5
-                         return (255, 255, 255 - int(55*t))
-                    elif bp_rp < 2.0:
-                         t = (bp_rp - 1.0) / 1.0
-                         return (255, 255 - int(80*t), 200 - int(100*t))
-                    else: return (255, 175, 100)
-                    
-                cols = [get_rgb(s) for s in self.celestial_objects]
-                self.np_r = np.array([c[0] for c in cols], dtype=np.uint8)
-                self.np_g = np.array([c[1] for c in cols], dtype=np.uint8)
-                self.np_b = np.array([c[2] for c in cols], dtype=np.uint8)
-                
+                bprp = np.array([s.get('bp_rp', 0.8) for s in self.celestial_objects], dtype=np.float32)
+                self.np_r, self.np_g, self.np_b = _bp_rp_to_rgb_arrays(bprp)
                 print(f"NumPy Optimization: {len(self.np_ra)} stars vectorized.")
             except Exception as e:
                 print(f"NumPy Init Error: {e}")
-                # Clear to avoid partial state
                 if hasattr(self, 'np_ra'): del self.np_ra
-        
-        # Legacy stub
-        pass
         
     def update_loop(self):
         if self.use_real_time:
@@ -9569,3 +9911,4 @@ class AstronomicalWidget(CustomWidgetBase):
             n = datetime.now()
             return n.hour + n.minute/60.0
         return self.manual_hour
+"""  """
