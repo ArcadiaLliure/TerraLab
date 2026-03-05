@@ -3,7 +3,7 @@ import traceback
 import os
 import faulthandler
 from PyQt5.QtWidgets import QApplication, QDialog
-from TerraLab.widgets.sky_widget import AstronomicalWidget
+from TerraLab.ui.sky_widget import AstronomicalWidget
 
 from PyQt5.QtCore import Qt
 

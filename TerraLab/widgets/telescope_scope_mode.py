@@ -47,6 +47,7 @@ class TelescopeScopeController:
     def __init__(self):
         self.enabled = False
         self.awaiting_center_click = False
+        self.user_center_fixed_once = False
         self.shape = self.SHAPE_CIRCLE
         self.speed_mode = self.SPEED_SLOW
         self.focal_mm = 250.0
@@ -59,7 +60,8 @@ class TelescopeScopeController:
 
     def activate(self) -> None:
         self.enabled = True
-        self.awaiting_center_click = True
+        self.user_center_fixed_once = False
+        self.awaiting_center_click = self.center is None
         self.dragging = False
 
     def deactivate(self) -> None:
@@ -131,13 +133,14 @@ class TelescopeScopeController:
         sky = screen_to_sky(sx, sy, unproject_fn)
         if sky is None:
             return True
-        self.center = sky
-        self.awaiting_center_click = False
+        self.set_center(sky, confirmed=True)
         return True
 
-    def set_center(self, sky: SkyCoord) -> None:
+    def set_center(self, sky: SkyCoord, confirmed: bool = False) -> None:
         self.center = self._normalized_center(sky)
         self.awaiting_center_click = False
+        if bool(confirmed):
+            self.user_center_fixed_once = True
 
     def start_drag(self, sx: float, sy: float) -> None:
         self.dragging = True
@@ -189,12 +192,17 @@ class TelescopeScopeController:
         # Dark overlay while waiting for center selection.
         if self.center is None or self.awaiting_center_click:
             painter.save()
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(0, 0, 0, 170))
-            painter.drawRect(QRectF(0.0, 0.0, float(width), float(height)))
-            painter.setPen(QColor(255, 255, 255, 220))
+            painter.setRenderHint(QPainter.Antialiasing, True)
             wait_txt = getTraduction("Scope.ClickCenter", "Click para fijar el centro de la mira")
-            painter.drawText(QRectF(10.0, 10.0, width - 20.0, 28.0), Qt.AlignLeft | Qt.AlignVCenter, wait_txt)
+            txt_rect = QRectF(14.0, 12.0, max(80.0, float(width) - 28.0), 34.0)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 125))
+            painter.drawRoundedRect(txt_rect, 6.0, 6.0)
+            painter.setPen(QColor(255, 255, 255, 225))
+            painter.drawText(txt_rect.adjusted(10.0, 0.0, -10.0, 0.0), Qt.AlignLeft | Qt.AlignVCenter, wait_txt)
+            painter.setPen(QPen(QColor(255, 255, 255, 55), 1.0, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(QRectF(7.0, 7.0, max(1.0, float(width) - 14.0), max(1.0, float(height) - 14.0)))
             painter.restore()
             return
 
@@ -223,7 +231,7 @@ class TelescopeScopeController:
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(0, 0, 0, 190))
+        painter.setBrush(QColor(0, 0, 0, 138))
         painter.drawPath(outside)
 
         # Border + glow
