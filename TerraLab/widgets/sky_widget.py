@@ -1265,20 +1265,9 @@ class AstroCanvas(QWidget):
             h = (h + 1) % 24
         return f"{h:02d}h {m:02d}m {s:02d}s"
 
-    def _format_dec_dms(self, dec_deg: float) -> str:
+    def _format_dec_deg(self, dec_deg: float) -> str:
         sign = "+" if dec_deg >= 0 else "-"
-        v = abs(float(dec_deg))
-        d = int(v)
-        m_total = (v - d) * 60.0
-        m = int(m_total)
-        s = int(round((m_total - m) * 60.0))
-        if s >= 60:
-            s = 0
-            m += 1
-        if m >= 60:
-            m = 0
-            d += 1
-        return f"{sign}{d:02d}d {m:02d}m {s:02d}s"
+        return f"{sign}{abs(float(dec_deg)):.3f}°"
 
     def _scope_hud_extra_lines(self, ut_hour: float, day_of_year_utc: int):
         if not self.scope_mode_enabled():
@@ -1290,7 +1279,7 @@ class AstroCanvas(QWidget):
         if ra_dec is None:
             return []
         ra_txt = self._format_ra_hms(ra_dec[0])
-        dec_txt = self._format_dec_dms(ra_dec[1])
+        dec_txt = self._format_dec_deg(ra_dec[1])
         line = getTraduction("Scope.HudCoords", "RA {ra} | Dec {dec}").format(ra=ra_txt, dec=dec_txt)
         lines = [line]
         vm_state = getattr(self.parent_widget, "visual_magnitude_result", None)
@@ -6257,6 +6246,57 @@ class AstronomicalWidget(CustomWidgetBase):
         h_exp.addWidget(self.scope_exposure_spin)
         v_scope.addLayout(h_exp)
 
+        h_ra = QHBoxLayout()
+        h_ra.addWidget(QLabel(getTraduction("Astro.ScopeInputRA", "RA")))
+        self.scope_ra_h_spin = QSpinBox()
+        self.scope_ra_h_spin.setRange(0, 23)
+        self.scope_ra_h_spin.setFixedWidth(48)
+        h_ra.addWidget(self.scope_ra_h_spin)
+        h_ra.addWidget(QLabel("h"))
+        self.scope_ra_m_spin = QSpinBox()
+        self.scope_ra_m_spin.setRange(0, 59)
+        self.scope_ra_m_spin.setFixedWidth(48)
+        h_ra.addWidget(self.scope_ra_m_spin)
+        h_ra.addWidget(QLabel("m"))
+        self.scope_ra_s_spin = QDoubleSpinBox()
+        self.scope_ra_s_spin.setRange(0.0, 59.9)
+        self.scope_ra_s_spin.setDecimals(1)
+        self.scope_ra_s_spin.setSingleStep(0.1)
+        self.scope_ra_s_spin.setFixedWidth(58)
+        h_ra.addWidget(self.scope_ra_s_spin)
+        h_ra.addWidget(QLabel("s"))
+        v_scope.addLayout(h_ra)
+
+        h_dec = QHBoxLayout()
+        h_dec.addWidget(QLabel(getTraduction("Astro.ScopeInputDec", "Dec")))
+        self.scope_dec_sign_combo = QComboBox()
+        self.scope_dec_sign_combo.addItem("+")
+        self.scope_dec_sign_combo.addItem("-")
+        self.scope_dec_sign_combo.setFixedWidth(44)
+        h_dec.addWidget(self.scope_dec_sign_combo)
+        self.scope_dec_d_spin = QSpinBox()
+        self.scope_dec_d_spin.setRange(0, 90)
+        self.scope_dec_d_spin.setFixedWidth(48)
+        h_dec.addWidget(self.scope_dec_d_spin)
+        h_dec.addWidget(QLabel("°"))
+        self.scope_dec_m_spin = QSpinBox()
+        self.scope_dec_m_spin.setRange(0, 59)
+        self.scope_dec_m_spin.setFixedWidth(48)
+        h_dec.addWidget(self.scope_dec_m_spin)
+        h_dec.addWidget(QLabel("'"))
+        self.scope_dec_s_spin = QDoubleSpinBox()
+        self.scope_dec_s_spin.setRange(0.0, 59.9)
+        self.scope_dec_s_spin.setDecimals(1)
+        self.scope_dec_s_spin.setSingleStep(0.1)
+        self.scope_dec_s_spin.setFixedWidth(58)
+        h_dec.addWidget(self.scope_dec_s_spin)
+        h_dec.addWidget(QLabel("\""))
+        v_scope.addLayout(h_dec)
+
+        self.btn_scope_goto_radec = QPushButton(getTraduction("Astro.ScopeGotoRaDec", "Go RA/Dec"))
+        self.btn_scope_goto_radec.clicked.connect(self.on_scope_goto_radec)
+        v_scope.addWidget(self.btn_scope_goto_radec)
+
         h_shape = QHBoxLayout()
         h_shape.addWidget(QLabel(getTraduction("Astro.ScopeShape", "Format")))
         self.scope_shape_combo = QComboBox()
@@ -6318,6 +6358,7 @@ class AstronomicalWidget(CustomWidgetBase):
         v_scope.addLayout(h_scope_actions)
         self.scope_aspect_custom_spin.setEnabled(False)
         self._sync_scope_aspect_controls(self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex()))
+        self._sync_scope_coord_inputs_from_canvas()
         self.scope_panel.hide()
         v_ext.addWidget(self.scope_panel)
 
@@ -6544,6 +6585,7 @@ class AstronomicalWidget(CustomWidgetBase):
                 self.btn_tools_panel.blockSignals(False)
             if hasattr(self, 'tools_panel'):
                 self.tools_panel.hide()
+            self._sync_scope_coord_inputs_from_canvas()
         if hasattr(self, 'scope_panel'):
             self.scope_panel.setVisible(checked)
         QTimer.singleShot(0, self._update_button_pos)
@@ -6732,6 +6774,116 @@ class AstronomicalWidget(CustomWidgetBase):
         self._persist_visual_magnitude_settings()
         self.canvas.update()
 
+    def _scope_coord_inputs_have_focus(self) -> bool:
+        fields = [
+            "scope_ra_h_spin",
+            "scope_ra_m_spin",
+            "scope_ra_s_spin",
+            "scope_dec_sign_combo",
+            "scope_dec_d_spin",
+            "scope_dec_m_spin",
+            "scope_dec_s_spin",
+        ]
+        for name in fields:
+            w = getattr(self, name, None)
+            if w is not None and hasattr(w, "hasFocus") and w.hasFocus():
+                return True
+        return False
+
+    def _set_scope_coord_inputs(self, ra_deg: float, dec_deg: float) -> None:
+        if not hasattr(self, "scope_ra_h_spin"):
+            return
+        h_total = (float(ra_deg) % 360.0) / 15.0
+        h = int(h_total)
+        m_total = (h_total - h) * 60.0
+        m = int(m_total)
+        s = (m_total - m) * 60.0
+        if s >= 59.95:
+            s = 0.0
+            m += 1
+        if m >= 60:
+            m = 0
+            h = (h + 1) % 24
+
+        dec_v = abs(float(dec_deg))
+        d = int(dec_v)
+        dm_total = (dec_v - d) * 60.0
+        dm = int(dm_total)
+        ds = (dm_total - dm) * 60.0
+        if ds >= 59.95:
+            ds = 0.0
+            dm += 1
+        if dm >= 60:
+            dm = 0
+            d = min(90, d + 1)
+
+        widgets = [
+            self.scope_ra_h_spin,
+            self.scope_ra_m_spin,
+            self.scope_ra_s_spin,
+            self.scope_dec_sign_combo,
+            self.scope_dec_d_spin,
+            self.scope_dec_m_spin,
+            self.scope_dec_s_spin,
+        ]
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            self.scope_ra_h_spin.setValue(h)
+            self.scope_ra_m_spin.setValue(m)
+            self.scope_ra_s_spin.setValue(round(float(s), 1))
+            self.scope_dec_sign_combo.setCurrentIndex(0 if float(dec_deg) >= 0.0 else 1)
+            self.scope_dec_d_spin.setValue(d)
+            self.scope_dec_m_spin.setValue(dm)
+            self.scope_dec_s_spin.setValue(round(float(ds), 1))
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+
+    def _sync_scope_coord_inputs_from_canvas(self) -> None:
+        if not hasattr(self, "scope_ra_h_spin"):
+            return
+        if self._scope_coord_inputs_have_focus():
+            return
+        center = getattr(getattr(self, "canvas", None), "scope_controller", None)
+        center = getattr(center, "center", None)
+        if center is None:
+            return
+        try:
+            ut_hour, day_of_year_utc = self.canvas._current_ut_context()
+            ra_dec = self.canvas._altaz_to_ra_dec(center[0], center[1], ut_hour, day_of_year_utc)
+            if ra_dec is None:
+                return
+            self._set_scope_coord_inputs(float(ra_dec[0]), float(ra_dec[1]))
+        except Exception:
+            return
+
+    def on_scope_goto_radec(self) -> None:
+        if not hasattr(self, "scope_ra_h_spin"):
+            return
+        ra_h = int(self.scope_ra_h_spin.value())
+        ra_m = int(self.scope_ra_m_spin.value())
+        ra_s = float(self.scope_ra_s_spin.value())
+        dec_sign = 1.0 if self.scope_dec_sign_combo.currentText() != "-" else -1.0
+        dec_d = int(self.scope_dec_d_spin.value())
+        dec_m = int(self.scope_dec_m_spin.value())
+        dec_s = float(self.scope_dec_s_spin.value())
+
+        ra_deg = (ra_h + (ra_m / 60.0) + (ra_s / 3600.0)) * 15.0
+        dec_deg = dec_sign * (dec_d + (dec_m / 60.0) + (dec_s / 3600.0))
+
+        try:
+            ut_hour, day_of_year_utc = self.canvas._current_ut_context()
+            sky = self.canvas._ra_dec_to_alt_az(ra_deg, dec_deg, ut_hour, day_of_year_utc)
+            if sky is None:
+                return
+            if not self.canvas.scope_mode_enabled():
+                self.activate_scope_mode()
+            self.canvas._scope_jump_to_sky(sky)
+            self._set_scope_coord_inputs(ra_deg, dec_deg)
+        except Exception:
+            return
+
     def _estimate_eye_pupil_mm(self, sun_alt_deg: float) -> float:
         if sun_alt_deg >= 0.0:
             return 2.2
@@ -6888,6 +7040,7 @@ class AstronomicalWidget(CustomWidgetBase):
                 "copernicus_api_url": str(get_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api") or ""),
             }
         )
+        self._sync_scope_coord_inputs_from_canvas()
         self.canvas.setFocus()
         self.sync_scope_ui_state(True)
 
@@ -7358,6 +7511,9 @@ class AstronomicalWidget(CustomWidgetBase):
                 delattr(self, 'trails_accumulated_seconds')
             if hasattr(self, 'lbl_trail_time'):
                 self.lbl_trail_time.setText("")
+
+        if hasattr(self, "scope_panel") and self.scope_panel.isVisible():
+            self._sync_scope_coord_inputs_from_canvas()
 
         self._refresh_climate_status_indicator()
         self.canvas.update()
