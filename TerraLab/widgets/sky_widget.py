@@ -4295,6 +4295,25 @@ class AstroCanvas(QWidget):
                 R_proj = min(w, h) / 2.0 * self.zoom_level
                 pixels_per_deg = R_proj / 90.0
                 celestial_scale = 10.0
+                scope_enabled = bool(self.scope_mode_enabled())
+                scope_disc_cap_px = None
+                scope_planet_cap_px = None
+
+                # Minimal anti-bloating guardrail:
+                # in wide scope fields (zoomed out), cap disc sizes so they do not
+                # explode into oversized balls.
+                if scope_enabled and hasattr(self, "scope_controller"):
+                    try:
+                        fov_w, fov_h = self.scope_controller.current_fov()
+                        fov_diag = math.hypot(float(fov_w), float(fov_h))
+                        # 0 @ narrow fields (<=6°), 1 @ very wide fields (>=32°)
+                        wide_t = max(0.0, min(1.0, (fov_diag - 6.0) / 26.0))
+                        # Keep current look at narrow FOV, progressively soften at wide FOV.
+                        celestial_scale = 10.0 - 5.8 * wide_t
+                        scope_disc_cap_px = max(3.5, 14.0 - 8.5 * wide_t)
+                        scope_planet_cap_px = max(2.0, 9.0 - 5.5 * wide_t)
+                    except Exception:
+                        pass
                 
                 # Sun Data
                 s = data['sun']
@@ -4340,6 +4359,9 @@ class AstroCanvas(QWidget):
 
                 sun_radius_px = max(3.0, sun_ang_radius_deg * pixels_per_deg * celestial_scale * scale_s)
                 moon_radius_px = max(3.0, moon_ang_radius_deg * pixels_per_deg * celestial_scale * scale_m)
+                if scope_disc_cap_px is not None:
+                    sun_radius_px = min(sun_radius_px, float(scope_disc_cap_px))
+                    moon_radius_px = min(moon_radius_px, float(scope_disc_cap_px))
 
                 show_sun_moon = True
                 if hasattr(self.parent_widget, 'chk_sun_moon'):
@@ -4451,6 +4473,8 @@ class AstroCanvas(QWidget):
                         
                         if fade_in > 0.01:
                             p_rad = max(2.0, (p['sz']/10.0) * pixels_per_deg * 2.0)
+                            if scope_planet_cap_px is not None:
+                                p_rad = min(p_rad, float(scope_planet_cap_px))
                             
                             # Apply fade to alpha
                             p_col = QColor(p['col'])
