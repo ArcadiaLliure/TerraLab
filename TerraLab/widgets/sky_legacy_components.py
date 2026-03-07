@@ -39,7 +39,12 @@ from PyQt5.QtGui import (
     QPolygonF,
 )
 
-from TerraLab.data.stars_dataset import ensure_stars_dataset, load_stars_dataset
+from TerraLab.data.stars_dataset import (
+    ensure_stars_dataset,
+    load_stars_dataset,
+    get_runtime_catalog_source_info,
+    log_startup_catalog_loaded,
+)
 from TerraLab.util.color import bp_rp_to_rgb_arrays
 
 try:
@@ -759,6 +764,7 @@ class CatalogLoaderWorker(QObject):
 
         celestial_objects = []
         np_ra = np_dec = np_mag = np_r = np_g = np_b = np_bp_rp = None
+        runtime_loaded = False
 
         # Preferred runtime path: APPDATA NPZ ensured from packaged ZST.
         if np is not None:
@@ -792,17 +798,40 @@ class CatalogLoaderWorker(QObject):
                         )
                     else:
                         celestial_objects = []
+                    runtime_loaded = True
                     print(
                         f"[CatalogLoader] Runtime dataset loaded: {len(np_ra)} stars "
                         f"from '{runtime_npz}' in {time.time()-t0:.3f}s"
                     )
+                    try:
+                        src_info = get_runtime_catalog_source_info()
+                        src_kind = str(src_info.get("source", "unknown"))
+                        src_path = str(src_info.get("source_path", "") or "")
+                        mag_min = float(np.min(np_mag)) if len(np_mag) > 0 else float("nan")
+                        mag_max = float(np.max(np_mag)) if len(np_mag) > 0 else float("nan")
+                        print(
+                            "[CatalogLoader] Startup source: "
+                            f"source={src_kind} "
+                            f"source_path='{src_path}' "
+                            f"rows={len(np_ra)} "
+                            f"mag_min={mag_min:.6f} "
+                            f"mag_max={mag_max:.6f}"
+                        )
+                        log_startup_catalog_loaded(
+                            runtime_npz=str(runtime_npz),
+                            rows=int(len(np_ra)),
+                            mag_min=mag_min,
+                            mag_max=mag_max,
+                        )
+                    except Exception as log_exc:
+                        print(f"[CatalogLoader] Startup source log failed: {log_exc}")
             except Exception as e:
                 print(f"[CatalogLoader] Runtime dataset path unavailable: {e}")
 
         entries = _discover_star_catalog_npz_entries(stars_dir)
         base_entry = _select_base_star_catalog_entry(entries, max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG)
 
-        if np is not None and (not celestial_objects) and base_entry is not None:
+        if np is not None and (not runtime_loaded) and base_entry is not None:
             try:
                 base = _load_star_npz_arrays(
                     base_entry["path"],
@@ -824,16 +853,17 @@ class CatalogLoaderWorker(QObject):
                     celestial_objects = _build_celestial_objects_from_arrays(
                         np_ra, np_dec, np_mag, bp_rp, source_id=source_id
                     )
+                    runtime_loaded = True
                     print(
                         f"[CatalogLoader] Loaded base NPZ '{os.path.basename(base_entry['path'])}' "
                         f"({len(np_ra)} stars) in {time.time()-t0:.3f}s"
                     )
             except Exception as e:
                 print(f"[CatalogLoader] Error loading base NPZ: {e}")
-        elif (not celestial_objects) and base_entry is None:
+        elif (not runtime_loaded) and base_entry is None:
             print(f"[CatalogLoader] No MAGNITUD_*.npz found in: {stars_dir}")
 
-        if not celestial_objects:
+        if (not runtime_loaded) and not celestial_objects:
             print("[CatalogLoader] Fallback to random stars")
             import random as _rnd
             for _ in range(500):

@@ -137,7 +137,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build TerraLab stars dataset ECSV -> ZST")
     parser.add_argument(
         "--stars-dir",
-        default=str(Path(__file__).resolve().parents[1] / "TerraLab" / "data" / "stars"),
+        default=str(Path(__file__).resolve().parents[1] / "gaia_stars" / "ecsv"),
         help="Directory containing *.ecsv files",
     )
     parser.add_argument("--zstd-level", type=int, default=12)

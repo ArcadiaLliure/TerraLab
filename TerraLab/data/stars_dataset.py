@@ -34,6 +34,7 @@ NPY_NAME = "stars_catalog.npy"
 ZST_NAME = "stars_catalog.zst"
 JSON_FALLBACK_NAME = "gaia_stars.json"
 SOURCE_LOG_NAME = "stars_dataset_source.log"
+META_NAME = "stars_dataset_meta.json"
 
 REQUIRED_COLS = ("ra", "dec", "phot_g_mean_mag")
 OPTIONAL_COLS = ("bp_rp", "pmra", "pmdec", "parallax", "source_id")
@@ -61,6 +62,10 @@ def _runtime_npy_path() -> Path:
 
 def _runtime_source_log_path() -> Path:
     return _runtime_data_dir() / SOURCE_LOG_NAME
+
+
+def _runtime_meta_path() -> Path:
+    return _runtime_data_dir() / META_NAME
 
 
 def _packaged_source_log_path() -> Path:
@@ -91,6 +96,127 @@ def _packaged_zst_path() -> Path:
 
 def _packaged_npz_path() -> Path:
     return _packaged_stars_dir() / NPZ_NAME
+
+
+def _read_runtime_meta(meta_path: Path) -> Dict[str, object]:
+    if not meta_path.exists():
+        return {}
+    try:
+        with meta_path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+def _write_runtime_meta(meta_path: Path, meta: Dict[str, object]) -> None:
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_out = meta_path.with_suffix(meta_path.suffix + ".tmp")
+    with tmp_out.open("w", encoding="utf-8") as fh:
+        json.dump(meta, fh, indent=2, ensure_ascii=True)
+    tmp_out.replace(meta_path)
+
+
+def _build_meta_payload(source: str, source_path: str | None = None, **extra) -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        "source": str(source or "unknown"),
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if source_path:
+        payload["source_path"] = str(source_path)
+        try:
+            payload["source_signature"] = _path_signature(Path(source_path))
+        except Exception:
+            pass
+    for k, v in extra.items():
+        if v is not None:
+            payload[str(k)] = v
+    return payload
+
+
+def get_runtime_catalog_source_info() -> Dict[str, object]:
+    """Return persisted source metadata for the current runtime stars dataset."""
+    meta = _read_runtime_meta(_runtime_meta_path())
+    if not isinstance(meta, dict):
+        return {"source": "unknown", "source_path": ""}
+
+    source = str(meta.get("source", "unknown") or "unknown")
+    source_path = str(meta.get("source_path", "") or "")
+
+    # Backward compatibility with previous zst-only metadata shape.
+    if (not source_path) and source == "zst":
+        zst_sig = meta.get("zst_signature")
+        if isinstance(zst_sig, dict):
+            source_path = str(zst_sig.get("path", "") or "")
+
+    info: Dict[str, object] = {"source": source, "source_path": source_path}
+    if "source_signature" in meta:
+        info["source_signature"] = meta.get("source_signature")
+    if "zst_signature" in meta:
+        info["zst_signature"] = meta.get("zst_signature")
+    return info
+
+
+def log_startup_catalog_loaded(runtime_npz: str, rows: int, mag_min: float, mag_max: float) -> None:
+    """Emit a startup log line that clearly states which catalog source was loaded."""
+    info = get_runtime_catalog_source_info()
+    source = str(info.get("source", "unknown"))
+    source_path = str(info.get("source_path", "") or "")
+    _source_log(
+        "startup_catalog "
+        f"source={source} "
+        f"source_path='{source_path}' "
+        f"runtime_npz='{runtime_npz}' "
+        f"rows={int(rows)} "
+        f"mag_min={float(mag_min):.6f} "
+        f"mag_max={float(mag_max):.6f}"
+    )
+
+
+def _path_signature(path: Path) -> Dict[str, object]:
+    st = path.stat()
+    return {
+        "path": str(path.resolve()),
+        "size": int(st.st_size),
+        "mtime_ns": int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1e9))),
+    }
+
+
+def _npz_get_first(npz_obj, keys):
+    for k in keys:
+        if k in npz_obj:
+            return npz_obj[k]
+    return None
+
+
+def _runtime_npz_to_arrays(npz_path: Path) -> Dict[str, np.ndarray]:
+    with np.load(npz_path, allow_pickle=False) as data:
+        ra_raw = _npz_get_first(data, ("ra", "RA"))
+        dec_raw = _npz_get_first(data, ("dec", "DEC"))
+        mag_raw = _npz_get_first(data, ("phot_g_mean_mag", "mag", "g_mag"))
+        if ra_raw is None or dec_raw is None or mag_raw is None:
+            raise ValueError(f"Dataset NPZ missing required arrays (ra/dec/mag): {npz_path}")
+
+        raw: Dict[str, np.ndarray] = {
+            "ra": np.asarray(ra_raw),
+            "dec": np.asarray(dec_raw),
+            "phot_g_mean_mag": np.asarray(mag_raw),
+        }
+        for optional_name in OPTIONAL_COLS:
+            arr = _npz_get_first(data, (optional_name,))
+            if arr is not None:
+                raw[optional_name] = np.asarray(arr)
+    arrays = _normalize_arrays(raw)
+    if len(arrays.get("ra", [])) <= 0:
+        raise ValueError(f"Dataset NPZ normalized to empty arrays: {npz_path}")
+    return arrays
+
+
+def _sync_runtime_npy_from_npz(npz_path: Path, npy_path: Path) -> None:
+    arrays = _runtime_npz_to_arrays(npz_path)
+    _write_structured_npy(npy_path, arrays)
 
 
 def _decompress_zst_to_npz(zst_path: Path, npz_path: Path) -> None:
@@ -516,18 +642,35 @@ def _build_from_npy_sources(stars_dir: Path, npz_path: Path, runtime_npy_path: P
 def ensure_stars_dataset() -> str:
     """Ensure `%APPDATA%/TerraLab/data/stars_catalog.npz` exists and return it."""
     npz_path = _runtime_npz_path()
-    if npz_path.exists() and npz_path.is_file():
-        _source_log(f"source=runtime_cache runtime_npz='{npz_path}'")
-        return str(npz_path)
-
     runtime_npy_path = _runtime_npy_path()
+    meta_path = _runtime_meta_path()
     stars_dir = _packaged_stars_dir()
 
     zst_path = _packaged_zst_path()
     if zst_path.exists():
+        zst_sig = _path_signature(zst_path)
+        meta = _read_runtime_meta(meta_path)
+        cached_sig = meta.get("zst_signature")
+        if npz_path.exists() and npz_path.is_file() and cached_sig == zst_sig:
+            _source_log(f"source=runtime_cache mode=zst runtime_npz='{npz_path}'")
+            return str(npz_path)
         try:
             _decompress_zst_to_npz(zst_path, npz_path)
-            _source_log(f"source=zst path='{zst_path}' -> runtime_npz='{npz_path}'")
+            _sync_runtime_npy_from_npz(npz_path, runtime_npy_path)
+            _write_runtime_meta(
+                meta_path,
+                {
+                    "source": "zst",
+                    "source_path": str(zst_path),
+                    "source_signature": zst_sig,
+                    "zst_signature": zst_sig,
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
+            _source_log(
+                f"source=zst path='{zst_path}' -> runtime_npz='{npz_path}' "
+                f"runtime_npy='{runtime_npy_path}'"
+            )
             return str(npz_path)
         except Exception as exc:
             # Continue to local fallbacks (NPY/ECSV/JSON) if ZST path is unusable.
@@ -535,21 +678,66 @@ def ensure_stars_dataset() -> str:
     else:
         _source_log(f"source=zst miss file not found '{zst_path}'")
 
+    if npz_path.exists() and npz_path.is_file():
+        meta = _read_runtime_meta(meta_path)
+        if not isinstance(meta, dict) or not meta.get("source"):
+            _write_runtime_meta(
+                meta_path,
+                _build_meta_payload(
+                    source="runtime_cache",
+                    source_path=str(npz_path),
+                ),
+            )
+        _source_log(f"source=runtime_cache runtime_npz='{npz_path}'")
+        return str(npz_path)
+
     packaged_npz = _packaged_npz_path()
     if packaged_npz.exists():
         npz_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(packaged_npz, npz_path)
+        try:
+            _sync_runtime_npy_from_npz(npz_path, runtime_npy_path)
+        except Exception as exc:
+            _source_log(f"source=packaged_npz npy_sync_failed error='{exc}'")
+        _write_runtime_meta(
+            meta_path,
+            _build_meta_payload(
+                source="packaged_npz",
+                source_path=str(packaged_npz),
+            ),
+        )
         _source_log(f"source=packaged_npz path='{packaged_npz}' -> runtime_npz='{npz_path}'")
         return str(npz_path)
     _source_log(f"source=packaged_npz miss file not found '{packaged_npz}'")
 
     if _build_from_npy_sources(stars_dir, npz_path, runtime_npy_path):
+        _write_runtime_meta(
+            meta_path,
+            _build_meta_payload(
+                source="npy_fallback",
+                source_path=str(stars_dir),
+            ),
+        )
         return str(npz_path)
 
     if _build_from_ecsv(stars_dir, npz_path):
+        _write_runtime_meta(
+            meta_path,
+            _build_meta_payload(
+                source="ecsv_fallback",
+                source_path=str(stars_dir),
+            ),
+        )
         return str(npz_path)
 
     if _build_from_json(stars_dir, npz_path, runtime_npy_path):
+        _write_runtime_meta(
+            meta_path,
+            _build_meta_payload(
+                source="json_fallback",
+                source_path=str(stars_dir / JSON_FALLBACK_NAME),
+            ),
+        )
         return str(npz_path)
 
     _source_log(f"source=none no dataset source found in stars_dir='{stars_dir}'")

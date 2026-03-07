@@ -55,7 +55,6 @@ class TelescopeScopeController:
         self.aspect_ratio_override: Optional[float] = None  # width / height for rectangle mode
         self.center: Optional[SkyCoord] = None
         self.dragging = False
-        self.last_mouse = QPointF(0.0, 0.0)
         self.manual_override: Optional[Tuple[float, float]] = None
 
     def activate(self) -> None:
@@ -144,27 +143,17 @@ class TelescopeScopeController:
 
     def start_drag(self, sx: float, sy: float) -> None:
         self.dragging = True
-        self.last_mouse = QPointF(float(sx), float(sy))
 
     def drag_move(self, sx: float, sy: float, unproject_fn: Callable) -> bool:
         if not self.enabled or not self.dragging:
             return False
-        if self.center is None:
-            return True
-
-        c = self.center
-        p0 = self.last_mouse
-        sky_prev = screen_to_sky(p0.x(), p0.y(), unproject_fn)
         sky_now = screen_to_sky(float(sx), float(sy), unproject_fn)
-        if sky_prev is None or sky_now is None:
-            self.last_mouse = QPointF(float(sx), float(sy))
+        if sky_now is None:
             return True
 
-        # Camera-like drag: movement of mouse displaces target in opposite direction.
-        d_alt = sky_now[0] - sky_prev[0]
-        d_az = ((sky_now[1] - sky_prev[1] + 180.0) % 360.0) - 180.0
-        self.center = self._normalized_center((c[0] - d_alt, c[1] - d_az))
-        self.last_mouse = QPointF(float(sx), float(sy))
+        # Direct follow: reticle center tracks mouse position in sky coordinates.
+        self.center = self._normalized_center(sky_now)
+        self.awaiting_center_click = False
         return True
 
     def end_drag(self) -> None:
