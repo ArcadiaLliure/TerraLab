@@ -240,6 +240,7 @@ class HorizonOverlay(QObject):
             except Exception as e:
                 print(f"[HorizonOverlay] Exception loading profile: {e}")
 
+        if not self._layers:
             print("[HorizonOverlay] No real data loaded — activating procedural fallback.")
             self._build_procedural_fallback()
 

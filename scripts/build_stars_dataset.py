@@ -7,6 +7,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import time
@@ -33,6 +34,7 @@ except Exception:  # pragma: no cover
 
 REQUIRED_COLS = ("ra", "dec", "phot_g_mean_mag", "bp_rp")
 OPTIONAL_COLS = ("pmra", "pmdec", "parallax", "source_id")
+JSON_SUPPLEMENT_PATH = Path(__file__).resolve().parents[1] / "TerraLab" / "data" / "stars" / "gaia_stars.json"
 
 
 def _read_with_astropy(path: Path) -> Dict[str, np.ndarray]:
@@ -123,6 +125,92 @@ def concat_chunks(chunks: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
     return out
 
 
+def _read_named_star_json_supplement(path: Path) -> Dict[str, np.ndarray] | None:
+    # Temporary patch:
+    # gaia_stars.json is used to backfill missing bright/named stars while the ECSV
+    # source is incomplete. This must remain optional: if the JSON disappears later,
+    # the build must continue from ECSV only without crashing.
+    if not path.exists():
+        return None
+
+    with path.open("r", encoding="utf-8") as fh:
+        payload = json.load(fh)
+
+    rows = []
+    names: List[str] = []
+    if isinstance(payload, dict):
+        rows = payload.get("data") or []
+        metadata = payload.get("metadata") or []
+        for item in metadata:
+            if isinstance(item, dict):
+                names.append(str(item.get("name", "")))
+    elif isinstance(payload, list):
+        rows = payload
+
+    if not rows:
+        return None
+
+    if isinstance(rows[0], dict):
+        raw: Dict[str, np.ndarray] = {}
+        for key in REQUIRED_COLS + OPTIONAL_COLS:
+            raw[key] = np.asarray([row.get(key) for row in rows], dtype=object)
+        return normalize_arrays(raw)
+
+    if not names:
+        return None
+
+    idx = {name: i for i, name in enumerate(names)}
+    raw = {}
+    for key in REQUIRED_COLS + OPTIONAL_COLS:
+        pos = idx.get(key)
+        if pos is None:
+            continue
+        raw[key] = np.asarray(
+            [
+                row[pos] if isinstance(row, (list, tuple)) and pos < len(row) else np.nan
+                for row in rows
+            ],
+            dtype=object,
+        )
+    if not raw:
+        return None
+    return normalize_arrays(raw)
+
+
+def _dedupe_by_source_id_first(arrays: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+    source_id = arrays.get("source_id")
+    if source_id is None:
+        return arrays
+
+    sid = np.asarray(source_id, dtype=np.int64)
+    n = len(sid)
+    if n <= 1:
+        return arrays
+
+    valid_mask = sid >= 0
+    if not np.any(valid_mask):
+        return arrays
+
+    valid_idx = np.where(valid_mask)[0]
+    valid_sid = sid[valid_mask]
+    _, first_pos = np.unique(valid_sid, return_index=True)
+    keep_valid_idx = valid_idx[first_pos]
+    invalid_idx = np.where(~valid_mask)[0]
+    keep_idx = np.sort(np.concatenate((keep_valid_idx, invalid_idx))).astype(np.int64, copy=False)
+
+    if len(keep_idx) == n:
+        return arrays
+
+    out: Dict[str, np.ndarray] = {}
+    for key, arr in arrays.items():
+        arr_np = np.asarray(arr)
+        if len(arr_np) == n:
+            out[key] = arr_np[keep_idx]
+        else:
+            out[key] = arr_np
+    return out
+
+
 def compress_npz_to_zst(npz_path: Path, zst_path: Path, level: int) -> None:
     if zstd is None:
         raise RuntimeError("zstandard is required to create .zst dataset. Install with: pip install zstandard")
@@ -165,10 +253,46 @@ def main() -> None:
         chunks.append(normalized)
         print(f"  - {path.name}: {n} rows ({time.time()-t_file:.2f}s)")
 
+    print("[build_stars_dataset] Stage: load optional named-star supplement")
+    t_stage = time.time()
+    try:
+        supplement = _read_named_star_json_supplement(JSON_SUPPLEMENT_PATH)
+    except Exception as exc:
+        supplement = None
+        print(f"[build_stars_dataset] Named-star supplement skipped: {exc}")
+    if supplement is not None and len(supplement.get("ra", [])) > 0:
+        chunks.append(supplement)
+        print(
+            "[build_stars_dataset] Temporary named-star supplement appended: "
+            f"{len(supplement['ra'])} rows from {JSON_SUPPLEMENT_PATH.name}"
+        )
+    print(f"[build_stars_dataset] Stage done: supplement ({time.time()-t_stage:.2f}s)")
+
+    print(
+        "[build_stars_dataset] Stage: concatenate chunks "
+        f"({len(chunks)} chunk(s), approx_rows={sum(len(c.get('ra', [])) for c in chunks)})"
+    )
+    t_stage = time.time()
     merged = concat_chunks(chunks)
+    print(
+        "[build_stars_dataset] Stage done: concatenate "
+        f"({len(merged.get('ra', []))} rows, {time.time()-t_stage:.2f}s)"
+    )
+
+    merged_before_dedupe = len(merged.get("ra", []))
+    if supplement is not None and len(supplement.get("ra", [])) > 0:
+        print("[build_stars_dataset] Stage: deduplicate by source_id")
+        t_stage = time.time()
+        merged = _dedupe_by_source_id_first(merged)
+        print(f"[build_stars_dataset] Stage done: deduplicate ({time.time()-t_stage:.2f}s)")
     merged_rows = len(merged.get("ra", []))
     if merged_rows == 0:
         raise SystemExit("No rows after normalization")
+    if merged_rows != merged_before_dedupe:
+        print(
+            "[build_stars_dataset] Deduplicated by source_id: "
+            f"{merged_before_dedupe - merged_rows} duplicate row(s) removed"
+        )
 
     temp_npz = stars_dir / "stars_catalog.tmp.npz"
     final_zst = stars_dir / "stars_catalog.zst"
@@ -177,14 +301,24 @@ def main() -> None:
     # - ra/dec float64 (projection precision)
     # - phot_g_mean_mag/bp_rp/pm*/parallax float32 (compact)
     # - source_id int64
+    print(f"[build_stars_dataset] Stage: write temporary NPZ -> {temp_npz}")
+    t_stage = time.time()
     np.savez(
         temp_npz,
         **merged,
     )
-    print(f"[build_stars_dataset] Temporary NPZ written: {temp_npz} ({temp_npz.stat().st_size / (1024*1024):.1f} MiB)")
+    print(
+        f"[build_stars_dataset] Temporary NPZ written: {temp_npz} "
+        f"({temp_npz.stat().st_size / (1024*1024):.1f} MiB, {time.time()-t_stage:.2f}s)"
+    )
 
+    print(f"[build_stars_dataset] Stage: compress NPZ -> ZST -> {final_zst}")
+    t_stage = time.time()
     compress_npz_to_zst(temp_npz, final_zst, level=int(args.zstd_level))
-    print(f"[build_stars_dataset] ZST written: {final_zst} ({final_zst.stat().st_size / (1024*1024):.1f} MiB)")
+    print(
+        f"[build_stars_dataset] ZST written: {final_zst} "
+        f"({final_zst.stat().st_size / (1024*1024):.1f} MiB, {time.time()-t_stage:.2f}s)"
+    )
 
     try:
         temp_npz.unlink()

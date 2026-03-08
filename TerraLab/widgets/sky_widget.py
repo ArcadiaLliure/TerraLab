@@ -2,6 +2,7 @@
 import os
 import time
 import random
+import json
 import unicodedata
 from typing import Optional
 try:
@@ -143,8 +144,7 @@ class AstroCanvas(QWidget):
         )
         
         # Horizon Overlay (terrain/mountains â€” independent from village)
-        _horizon_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'horizon_profile.npz')
-        self.horizon_overlay = HorizonOverlay(horizon_profile_path=_horizon_path)
+        self.horizon_overlay = HorizonOverlay(horizon_profile_path=None)
         self.horizon_overlay.request_update.connect(self.update)
         
         # Village Overlay (houses, trees, lanterns â€” on top of terrain)
@@ -1425,8 +1425,10 @@ class AstroCanvas(QWidget):
         # Toast HUD: show FOV and 35mm-equivalent focal of current camera zoom.
         if hasattr(self, 'hint_overlay') and not self.scope_mode_enabled():
             fov_deg = 100.0 / self.zoom_level
-            focal_rad = math.radians(fov_deg)
-            focal_eq = int(round(18.0 / math.tan(focal_rad / 2.0)))
+            focal_eq = 1
+            if fov_deg < 179.0:
+                focal_rad = math.radians(fov_deg)
+                focal_eq = max(1, int(round(18.0 / math.tan(focal_rad / 2.0))))
             txt = getTraduction("HUD.ZoomHint", "FOV {fov}°  ·  {focal}mm").format(
                 fov=f"{fov_deg:.1f}", focal=focal_eq
             )
@@ -1941,13 +1943,15 @@ class AstroCanvas(QWidget):
             # 35mm equiv focal length: f = 36 / (2 * tan(fov_horiz/2))
             # fov_horiz_rad = radians(100 / zoom)
             fov_rad = math.radians(93.9 / self.zoom_level)
-            focal_length = 18.0 / math.tan(fov_rad / 2.0)
+            focal_length = 1.0
+            if (93.9 / self.zoom_level) < 179.0:
+                focal_length = max(1.0, 18.0 / math.tan(fov_rad / 2.0))
             
             # Using round() to avoid 49.99mm displaying as 49mm
             if self.scope_mode_enabled() and hasattr(self, "scope_controller"):
                 display_focal = int(round(max(1.0, float(getattr(self.scope_controller, "focal_mm", focal_length)))))
             else:
-                display_focal = int(round(focal_length))
+                display_focal = max(1, int(round(focal_length)))
             painter.drawText(20, 120, f"FOC: {display_focal} mm")
             
             # Position the eye button dynamically next to FOC text
@@ -3106,6 +3110,15 @@ class AstroCanvas(QWidget):
             f"zoom={self.zoom_level:.2f} fov={fov_deg:.2f} "
             f"cam_ra={self.azimuth_offset % 360.0:.2f} cam_dec={self.elevation_angle:.2f} "
             f"total_in_view={stars_result.total_in_view} "
+            f"view_prefilter={int(counters.get('view_prefilter_count', 0))} "
+            f"view_tiles={int(counters.get('view_tile_count', 0))} "
+            f"view_tile_candidates={int(counters.get('view_tile_candidates', 0))} "
+            f"view_fov_pre={float(counters.get('view_prefilter_fov_deg', 0.0)):.2f} "
+            f"scope_prefilter={int(counters.get('scope_prefilter_count', 0))} "
+            f"scope_mask={int(counters.get('scope_after_mask', 0))} "
+            f"scope_bounds={int(counters.get('scope_after_bounds', 0))} "
+            f"scope_tiles={int(counters.get('scope_tile_count', 0))} "
+            f"scope_tile_candidates={int(counters.get('scope_tile_candidates', 0))} "
             f"after_mag={stars_result.after_mag_cut} "
             f"after_bucket={stars_result.after_bucket} "
             f"avg_radius={stars_result.avg_radius:.2f} "
@@ -3119,6 +3132,10 @@ class AstroCanvas(QWidget):
             f"catalogMax={float(counters.get('catalog_max_mag', -1.0)):.2f} "
             f"ms_horizon={timings.get('renderer_horizon', 0.0):.2f} "
             f"ms_grid={timings.get('renderer_grid', 0.0):.2f} "
+            f"ms_view_pre={timings.get('stars_view_prefilter', 0.0):.2f} "
+            f"ms_scope_pre={timings.get('stars_scope_prefilter', 0.0):.2f} "
+            f"ms_altaz={timings.get('stars_altaz', 0.0):.2f} "
+            f"ms_proj={timings.get('stars_projection', 0.0):.2f} "
             f"ms_stars_renderer={timings.get('renderer_stars', 0.0):.2f} "
             f"ms_overlays={timings.get('renderer_overlays', 0.0):.2f}"
         )
@@ -5609,8 +5626,6 @@ class AstronomicalWidget(CustomWidgetBase):
             if self.lbl_loading.isHidden():
                 self.lbl_loading.show()
                 self.lbl_loading.raise_()
-        
-        self.canvas.update()
 
     def pause_updates(self):
         """Pause sky updates to free up main thread for video loading."""
@@ -5767,7 +5782,11 @@ class AstronomicalWidget(CustomWidgetBase):
                 try:
                     stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
                     if stars_renderer is not None:
-                        stars_renderer.prime_catalog_indices(getattr(self, "np_ra", None))
+                        stars_renderer.prime_catalog_indices(
+                            getattr(self, "np_ra", None),
+                            getattr(self, "np_dec", None),
+                            getattr(self, "np_mag", None),
+                        )
                 except Exception:
                     pass
                 self.canvas.update()
@@ -7036,7 +7055,11 @@ class AstronomicalWidget(CustomWidgetBase):
         try:
             stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
             if stars_renderer is not None:
-                stars_renderer.prime_catalog_indices(getattr(self, "np_ra", None))
+                stars_renderer.prime_catalog_indices(
+                    getattr(self, "np_ra", None),
+                    getattr(self, "np_dec", None),
+                    getattr(self, "np_mag", None),
+                )
         except Exception:
             pass
         self.canvas.set_scope_focal_mm(self.scope_focal_spin.value())
@@ -8048,6 +8071,15 @@ class AstronomicalWidget(CustomWidgetBase):
                 if name and not name.lower().startswith('gaia'):
                     register_name(name, {"type": "star", "obj": star})
 
+        # Temporary patch:
+        # gaia_stars.json still carries commercial star names while the large ZST
+        # does not embed them. Use it only as an optional search supplement.
+        # If the JSON disappears later, search must still work without crashing.
+        for star_info in self._load_named_star_search_entries():
+            name = str(star_info.get("name", "")).strip()
+            if name:
+                register_name(name, {"type": "star", "obj": star_info})
+
         # 3. SETUP QCOMPLETER
         from PyQt5.QtWidgets import QCompleter
         from PyQt5.QtCore import Qt
@@ -8060,6 +8092,77 @@ class AstronomicalWidget(CustomWidgetBase):
         completer.activated[str].connect(self.on_search_triggered)
         self.txt_search.setEnabled(True)
         print(f"[AstroWidget] Search index built: {len(self.search_index)} objects.")
+
+    def _load_named_star_search_entries(self):
+        cached = getattr(self, "_named_star_search_entries_cache", None)
+        if cached is not None:
+            return cached
+
+        path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "data", "stars", "gaia_stars.json")
+        )
+        if not os.path.isfile(path):
+            self._named_star_search_entries_cache = []
+            return self._named_star_search_entries_cache
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception as exc:
+            print(f"[AstroWidget] Named-star search supplement skipped: {exc}")
+            self._named_star_search_entries_cache = []
+            return self._named_star_search_entries_cache
+
+        rows = []
+        names = []
+        if isinstance(payload, dict):
+            rows = payload.get("data") or []
+            metadata = payload.get("metadata") or []
+            for item in metadata:
+                if isinstance(item, dict):
+                    names.append(str(item.get("name", "")))
+        elif isinstance(payload, list):
+            rows = payload
+
+        if not rows or not names:
+            self._named_star_search_entries_cache = []
+            return self._named_star_search_entries_cache
+
+        idx = {name: i for i, name in enumerate(names)}
+        name_i = idx.get("designation")
+        ra_i = idx.get("ra")
+        dec_i = idx.get("dec")
+        sid_i = idx.get("source_id")
+        if name_i is None or ra_i is None or dec_i is None:
+            self._named_star_search_entries_cache = []
+            return self._named_star_search_entries_cache
+
+        out = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)):
+                continue
+            if max(name_i, ra_i, dec_i) >= len(row):
+                continue
+            try:
+                name = str(row[name_i] or "").strip()
+                if (not name) or name.lower().startswith("gaia dr3 "):
+                    continue
+                ra = float(row[ra_i])
+                dec = float(row[dec_i])
+                if not math.isfinite(ra) or not math.isfinite(dec):
+                    continue
+                info = {"name": name, "ra": ra, "dec": dec}
+                if sid_i is not None and sid_i < len(row):
+                    try:
+                        info["source_id"] = int(row[sid_i])
+                    except Exception:
+                        pass
+                out.append(info)
+            except Exception:
+                continue
+
+        self._named_star_search_entries_cache = out
+        return self._named_star_search_entries_cache
 
     @staticmethod
     def _normalize_search_key(text: str) -> str:
