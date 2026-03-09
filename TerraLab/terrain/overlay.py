@@ -165,7 +165,7 @@ class _BandPoints:
         self.band_id  = band_id
         # Parsegem min/max de l'ID (ex: "far_25k_38k")
         self.band_min, self.band_max = _parse_band_max_from_id(band_id)
-        self.points = self._build(profile, band_id, vert_exaggeration)
+        self.points, self.valid_mask = self._build(profile, band_id, vert_exaggeration)
 
 
     # ── private ──
@@ -173,7 +173,7 @@ class _BandPoints:
     def _build(self, profile, band_id, vert_exag):
         raw = profile.get_band_points(band_id)
         if not raw:
-            return None, None
+            return (None, None), None
 
         # Unpack raw data (list of (az, elev))
         # Check if raw is already a numpy array from the engine
@@ -183,6 +183,11 @@ class _BandPoints:
         else:
             az = np.array([pt[0] for pt in raw], dtype=np.float32)
             elev = np.array([pt[1] for pt in raw], dtype=np.float32)
+        resolved_mask = getattr(profile, "resolved_mask", None)
+        if resolved_mask is not None and len(resolved_mask) == len(az):
+            valid_mask = np.asarray(resolved_mask, dtype=bool)
+        else:
+            valid_mask = np.ones_like(az, dtype=bool)
 
         # Handle voids
         h = np.where(elev < self.VOID_THRESHOLD, -20.0, elev * vert_exag)
@@ -191,10 +196,11 @@ class _BandPoints:
         if len(az) > 0 and az[0] == 0 and az[-1] < 360:
             az = np.append(az, 360.0)
             h = np.append(h, h[0])
+            valid_mask = np.append(valid_mask, valid_mask[0])
             
         # Ensure sorting for polygon continuity
         sort_idx = np.argsort(az)
-        return az[sort_idx], h[sort_idx]
+        return (az[sort_idx], h[sort_idx]), valid_mask[sort_idx]
 
 
 # ─── Main overlay class ──────────────────────────────────────────
@@ -209,9 +215,10 @@ class HorizonOverlay(QObject):
     request_update = pyqtSignal()
 
     def __init__(self, parent=None, horizon_profile_path=None,
-                 vert_exaggeration=1.0):
+                 vert_exaggeration=1.0, allow_procedural_fallback=True):
         super().__init__(parent)
         self.vert_exaggeration = vert_exaggeration
+        self.allow_procedural_fallback = bool(allow_procedural_fallback)
         self._layers = []       # list of (_BandPoints, parallax, night_col, day_col)
         self.profile = None      # Store reference to the current profile
         self._loaded = False
@@ -240,7 +247,7 @@ class HorizonOverlay(QObject):
             except Exception as e:
                 print(f"[HorizonOverlay] Exception loading profile: {e}")
 
-        if not self._layers:
+        if not self._layers and self.allow_procedural_fallback:
             print("[HorizonOverlay] No real data loaded — activating procedural fallback.")
             self._build_procedural_fallback()
 
@@ -279,6 +286,14 @@ class HorizonOverlay(QObject):
             
         except Exception as e:
             print(f"[HorizonOverlay] Error setting profile: {e}")
+
+    def clear_profile(self):
+        self.profile = None
+        self._layers.clear()
+        self._loaded = False
+        if self.allow_procedural_fallback:
+            self._build_procedural_fallback()
+        self.request_update.emit()
 
     def draw(self, painter: QPainter, projection_fn, 
              width: int, height: int,
@@ -448,7 +463,9 @@ class HorizonOverlay(QObject):
         # ── Farciment del terra amb gradient de perspectiva ───────────────────────
         # Simulem el pla de terra que s'allunya amb un gradient fosc→color terra,
         # evitant el rectangle pla uniforme que trenca el realisme.
-        if self._layers:
+        profile_resolved = getattr(self.profile, "resolved_mask", None)
+        profile_is_partial = profile_resolved is not None and not bool(np.all(profile_resolved))
+        if self._layers and not profile_is_partial:
             ground_c = _lerp_color(GROUND_DAY, GROUND_NIGHT, t_night)
             nearest = self._layers[-1]
             self._draw_ground_linear(painter, nearest[0], ground_c, projection_fn,
@@ -466,6 +483,9 @@ class HorizonOverlay(QObject):
         """
         az_raw, h_raw = band_pts.points
         if az_raw is None: return
+        valid_raw = getattr(band_pts, "valid_mask", None)
+        if valid_raw is None:
+            valid_raw = np.ones_like(az_raw, dtype=bool)
 
         # Apply parallax shift
         parallax_shift = (parallax - 1.0) * cur_az
@@ -487,6 +507,9 @@ class HorizonOverlay(QObject):
             
             culled_az = final_az[mask]
             culled_h = h_raw[mask]
+            culled_valid = np.asarray(valid_raw[mask], dtype=bool)
+            if not np.any(culled_valid):
+                continue
             
             # 2. VECTORIZED PROJECTION
             # Linear X mapping
@@ -509,8 +532,18 @@ class HorizonOverlay(QObject):
                         sy.append(h * 2) # Safety
                 sy = np.array(sy)
 
-            all_sx.append(sx)
-            all_sy.append(sy)
+            finite_mask = np.isfinite(sx) & np.isfinite(sy) & culled_valid
+            if not np.any(finite_mask):
+                continue
+            edge_mask = np.diff(np.pad(finite_mask.astype(np.int8), (1, 1), constant_values=0))
+            starts = np.where(edge_mask == 1)[0]
+            stops = np.where(edge_mask == -1)[0]
+            for start, stop in zip(starts, stops):
+                seg_sx = sx[start:stop]
+                seg_sy = sy[start:stop]
+                if len(seg_sx) >= 2:
+                    all_sx.append(seg_sx)
+                    all_sy.append(seg_sy)
             
         if all_sx:
             self._fill_strip_downward_numpy(painter, all_sx, all_sy, color, h * 2)
@@ -651,4 +684,5 @@ class HorizonOverlay(QObject):
             
             bp = _BandPoints.__new__(_BandPoints)
             bp.points = (np.array(pts_az, dtype=np.float32), np.array(pts_h, dtype=np.float32))
+            bp.valid_mask = np.ones(len(pts_az), dtype=bool)
             self._layers.append((bp, par, nc, dc))

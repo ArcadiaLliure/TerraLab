@@ -29,6 +29,76 @@ class StarsRenderResult:
     avg_radius: float = 0.0
 
 
+def build_scope_spatial_index_payload(
+    ra_all,
+    dec_all,
+    ra_bins: int = 360,
+    dec_bins: int = 180,
+    chunk_size: int = 1_000_000,
+):
+    if np is None or ra_all is None or dec_all is None:
+        return None, None
+
+    n_total = int(len(ra_all))
+    num_tiles = int(ra_bins * dec_bins)
+    if n_total <= 0:
+        return np.array([], dtype=np.int32), np.zeros(num_tiles + 1, dtype=np.int64)
+
+    counts = np.zeros(num_tiles, dtype=np.int64)
+    valid_total = 0
+
+    for start in range(0, n_total, chunk_size):
+        end = min(start + chunk_size, n_total)
+        ra_chunk = np.asarray(ra_all[start:end], dtype=np.float32)
+        dec_chunk = np.asarray(dec_all[start:end], dtype=np.float32)
+        valid = np.isfinite(ra_chunk) & np.isfinite(dec_chunk)
+        if not np.any(valid):
+            continue
+
+        ra_valid = np.mod(ra_chunk[valid], 360.0)
+        dec_valid = np.clip(dec_chunk[valid], -90.0, 89.99999)
+        ra_bin = np.asarray(np.floor(ra_valid), dtype=np.int32)
+        dec_bin = np.asarray(np.floor(dec_valid + 90.0), dtype=np.int32)
+        tile_ids = np.asarray(dec_bin * ra_bins + ra_bin, dtype=np.int32)
+        counts += np.bincount(tile_ids, minlength=num_tiles)
+        valid_total += int(len(tile_ids))
+
+    offsets = np.empty(num_tiles + 1, dtype=np.int64)
+    offsets[0] = 0
+    np.cumsum(counts, out=offsets[1:])
+    sorted_indices = np.empty(valid_total, dtype=np.int32)
+    cursor = offsets[:-1].copy()
+
+    for start in range(0, n_total, chunk_size):
+        end = min(start + chunk_size, n_total)
+        ra_chunk = np.asarray(ra_all[start:end], dtype=np.float32)
+        dec_chunk = np.asarray(dec_all[start:end], dtype=np.float32)
+        valid = np.isfinite(ra_chunk) & np.isfinite(dec_chunk)
+        if not np.any(valid):
+            continue
+
+        raw_idx = np.arange(start, end, dtype=np.int32)[valid]
+        ra_valid = np.mod(ra_chunk[valid], 360.0)
+        dec_valid = np.clip(dec_chunk[valid], -90.0, 89.99999)
+        ra_bin = np.asarray(np.floor(ra_valid), dtype=np.int32)
+        dec_bin = np.asarray(np.floor(dec_valid + 90.0), dtype=np.int32)
+        tile_ids = np.asarray(dec_bin * ra_bins + ra_bin, dtype=np.int32)
+
+        local_order = np.argsort(tile_ids, kind="mergesort")
+        tile_sorted = tile_ids[local_order]
+        idx_sorted = raw_idx[local_order]
+        unique_tiles, first_pos = np.unique(tile_sorted, return_index=True)
+        next_pos = np.append(first_pos[1:], len(tile_sorted))
+
+        for tile_id, seg_start, seg_end in zip(unique_tiles, first_pos, next_pos):
+            dst = int(cursor[int(tile_id)])
+            seg_len = int(seg_end - seg_start)
+            sorted_indices[dst : dst + seg_len] = idx_sorted[seg_start:seg_end]
+            cursor[int(tile_id)] += seg_len
+
+    return sorted_indices, offsets
+
+
 class StarsRenderer:
     """
     Renderer orientado a look "sky map / night-sky":
@@ -66,6 +136,7 @@ class StarsRenderer:
         self._scope_query_cache_indices = None
         self._scope_query_cache_tile_count = 0
         self._scope_query_cache_candidate_count = 0
+        self._scope_index_pending_key = None
 
 
     # -----------------------------
@@ -160,6 +231,25 @@ class StarsRenderer:
         self._scope_query_cache_tile_count = 0
         self._scope_query_cache_candidate_count = 0
 
+    def begin_scope_index_warmup(self, ra_all, dec_all):
+        key = self._catalog_array_key(ra_all, dec_all)
+        self._scope_index_pending_key = key
+        if self._scope_grid_key != key:
+            self._reset_scope_spatial_index()
+        return key
+
+    def apply_scope_spatial_index_payload(self, key, sorted_indices, offsets):
+        self._reset_scope_spatial_index()
+        self._scope_grid_key = key
+        self._scope_grid_indices = np.asarray(sorted_indices, dtype=np.int32)
+        self._scope_grid_offsets = np.asarray(offsets, dtype=np.int64)
+        if self._scope_index_pending_key == key:
+            self._scope_index_pending_key = None
+
+    def clear_scope_index_warmup(self, key=None):
+        if key is None or self._scope_index_pending_key == key:
+            self._scope_index_pending_key = None
+
     def _ensure_scope_spatial_index(self, ra_all, dec_all):
         if np is None or ra_all is None or dec_all is None:
             return None, None
@@ -173,73 +263,17 @@ class StarsRenderer:
             return self._scope_grid_indices, self._scope_grid_offsets
 
         self._reset_scope_spatial_index()
+        if self._scope_index_pending_key == key:
+            return None, None
 
-        n_total = int(len(ra_all))
-        if n_total <= 0:
-            self._scope_grid_key = key
-            self._scope_grid_indices = np.array([], dtype=np.int32)
-            self._scope_grid_offsets = np.zeros(
-                self._scope_grid_ra_bins * self._scope_grid_dec_bins + 1,
-                dtype=np.int64,
-            )
-            return self._scope_grid_indices, self._scope_grid_offsets
-
-        ra_bins = int(self._scope_grid_ra_bins)
-        dec_bins = int(self._scope_grid_dec_bins)
-        num_tiles = int(ra_bins * dec_bins)
-        chunk_size = 1_000_000
-
-        counts = np.zeros(num_tiles, dtype=np.int64)
-        valid_total = 0
-
-        for start in range(0, n_total, chunk_size):
-            end = min(start + chunk_size, n_total)
-            ra_chunk = np.asarray(ra_all[start:end], dtype=np.float32)
-            dec_chunk = np.asarray(dec_all[start:end], dtype=np.float32)
-            valid = np.isfinite(ra_chunk) & np.isfinite(dec_chunk)
-            if not np.any(valid):
-                continue
-
-            ra_valid = np.mod(ra_chunk[valid], 360.0)
-            dec_valid = np.clip(dec_chunk[valid], -90.0, 89.99999)
-            ra_bin = np.asarray(np.floor(ra_valid), dtype=np.int32)
-            dec_bin = np.asarray(np.floor(dec_valid + 90.0), dtype=np.int32)
-            tile_ids = np.asarray(dec_bin * ra_bins + ra_bin, dtype=np.int32)
-            counts += np.bincount(tile_ids, minlength=num_tiles)
-            valid_total += int(len(tile_ids))
-
-        offsets = np.empty(num_tiles + 1, dtype=np.int64)
-        offsets[0] = 0
-        np.cumsum(counts, out=offsets[1:])
-        sorted_indices = np.empty(valid_total, dtype=np.int32)
-        cursor = offsets[:-1].copy()
-
-        for start in range(0, n_total, chunk_size):
-            end = min(start + chunk_size, n_total)
-            ra_chunk = np.asarray(ra_all[start:end], dtype=np.float32)
-            dec_chunk = np.asarray(dec_all[start:end], dtype=np.float32)
-            valid = np.isfinite(ra_chunk) & np.isfinite(dec_chunk)
-            if not np.any(valid):
-                continue
-
-            raw_idx = np.arange(start, end, dtype=np.int32)[valid]
-            ra_valid = np.mod(ra_chunk[valid], 360.0)
-            dec_valid = np.clip(dec_chunk[valid], -90.0, 89.99999)
-            ra_bin = np.asarray(np.floor(ra_valid), dtype=np.int32)
-            dec_bin = np.asarray(np.floor(dec_valid + 90.0), dtype=np.int32)
-            tile_ids = np.asarray(dec_bin * ra_bins + ra_bin, dtype=np.int32)
-
-            local_order = np.argsort(tile_ids, kind="mergesort")
-            tile_sorted = tile_ids[local_order]
-            idx_sorted = raw_idx[local_order]
-            unique_tiles, first_pos = np.unique(tile_sorted, return_index=True)
-            next_pos = np.append(first_pos[1:], len(tile_sorted))
-
-            for tile_id, seg_start, seg_end in zip(unique_tiles, first_pos, next_pos):
-                dst = int(cursor[int(tile_id)])
-                seg_len = int(seg_end - seg_start)
-                sorted_indices[dst : dst + seg_len] = idx_sorted[seg_start:seg_end]
-                cursor[int(tile_id)] += seg_len
+        sorted_indices, offsets = build_scope_spatial_index_payload(
+            ra_all,
+            dec_all,
+            ra_bins=int(self._scope_grid_ra_bins),
+            dec_bins=int(self._scope_grid_dec_bins),
+        )
+        if sorted_indices is None or offsets is None:
+            return None, None
 
         self._scope_grid_key = key
         self._scope_grid_indices = sorted_indices

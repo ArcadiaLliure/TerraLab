@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QSlider, QLineEdit, QPushButton, QFrame,
                              QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox, QMenu, QMessageBox, QInputDialog, QShortcut)
-from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, pyqtSlot, QObject, QThread, QLineF, QUrl, QEvent
+from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, pyqtSlot, QObject, QThread, QLineF, QUrl, QEvent, QMetaObject
 from PyQt5.QtGui import QPainter, QColor, QPen, QRadialGradient, QBrush, QPainterPath, QLinearGradient, QPixmap, QFont, QTransform, QImage, QPolygonF, QDesktopServices
 
 from TerraLab.common.custom_widget_base import CustomWidgetBase
@@ -81,6 +81,22 @@ from TerraLab.widgets.sky_legacy_components import (
     StarRenderWorker,
 )
 
+
+class ScopeIndexWarmWorker(QObject):
+    ready = pyqtSignal(object, object)
+    error = pyqtSignal(str)
+
+    @pyqtSlot(object, object)
+    def build(self, ra_all, dec_all):
+        try:
+            from TerraLab.render.stars_renderer import build_scope_spatial_index_payload
+
+            sorted_indices, offsets = build_scope_spatial_index_payload(ra_all, dec_all)
+            self.ready.emit(sorted_indices, offsets)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 class AstroCanvas(QWidget):
     request_render_signal = pyqtSignal(dict)
     request_trails_signal = pyqtSignal(dict)
@@ -88,6 +104,10 @@ class AstroCanvas(QWidget):
     def __init__(self, parent):
         super().__init__(parent)
         self.parent_widget = parent
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background-color: #000000;")
+        self._reported_first_useful_paint = False
         self.setMinimumSize(800, 600)
         self.azimuth_offset = 0    
         self.elevation_angle = 40  # Default to Horizon 
@@ -144,7 +164,7 @@ class AstroCanvas(QWidget):
         )
         
         # Horizon Overlay (terrain/mountains â€” independent from village)
-        self.horizon_overlay = HorizonOverlay(horizon_profile_path=None)
+        self.horizon_overlay = HorizonOverlay(horizon_profile_path=None, allow_procedural_fallback=False)
         self.horizon_overlay.request_update.connect(self.update)
         
         # Village Overlay (houses, trees, lanterns â€” on top of terrain)
@@ -194,6 +214,7 @@ class AstroCanvas(QWidget):
                 background-color: rgba(255, 255, 255, 50);
             }
         """)
+
         self.btn_human_eye.clicked.connect(self.reset_zoom_human)
         self.btn_human_eye.hide()
 
@@ -230,6 +251,15 @@ class AstroCanvas(QWidget):
         self._selection_pulse_timer = QTimer(self)
         self._selection_pulse_timer.setInterval(33)
         self._selection_pulse_timer.timeout.connect(self._selection_pulse_tick)
+
+    def _parent_checkbox_checked(self, attr_name: str, default: bool = False) -> bool:
+        widget = getattr(self.parent_widget, attr_name, None)
+        if widget is None:
+            return bool(default)
+        try:
+            return bool(widget.isChecked())
+        except Exception:
+            return bool(default)
 
     def reset_zoom_human(self):
         """Reset zoom to human eye equivalent (43mm)."""
@@ -1631,6 +1661,21 @@ class AstroCanvas(QWidget):
         try:
             painter.setRenderHint(QPainter.Antialiasing)
             painter.fillRect(self.rect(), Qt.black) # Safe background
+            stage_order = {
+                "boot": 0,
+                "base_sky": 1,
+                "stars_ready": 2,
+                "horizon_preview": 3,
+                "scene_ready": 4,
+            }
+            scene_stage = getattr(self.parent_widget, "scene_load_stage", "scene_ready")
+            scene_stage_rank = stage_order.get(scene_stage, 4)
+            if scene_stage_rank >= 1 and not self._reported_first_useful_paint:
+                self._reported_first_useful_paint = True
+                if hasattr(self.parent_widget, "_on_canvas_first_useful_paint"):
+                    self.parent_widget._on_canvas_first_useful_paint()
+            if scene_stage_rank <= 0:
+                return
 
 
             # 1. Determine Correct Time (Local -> UT) using Full Datetime
@@ -1728,18 +1773,19 @@ class AstroCanvas(QWidget):
             self.draw_background(painter, eff_sun_alt, eff_sun_az, wrapped_az, dimming=eclipse_dimming)
             
             # 2. Light Pollution & Ambient Glows (Drawn BEFORE stars to avoid occlusion)
-            if hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
+            if scene_stage_rank >= 3 and hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
                 self.draw_light_domes(painter, self.horizon_overlay.profile, eff_sun_alt, eclipse_dimming)
     
             # === WEATHER SYSTEM ===
             # IMPORTANT: forecast/cache keys are indexed in UTC slots.
             # We keep ephemerides untouched and only map weather indexing to UTC
             # so manual/local timeline changes match cached forecast rows.
-            self.weather.update_weather(day_of_year_utc, ut_hour, year=dt_utc.year)
-            self.weather.update_thunder()
+            if scene_stage_rank >= 3:
+                self.weather.update_weather(day_of_year_utc, ut_hour, year=dt_utc.year)
+                self.weather.update_thunder()
 
             # 3. Trails
-            checked = self.parent_widget.chk_trails.isChecked()
+            checked = self._parent_checkbox_checked("chk_trails", default=False)
             if checked and eff_sun_alt < -6.0:
                 if self.trail_start_hour is None:
                     self.trail_start_hour = ut_hour
@@ -1813,9 +1859,7 @@ class AstroCanvas(QWidget):
                 self._cached_star_image = None
                 self._last_mag_limit = final_mag_limit
             
-            show_sun_moon_effects = True
-            if hasattr(self.parent_widget, 'chk_sun_moon'):
-                show_sun_moon_effects = self.parent_widget.chk_sun_moon.isChecked()
+            show_sun_moon_effects = self._parent_checkbox_checked("chk_sun_moon", default=True)
 
             vis_factor = 1.0
             moon_mask = None
@@ -1832,45 +1876,47 @@ class AstroCanvas(QWidget):
                         moon_mask = (pt_m[0], pt_m[1], mr_px)
     
             # 4. Stars & Celestial Objects
-            if self.parent_widget.chk_enable_sky.isChecked():
+            if scene_stage_rank >= 2 and self._parent_checkbox_checked("chk_enable_sky", default=True):
                 self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit, eff_lat=eff_lat, day_of_year=day_for_astro)
             
             self.visible_sky_objects = []
-            if SKYFIELD_AVAILABLE and hasattr(self.parent_widget, 'eph'):
+            if scene_stage_rank >= 2 and SKYFIELD_AVAILABLE and hasattr(self.parent_widget, 'eph'):
                  self.draw_skyfield_objects(painter, ut_hour, day_for_astro, ambient_light=ambient_light, mag_limit=final_mag_limit)
 
             # Constellations are part of sky content, so they must be occluded by terrain.
-            self.constellation_controller.draw(
-                painter,
-                self.project_universal_stereo,
-                lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
-            )
+            if scene_stage_rank >= 2:
+                self.constellation_controller.draw(
+                    painter,
+                    self.project_universal_stereo,
+                    lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                )
 
             # Weather cloud layer goes above stars/sun/moon so overcast can occlude them.
             # Horizon/topography will still be painted after this and remain in front.
             w_sun_alt = eff_sun_alt
             base_fov = 100.0
             current_fov = base_fov / self.zoom_level
-            self.weather.draw(
-                painter,
-                w_sun_alt,
-                self.azimuth_offset,
-                self.elevation_angle,
-                current_fov,
-                eclipse_dimming=eclipse_dimming,
-                project_fn=self.project_universal_stereo,
-            )
+            if scene_stage_rank >= 3:
+                self.weather.draw(
+                    painter,
+                    w_sun_alt,
+                    self.azimuth_offset,
+                    self.elevation_angle,
+                    current_fov,
+                    eclipse_dimming=eclipse_dimming,
+                    project_fn=self.project_universal_stereo,
+                )
 
             # 5. Horizon / Topography (Drawn on top to mask everything behind mountains)
             show_horizon = True
             if hasattr(self.parent_widget, 'chk_enable_horizon'):
-                show_horizon = self.parent_widget.chk_enable_horizon.isChecked()
+                show_horizon = self._parent_checkbox_checked("chk_enable_horizon", default=True)
             
             use_detailed_topo = True
             if hasattr(self.parent_widget, 'chk_enable_village'):
-                use_detailed_topo = self.parent_widget.chk_enable_village.isChecked()
+                use_detailed_topo = self._parent_checkbox_checked("chk_enable_village", default=True)
 
-            if show_horizon:
+            if scene_stage_rank >= 3 and show_horizon:
                 force_flat = not use_detailed_topo
                 dome_callback = None
                 is_auto_bortle = getattr(self.parent_widget, 'is_auto_bortle', getattr(self, 'is_auto_bortle', True))
@@ -4172,9 +4218,7 @@ class AstroCanvas(QWidget):
         twilight_factor *= eclipse_dimming
         if twilight_factor <= 0.01: return
 
-        show_sun_moon_effects = True
-        if hasattr(self.parent_widget, 'chk_sun_moon'):
-            show_sun_moon_effects = self.parent_widget.chk_sun_moon.isChecked()
+        show_sun_moon_effects = self._parent_checkbox_checked("chk_sun_moon", default=True)
 
         # MOON GLOW (Only)
         # Global Sky Glow is now handled inside sky_color_phys physically
@@ -4380,9 +4424,7 @@ class AstroCanvas(QWidget):
                     sun_radius_px = min(sun_radius_px, float(scope_disc_cap_px))
                     moon_radius_px = min(moon_radius_px, float(scope_disc_cap_px))
 
-                show_sun_moon = True
-                if hasattr(self.parent_widget, 'chk_sun_moon'):
-                    show_sun_moon = self.parent_widget.chk_sun_moon.isChecked()
+                show_sun_moon = self._parent_checkbox_checked("chk_sun_moon", default=True)
 
                 # ... Sun Color (Copied logic, can optimize later) ...
                 c_zenith = QColor(255, 255, 240)
@@ -4450,9 +4492,7 @@ class AstroCanvas(QWidget):
                     self.draw_moon_skyfield(painter, alt_m_vis, az_m_vis, illumination, rotation_deg, moon_radius_px, 1.0, is_eclipsing, (alt_s_deg > -6), sun_params=(alt_s_deg, az_s_deg, sun_radius_px), pixels_per_deg=visual_ppd, tint_color=moon_tint)
                 
                 # Planets
-                show_planets = True
-                if hasattr(self.parent_widget, 'chk_planets'):
-                    show_planets = self.parent_widget.chk_planets.isChecked()
+                show_planets = self._parent_checkbox_checked("chk_planets", default=True)
                     
                 if show_planets:
                     for p in data['planets']:
@@ -5412,7 +5452,7 @@ class AstronomicalWidget(CustomWidgetBase):
     request_render_signal = pyqtSignal()
     request_trails_signal = pyqtSignal()
     # Signal to start baking in background thread
-    request_horizon_bake = pyqtSignal(float, float) # lat, lon
+    request_horizon_bake = pyqtSignal(object)
 
     def __init__(self, parent=None, **kwargs):
         # 1. Initialize properties required by UI/Canvas
@@ -5474,33 +5514,20 @@ class AstronomicalWidget(CustomWidgetBase):
             use_remote_weather=self.weather_use_remote_metno,
             cache_enabled=self.weather_cache_enabled,
         )
+        self.scene_load_stage = "boot"
+        self._active_horizon_job_id = None
+        self._deferred_controls_ready = False
+        self._deferred_controls_build_scheduled = False
 
         # 2. Init Base Widget (Calls setup_ui -> setup_content)
         super().__init__(title="Astronomy", parent=parent, **kwargs)
+        self._startup_placeholder_visible = True
+        self._create_startup_placeholder()
+        self._position_startup_placeholder()
         
         # 3. Post-UI initialization â€” ASYNC (non-blocking)
         self.show_satellites = False
         self.satellites = []
-        
-        # --- Async Skyfield loading (Optimization 4) ---
-        if SKYFIELD_AVAILABLE:
-            self._skyfield_thread = QThread()
-            self._skyfield_worker = SkyfieldLoaderWorker()
-            self._skyfield_worker.moveToThread(self._skyfield_thread)
-            self._skyfield_worker.skyfield_ready.connect(self._on_skyfield_ready)
-            self._skyfield_thread.started.connect(self._skyfield_worker.load)
-            self._skyfield_thread.start()
-            try:
-                self._skyfield_thread.setPriority(QThread.LowPriority)
-            except Exception:
-                pass
-            print("[AstroWidget] Skyfield loading in background...")
-        
-        # --- Async Catalog loading (Optimization 3 + 5) ---
-        self._catalog_thread = QThread()
-        self._catalog_worker = CatalogLoaderWorker()
-        self._catalog_worker.moveToThread(self._catalog_thread)
-        self._catalog_worker.catalog_ready.connect(self._on_catalog_ready)
         local_dir = os.path.dirname(os.path.abspath(__file__))
         self._stars_catalog_dir = os.path.normpath(os.path.join(local_dir, '..', 'data', 'stars'))
         self._scope_catalog_loading = False
@@ -5508,60 +5535,10 @@ class AstronomicalWidget(CustomWidgetBase):
         self._catalog_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
         self._scope_catalog_thread = None
         self._scope_catalog_worker = None
-        # Use lambda to pass argument when thread starts
-        self._catalog_thread.started.connect(lambda: self._catalog_worker.load(self._stars_catalog_dir))
-        self._catalog_thread.start()
-        try:
-            self._catalog_thread.setPriority(QThread.LowPriority)
-        except Exception:
-            pass
-        print("[AstroWidget] Star catalog loading in background...")
-
-        # Initialize Horizon Worker for dynamic baking
-        from TerraLab.terrain.worker import HorizonWorker
-        from TerraLab.common.utils import resource_path
-        import sys
-        
-        # Initialize Horizon Worker for dynamic baking
-        from TerraLab.terrain.worker import HorizonWorker
-        
-        # Tiles path is now handled internally by HorizonWorker via ConfigManager
-        # We don't need to pass it explicitly here.
-
-        self.horizon_thread = QThread()
-        self.horizon_worker = HorizonWorker() # Config handles path
-        
-        # Hydrate saved offset into worker before moving thread
-        saved_offset = float(get_config_value("observer_offset", 0.0))
-        self.horizon_worker.set_observer_offset(saved_offset)
-        
-        self.horizon_worker.moveToThread(self.horizon_thread)
-        
-        self.horizon_worker.profile_ready.connect(self.on_horizon_profile_ready)
-        self.horizon_worker.error_occurred.connect(lambda err: print(f"[HorizonWorker] THREAD ERROR: {err}"))
-        self.horizon_worker.progress_message.connect(self.on_horizon_progress)
-        self.request_horizon_bake.connect(self.horizon_worker.request_bake)
-        
-        # Start the thread and initialize sampler immediately to avoid UI lag/desync
-        self.horizon_thread.started.connect(self.horizon_worker.initialize)
-        
-        print(f"[AstroWidget] Starting Horizon Thread... (Path managed by Worker)")
-        self.horizon_thread.start()
-        try:
-            self.horizon_thread.setPriority(QThread.LowPriority)
-        except Exception:
-            pass
-        print(f"[AstroWidget] Horizon Thread started. ID: {int(self.horizon_thread.currentThreadId()) if self.horizon_thread.currentThreadId() else 'N/A'}")
-        
-        # Trigger initial bake via Signal (Runs on Worker Thread)
-        def trigger_bake():
-            print(f"[AstroWidget] Emitting bake request for {self.latitude}, {self.longitude}")
-            if hasattr(self, 'lbl_loading'):
-                self.lbl_loading.show()
-                self.lbl_loading.raise_()
-            self.request_horizon_bake.emit(self.latitude, self.longitude)
-        
-        QTimer.singleShot(1000, trigger_bake) # Delay 1s to ensure thread ready
+        self._scope_index_loading = False
+        self._scope_index_target_key = None
+        self._scope_index_thread = None
+        self._scope_index_worker = None
 
         # Default to Horizon View (This uses self.canvas, created in setup_content)
         self.set_horizon_view()
@@ -5583,9 +5560,223 @@ class AstronomicalWidget(CustomWidgetBase):
         self.bake_debounce_timer = QTimer()
         self.bake_debounce_timer.setSingleShot(True)
         self.bake_debounce_timer.timeout.connect(self._do_delayed_bake)
+        self._last_horizon_progress_text = ""
+
+        QTimer.singleShot(0, lambda: self._set_scene_load_stage("base_sky"))
+        QTimer.singleShot(200, self._start_async_bootstrap)
+
+    def _set_scene_load_stage(self, stage: str):
+        valid = {"boot", "base_sky", "stars_ready", "horizon_preview", "scene_ready"}
+        if stage not in valid:
+            return
+        if getattr(self, "scene_load_stage", None) == stage:
+            return
+        self.scene_load_stage = stage
+        if hasattr(self, "canvas"):
+            self.canvas.update()
+
+    def _create_startup_placeholder(self):
+        if hasattr(self, "_startup_placeholder"):
+            return
+        self._startup_placeholder = QFrame(self)
+        self._startup_placeholder.setObjectName("startupPlaceholder")
+        self._startup_placeholder.setStyleSheet(
+            "QFrame#startupPlaceholder { background-color: #000000; }"
+        )
+        layout = QVBoxLayout(self._startup_placeholder)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.addStretch(1)
+        title = QLabel("TerraLab", self._startup_placeholder)
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #eef4ff; font-size: 28px; font-weight: bold; background: transparent;")
+        subtitle = QLabel("Initializing sky...", self._startup_placeholder)
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #8ea3c2; font-size: 14px; background: transparent;")
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addStretch(2)
+        self._startup_placeholder.show()
+        self._startup_placeholder.raise_()
+
+    def _position_startup_placeholder(self):
+        if not hasattr(self, "_startup_placeholder"):
+            return
+        self._startup_placeholder.setGeometry(self.rect())
+        self._startup_placeholder.raise_()
+
+    def _hide_startup_placeholder(self):
+        if getattr(self, "_startup_placeholder_visible", False) and hasattr(self, "_startup_placeholder"):
+            self._startup_placeholder_visible = False
+            self._startup_placeholder.hide()
+
+    def _schedule_deferred_controls_build(self):
+        if getattr(self, "_deferred_controls_ready", False):
+            return
+        if getattr(self, "_deferred_controls_build_scheduled", False):
+            return
+        self._deferred_controls_build_scheduled = True
+        QTimer.singleShot(60, self._build_deferred_controls_ui)
+
+    def _on_canvas_first_useful_paint(self):
+        self._hide_startup_placeholder()
+        self._start_async_bootstrap()
+        self._schedule_deferred_controls_build()
+
+    def _start_async_bootstrap(self):
+        if getattr(self, "_async_bootstrap_started", False):
+            return
+        self._async_bootstrap_started = True
+
+        # --- Async Skyfield loading ---
+        if SKYFIELD_AVAILABLE:
+            self._skyfield_thread = QThread()
+            self._skyfield_worker = SkyfieldLoaderWorker()
+            self._skyfield_worker.moveToThread(self._skyfield_thread)
+            self._skyfield_worker.skyfield_ready.connect(self._on_skyfield_ready)
+            self._skyfield_thread.started.connect(self._skyfield_worker.load)
+            self._skyfield_thread.start()
+            try:
+                self._skyfield_thread.setPriority(QThread.LowPriority)
+            except Exception:
+                pass
+            print("[AstroWidget] Skyfield loading in background...")
+
+        # --- Async Catalog loading ---
+        self._catalog_thread = QThread()
+        self._catalog_worker = CatalogLoaderWorker()
+        self._catalog_worker.moveToThread(self._catalog_thread)
+        self._catalog_worker.catalog_ready.connect(self._on_catalog_ready)
+        self._catalog_thread.started.connect(lambda: self._catalog_worker.load(self._stars_catalog_dir))
+        self._catalog_thread.start()
+        try:
+            self._catalog_thread.setPriority(QThread.LowPriority)
+        except Exception:
+            pass
+        print("[AstroWidget] Star catalog loading in background...")
+
+        # --- Horizon worker bootstrap ---
+        from TerraLab.terrain.worker import HorizonWorker
+
+        self.horizon_thread = QThread()
+        self.horizon_worker = HorizonWorker()
+        saved_offset = float(get_config_value("observer_offset", 0.0))
+        self.horizon_worker.set_observer_offset(saved_offset)
+        self.horizon_worker.moveToThread(self.horizon_thread)
+
+        self.horizon_worker.profile_ready.connect(self.on_horizon_profile_ready)
+        self.horizon_worker.preview_ready.connect(self.on_horizon_preview_ready)
+        self.horizon_worker.progress_state.connect(self.on_horizon_progress_state)
+        self.horizon_worker.error_occurred.connect(lambda err: print(f"[HorizonWorker] THREAD ERROR: {err}"))
+        self.request_horizon_bake.connect(self.horizon_worker.request_bake)
+
+        print("[AstroWidget] Starting Horizon Thread... (Path managed by Worker)")
+        self.horizon_thread.start()
+        try:
+            self.horizon_thread.setPriority(QThread.LowPriority)
+        except Exception:
+            pass
+        print(
+            f"[AstroWidget] Horizon Thread started. ID: "
+            f"{int(self.horizon_thread.currentThreadId()) if self.horizon_thread.currentThreadId() else 'N/A'}"
+        )
+
+        def trigger_bake():
+            print(f"[AstroWidget] Emitting bake request for {self.latitude}, {self.longitude}")
+            self._begin_horizon_bake()
+
+        QTimer.singleShot(300, lambda: QMetaObject.invokeMethod(self.horizon_worker, "initialize", Qt.QueuedConnection))
+        QTimer.singleShot(900, trigger_bake)
+
+    def _build_horizon_bake_job(self) -> dict:
+        from TerraLab.common.utils import get_config_value
+        import uuid
+
+        try:
+            n_bands = int(get_config_value("horizon_quality", 20))
+        except Exception:
+            n_bands = 20
+        current_fov = 100.0 / max(0.001, float(getattr(self.canvas, "zoom_level", 1.0)))
+        return {
+            "job_id": uuid.uuid4().hex,
+            "lat": float(self.latitude),
+            "lon": float(self.longitude),
+            "observer_offset": float(getattr(self.horizon_worker, "observer_offset", 0.0)),
+            "bands": max(1, int(n_bands)),
+            "view_azimuth": float(getattr(self.canvas, "azimuth_offset", 180.0)) % 360.0,
+            "view_fov_deg": float(current_fov),
+            "view_elevation": float(getattr(self.canvas, "elevation_angle", 0.0)),
+        }
+
+    def _begin_horizon_bake(self):
+        if not hasattr(self, "horizon_worker"):
+            return
+        self.horizon_worker.abort_current_job()
+        self._active_horizon_job_id = None
+        if hasattr(self.canvas, "horizon_overlay"):
+            self.canvas.horizon_overlay.clear_profile()
+        target_stage = "stars_ready" if hasattr(self, "np_ra") else "base_sky"
+        self._set_scene_load_stage(target_stage)
+        job = self._build_horizon_bake_job()
+        self._active_horizon_job_id = str(job["job_id"])
+        self.on_horizon_progress_state(
+            {
+                "job_id": self._active_horizon_job_id,
+                "phase": "prepare",
+                "percent": 0.0,
+                "current": 0,
+                "total": int(round(360.0 / 0.5)),
+            }
+        )
+        self.request_horizon_bake.emit(job)
+
+    def on_horizon_progress_state(self, state):
+        if not isinstance(state, dict):
+            return
+        job_id = str(state.get("job_id", "") or "")
+        if job_id and getattr(self, "_active_horizon_job_id", None) and job_id != self._active_horizon_job_id:
+            return
+        percent = max(0.0, min(100.0, float(state.get("percent", 0.0))))
+        percent_text = f"{percent:.1f}"
+        if percent_text.endswith(".0"):
+            percent_text = percent_text[:-2]
+        current = state.get("current")
+        total = state.get("total")
+        msg = getTraduction("Horizon.CalculatingHorizon", "Calculating horizon: {pct}%").format(pct=percent_text)
+        if current is not None and total:
+            msg = f"{msg} · {int(current)}/{int(total)}"
+        self.on_horizon_progress(msg)
+
+    def on_horizon_preview_ready(self, payload):
+        if not isinstance(payload, dict):
+            return
+        job_id = str(payload.get("job_id", "") or "")
+        if job_id and job_id != getattr(self, "_active_horizon_job_id", None):
+            return
+        profile = payload.get("profile")
+        if profile is None:
+            return
+        layer_defs = None
+        band_defs = getattr(profile, "_band_defs", None)
+        if band_defs is not None:
+            try:
+                from TerraLab.terrain.overlay import generate_layer_defs
+                layer_defs = generate_layer_defs(band_defs)
+            except Exception as exc:
+                print(f"[AstroWidget] Warning: Could not generate preview layer_defs: {exc}")
+        if hasattr(self.canvas, "horizon_overlay"):
+            self.canvas.horizon_overlay.set_profile(profile, layer_defs=layer_defs)
+        if getattr(self, "scene_load_stage", "base_sky") != "scene_ready":
+            self._set_scene_load_stage("horizon_preview")
 
     def on_horizon_profile_ready(self, profile):
         """Callback when background worker finishes baking horizon."""
+        if isinstance(profile, dict):
+            job_id = str(profile.get("job_id", "") or "")
+            if job_id and job_id != getattr(self, "_active_horizon_job_id", None):
+                return
+            profile = profile.get("profile")
+        if profile is None:
+            return
         print(f"[AstroWidget] New Horizon Profile received! Bands: {len(profile.bands)}")
         # Hide Loading Label
         if hasattr(self, 'lbl_loading'):
@@ -5615,17 +5806,40 @@ class AstronomicalWidget(CustomWidgetBase):
         # Initial Bortle Sync if in Auto mode
         if getattr(self, 'is_auto_bortle', True):
             self.reset_lp_to_auto()
-             
+        self._set_scene_load_stage("scene_ready")
         self.canvas.update()
 
 
     def on_horizon_progress(self, msg):
         """Update loading label with progress message."""
+        self._last_horizon_progress_text = str(msg or "")
         if hasattr(self, 'lbl_loading'):
+            if not msg:
+                self.lbl_loading.hide()
+                return
             self.lbl_loading.setText(msg)
+            fm = self.lbl_loading.fontMetrics()
+            required_w = fm.horizontalAdvance(msg) + 28
+            required_h = max(fm.height() + 12, 32)
+            self.lbl_loading.resize(
+                min(max(required_w, 360), max(360, self.width() - 20)),
+                required_h,
+            )
             if self.lbl_loading.isHidden():
                 self.lbl_loading.show()
                 self.lbl_loading.raise_()
+            self.lbl_loading.repaint()
+
+    def _poll_horizon_progress(self):
+        if not hasattr(self, "horizon_worker"):
+            return
+        try:
+            msg = self.horizon_worker.get_progress_text()
+        except Exception:
+            return
+        msg = str(msg or "")
+        if msg != getattr(self, "_last_horizon_progress_text", ""):
+            self.on_horizon_progress(msg)
 
     def pause_updates(self):
         """Pause sky updates to free up main thread for video loading."""
@@ -5669,8 +5883,7 @@ class AstronomicalWidget(CustomWidgetBase):
     def _do_delayed_bake(self):
         """Actually sends the bake request after debouncing."""
         if hasattr(self, 'horizon_worker'):
-             # Signal current bake to abort if possible to free the worker for the new one
-             self.horizon_worker._abort_requested = True
+             self.horizon_worker.abort_current_job()
              
         # SAVE CONFIG ONLY HERE (Avoid disk spam)
         from TerraLab.common.utils import set_config_value
@@ -5680,7 +5893,7 @@ class AstronomicalWidget(CustomWidgetBase):
         set_config_value("observer_lon", self.longitude)
              
         print(f"[AstroWidget] Emitting debounced bake request for {self.latitude}, {self.longitude}")
-        self.request_horizon_bake.emit(self.latitude, self.longitude)
+        self._begin_horizon_bake()
     
     def _on_catalog_ready(self, celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp):
         """Callback when star catalog finishes loading in background."""
@@ -5710,6 +5923,11 @@ class AstronomicalWidget(CustomWidgetBase):
                 pass
         print(f"[AstroWidget] Star catalog ready: {len(celestial_objects)} stars (async).")
         self.build_search_index()
+        self._ensure_scope_catalog_loaded()
+        if self.canvas.scope_mode_enabled():
+            self._ensure_scope_spatial_index_warmup()
+        if getattr(self, "scene_load_stage", "boot") in {"boot", "base_sky"}:
+            self._set_scene_load_stage("stars_ready")
         self.canvas.update()
         # Clean up thread
         self._catalog_thread.quit()
@@ -5738,6 +5956,10 @@ class AstronomicalWidget(CustomWidgetBase):
         self._scope_catalog_thread = thread
         self._scope_catalog_worker = worker
         thread.start()
+        try:
+            thread.setPriority(QThread.LowPriority)
+        except Exception:
+            pass
         print(f"[AstroWidget] Scope catalog extension loading from > {loaded_max_mag:.2f} mag...")
 
     def _cleanup_scope_catalog_loader(self):
@@ -5753,6 +5975,105 @@ class AstronomicalWidget(CustomWidgetBase):
                 pass
         self._scope_catalog_worker = None
         self._scope_catalog_thread = None
+
+    def _cleanup_scope_index_warmup(self):
+        thread = getattr(self, "_scope_index_thread", None)
+        if thread is not None:
+            try:
+                thread.quit()
+            except Exception:
+                pass
+            try:
+                thread.wait(3000)
+            except Exception:
+                pass
+        self._scope_index_worker = None
+        self._scope_index_thread = None
+
+    def _ensure_scope_spatial_index_warmup(self):
+        if np is None:
+            return
+        stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
+        if stars_renderer is None:
+            return
+
+        ra_all = getattr(self, "np_ra", None)
+        dec_all = getattr(self, "np_dec", None)
+        if ra_all is None or dec_all is None:
+            return
+
+        key = stars_renderer._catalog_array_key(ra_all, dec_all)
+        if (
+            stars_renderer._scope_grid_key == key
+            and stars_renderer._scope_grid_indices is not None
+            and stars_renderer._scope_grid_offsets is not None
+        ):
+            return
+
+        if getattr(self, "_scope_index_loading", False):
+            return
+
+        self._scope_index_loading = True
+        self._scope_index_target_key = key
+        stars_renderer.begin_scope_index_warmup(ra_all, dec_all)
+
+        thread = QThread()
+        worker = ScopeIndexWarmWorker()
+        worker.moveToThread(thread)
+        worker.ready.connect(
+            lambda sorted_indices, offsets, catalog_key=key: self._on_scope_spatial_index_ready(
+                catalog_key,
+                sorted_indices,
+                offsets,
+            )
+        )
+        worker.ready.connect(thread.quit)
+        worker.error.connect(self._on_scope_spatial_index_error)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(lambda w=worker, ra=ra_all, dec=dec_all: w.build(ra, dec))
+        self._scope_index_thread = thread
+        self._scope_index_worker = worker
+        thread.start()
+        try:
+            thread.setPriority(QThread.LowPriority)
+        except Exception:
+            pass
+        print("[AstroWidget] Scope spatial index warm-up started.")
+
+    def _on_scope_spatial_index_ready(self, catalog_key, sorted_indices, offsets):
+        self._scope_index_loading = False
+        restart_warmup = False
+        try:
+            stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
+            if stars_renderer is None:
+                return
+            current_key = stars_renderer._catalog_array_key(
+                getattr(self, "np_ra", None),
+                getattr(self, "np_dec", None),
+            )
+            if current_key != catalog_key:
+                stars_renderer.clear_scope_index_warmup(catalog_key)
+                restart_warmup = True
+            else:
+                stars_renderer.apply_scope_spatial_index_payload(catalog_key, sorted_indices, offsets)
+                print("[AstroWidget] Scope spatial index ready.")
+                self.canvas.update()
+        finally:
+            self._cleanup_scope_index_warmup()
+        if restart_warmup:
+            self._ensure_scope_spatial_index_warmup()
+
+    def _on_scope_spatial_index_error(self, message: str):
+        self._scope_index_loading = False
+        print(f"[AstroWidget] Scope spatial index warm-up error: {message}")
+        try:
+            stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
+            if stars_renderer is not None:
+                stars_renderer.clear_scope_index_warmup(self._scope_index_target_key)
+        finally:
+            self._cleanup_scope_index_warmup()
 
     def _on_scope_extension_ready(self, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp, loaded_max_mag):
         self._scope_catalog_loading = False
@@ -5779,16 +6100,7 @@ class AstronomicalWidget(CustomWidgetBase):
                 print(f"[AstroWidget] Scope extension appended: +{len(np_ra)} stars.")
                 self.canvas._cached_star_image = None
                 self.canvas._cached_trail_image = None
-                try:
-                    stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
-                    if stars_renderer is not None:
-                        stars_renderer.prime_catalog_indices(
-                            getattr(self, "np_ra", None),
-                            getattr(self, "np_dec", None),
-                            getattr(self, "np_mag", None),
-                        )
-                except Exception:
-                    pass
+                self._ensure_scope_spatial_index_warmup()
                 self.canvas.update()
                 try:
                     if np_mag is not None and len(np_mag) > 0:
@@ -5811,6 +6123,7 @@ class AstronomicalWidget(CustomWidgetBase):
             except Exception:
                 pass
             self._cleanup_scope_catalog_loader()
+            QTimer.singleShot(0, self._ensure_scope_spatial_index_warmup)
 
     def init_skyfield(self):
         """Legacy synchronous init. Kept for compatibility."""
@@ -5845,6 +6158,31 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.update()
 
     def setup_content(self):
+        if hasattr(self, 'title_bar'):
+            self.title_bar.hide()
+
+        layout = self.content_layout
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.canvas = AstroCanvas(self)
+        layout.addWidget(self.canvas, 1)
+
+        # Loading indicator stays available from the first visible frame.
+        self.lbl_loading = QLabel(getTraduction("Astro.LoadingTopography", "? Carregant topografia..."), self)
+        self.lbl_loading.setStyleSheet(
+            "color: yellow; font-weight: bold; background-color: rgba(0,0,0,100); "
+            "padding: 5px; border-radius: 4px;"
+        )
+        self.lbl_loading.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.lbl_loading.setWordWrap(False)
+        self.lbl_loading.hide()
+        self.lbl_loading.move(10, 50)
+        self.lbl_loading.resize(420, 32)
+
+    def _build_deferred_controls_ui(self):
+        if getattr(self, "_deferred_controls_ready", False):
+            return
+        self._deferred_controls_build_scheduled = False
         # Hide standard window decorations since this is a wallpaper/panel
         if hasattr(self, 'title_bar'):
             self.title_bar.hide()
@@ -5852,9 +6190,10 @@ class AstronomicalWidget(CustomWidgetBase):
         # Use the content layout provided by CustomWidgetBase
         layout = self.content_layout
         layout.setContentsMargins(0,0,0,0)
-        
-        self.canvas = AstroCanvas(self)
-        layout.addWidget(self.canvas, 1)
+
+        if not hasattr(self, "canvas"):
+            self.canvas = AstroCanvas(self)
+            layout.addWidget(self.canvas, 1)
         self._shortcut_delete_constellation = QShortcut(Qt.Key_Delete, self)
         self._shortcut_delete_constellation.setContext(Qt.WidgetWithChildrenShortcut)
         self._shortcut_delete_constellation.activated.connect(self._delete_constellation_shortcut)
@@ -5885,12 +6224,14 @@ class AstronomicalWidget(CustomWidgetBase):
         frame_layout.addWidget(self.time_bar)
 
         # Loading indicator (absolute, sobre canvas)
-        self.lbl_loading = QLabel(getTraduction("Astro.LoadingTopography", "? Carregant topografia..."), self)
-        self.lbl_loading.setStyleSheet("color: yellow; font-weight: bold; background-color: rgba(0,0,0,100); padding: 5px; border-radius: 4px;")
-        self.lbl_loading.setAlignment(Qt.AlignCenter)
-        self.lbl_loading.hide()
-        self.lbl_loading.move(10, 50)
-        self.lbl_loading.resize(200, 30)
+        if not hasattr(self, "lbl_loading"):
+            self.lbl_loading = QLabel(getTraduction("Astro.LoadingTopography", "? Carregant topografia..."), self)
+            self.lbl_loading.setStyleSheet("color: yellow; font-weight: bold; background-color: rgba(0,0,0,100); padding: 5px; border-radius: 4px;")
+            self.lbl_loading.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.lbl_loading.setWordWrap(False)
+            self.lbl_loading.hide()
+            self.lbl_loading.move(10, 50)
+            self.lbl_loading.resize(420, 32)
 
         # â”€â”€ THE 3 BOTTOM PANELS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         panels_layout = QHBoxLayout()
@@ -6565,6 +6906,10 @@ class AstronomicalWidget(CustomWidgetBase):
         
         # Apply Themes
         self.update_custom_theme()
+        self._deferred_controls_ready = True
+        if getattr(self, "search_index", None):
+            self.build_search_index()
+        QTimer.singleShot(0, self._update_button_pos)
 
     def apply_styles(self):
         super().apply_styles()
@@ -6985,6 +7330,15 @@ class AstronomicalWidget(CustomWidgetBase):
         if atmo_loss is None:
             atmo_loss = 0.0
 
+        sensor_profile = str(getattr(self.canvas.scope_controller, "sensor_key", "tiny"))
+        if hasattr(self, "scope_sensor_combo"):
+            try:
+                current_sensor = self.scope_sensor_combo.itemData(self.scope_sensor_combo.currentIndex())
+                if current_sensor:
+                    sensor_profile = str(current_sensor)
+            except Exception:
+                pass
+
         inputs = VisualMagnitudeInputs(
             aperture_mm=aperture_mm_effective,
             telescope_focal_mm=focal_mm,
@@ -6997,7 +7351,7 @@ class AstronomicalWidget(CustomWidgetBase):
             exposure_seconds=float(self.scope_exposure_s),
             iso=float(self.scope_iso),
             instrument_profile=instrument_profile,
-            sensor_profile=str(self.scope_sensor_combo.itemData(self.scope_sensor_combo.currentIndex())),
+            sensor_profile=sensor_profile,
         )
         result = self.visual_magnitude_engine.compute(inputs)
         self.visual_magnitude_result = result
@@ -7052,50 +7406,47 @@ class AstronomicalWidget(CustomWidgetBase):
     def activate_scope_mode(self):
         # Scope mode remaps navigation to pointing control.
         self._ensure_scope_catalog_loaded()
+        self._ensure_scope_spatial_index_warmup()
+        self.canvas.setUpdatesEnabled(False)
         try:
-            stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
-            if stars_renderer is not None:
-                stars_renderer.prime_catalog_indices(
-                    getattr(self, "np_ra", None),
-                    getattr(self, "np_dec", None),
-                    getattr(self, "np_mag", None),
-                )
-        except Exception:
-            pass
-        self.canvas.set_scope_focal_mm(self.scope_focal_spin.value())
-        self.canvas.set_scope_shape(self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex()))
-        self.canvas.set_scope_sensor(self.scope_sensor_combo.itemData(self.scope_sensor_combo.currentIndex()))
-        self._apply_scope_aspect_from_ui()
-        self.canvas.set_scope_speed_mode(self.scope_speed_combo.itemData(self.scope_speed_combo.currentIndex()))
-        self.canvas.set_scope_enabled(True)
-        instrument_profile = str(getattr(self, "scope_instrument_profile", "telescope"))
-        eyepiece_mm = float(self.scope_eyepiece_mm if instrument_profile == "telescope" else self.scope_focal_spin.value())
-        aperture_mm_effective = self._effective_scope_aperture_mm(self.scope_focal_spin.value())
-        on_telescope_view_enabled(
-            {
-                "scope_enabled": True,
-                "lat": float(self.latitude),
-                "lon": float(self.longitude),
-                "h_deg": float(self.canvas.elevation_angle),
-                "focal_mm": float(self.scope_focal_spin.value()),
-                "aperture_mm": float(aperture_mm_effective),
-                "ocular_mm": eyepiece_mm,
-                "instrument_profile": instrument_profile,
-                "k_fallback": float(self.scope_k_fallback),
-                "weather_enabled": bool(getattr(self.canvas.weather, "enabled", False)),
-                "copernicus_api_key": str(get_config_value("copernicus_api_key", "") or ""),
-                "copernicus_api_url": str(get_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api") or ""),
-            }
-        )
-        self._sync_scope_coord_inputs_from_canvas()
-        self.canvas.setFocus()
-        self.sync_scope_ui_state(True)
+            self.canvas.set_scope_focal_mm(self.scope_focal_spin.value())
+            self.canvas.set_scope_shape(self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex()))
+            self.canvas.set_scope_sensor(self.scope_sensor_combo.itemData(self.scope_sensor_combo.currentIndex()))
+            self._apply_scope_aspect_from_ui()
+            self.canvas.set_scope_speed_mode(self.scope_speed_combo.itemData(self.scope_speed_combo.currentIndex()))
+            self.canvas.set_scope_enabled(True)
+            instrument_profile = str(getattr(self, "scope_instrument_profile", "telescope"))
+            eyepiece_mm = float(self.scope_eyepiece_mm if instrument_profile == "telescope" else self.scope_focal_spin.value())
+            aperture_mm_effective = self._effective_scope_aperture_mm(self.scope_focal_spin.value())
+            on_telescope_view_enabled(
+                {
+                    "scope_enabled": True,
+                    "lat": float(self.latitude),
+                    "lon": float(self.longitude),
+                    "h_deg": float(self.canvas.elevation_angle),
+                    "focal_mm": float(self.scope_focal_spin.value()),
+                    "aperture_mm": float(aperture_mm_effective),
+                    "ocular_mm": eyepiece_mm,
+                    "instrument_profile": instrument_profile,
+                    "k_fallback": float(self.scope_k_fallback),
+                    "weather_enabled": bool(getattr(self.canvas.weather, "enabled", False)),
+                    "copernicus_api_key": str(get_config_value("copernicus_api_key", "") or ""),
+                    "copernicus_api_url": str(get_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api") or ""),
+                },
+                allow_remote_fetch=False,
+            )
+            self._sync_scope_coord_inputs_from_canvas()
+            self.canvas.setFocus()
+            self.sync_scope_ui_state(True)
 
-        # Optional: deactivate measurement input when entering scope mode.
-        self.canvas.set_measurement_tool(TOOL_NONE)
-        self._sync_measure_tool_buttons(TOOL_NONE)
-        self.canvas.set_constellation_draw_mode(False)
-        self._sync_constellation_controls()
+            # Optional: deactivate measurement input when entering scope mode.
+            self.canvas.set_measurement_tool(TOOL_NONE)
+            self._sync_measure_tool_buttons(TOOL_NONE)
+            self.canvas.set_constellation_draw_mode(False)
+            self._sync_constellation_controls()
+        finally:
+            self.canvas.setUpdatesEnabled(True)
+            self.canvas.update()
         QTimer.singleShot(0, self._update_button_pos)
 
     def exit_scope_mode(self):
@@ -7351,9 +7702,15 @@ class AstronomicalWidget(CustomWidgetBase):
             
             # Feedback
             if hasattr(self, 'lbl_loading'):
-                self.lbl_loading.setText(getTraduction("Astro.RecalcTopography", "? Recalculant topografia..."))
-                self.lbl_loading.show()
-                self.lbl_loading.raise_()
+                self.on_horizon_progress_state(
+                    {
+                        "job_id": getattr(self, "_active_horizon_job_id", "") or "",
+                        "phase": "prepare",
+                        "percent": 0.0,
+                        "current": 0,
+                        "total": int(round(360.0 / 0.5)),
+                    }
+                )
             
             # Update internal params
             self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
@@ -7506,14 +7863,17 @@ class AstronomicalWidget(CustomWidgetBase):
             # Sync Day & Year
             self.manual_year = now.year
             self.manual_day = (now - datetime(now.year, 1, 1)).days
-            self.lbl_date.setText(self.format_date(self.manual_day))
+            if hasattr(self, "lbl_date"):
+                self.lbl_date.setText(self.format_date(self.manual_day))
             
             # Sync Gradient
-            self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
+            if hasattr(self, "time_bar"):
+                self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
             
             # Sync Time
             h = now.hour + now.minute/60.0 + now.second/3600.0
-            self.time_bar.set_time(h)
+            if hasattr(self, "time_bar"):
+                self.time_bar.set_time(h)
         else:
             # Manual Mode: "Time keeps running forward"
             # Increment manual_hour by elapsed time
@@ -7525,7 +7885,8 @@ class AstronomicalWidget(CustomWidgetBase):
             elif self.manual_hour < 0:
                  self.manual_hour += 24.0
                  self.manual_day -= 1
-            self.time_bar.set_time(self.manual_hour)
+            if hasattr(self, "time_bar"):
+                self.time_bar.set_time(self.manual_hour)
             
         # Update trails elapsed time based on simulation time
         if hasattr(self, 'chk_trails') and self.chk_trails.isChecked() and hasattr(self.canvas, 'trail_start_hour') and \
@@ -7544,15 +7905,18 @@ class AstronomicalWidget(CustomWidgetBase):
             self.trails_accumulated_seconds = max(0.0, diff * 3600.0)
             elapsed = int(self.trails_accumulated_seconds)
             if elapsed < 60:
-                self.lbl_trail_time.setText(f"{elapsed}s")
+                if hasattr(self, "lbl_trail_time"):
+                    self.lbl_trail_time.setText(f"{elapsed}s")
             elif elapsed < 3600:
                 m = elapsed // 60
                 s = elapsed % 60
-                self.lbl_trail_time.setText(f"{m}m {s}s")
+                if hasattr(self, "lbl_trail_time"):
+                    self.lbl_trail_time.setText(f"{m}m {s}s")
             else:
                 h = elapsed // 3600
                 m = (elapsed % 3600) // 60
-                self.lbl_trail_time.setText(f"{h}h {m}m")
+                if hasattr(self, "lbl_trail_time"):
+                    self.lbl_trail_time.setText(f"{h}h {m}m")
         else:
             if hasattr(self, 'trails_accumulated_seconds'):
                 delattr(self, 'trails_accumulated_seconds')
@@ -7585,7 +7949,8 @@ class AstronomicalWidget(CustomWidgetBase):
             self.canvas.azimuth_offset = 180 # Facing South (North Hemi)
         else:
             self.canvas.azimuth_offset = 0   # Facing North (South Hemi)
-        self.btn_view.setText(getTraduction("Astro.ViewZenith", "Cénit"))
+        if hasattr(self, "btn_view"):
+            self.btn_view.setText(getTraduction("Astro.ViewZenith", "Cénit"))
         self.canvas.update()
         
     def set_zenith_view(self):
@@ -7593,7 +7958,8 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.vertical_offset_ratio = 0.0 # Center
         self.canvas.zoom_level = 1.0 # Wide Fisheye
         self.canvas.azimuth_offset = 0
-        self.btn_view.setText(getTraduction("Astro.ViewHorizontal", "Horizonte"))
+        if hasattr(self, "btn_view"):
+            self.btn_view.setText(getTraduction("Astro.ViewHorizontal", "Horizonte"))
         self.canvas.update()
         
     def on_extra_height_changed(self, val):
@@ -7608,15 +7974,17 @@ class AstronomicalWidget(CustomWidgetBase):
     def update_altitude_label(self):
         if hasattr(self, 'horizon_worker'):
             bare = self.horizon_worker.get_bare_elevation(self.latitude, self.longitude)
-            offset = self.spin_extra_height.value()
+            offset = self.spin_extra_height.value() if hasattr(self, "spin_extra_height") else 0.0
             if bare is not None:
                 total = bare + offset
                 tpl = getTraduction("Astro.AltitudeInfo", "Altitud terreno: {dem} m | Total observador: {total} m")
-                self.lbl_altitude_info.setText(tpl.format(dem=f"{bare:.1f}", total=f"{total:.1f}"))
+                if hasattr(self, "lbl_altitude_info"):
+                    self.lbl_altitude_info.setText(tpl.format(dem=f"{bare:.1f}", total=f"{total:.1f}"))
             else:
                 fallback_str = getTraduction("Astro.AltitudeInfo", "Altitud terreno: {dem} m | Total observador: {total} m")
                 fallback_str = fallback_str.replace("{dem}", "--").replace("{total}", "--")
-                self.lbl_altitude_info.setText(fallback_str)
+                if hasattr(self, "lbl_altitude_info"):
+                    self.lbl_altitude_info.setText(fallback_str)
 
     def update_star_scale(self, val):
         self.star_scale = val / 10.0
@@ -8080,18 +8448,34 @@ class AstronomicalWidget(CustomWidgetBase):
             if name:
                 register_name(name, {"type": "star", "obj": star_info})
 
-        # 3. SETUP QCOMPLETER
+        # 3. OPENNGC / MESSIER
+        for obj in self._load_ngc_search_entries():
+            info = {"type": "ngc", "obj": obj, "name": obj.common_name or obj.name}
+            try:
+                from TerraLab.astro.ngc_catalog import iter_ngc_aliases
+
+                for alias in iter_ngc_aliases(obj):
+                    register_name(alias, info)
+            except Exception as exc:
+                print(f"[AstroWidget] Warning: failed to register NGC aliases for {obj.name}: {exc}")
+
+        # 4. SETUP QCOMPLETER
+        names = sorted(list(self.search_index.keys()), key=lambda x: x.lower())
+        self._attach_search_completer(names)
+        print(f"[AstroWidget] Search index built: {len(self.search_index)} objects.")
+
+    def _attach_search_completer(self, names):
+        if not hasattr(self, "txt_search"):
+            return
         from PyQt5.QtWidgets import QCompleter
         from PyQt5.QtCore import Qt
 
-        names = sorted(list(self.search_index.keys()), key=lambda x: x.lower())
         completer = QCompleter(names, self)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
         self.txt_search.setCompleter(completer)
         completer.activated[str].connect(self.on_search_triggered)
         self.txt_search.setEnabled(True)
-        print(f"[AstroWidget] Search index built: {len(self.search_index)} objects.")
 
     def _load_named_star_search_entries(self):
         cached = getattr(self, "_named_star_search_entries_cache", None)
@@ -8164,6 +8548,29 @@ class AstronomicalWidget(CustomWidgetBase):
         self._named_star_search_entries_cache = out
         return self._named_star_search_entries_cache
 
+    def _load_ngc_search_entries(self):
+        cached = getattr(self, "_ngc_search_entries_cache", None)
+        if cached is not None:
+            return cached
+
+        path = getattr(self, "_astro_ngc_catalog_path", "")
+        if not path:
+            path = os.path.abspath(
+                os.path.join(os.path.dirname(__file__), "..", "data", "sky", "openngc_catalog.csv")
+            )
+        if not os.path.isfile(path):
+            self._ngc_search_entries_cache = []
+            return self._ngc_search_entries_cache
+
+        try:
+            from TerraLab.astro.ngc_catalog import load_ngc_catalog
+
+            self._ngc_search_entries_cache = load_ngc_catalog(path)
+        except Exception as exc:
+            print(f"[AstroWidget] Warning: could not load OpenNGC search entries: {exc}")
+            self._ngc_search_entries_cache = []
+        return self._ngc_search_entries_cache
+
     @staticmethod
     def _normalize_search_key(text: str) -> str:
         lowered = (text or "").strip().lower()
@@ -8215,13 +8622,15 @@ class AstronomicalWidget(CustomWidgetBase):
             print(f"[AstroWidget] {msg}")
 
     def center_on_object(self, info):
-        """Calculates current Az/Alt for the object and starts animation."""
+        """Snap the searched object into view and mark it immediately."""
         az = alt = None
 
         if info["type"] == "star":
             star = info["obj"]
             az, alt = self.get_horizontal_coords(star['ra'], star['dec'])
+            selected_payload = {"kind": "star", "obj": star, "info": info}
         elif info["type"] == "planet":
+            selected_payload = {"kind": "planet", "obj": info.get("obj"), "info": info}
             data = self._prepare_skyfield_cache_for_search()
             if data:
                 p_key = self._normalize_search_key(info.get('key', ''))
@@ -8243,11 +8652,24 @@ class AstronomicalWidget(CustomWidgetBase):
                             az = p.get('az')
                             alt = p.get('alt')
                             break
+        elif info["type"] == "ngc":
+            obj = info["obj"]
+            az, alt = self.get_horizontal_coords(obj.ra_deg, obj.dec_deg)
+            selected_payload = {"kind": "ngc", "obj": obj, "info": info}
+        else:
+            selected_payload = {"kind": str(info.get("type", "object")), "obj": info.get("obj"), "info": info}
 
         if az is not None and alt is not None:
             az %= 360.0
-            self.target_azimuth = az
-            self.target_elevation = alt
+            self.target_azimuth = None
+            self.target_elevation = None
+            if hasattr(self, "anim_timer"):
+                self.anim_timer.stop()
+            if hasattr(self.canvas, "_set_selected_target"):
+                self.canvas._set_selected_target(selected_payload)
+            self.canvas.azimuth_offset = az
+            self.canvas.elevation_angle = alt
+            self.canvas.dragging = False
             if self.canvas.scope_mode_enabled():
                 self.canvas.scope_controller.set_center((alt, az))
 
@@ -8255,7 +8677,6 @@ class AstronomicalWidget(CustomWidgetBase):
                 hint = getTraduction("Astro.ObjectBelowHorizon", "Object below horizon ({alt:.1f} deg)").format(alt=alt)
                 self.canvas.hint_overlay.show_hint(hint)
 
-            self.anim_timer.start(16)
             self.canvas.update()
 
     def get_horizontal_coords(self, ra, dec):
@@ -8410,6 +8831,7 @@ class AstronomicalWidget(CustomWidgetBase):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._position_startup_placeholder()
         # Defer position update to ensure layout geometry is final
         QTimer.singleShot(0, self._update_button_pos)
 

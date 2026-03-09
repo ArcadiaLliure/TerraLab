@@ -361,7 +361,7 @@ def _compute_general_render_mlim_mag(bortle_class, render_compensation_mag=DEFAU
     )
 
 
-def update_telescope_hud(state):
+def update_telescope_hud(state, allow_remote_fetch=True):
     if not bool(state.get("scope_enabled", False)):
         return state
 
@@ -395,7 +395,7 @@ def update_telescope_hud(state):
     if weather_enabled:
         aod, pressure_hpa = _read_cds_cached_metrics(cache, now_utc)
 
-        if aod is None or pressure_hpa is None:
+        if (aod is None or pressure_hpa is None) and bool(allow_remote_fetch):
             aod, pressure_hpa = fetch_copernicus_aod_pressure(
                 lat,
                 lon,
@@ -404,7 +404,7 @@ def update_telescope_hud(state):
                 api_url=copernicus_api_url if copernicus_api_url else None,
             )
             state["_wx_cache"] = _write_cds_cached_metrics(cache, now_utc, aod, pressure_hpa)
-        elif isinstance(cache, dict):
+        elif aod is not None and pressure_hpa is not None and isinstance(cache, dict):
             # Preserve existing structure and refresh flat fields for compatibility.
             state["_wx_cache"] = _write_cds_cached_metrics(cache, now_utc, aod, pressure_hpa)
     else:
@@ -427,9 +427,9 @@ def update_telescope_hud(state):
     return state
 
 
-def on_telescope_view_enabled(state):
+def on_telescope_view_enabled(state, allow_remote_fetch=True):
     state["scope_enabled"] = True
-    update_telescope_hud(state)
+    update_telescope_hud(state, allow_remote_fetch=allow_remote_fetch)
     update_star_rendering_params(state)
     return state
 

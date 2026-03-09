@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from typing import Optional, Tuple
+from datetime import datetime, timedelta, timezone
 
 try:
     import numpy as np
@@ -13,8 +14,24 @@ except Exception:  # pragma: no cover
 from TerraLab.scene.camera import Camera
 
 
-def local_sidereal_angle(day_of_year: int, ut_hour: float, longitude_deg: float) -> float:
-    return (100.0 + float(day_of_year) * 0.9856 + float(ut_hour) * 15.0 + float(longitude_deg)) % 360.0
+def local_sidereal_angle(day_of_year: int, ut_hour: float, longitude_deg: float, year: Optional[int] = None) -> float:
+    if year is None or int(year) <= 0:
+        return (100.0 + float(day_of_year) * 0.9856 + float(ut_hour) * 15.0 + float(longitude_deg)) % 360.0
+
+    dt_utc = datetime(int(year), 1, 1, tzinfo=timezone.utc) + timedelta(
+        days=int(day_of_year),
+        hours=float(ut_hour),
+    )
+    j2000 = datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    jd = 2451545.0 + (dt_utc - j2000).total_seconds() / 86400.0
+    T = (jd - 2451545.0) / 36525.0
+    gmst = (
+        280.46061837
+        + 360.98564736629 * (jd - 2451545.0)
+        + 0.000387933 * T * T
+        - (T * T * T) / 38710000.0
+    )
+    return (gmst + float(longitude_deg)) % 360.0
 
 
 def radec_to_altaz_numpy(
@@ -24,6 +41,7 @@ def radec_to_altaz_numpy(
     longitude_deg: float,
     ut_hour: float,
     day_of_year: int,
+    year: Optional[int] = None,
 ):
     """Vectorized RA/Dec -> Alt/Az in degrees."""
     if np is None:
@@ -33,7 +51,7 @@ def radec_to_altaz_numpy(
     dec = np.asarray(dec_deg, dtype=np.float32)
 
     lat_rad = np.float32(math.radians(float(latitude_deg)))
-    lst = np.float32(local_sidereal_angle(day_of_year, ut_hour, longitude_deg))
+    lst = np.float32(local_sidereal_angle(day_of_year, ut_hour, longitude_deg, year=year))
 
     ha_rad = np.radians(lst - ra)
     dec_rad = np.radians(dec)
