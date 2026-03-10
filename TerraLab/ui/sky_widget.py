@@ -1,17 +1,8 @@
-"""New small UI entrypoint for sky widget.
-
-This module keeps a stable import path while the migration from
-`TerraLab.widgets.sky_widget` is still in progress.
-"""
+"""Public UI entrypoint for the sky widget."""
 
 from __future__ import annotations
 
-from TerraLab.widgets.sky_widget import AstronomicalWidget as _LegacyAstronomicalWidget
-
-
-class SkyWidget(_LegacyAstronomicalWidget):
-    pass
-
+from TerraLab.ui.sky_widget_impl import AstronomicalWidget as SkyWidget
 
 AstronomicalWidget = SkyWidget
 

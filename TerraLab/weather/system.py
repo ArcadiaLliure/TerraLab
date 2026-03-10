@@ -503,10 +503,23 @@ class WeatherSystem:
         except Exception:
             pass
 
+    def set_remote_user_agent(self, user_agent: str):
+        try:
+            self.provider.set_user_agent(str(user_agent or "").strip())
+            self.last_weather_reason = self.provider.get_last_status()
+        except Exception:
+            pass
+
     def get_runtime_status(self):
+        requires_user_agent = False
+        try:
+            requires_user_agent = not bool(str(getattr(self.provider, "user_agent", "") or "").strip())
+        except Exception:
+            requires_user_agent = True
         return {
             "source": str(getattr(self, "last_weather_source", "fallback") or "fallback"),
             "reason": str(getattr(self, "last_weather_reason", "unknown") or "unknown"),
+            "requires_user_agent": bool(requires_user_agent),
         }
         
     def set_bortle(self, bortle_class: int):

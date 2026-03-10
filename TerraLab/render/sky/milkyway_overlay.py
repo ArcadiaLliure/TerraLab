@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import io
 import math
 import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -17,24 +18,41 @@ except Exception:  # pragma: no cover
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPainter
 
+from TerraLab.common.app_paths import ensure_runtime_layout
 from TerraLab.common.utils import resource_path
 from TerraLab.scene.projection import local_sidereal_angle
 from TerraLab.util.math2d import clamp
 
 
+def _default_runtime_texture_path() -> str:
+    try:
+        layout = ensure_runtime_layout()
+        return str(Path(layout["data_milkyway"]) / "milkyway_overlay.png")
+    except Exception:
+        return "data/sky/milkyway_overlay.png"
+
+
+def _default_runtime_dust_path() -> str:
+    try:
+        layout = ensure_runtime_layout()
+        return str(Path(layout["data_planck"]) / "planck_dust_opacity_eq_u16.npz")
+    except Exception:
+        return "data/sky/derived/planck_dust_opacity_eq_u16.npz"
+
+
 @dataclass
 class _OverlayConfig:
     enabled: bool = True
-    texture_path: str = "data/sky/milkyway_overlay.png"
+    texture_path: str = _default_runtime_texture_path()
     opacity: float = 0.65
     blend_mode: str = "add"
     ra_offset_deg: float = 180.0
     coord_frame: str = "galactic"
     lat_flip: bool = True
     lon_flip: bool = True
-    sample_scale: float = 0.35
+    sample_scale: float = 1.0
     dust_map_enabled: bool = False
-    dust_map_path: str = "data/sky/derived/planck_dust_opacity_eq_u16.npz"
+    dust_map_path: str = _default_runtime_dust_path()
     dust_density_strength: float = 0.0
     dust_extinction_strength: float = 0.65
     auto_opacity: bool = True
@@ -56,7 +74,7 @@ class MilkyWayOverlay:
         self.coord_frame: str = "galactic"
         self.lat_flip: bool = True
         self.lon_flip: bool = True
-        self.texture_path: str = "data/sky/milkyway_overlay.png"
+        self.texture_path: str = _default_runtime_texture_path()
 
         self._texture_rgba: Optional[np.ndarray] = None
         self._texture_rgb_gain: float = 1.0
@@ -69,6 +87,7 @@ class MilkyWayOverlay:
 
         self._cached_overlay_key: Optional[tuple] = None
         self._cached_overlay_image: Optional[QImage] = None
+        self._last_overlay_build_mono: float = 0.0
         self._screen_grid_cache_key: Optional[tuple] = None
         self._screen_grid_cache: Optional[tuple] = None
         self._warned_missing_texture: bool = False
@@ -190,13 +209,30 @@ class MilkyWayOverlay:
             self._dust_map_path_resolved = None
             self._dust_map_stamp = None
 
+        interaction_active = bool(
+            getattr(state, "interaction_active", False) or getattr(state, "scope_enabled", False)
+        )
         key = self._build_cache_key(ctx, state, cfg, effective_opacity)
-        if self._cached_overlay_key != key or self._cached_overlay_image is None:
-            image = self._build_overlay_image(ctx, state, cfg, effective_opacity)
-            if image is None:
+        must_rebuild = self._cached_overlay_key != key or self._cached_overlay_image is None
+
+        if must_rebuild:
+            # While interacting, throttle expensive overlay rebuilds and reuse
+            # the last frame in-between to keep motion fluid.
+            can_rebuild_now = True
+            if interaction_active and self._cached_overlay_image is not None:
+                dt_s = time.monotonic() - float(getattr(self, "_last_overlay_build_mono", 0.0))
+                if dt_s < 0.050:  # ~20 Hz overlay updates during camera motion
+                    can_rebuild_now = False
+
+            if can_rebuild_now:
+                image = self._build_overlay_image(ctx, state, cfg, effective_opacity)
+                if image is None:
+                    return
+                self._cached_overlay_key = key
+                self._cached_overlay_image = image
+                self._last_overlay_build_mono = time.monotonic()
+            elif self._cached_overlay_image is None:
                 return
-            self._cached_overlay_key = key
-            self._cached_overlay_image = image
 
         painter = ctx.painter
         painter.save()
@@ -273,9 +309,9 @@ class MilkyWayOverlay:
             coord_frame=str(block.get("coord_frame", self.coord_frame or "galactic")).strip().lower(),
             lat_flip=bool(block.get("lat_flip", self.lat_flip)),
             lon_flip=bool(block.get("lon_flip", self.lon_flip)),
-            sample_scale=float(clamp(block.get("sample_scale", 0.35), 0.10, 1.0)),
+            sample_scale=float(clamp(block.get("sample_scale", 1.0), 0.10, 1.0)),
             dust_map_enabled=bool(block.get("dust_map_enabled", False)),
-            dust_map_path=str(block.get("dust_map_path", "data/sky/derived/planck_dust_opacity_eq_u16.npz")),
+            dust_map_path=str(block.get("dust_map_path", _default_runtime_dust_path())),
             dust_density_strength=float(max(0.0, block.get("dust_density_strength", 0.0))),
             dust_extinction_strength=float(max(0.0, block.get("dust_extinction_strength", 0.65))),
             auto_opacity=bool(block.get("auto_opacity", True)),
@@ -329,7 +365,9 @@ class MilkyWayOverlay:
         cam_el = float(getattr(cam, "elevation_angle", 0.0))
         cam_zoom = float(getattr(cam, "zoom_level", 1.0))
         cam_voff = float(getattr(cam, "vertical_offset_ratio", 0.3))
-        interaction_active = bool(getattr(state, "interaction_active", False))
+        interaction_active = bool(
+            getattr(state, "interaction_active", False) or getattr(state, "scope_enabled", False)
+        )
         sample_scale_eff = float(self._effective_sample_scale(cfg, interaction_active))
         dust_stamp = self._dust_map_stamp if cfg.dust_map_enabled else None
         lst_deg = float(
@@ -340,11 +378,11 @@ class MilkyWayOverlay:
             )
         )
         # Fem quantitzacio adaptativa per evitar reconstruccio per variacions minimes.
-        cam_step = 0.55 if interaction_active else 0.20
-        zoom_step = 0.03 if interaction_active else 0.01
-        voff_step = 0.010 if interaction_active else 0.005
+        cam_step = 1.20 if interaction_active else 0.20
+        zoom_step = 0.060 if interaction_active else 0.01
+        voff_step = 0.020 if interaction_active else 0.005
         latlon_step = 0.01
-        lst_step = 0.25 if interaction_active else 0.10
+        lst_step = 0.80 if interaction_active else 0.10
 
         return (
             int(ctx.width),
@@ -379,7 +417,9 @@ class MilkyWayOverlay:
 
         full_w = int(ctx.width)
         full_h = int(ctx.height)
-        interaction_active = bool(getattr(state, "interaction_active", False))
+        interaction_active = bool(
+            getattr(state, "interaction_active", False) or getattr(state, "scope_enabled", False)
+        )
         sample_scale_eff = float(self._effective_sample_scale(cfg, interaction_active))
         sample_w = max(64, int(round(full_w * sample_scale_eff)))
         sample_h = max(32, int(round(full_h * sample_scale_eff)))
@@ -499,7 +539,7 @@ class MilkyWayOverlay:
         base = float(clamp(cfg.sample_scale, 0.10, 1.0))
         if not interaction_active:
             return base
-        return float(clamp(max(0.14, base * 0.62), 0.10, base))
+        return float(clamp(min(base, max(0.10, base * 0.28)), 0.10, base))
 
     def _altaz_to_radec(
         self,

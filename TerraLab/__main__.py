@@ -2,7 +2,7 @@ import sys
 import traceback
 import os
 import faulthandler
-from PyQt5.QtWidgets import QApplication, QDialog
+from PyQt5.QtWidgets import QApplication
 from TerraLab.ui.sky_widget import AstronomicalWidget
 
 from PyQt5.QtCore import Qt
@@ -33,21 +33,7 @@ def main():
         print(f"[TerraLab] Warning: could not enable faulthandler: {e}")
 
     app = QApplication(sys.argv)
-    
-    # Standalone mode
-    # Check Terrain Config before launch
-    from TerraLab.config import ConfigManager
-    config = ConfigManager()
-    raster_path = config.get_raster_path()
-    
-    start_app = True
-    if not raster_path or not os.path.exists(raster_path):
-        from TerraLab.widgets.terrain_config_dialog import TerrainConfigDialog
-        dlg = TerrainConfigDialog()
-        if dlg.exec_() == QDialog.Accepted:
-             # Reload config just in case
-             config._load()
-             
+
     widget = StandaloneAstronomicalWidget()
     widget.show()
     

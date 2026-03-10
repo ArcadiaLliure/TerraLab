@@ -1,19 +1,17 @@
-"""
+﻿"""
 Clase base para todos los widgets personalizados del escritorio.
-Proporciona funcionalidad común como arrastre, redimensionamiento y controles de ventana.
+Proporciona funcionalidad comÃºn como arrastre, redimensionamiento y controles de ventana.
 
-Esta implementación incorpora soporte de tematización. Los colores y estilos de la
+Esta implementaciÃ³n incorpora soporte de tematizaciÃ³n. Los colores y estilos de la
 interfaz se derivan de un tema actual almacenado en `self.current_theme`.  Este
-tema puede ser configurado mediante el método `set_theme()`, que acepta tanto
+tema puede ser configurado mediante el mÃ©todo `set_theme()`, que acepta tanto
 formatos simplificados como los temas completos de Studio Ghibli (con
 secciones `colors`, `gradients` y `effects`).
 
-El método `apply_styles()` genera dinámicamente la hoja de estilos QSS en
-función del tema activo.
+El mÃ©todo `apply_styles()` genera dinÃ¡micamente la hoja de estilos QSS en
+funciÃ³n del tema activo.
 """
 
-import os
-import json
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QFrame, QSizeGrip, QApplication
@@ -21,7 +19,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal, QEvent
 from PyQt5.QtGui import QFont, QIcon
 from PyQt5.QtWidgets import QSizePolicy
-from .utils import resource_path
+from .utils import get_config_value
 
 
 
@@ -40,7 +38,7 @@ def _rgb_to_hex(r: int, g: int, b: int) -> str:
 
 def lighten_color(color: str, factor: float = 0.1) -> str:
     """
-    Aclara un color mezclándolo con blanco. El factor debe estar entre 0 y 1.
+    Aclara un color mezclÃ¡ndolo con blanco. El factor debe estar entre 0 y 1.
     Un factor de 0.0 no cambia el color, 1.0 lo vuelve blanco.
     """
     r, g, b = _hex_to_rgb(color)
@@ -65,10 +63,10 @@ def darken_color(color: str, factor: float = 0.1) -> str:
 def get_contrast_color(color: str) -> str:
     """
     Determina un color de texto (negro o blanco) que contraste con el fondo.
-    Se calcula la luminosidad perceptual del color para escoger el más legible.
+    Se calcula la luminosidad perceptual del color para escoger el mÃ¡s legible.
     """
     r, g, b = _hex_to_rgb(color)
-    # Fórmula de luminosidad percibida según ITU-R BT.601
+    # FÃ³rmula de luminosidad percibida segÃºn ITU-R BT.601
     luminance = (0.299 * r + 0.587 * g + 0.114 * b)
     return '#000000' if luminance > 128 else '#FFFFFF'
 
@@ -79,13 +77,13 @@ class CustomWidgetBase(QWidget):
     Proporciona funcionalidad de ventana frameless con controles personalizados.
     """
 
-    # Señales para comunicación con la ventana principal
-    widget_minimized = pyqtSignal(object)  # Emite el widget que se minimizó
-    widget_maximized = pyqtSignal(object)  # Emite el widget que se maximizó
-    widget_restored = pyqtSignal(object)   # Emite el widget que se restauró
-    widget_closed = pyqtSignal(object)     # Emite el widget que se cerró
+    # SeÃ±ales para comunicaciÃ³n con la ventana principal
+    widget_minimized = pyqtSignal(object)  # Emite el widget que se minimizÃ³
+    widget_maximized = pyqtSignal(object)  # Emite el widget que se maximizÃ³
+    widget_restored = pyqtSignal(object)   # Emite el widget que se restaurÃ³
+    widget_closed = pyqtSignal(object)     # Emite el widget que se cerrÃ³
 
-    # Lista de instancias para la actualización masiva de temas
+    # Lista de instancias para la actualizaciÃ³n masiva de temas
     _instances = []
 
     # Marge per detectar el redimensionament
@@ -94,7 +92,7 @@ class CustomWidgetBase(QWidget):
     def __init__(self, title: str = "Widget", parent=None, frameless=True):
         super().__init__(parent)
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        # Habilitar el seguiment del ratolí per canviar el cursor a les vores
+        # Habilitar el seguiment del ratolÃ­ per canviar el cursor a les vores
         self.setMouseTracking(True)
         
         self.title = title
@@ -117,14 +115,14 @@ class CustomWidgetBase(QWidget):
             # Standard window
             self.setAttribute(Qt.WA_TranslucentBackground, False)
 
-        # Configurar tamaño por defecto
+        # Configurar tamaÃ±o por defecto
         self.default_size = (400, 300)
         self.default_position = (100, 100)
         self.resize(*self.default_size)
         self.move(*self.default_position)
 
         # Definir un tema por defecto basado en la paleta Terra
-        # Este diccionario puede ser actualizado mediante el método set_theme().
+        # Este diccionario puede ser actualizado mediante el mÃ©todo set_theme().
         error_color = '#c8553d'
         control_bg = '#948465'
         secondary_color = '#634311'
@@ -135,7 +133,7 @@ class CustomWidgetBase(QWidget):
             'widget_background': '#f1dfbe',
             'widget_border_color': secondary_color,
             'widget_border_radius': 10,
-            # Barra de título
+            # Barra de tÃ­tulo
             'title_bar_gradient': ['#a3a85e', '#a3a85e'],
             'title_bar_bg': '#a3a85e',
             'title_text_color': '#000000',
@@ -145,7 +143,7 @@ class CustomWidgetBase(QWidget):
             'control_button_hover': secondary_color,
             'control_button_pressed': secondary_color,
             'control_button_text_color': get_contrast_color(control_bg),
-            # Botón de cierre
+            # BotÃ³n de cierre
             'close_button_bg': error_color,
             'close_button_border': darken_color(error_color, 0.15),
             'close_button_hover': lighten_color(error_color, 0.15),
@@ -169,29 +167,20 @@ class CustomWidgetBase(QWidget):
             CustomWidgetBase._instances = [self]
 
         # Aplicar el tema persistido al inicializar, si existe una preferencia
-        # y la paleta actual del widget aún es la predeterminada. Esto evita
+        # y la paleta actual del widget aÃºn es la predeterminada. Esto evita
         # que se muestren colores por defecto antes de que el usuario seleccione
         # manualmente un tema.
         try:
-            import json
-            import os
-            # Localizar el archivo de configuración desde la ruta de este módulo
-            config_file = resource_path('data/config.json')
-            if os.path.exists(config_file):
-                with open(config_file, 'r', encoding='utf-8') as cfg:
-                    conf = json.load(cfg)
-                saved_theme = conf.get('theme')
-                if saved_theme:
-                    # Obtener tema completo utilizando ThemeManager (se crea instancia temporal)
-                    try:
-                        from theme.theme_service import ThemeManager
-                        tmp_tm = ThemeManager()
-                        theme_dict = tmp_tm.get_theme(saved_theme)
-                        # Establecer el tema en este widget solo si es diferente al actual
-                        if theme_dict:
-                            self.set_theme(theme_dict)
-                    except Exception:
-                        pass
+            saved_theme = get_config_value("theme", None)
+            if saved_theme:
+                try:
+                    from theme.theme_service import ThemeManager
+                    tmp_tm = ThemeManager()
+                    theme_dict = tmp_tm.get_theme(saved_theme)
+                    if theme_dict:
+                        self.set_theme(theme_dict)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -202,46 +191,46 @@ class CustomWidgetBase(QWidget):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(0)
 
-        # Crear la barra de título (Solo si es frameless)
+        # Crear la barra de tÃ­tulo (Solo si es frameless)
         if self.is_frameless:
             self.create_title_bar()
 
-        # Crear el área de contenido
+        # Crear el Ã¡rea de contenido
         self.content_frame = QFrame()
         self.content_frame.setObjectName("contentFrame")
         self.content_layout = QVBoxLayout(self.content_frame)
         self.content_layout.setContentsMargins(10, 10, 10, 10)
 
-        # Añadir al layout principal
+        # AÃ±adir al layout principal
         if self.is_frameless:
             self.main_layout.addWidget(self.title_bar)
             
         self.main_layout.addWidget(self.content_frame, 1)
         
-        # Instal·lem event filter al frame de contingut per detectar vores fins i tot a sobre dels fills
+        # InstalÂ·lem event filter al frame de contingut per detectar vores fins i tot a sobre dels fills
         self.content_frame.setMouseTracking(True)
         self.content_frame.installEventFilter(self)
 
-        # Configurar el contenido específico del widget
+        # Configurar el contenido especÃ­fico del widget
         self.setup_content()
 
     def eventFilter(self, obj, event):
         """Intercepta moviments per actualitzar cursor a les vores."""
         if obj == self.content_frame:
             if event.type() == QEvent.MouseMove or event.type() == QEvent.HoverMove:
-                # Convertim la posició local del fill a la del pare (CustomWidgetBase)
+                # Convertim la posiciÃ³ local del fill a la del pare (CustomWidgetBase)
                 pos = self.mapFromGlobal(obj.mapToGlobal(event.pos()))
                 edges = self._check_resize_area(pos)
                 if edges:
                     self._update_cursor(edges)
-                    # Opcional: Si estem molt a la vora, podríem voler 'menjar-nos' l'event
-                    # o deixar que passi. Normalment canviar el cursor és suficient visualment.
-                    return False # Deixem passar, però ja hem canviat el cursor
+                    # Opcional: Si estem molt a la vora, podrÃ­em voler 'menjar-nos' l'event
+                    # o deixar que passi. Normalment canviar el cursor Ã©s suficient visualment.
+                    return False # Deixem passar, perÃ² ja hem canviat el cursor
                 elif not self._resizing:
                      # Si no estem a la vora ni redimensionant, restaurem cursor normal
                      self.setCursor(Qt.ArrowCursor)
             
-            # També cal gestionar el clic si volem permetre redimensionar iniciant el clic DINS del marge del fill
+            # TambÃ© cal gestionar el clic si volem permetre redimensionar iniciant el clic DINS del marge del fill
             if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
                 pos = self.mapFromGlobal(obj.mapToGlobal(event.pos()))
                 edges = self._check_resize_area(pos)
@@ -254,7 +243,7 @@ class CustomWidgetBase(QWidget):
         return super().eventFilter(obj, event)
 
     def create_title_bar(self):
-        """Crea la barra de título personalizada."""
+        """Crea la barra de tÃ­tulo personalizada."""
         self.title_bar = QFrame()
         self.title_bar.setObjectName("titleBar")
         self.title_bar.setFixedHeight(30)
@@ -262,7 +251,7 @@ class CustomWidgetBase(QWidget):
         title_layout = QHBoxLayout(self.title_bar)
         title_layout.setContentsMargins(10, 5, 5, 5)
 
-        # Título
+        # TÃ­tulo
         self.title_label = QLabel(self.title)
         self.title_label.setObjectName("titleLabel")
         title_layout.addWidget(self.title_label)
@@ -270,22 +259,22 @@ class CustomWidgetBase(QWidget):
         title_layout.addStretch()
 
         # Botones de control
-        self.minimize_btn = QPushButton("−")
+        self.minimize_btn = QPushButton("âˆ’")
         self.minimize_btn.setObjectName("controlButton")
         self.minimize_btn.setFixedSize(20, 20)
         self.minimize_btn.clicked.connect(self.minimize_widget)
 
-        self.restore_btn = QPushButton("□")
+        self.restore_btn = QPushButton("â–¡")
         self.restore_btn.setObjectName("controlButton")
         self.restore_btn.setFixedSize(20, 20)
         self.restore_btn.clicked.connect(self.restore_widget)
 
-        self.maximize_btn = QPushButton("□")
+        self.maximize_btn = QPushButton("â–¡")
         self.maximize_btn.setObjectName("controlButton")
         self.maximize_btn.setFixedSize(20, 20)
         self.maximize_btn.clicked.connect(self.maximize_widget)
 
-        self.close_btn = QPushButton("×")
+        self.close_btn = QPushButton("Ã—")
         self.close_btn.setObjectName("closeButton")
         self.close_btn.setFixedSize(20, 20)
         self.close_btn.clicked.connect(self.close_widget)
@@ -297,15 +286,15 @@ class CustomWidgetBase(QWidget):
 
     def setup_content(self):
         """
-        Método para ser sobrescrito por las subclases.
-        Aquí se debe configurar el contenido específico del widget.
+        MÃ©todo para ser sobrescrito por las subclases.
+        AquÃ­ se debe configurar el contenido especÃ­fico del widget.
         """
         pass
 
     def apply_styles(self):
-        """Aplica los estilos CSS al widget en función del tema actual."""
+        """Aplica los estilos CSS al widget en funciÃ³n del tema actual."""
         t = self.current_theme
-        # Construir estilo del widget y su barra de título
+        # Construir estilo del widget y su barra de tÃ­tulo
         css_parts = []
         # Estilo para el contenedor principal (CustomWidgetBase)
         if t.get('widget_background_gradient'):
@@ -314,15 +303,15 @@ class CustomWidgetBase(QWidget):
         else:
             widget_bg = f"background-color: {t.get('widget_background', '#ffffff')};"
         # Determinar colores y valores tomando como preferencia los definidos en el tema.
-        # Si no existen, derivar de otros valores ya presentes en el tema de manera lógica.
+        # Si no existen, derivar de otros valores ya presentes en el tema de manera lÃ³gica.
         border_color = t.get('widget_border_color', t.get('control_button_border', t.get('control_button_bg', '#cccccc')))
         border_radius = t.get('widget_border_radius', 8)
         css_parts.append(
             f"CustomWidgetBase {{ {widget_bg} border: 2px solid {border_color}; "
             f"border-radius: {border_radius}px; }}"
         )
-        # Estilo de la barra de título
-        # (Modificació: Ignorar el gradient per defecte per evitar que es vegi fosc/verd si l'usuari prefereix el color pla)
+        # Estilo de la barra de tÃ­tulo
+        # (ModificaciÃ³: Ignorar el gradient per defecte per evitar que es vegi fosc/verd si l'usuari prefereix el color pla)
         # if t.get('title_bar_gradient'):
         #     tb_c0, tb_c1 = t['title_bar_gradient'][0], t['title_bar_gradient'][-1]
         #     title_bar_bg = (
@@ -338,16 +327,16 @@ class CustomWidgetBase(QWidget):
             f"border-top-left-radius: {tb_radius}px; "
             f"border-top-right-radius: {tb_radius}px; }}"
         )
-        # Estilo del título
+        # Estilo del tÃ­tulo
         css_parts.append(
             f"#titleLabel {{ font-weight: bold; color: {t.get('title_text_color', t.get('text_primary', '#333333'))}; }}"
         )
 
 
-        # Estilo de los botones de control (excluyendo el botón de cierre)
+        # Estilo de los botones de control (excluyendo el botÃ³n de cierre)
         # Para los botones de control usamos un esquema que derive colores de otros valores
         # si alguna clave no existe. De este modo evitamos caer en colores por defecto
-        # ajenos al tema (como grises genéricos).
+        # ajenos al tema (como grises genÃ©ricos).
         ctrl_bg = t.get(
             'control_button_bg',
             t.get('widget_border_color', t.get('title_bar_bg', t.get('widget_background', '#d0d0d0')))
@@ -370,8 +359,8 @@ class CustomWidgetBase(QWidget):
         css_parts.append(
             f"#controlButton:pressed {{ background-color: {ctrl_pressed}; }}"
         )
-        # Estilo específico del botón de cierre
-        # Estilo específico del botón de cierre
+        # Estilo especÃ­fico del botÃ³n de cierre
+        # Estilo especÃ­fico del botÃ³n de cierre
         close_bg = t.get('close_button_bg', ctrl_hover)
         close_border = t.get('close_button_border', darken_color(close_bg, 0.15))
         # Calcular el color de texto contrastado si no viene en el tema
@@ -403,7 +392,7 @@ class CustomWidgetBase(QWidget):
         # Unir partes y aplicar
         self.setStyleSheet("\n".join(css_parts))
 
-    # ----- Gestión del tema -----
+    # ----- GestiÃ³n del tema -----
     def set_theme(self, theme_dict):
         """
         Establece un tema para el widget. Puede aceptar tanto un tema
@@ -411,7 +400,7 @@ class CustomWidgetBase(QWidget):
         como un tema avanzado con secciones `colors`, `gradients` y `effects`.
 
         Args:
-            theme_dict (dict): Descripción del tema.
+            theme_dict (dict): DescripciÃ³n del tema.
         """
         # Si el tema tiene la estructura de los temas de Ghibli (colors/gradients/effects)
         if isinstance(theme_dict, dict) and 'colors' in theme_dict and 'gradients' in theme_dict:
@@ -436,7 +425,7 @@ class CustomWidgetBase(QWidget):
             # Borde y radio
             new_theme['widget_border_color'] = colors.get('secondary', self.current_theme.get('widget_border_color'))
             new_theme['widget_border_radius'] = effects.get('border_radius', self.current_theme.get('widget_border_radius', 8))
-            # Barra de título
+            # Barra de tÃ­tulo
             new_theme['title_bar_gradient'] = gradients.get('title_bar')
             if 'title_bar' in gradients and gradients.get('title_bar'):
                 new_theme['title_bar_bg'] = gradients['title_bar'][0]
@@ -448,11 +437,11 @@ class CustomWidgetBase(QWidget):
             new_theme['control_button_bg'] = primary or self.current_theme.get('control_button_bg')
             new_theme['control_button_border'] = secondary or new_theme['control_button_bg']
             new_theme['control_button_hover'] = accent or new_theme['control_button_border']
-            # Para el botón pulsado, oscurecer el color de hover
+            # Para el botÃ³n pulsado, oscurecer el color de hover
             new_theme['control_button_pressed'] = darken_color(new_theme['control_button_hover'], 0.1)
             # Color de texto contrastado para los botones de control
             new_theme['control_button_text_color'] = get_contrast_color(new_theme['control_button_bg'])
-            # Botón de cierre
+            # BotÃ³n de cierre
             new_theme['close_button_bg'] = error_color or new_theme['control_button_hover']
             new_theme['close_button_border'] = darken_color(new_theme['close_button_bg'], 0.15)
             new_theme['close_button_hover'] = lighten_color(new_theme['close_button_bg'], 0.15)
@@ -460,7 +449,7 @@ class CustomWidgetBase(QWidget):
             new_theme['close_button_text_color'] = get_contrast_color(new_theme['close_button_bg'])
             # Contenido interno
             new_theme['content_bg'] = colors.get('surface', colors.get('background', self.current_theme.get('content_bg')))
-            # Asegurarse de que todos los atributos esenciales están presentes
+            # Asegurarse de que todos los atributos esenciales estÃ¡n presentes
             required_keys = [
                 'widget_background_gradient', 'widget_background', 'widget_border_color', 'widget_border_radius',
                 'title_bar_gradient', 'title_bar_bg', 'title_text_color',
@@ -470,7 +459,7 @@ class CustomWidgetBase(QWidget):
             ]
             for k in required_keys:
                 if k not in new_theme:
-                    # Derivar faltantes basándose en otros valores calculados
+                    # Derivar faltantes basÃ¡ndose en otros valores calculados
                     if k == 'widget_background_gradient':
                         # Si no hay gradiente definido, crear uno a partir del fondo y el borde
                         new_theme[k] = gradients.get('widget_background', [new_theme['content_bg'], new_theme['control_button_bg']])
@@ -483,7 +472,7 @@ class CustomWidgetBase(QWidget):
                     elif k == 'title_bar_bg':
                         new_theme[k] = new_theme.get('control_button_bg', '#e0e0e0')
                     elif k == 'title_text_color':
-                        # Calcular color de texto según contraste con barra de título
+                        # Calcular color de texto segÃºn contraste con barra de tÃ­tulo
                         new_theme[k] = get_contrast_color(new_theme.get('title_bar_bg', new_theme.get('control_button_bg', '#333333')))
                     elif k == 'control_button_bg':
                         new_theme[k] = new_theme.get('control_button_hover', new_theme.get('control_button_border', primary))
@@ -515,7 +504,7 @@ class CustomWidgetBase(QWidget):
         elif isinstance(theme_dict, dict):
             # Interpretar el diccionario simplificado como un conjunto de sobrescrituras
             self.current_theme.update(theme_dict)
-            # Asegurar que todas las claves esenciales estén presentes. Si faltan, derivar valores lógicos.
+            # Asegurar que todas las claves esenciales estÃ©n presentes. Si faltan, derivar valores lÃ³gicos.
             required_keys = [
                 'widget_background_gradient', 'widget_background', 'widget_border_color', 'widget_border_radius',
                 'title_bar_gradient', 'title_bar_bg', 'title_text_color',
@@ -548,35 +537,35 @@ class CustomWidgetBase(QWidget):
                     elif k == 'title_text_color':
                         t[k] = t.get('title_text_color', get_contrast_color(t.get('title_bar_bg', ctrl_bg)))
                     elif k == 'control_button_bg':
-                        # Si no hay color para el fondo del botón de control, usar el color del borde del widget
-                        # o bien el color de la barra de título. Así se mantiene la coherencia con el tema.
+                        # Si no hay color para el fondo del botÃ³n de control, usar el color del borde del widget
+                        # o bien el color de la barra de tÃ­tulo. AsÃ­ se mantiene la coherencia con el tema.
                         t[k] = t.get('control_button_bg', t.get('widget_border_color', t.get('title_bar_bg', '#d0d0d0')))
                     elif k == 'control_button_border':
-                        # Usar el borde del widget o el fondo del botón de control
+                        # Usar el borde del widget o el fondo del botÃ³n de control
                         t[k] = t.get('control_button_border', t.get('widget_border_color', t.get('control_button_bg')))
                     elif k == 'control_button_hover':
-                        # Por defecto el hover hereda del borde del botón de control
+                        # Por defecto el hover hereda del borde del botÃ³n de control
                         t[k] = t.get('control_button_hover', t.get('control_button_border', t.get('control_button_bg')))
                     elif k == 'control_button_pressed':
                         # Si no se define, oscurecer el color del hover
                         t[k] = t.get('control_button_pressed', darken_color(t.get('control_button_hover', t.get('control_button_bg')), 0.1))
                     elif k == 'control_button_text_color':
-                        # Determinar color de texto según contraste con el fondo del botón de control
+                        # Determinar color de texto segÃºn contraste con el fondo del botÃ³n de control
                         t[k] = t.get('control_button_text_color', get_contrast_color(t.get('control_button_bg', t.get('widget_border_color', '#d0d0d0'))))
                     elif k == 'close_button_bg':
-                        # Usar el color de error o en su defecto el color de hover del botón de control
+                        # Usar el color de error o en su defecto el color de hover del botÃ³n de control
                         t[k] = t.get('close_button_bg', t.get('control_button_hover', t.get('control_button_bg')))
                     elif k == 'close_button_border':
-                        # Oscurecer el color de fondo del botón de cierre
+                        # Oscurecer el color de fondo del botÃ³n de cierre
                         t[k] = t.get('close_button_border', darken_color(t.get('close_button_bg', t.get('control_button_hover', t.get('control_button_bg'))), 0.15))
                     elif k == 'close_button_hover':
-                        # Aclarar el color de fondo del botón de cierre
+                        # Aclarar el color de fondo del botÃ³n de cierre
                         t[k] = t.get('close_button_hover', lighten_color(t.get('close_button_bg', t.get('control_button_hover', t.get('control_button_bg'))), 0.15))
                     elif k == 'close_button_pressed':
-                        # Oscurecer el color de fondo del botón de cierre
+                        # Oscurecer el color de fondo del botÃ³n de cierre
                         t[k] = t.get('close_button_pressed', darken_color(t.get('close_button_bg', t.get('control_button_hover', t.get('control_button_bg'))), 0.15))
                     elif k == 'close_button_text_color':
-                        # Ajustar texto para que contraste con el color del botón de cierre
+                        # Ajustar texto para que contraste con el color del botÃ³n de cierre
                         t[k] = t.get('close_button_text_color', get_contrast_color(t.get('close_button_bg', t.get('control_button_hover', t.get('control_button_bg')))))
                     elif k == 'content_bg':
                         # Usar superficie o fondo por defecto
@@ -584,13 +573,13 @@ class CustomWidgetBase(QWidget):
             # Aplicar estilos con el tema completado
             self.apply_styles()
         else:
-            # Formato no reconocido: no se aplica ningún cambio
+            # Formato no reconocido: no se aplica ningÃºn cambio
             return
 
-    # ----- Eventos de interacción y manejo del widget -----
+    # ----- Eventos de interacciÃ³n y manejo del widget -----
     
     def _check_resize_area(self, pos):
-        """Determina a quina vora està el ratolí."""
+        """Determina a quina vora estÃ  el ratolÃ­."""
         edges = 0
         w, h = self.width(), self.height()
         m = self._RESIZE_MARGIN
@@ -629,7 +618,7 @@ class CustomWidgetBase(QWidget):
 
     def mouseMoveEvent(self, event):
         """Maneja el moviment (redimensionament, arrossegament o canvi de cursor)."""
-        # 1. Si no estem prement res, actualitzem cursor segons posició
+        # 1. Si no estem prement res, actualitzem cursor segons posiciÃ³
         if event.buttons() == Qt.NoButton:
             if not self.isMaximized():
                 edges = self._check_resize_area(event.pos())
@@ -641,7 +630,7 @@ class CustomWidgetBase(QWidget):
             delta = event.globalPos() - self._resize_drag_pos
             geo = self.geometry()
             
-            # Càlcul de nova geometria
+            # CÃ lcul de nova geometria
             if self._resize_edges & 1: # Left
                 geo.setLeft(geo.left() + delta.x())
             if self._resize_edges & 2: # Top
@@ -651,7 +640,7 @@ class CustomWidgetBase(QWidget):
             if self._resize_edges & 8: # Bottom
                 geo.setBottom(geo.bottom() + delta.y())
             
-            # Aplicar límits mínims (per evitar errors)
+            # Aplicar lÃ­mits mÃ­nims (per evitar errors)
             if geo.width() < 100: 
                 geo.setWidth(100)
                 if self._resize_edges & 1: geo.setLeft(geo.right() - 100)
@@ -698,7 +687,7 @@ class CustomWidgetBase(QWidget):
         self.widget_minimized.emit(self)
 
     def restore_widget(self):
-        """Restaura el widget a su tamaño y posición por defecto."""
+        """Restaura el widget a su tamaÃ±o y posiciÃ³n por defecto."""
         if self.is_maximized:
             # Restaurar desde maximizado
             if self.old_geometry:
@@ -709,19 +698,19 @@ class CustomWidgetBase(QWidget):
             self.is_maximized = False
             self.widget_restored.emit(self)
         else:
-            # Restaurar a posición/tamaño por defecto
+            # Restaurar a posiciÃ³n/tamaÃ±o por defecto
             self.resize(*self.default_size)
             self.move(*self.default_position)
 
     def maximize_widget(self):
-        """Maximiza el widget dentro del área de trabajo (sin salirse por abajo)."""
+        """Maximiza el widget dentro del Ã¡rea de trabajo (sin salirse por abajo)."""
         if self.is_maximized:
             return
 
-        # Guardar geometría actual para poder restaurar
+        # Guardar geometrÃ­a actual para poder restaurar
         self.old_geometry = self.geometry()
 
-        # Intentamos usar la pantalla donde está el widget
+        # Intentamos usar la pantalla donde estÃ¡ el widget
         app = QApplication.instance()
         screen = None
         if app is not None and hasattr(app, "screenAt"):
@@ -733,9 +722,9 @@ class CustomWidgetBase(QWidget):
             screen = QApplication.primaryScreen()
 
         if screen is not None:
-            geom = screen.availableGeometry()   # 👈 área útil (respeta barra de tareas)
+            geom = screen.availableGeometry()   # ðŸ‘ˆ Ã¡rea Ãºtil (respeta barra de tareas)
         else:
-            # Último recurso
+            # Ãšltimo recurso
             geom = QApplication.desktop().availableGeometry(self)
 
         self.setGeometry(geom)
@@ -772,21 +761,21 @@ class CustomWidgetBase(QWidget):
             self.setVisible(state['visible'])
 
     # ------------------------------------------------------------------
-    # Métodos de utilidad para la gestión de temas
+    # MÃ©todos de utilidad para la gestiÃ³n de temas
     # ------------------------------------------------------------------
     @classmethod
     def update_all_widgets_theme(cls, theme_dict: dict):
         """
         Actualiza el tema de todas las instancias vivas de CustomWidgetBase.
 
-        Este método recorre todas las instancias registradas de la clase y
+        Este mÃ©todo recorre todas las instancias registradas de la clase y
         aplica el nuevo tema usando `set_theme()`. Debe llamarse desde
         ThemeManager cuando cambia el tema para asegurar que cada widget
         refleje la nueva paleta.
 
         Args:
             theme_dict (dict): Diccionario del tema (puede ser avanzado o
-                               simplificado) que se pasará a `set_theme()`.
+                               simplificado) que se pasarÃ¡ a `set_theme()`.
         """
         for widget in list(cls._instances):
             try:
@@ -796,14 +785,14 @@ class CustomWidgetBase(QWidget):
 
     def refresh(self, deep: bool = True, reapply_theme: bool = True):
         """
-        Refresca el widget tras cambios de configuración/idioma/tema.
+        Refresca el widget tras cambios de configuraciÃ³n/idioma/tema.
 
         - reapply_theme: si True, vuelve a aplicar la hoja de estilos actual.
         - deep: si True, reconstruye el contenido del widget (llama a setup_content()).
 
-        Subclases pueden sobreescribir on_refresh() o implementar métodos como:
+        Subclases pueden sobreescribir on_refresh() o implementar mÃ©todos como:
         retranslate_ui(), retranslate(), update_texts(), update_ui(), refresh_content()
-        para actualizar sus textos/estados específicos.
+        para actualizar sus textos/estados especÃ­ficos.
         """
         # 1) Reaplicar estilos del tema activo
         if reapply_theme:
@@ -812,7 +801,7 @@ class CustomWidgetBase(QWidget):
             except Exception:
                 pass
 
-        # 3) Hook de extensión para subclases
+        # 3) Hook de extensiÃ³n para subclases
         onr = getattr(self, "retranslate_ui", None)
         if callable(onr):
             try:
@@ -820,7 +809,7 @@ class CustomWidgetBase(QWidget):
             except Exception:
                 pass
 
-        # 4) Reconstrucción profunda del contenido si se pide
+        # 4) ReconstrucciÃ³n profunda del contenido si se pide
         if deep:
             try:
                 # Vaciar el layout de contenido
@@ -829,7 +818,7 @@ class CustomWidgetBase(QWidget):
                     w = item.widget()
                     if w is not None:
                         w.setParent(None)
-                # Volver a construir el contenido específico
+                # Volver a construir el contenido especÃ­fico
                 self.setup_content()
             except Exception:
                 pass
@@ -840,3 +829,4 @@ class CustomWidgetBase(QWidget):
             self.repaint()
         except Exception:
             pass
+

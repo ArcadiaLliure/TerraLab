@@ -4,11 +4,12 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from TerraLab.common.utils import get_base_dir
+from TerraLab.common.utils import get_config_value
+from TerraLab.common.app_paths import weather_cache_path
 
 
 METNO_COMPACT_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
-METNO_USER_AGENT = "TerraLab/1.0 (weather client)"
+METNO_USER_AGENT = ""
 METNO_FORECAST_MAX_DAYS = 10
 METNO_CACHE_TTL_SECONDS = 12 * 3600
 
@@ -127,6 +128,9 @@ def _compact_metno_payload(payload):
 
 
 def _fetch_metno_compact(lat, lon, timeout_s, user_agent):
+    user_agent = str(user_agent or "").strip()
+    if not user_agent:
+        return None
     try:
         import requests
 
@@ -159,8 +163,9 @@ class MetNoWeatherProvider:
         self._attempt_backoff_seconds = 20.0
         self._cache = {}
         self.last_status = "init"
+        self.user_agent = str(get_config_value("weather.metno_user_agent", "") or "").strip()
         # Disk cache used for reproducible testing and avoiding repeated API traffic.
-        self._cache_path = os.path.join(get_base_dir(), "terralab_metno_weather_cache.json")
+        self._cache_path = str(weather_cache_path())
         self._load_cache()
 
     def get_cache_path(self):
@@ -183,6 +188,13 @@ class MetNoWeatherProvider:
             self.last_status = "cache_disabled"
         else:
             self._load_cache()
+
+    def set_user_agent(self, value):
+        self.user_agent = str(value or "").strip()
+        if not self.user_agent:
+            self.last_status = "missing_user_agent"
+        elif self.use_remote:
+            self.last_status = "user_agent_updated"
 
     def clear_cache_file(self):
         self._cache = {}
@@ -279,6 +291,9 @@ class MetNoWeatherProvider:
         if self._future is not None and not self._future.done():
             self.last_status = "fetching"
             return
+        if not str(self.user_agent or "").strip():
+            self.last_status = "missing_user_agent"
+            return
         now_m = time.monotonic()
         if now_m - self._last_attempt_monotonic < self._attempt_backoff_seconds:
             self.last_status = "fetch_backoff"
@@ -290,7 +305,7 @@ class MetNoWeatherProvider:
             self.latitude,
             self.longitude,
             8.0,
-            METNO_USER_AGENT,
+            self.user_agent,
         )
 
     def _consume_ready_future(self):
@@ -330,6 +345,9 @@ class MetNoWeatherProvider:
     def get_weather(self, year, day_of_year, hour):
         if not self.use_remote:
             self.last_status = "remote_disabled"
+            return None
+        if not str(self.user_agent or "").strip():
+            self.last_status = "missing_user_agent"
             return None
         # Fetch policy:
         # - one compact request covers the API forecast horizon in a single call.

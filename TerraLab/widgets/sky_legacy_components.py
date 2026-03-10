@@ -601,16 +601,88 @@ class RusticTimeBar(QWidget):
         self.lat = 0.0
         self.lon = 0.0
         self.day_of_year = 1
+        self._bg_cache_image = None
+        self._bg_cache_key = None
 
     def set_time(self, hour):
         self.current_hour = hour % 24.0
         self.update()
 
     def update_params(self, lat, lon, day_of_year):
-        self.lat = lat
-        self.lon = lon
-        self.day_of_year = day_of_year
+        new_lat = float(lat)
+        new_lon = float(lon)
+        new_day = int(day_of_year)
+        changed = (
+            abs(new_lat - float(self.lat)) > 1e-6
+            or abs(new_lon - float(self.lon)) > 1e-6
+            or new_day != int(self.day_of_year)
+        )
+        self.lat = new_lat
+        self.lon = new_lon
+        self.day_of_year = new_day
+        if changed:
+            self._bg_cache_image = None
+            self._bg_cache_key = None
         self.update()
+
+    def resizeEvent(self, event):
+        self._bg_cache_image = None
+        self._bg_cache_key = None
+        super().resizeEvent(event)
+
+    def _ensure_background_cache(self):
+        rect = self.rect()
+        if rect.width() <= 0 or rect.height() <= 0:
+            return
+
+        key = (
+            int(rect.width()),
+            int(rect.height()),
+            round(float(self.lat), 4),
+            round(float(self.lon), 4),
+            int(self.day_of_year),
+        )
+        if self._bg_cache_image is not None and self._bg_cache_key == key:
+            return
+
+        img = QImage(rect.size(), QImage.Format_ARGB32_Premultiplied)
+        img.fill(QColor(0, 0, 0, 0))
+        p = QPainter(img)
+        try:
+            # 1. Background Gradient (Sampled every 15 mins)
+            grad = QLinearGradient(0, 0, rect.width(), 0)
+
+            step = 0.25
+            steps = int(24.0 / step)
+            for i in range(steps + 1):
+                h = i * step
+                if h > 24.0:
+                    h = 24.0
+                alt = self.get_sun_alt_fast(h, self.lat, self.lon, self.day_of_year)
+                grad.setColorAt(h / 24.0, self.get_color_for_alt(alt))
+
+            p.fillRect(rect, grad)
+
+            # 2. Ticks & Labels (static with cache key)
+            p.setPen(QColor(255, 255, 255, 150))
+            font = p.font()
+            font.setPointSize(8)
+            p.setFont(font)
+            for h in self.hours_text:
+                x = (h / 24.0) * rect.width()
+                p.drawLine(int(x), 0, int(x), 5)
+                p.drawLine(int(x), rect.height(), int(x), rect.height() - 5)
+                if h < 24:
+                    p.drawText(int(x) + 2, rect.height() - 2, f"{h}h")
+
+            # 3. Border
+            p.setPen(QPen(QColor(100, 100, 100), 1))
+            p.drawRect(0, 0, rect.width() - 1, rect.height() - 1)
+        finally:
+            p.end()
+
+        self._bg_cache_image = img
+        self._bg_cache_key = key
         
     def get_sun_alt_fast(self, hour, lat, lon, day):
         # Quick calculation of sun altitude for the bar
@@ -681,39 +753,12 @@ class RusticTimeBar(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         rect = self.rect()
-        
-        # 1. Background Gradient (Sampled every 15 mins)
-        grad = QLinearGradient(0, 0, rect.width(), 0)
-        
-        # Sampling step (0.25h = 15min) -> 96 steps
-        step = 0.25
-        steps = int(24.0 / step)
-        
-        for i in range(steps + 1):
-            h = i * step
-            if h > 24.0: h = 24.0
-            
-            alt = self.get_sun_alt_fast(h, self.lat, self.lon, self.day_of_year)
-            color = self.get_color_for_alt(alt)
-            
-            grad.setColorAt(h / 24.0, color)
-        
-        painter.fillRect(rect, grad)
-        
-        # 2. Ticks & Labels
-        painter.setPen(QColor(255, 255, 255, 150))
-        font = painter.font()
-        font.setPointSize(8)
-        painter.setFont(font)
-        
-        for h in self.hours_text:
-            x = (h / 24.0) * rect.width()
-            painter.drawLine(int(x), 0, int(x), 5)
-            painter.drawLine(int(x), rect.height(), int(x), rect.height()-5)
-            if h < 24:
-                painter.drawText(int(x)+2, rect.height()-2, f"{h}h")
 
-        # 3. Time Marker
+        self._ensure_background_cache()
+        if self._bg_cache_image is not None:
+            painter.drawImage(0, 0, self._bg_cache_image)
+
+        # Time Marker (dynamic)
         pos_x = (self.current_hour / 24.0) * rect.width()
         
         # Rustic Indicator Line
@@ -727,11 +772,7 @@ class RusticTimeBar(QWidget):
         text_x = pos_x + 5
         if text_x + 30 > rect.width(): text_x = pos_x - 35
         painter.drawText(int(text_x), 15, time_str)
-        
-        # Border
-        painter.setPen(QPen(QColor(100, 100, 100), 1))
-        painter.drawRect(0, 0, rect.width()-1, rect.height()-1)
-        
+
         painter.end()
 
     def mousePressEvent(self, event):

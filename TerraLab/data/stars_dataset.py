@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List
 
 import numpy as np
+from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 
 try:
     import zstandard as zstd
@@ -40,16 +41,8 @@ REQUIRED_COLS = ("ra", "dec", "phot_g_mean_mag")
 OPTIONAL_COLS = ("bp_rp", "pmra", "pmdec", "parallax", "source_id")
 
 
-def _appdata_root() -> Path:
-    appdata = os.getenv("APPDATA")
-    if appdata:
-        return Path(appdata)
-    # Fallback for non-Windows local runs.
-    return Path.home() / "AppData" / "Roaming"
-
-
 def _runtime_data_dir() -> Path:
-    return _appdata_root() / APP_NAME / "data"
+    return runtime_data_dir_for("gaia")
 
 
 def _runtime_npz_path() -> Path:
