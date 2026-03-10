@@ -501,8 +501,8 @@ class StarsRenderer:
     # -----------------------------
     def _limiting_magnitude(self, state) -> float:
         cam = state.camera
-        extras = getattr(state, "extras", {}) if isinstance(getattr(state, "extras", {}), dict) else {}
         scope_enabled = bool(getattr(state, "scope_enabled", False))
+        extras = getattr(state, "extras", {}) if isinstance(getattr(state, "extras", {}), dict) else {}
 
         base = float(getattr(state, "magnitude_limit", 6.0))
         spike_knob = float(getattr(state, "spike_magnitude_threshold", 2.0))
@@ -655,6 +655,9 @@ class StarsRenderer:
     def render(self, ctx, state):
         if np is None:
             return self._empty_result()
+        extras = getattr(state, "extras", {}) if isinstance(getattr(state, "extras", {}), dict) else {}
+        if not bool(extras.get("stars_enabled", True)):
+            return self._empty_result()
         if state.ra is None or state.dec is None or state.mag is None:
             return self._empty_result()
 
@@ -671,7 +674,6 @@ class StarsRenderer:
             if len(bp_rp_all) != len(mag_all):
                 bp_rp_all = None
 
-        extras = getattr(state, "extras", {}) if isinstance(getattr(state, "extras", {}), dict) else {}
         scope_enabled = bool(getattr(state, "scope_enabled", False))
         interaction_active = bool(getattr(state, "interaction_active", False))
         diag = getattr(ctx, "diagnostics", None)

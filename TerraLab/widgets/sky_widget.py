@@ -54,6 +54,7 @@ from TerraLab.render.sky_renderer import SkyRenderer
 from TerraLab.scene.camera import Camera
 from TerraLab.scene.render_context import RenderContext
 from TerraLab.scene.scene_state import SceneState
+from TerraLab.util.math2d import clamp
 
 # Skyfield imports
 try:
@@ -1876,7 +1877,9 @@ class AstroCanvas(QWidget):
                         moon_mask = (pt_m[0], pt_m[1], mr_px)
     
             # 4. Stars & Celestial Objects
-            if scene_stage_rank >= 2 and self._parent_checkbox_checked("chk_enable_sky", default=True):
+            show_stars_layer = self._parent_checkbox_checked("chk_enable_sky", default=True)
+            show_milkyway_layer = self._parent_checkbox_checked("chk_enable_milkyway", default=True)
+            if scene_stage_rank >= 1 and (show_stars_layer or show_milkyway_layer):
                 self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit, eff_lat=eff_lat, day_of_year=day_for_astro)
             
             self.visible_sky_objects = []
@@ -1959,6 +1962,9 @@ class AstroCanvas(QWidget):
             lbl_stars = getTraduction("Astro.Stars", "STARS")
             stars_count = self._scope_hud_star_count() if self.scope_mode_enabled() else self._visible_star_count_raw()
             painter.drawText(20, 30, f"{lbl_stars}: {stars_count}")
+            mw_line = self._milkyway_overlay_status_line()
+            painter.setFont(QFont("Arial", 9))
+            painter.drawText(20, 45, mw_line)
             
             # Direction HUD
             az = self.azimuth_offset % 360
@@ -1971,18 +1977,18 @@ class AstroCanvas(QWidget):
             lbl_looking = getTraduction("Astro.Looking", "LOOKING")
             
             painter.setFont(QFont("Arial", 14, QFont.Bold))
-            painter.drawText(20, 60, f"{lbl_looking}: {direction_str}")
+            painter.drawText(20, 68, f"{lbl_looking}: {direction_str}")
             
             # Lat Indicator
             lat = self.parent_widget.latitude
             hemi = "N" if lat >= 0 else "S"
             painter.setFont(QFont("Arial", 10))
-            painter.drawText(20, 80, f"LAT: {abs(lat):.2f}Â° {hemi}")
+            painter.drawText(20, 88, f"LAT: {abs(lat):.2f}Â° {hemi}")
 
             # Altitude Indicator
             alt = self.elevation_angle
             lbl_alt = "ALT" 
-            painter.drawText(20, 100, f"{lbl_alt}: {alt:.1f}Â°")
+            painter.drawText(20, 108, f"{lbl_alt}: {alt:.1f}Â°")
             
             # Focal Length Indicator & Human Eye Button
             # Base FOV = 100 deg (Zoom 1.0)
@@ -1998,7 +2004,7 @@ class AstroCanvas(QWidget):
                 display_focal = int(round(max(1.0, float(getattr(self.scope_controller, "focal_mm", focal_length)))))
             else:
                 display_focal = max(1, int(round(focal_length)))
-            painter.drawText(20, 120, f"FOC: {display_focal} mm")
+            painter.drawText(20, 128, f"FOC: {display_focal} mm")
             
             # Position the eye button dynamically next to FOC text
             # Assuming text width ~ 100px?
@@ -2022,6 +2028,8 @@ class AstroCanvas(QWidget):
                 self.project_universal_stereo,
                 hud_extra_lines=scope_hud_lines,
             )
+            if hasattr(self.parent_widget, "_refresh_milkyway_status_indicator"):
+                self.parent_widget._refresh_milkyway_status_indicator()
              
         finally:
             painter.end()
@@ -2936,7 +2944,7 @@ class AstroCanvas(QWidget):
         self.trail_rendering_busy = False
 
     def draw_stars(self, painter, hour, sun_alt, sun_az, for_trails=False, visibility_factor=1.0, moon_mask=None, mag_limit=None, eff_lat=None, day_of_year=None):
-        if np and hasattr(self.parent_widget, 'np_ra'):
+        if np is not None:
             self.draw_stars_numpy(
                 painter,
                 hour,
@@ -2974,6 +2982,55 @@ class AstroCanvas(QWidget):
             "star_gamma": float(getattr(pw, "star_gamma", 0.55)) if hasattr(pw, "star_gamma") else 0.55,
             "star_brightness_boost": float(getattr(pw, "star_brightness_boost", 1.20)) if hasattr(pw, "star_brightness_boost") else 1.20,
             "scope_instrument_profile": str(getattr(pw, "scope_instrument_profile", "telescope")),
+            "stars_enabled": bool(self._parent_checkbox_checked("chk_enable_sky", default=True)),
+        }
+
+        mw_enabled = bool(getattr(pw, "milkyway_overlay_enabled", get_config_value("milkyway_overlay_enabled", True)))
+        mw_blend_mode = str(getattr(pw, "milkyway_overlay_blend_mode", get_config_value("milkyway_overlay_blend_mode", "add")))
+        mw_ra_offset = float(getattr(pw, "milkyway_overlay_ra_offset_deg", get_config_value("milkyway_overlay_ra_offset_deg", 180.0)))
+        mw_coord_frame = str(getattr(pw, "milkyway_overlay_coord_frame", get_config_value("milkyway_overlay_coord_frame", "galactic")))
+        mw_lat_flip = bool(getattr(pw, "milkyway_overlay_lat_flip", get_config_value("milkyway_overlay_lat_flip", True)))
+        mw_lon_flip = bool(getattr(pw, "milkyway_overlay_lon_flip", get_config_value("milkyway_overlay_lon_flip", True)))
+        mw_opacity_factor = float(getattr(pw, "milkyway_overlay_opacity", get_config_value("milkyway_overlay_opacity", 0.65)))
+        mw_texture_path = str(getattr(pw, "milkyway_overlay_texture_path", get_config_value("milkyway_overlay_texture_path", "data/sky/milkyway_overlay.png")))
+        mw_sample_scale = float(getattr(pw, "milkyway_overlay_sample_scale", get_config_value("milkyway_overlay_sample_scale", 0.35)))
+
+        dust_map_enabled = bool(getattr(pw, "dust_map_enabled", get_config_value("dust_map_enabled", False)))
+        dust_map_path = str(getattr(pw, "dust_map_path", get_config_value("dust_map_path", "data/sky/derived/planck_dust_opacity_eq_u16.npz")))
+        dust_density_strength = float(getattr(pw, "dust_density_strength", get_config_value("dust_density_strength", 0.0)))
+        dust_extinction_strength = float(getattr(pw, "dust_extinction_strength", get_config_value("dust_extinction_strength", 0.65)))
+        if bool(dust_map_enabled) and float(dust_density_strength) <= 0.0 and float(dust_extinction_strength) <= 0.0:
+            dust_extinction_strength = 0.65
+
+        scope_focal_mm = float(getattr(getattr(self, "scope_controller", None), "focal_mm", 250.0))
+        scope_aperture_mode = str(getattr(pw, "scope_aperture_input_mode", "diameter_mm"))
+        scope_aperture_f_number = float(getattr(pw, "scope_aperture_f_number", 4.0))
+        if scope_aperture_mode != "f_number":
+            aperture_mm = max(1e-6, float(getattr(pw, "scope_aperture_mm", 80.0)))
+            scope_aperture_f_number = max(0.7, float(scope_focal_mm) / aperture_mm)
+
+        extras["milkyway_overlay"] = {
+            "enabled": mw_enabled,
+            "texture_path": mw_texture_path,
+            "opacity": float(clamp(mw_opacity_factor, 0.0, 1.0)),
+            "blend_mode": mw_blend_mode,
+            "ra_offset_deg": mw_ra_offset,
+            "coord_frame": mw_coord_frame.strip().lower(),
+            "lat_flip": bool(mw_lat_flip),
+            "lon_flip": bool(mw_lon_flip),
+            "sample_scale": float(clamp(mw_sample_scale, 0.10, 1.0)),
+            "auto_opacity": True,
+            "is_auto_bortle": bool(getattr(pw, "is_auto_bortle", True)),
+            "bortle": float(getattr(pw, "auto_bortle_estimate", 1.0)),
+            "manual_mag_limit": float(getattr(pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+            "scope_enabled": bool(scope_enabled),
+            "scope_iso": float(max(1.0, float(getattr(pw, "scope_iso", 800.0)))),
+            "scope_exposure_s": float(max(1e-3, float(getattr(pw, "scope_exposure_s", 15.0)))),
+            "scope_aperture_f_number": float(max(0.1, scope_aperture_f_number)),
+            "dust_map_enabled": bool(dust_map_enabled),
+            "dust_map_path": dust_map_path,
+            "dust_density_strength": float(max(0.0, dust_density_strength)),
+            "dust_extinction_strength": float(max(0.0, dust_extinction_strength)),
         }
 
         vm_state = getattr(pw, "visual_magnitude_result", None)
@@ -3177,6 +3234,7 @@ class AstroCanvas(QWidget):
             f"preLim={float(counters.get('pre_limit', 0.0)):.2f} "
             f"catalogMax={float(counters.get('catalog_max_mag', -1.0)):.2f} "
             f"ms_horizon={timings.get('renderer_horizon', 0.0):.2f} "
+            f"ms_milkyway={timings.get('renderer_milkyway', 0.0):.2f} "
             f"ms_grid={timings.get('renderer_grid', 0.0):.2f} "
             f"ms_view_pre={timings.get('stars_view_prefilter', 0.0):.2f} "
             f"ms_scope_pre={timings.get('stars_scope_prefilter', 0.0):.2f} "
@@ -3187,10 +3245,51 @@ class AstroCanvas(QWidget):
         )
         print(line)
 
-    def draw_stars_numpy(self, painter, hour, sun_alt, sun_az, mag_limit=None, eff_lat=None, day_of_year=None):
-        pw = self.parent_widget
+    def _milkyway_overlay_status_line(self) -> str:
+        renderer = getattr(getattr(self, "sky_renderer", None), "milkyway_overlay", None)
+        if renderer is None or not hasattr(renderer, "runtime_status"):
+            return "MW: n/a"
+        try:
+            status = renderer.runtime_status()
+        except Exception:
+            return "MW: status error"
+        if not isinstance(status, dict):
+            return "MW: pending"
+        if not bool(status.get("enabled", False)):
+            return "MW: OFF"
+        if not bool(status.get("texture_loaded", False)):
+            return "MW: PNG NO"
+        dust_requested = bool(status.get("dust_requested", False))
+        dust_loaded = bool(status.get("dust_loaded", False))
+        opacity = float(status.get("effective_opacity", 0.0))
+        blend_mode = str(status.get("blend_mode", "add"))
+        opacity_reason = str(status.get("opacity_reason", ""))
+        rgb_gain = float(status.get("texture_rgb_gain", 1.0))
+        texture_frame = str(status.get("texture_frame", "galactic"))
+        frame_short = "gal" if texture_frame.startswith("gal") else "eq"
+        ra_off = float(status.get("ra_offset_deg", 0.0))
+        lat_flip = bool(status.get("texture_lat_flip", False))
+        lon_flip = bool(status.get("texture_lon_flip", False))
+        flip_txt = ("vf=1" if lat_flip else "vf=0") + (" hf=1" if lon_flip else " hf=0")
+        dust_den = float(status.get("dust_density_strength", 0.0))
+        dust_ext = float(status.get("dust_extinction_strength", 0.0))
+        dust_gain_txt = f"d={dust_den:.2f} e={dust_ext:.2f}"
+        if dust_requested:
+            dust_txt = "Planck OK" if dust_loaded else "Planck NO"
+        else:
+            dust_txt = "Planck OFF"
+        if opacity <= 1e-4:
+            return (
+                f"MW: ON op=0.00 ({opacity_reason}) g={rgb_gain:.2f} "
+                f"fr={frame_short} off={ra_off:.0f} {flip_txt} {dust_gain_txt} {dust_txt}"
+            )
+        return (
+            f"MW: ON op={opacity:.2f} {blend_mode} g={rgb_gain:.2f} "
+            f"fr={frame_short} off={ra_off:.0f} {flip_txt} {dust_gain_txt} {dust_txt}"
+        )
 
-        if np is None or not hasattr(pw, "np_ra"):
+    def draw_stars_numpy(self, painter, hour, sun_alt, sun_az, mag_limit=None, eff_lat=None, day_of_year=None):
+        if np is None:
             self.visible_stars = []
             self.visible_stars_sx = np.array([], dtype=np.float32) if np is not None else []
             self.visible_stars_sy = np.array([], dtype=np.float32) if np is not None else []
@@ -5481,6 +5580,41 @@ class AstronomicalWidget(CustomWidgetBase):
         self.scope_iso = int(get_config_value("scope_iso", 800))
         self.scope_exposure_s = float(get_config_value("scope_exposure_s", 2.0))
         self.scope_k_fallback = float(get_config_value("scope_k_fallback", 0.20))
+        self.milkyway_overlay_enabled = bool(get_config_value("milkyway_overlay_enabled", True))
+        self.milkyway_overlay_blend_mode = str(get_config_value("milkyway_overlay_blend_mode", "add"))
+        # L'asset Gaia inclòs porta el nucli prop del centre horitzontal del PNG.
+        # Amb equirectangular clàssic (lon 0 a l'esquerra) cal un desplaçament de 180°.
+        self.milkyway_overlay_ra_offset_deg = float(get_config_value("milkyway_overlay_ra_offset_deg", 180.0))
+        self.milkyway_overlay_coord_frame = str(get_config_value("milkyway_overlay_coord_frame", "galactic"))
+        self.milkyway_overlay_lat_flip = bool(get_config_value("milkyway_overlay_lat_flip", True))
+        self.milkyway_overlay_lon_flip = bool(get_config_value("milkyway_overlay_lon_flip", True))
+        self.milkyway_overlay_opacity = float(get_config_value("milkyway_overlay_opacity", 0.65))
+        self.milkyway_overlay_texture_path = str(get_config_value("milkyway_overlay_texture_path", "data/sky/milkyway_overlay.png"))
+        self.milkyway_overlay_sample_scale = float(get_config_value("milkyway_overlay_sample_scale", 0.35))
+        tex_name = os.path.basename(str(self.milkyway_overlay_texture_path)).lower()
+        if (
+            str(self.milkyway_overlay_coord_frame).strip().lower().startswith("gal")
+            and tex_name in ("milkyway_overlay.png", "via_negra.png")
+            and abs(float(self.milkyway_overlay_ra_offset_deg)) < 1e-6
+        ):
+            # Migració conservadora: els assets galàctics inclosos tenen lon 0 al centre del mapa.
+            self.milkyway_overlay_ra_offset_deg = 180.0
+            set_config_value("milkyway_overlay_ra_offset_deg", 180.0)
+        if str(self.milkyway_overlay_coord_frame).strip().lower().startswith("gal") and tex_name == "milkyway_overlay.png":
+            # Migració conservadora: aquest asset concret ve amb latitud galàctica invertida.
+            self.milkyway_overlay_lat_flip = True
+            set_config_value("milkyway_overlay_lat_flip", True)
+            # Migració conservadora: aquest asset concret porta longitud galàctica invertida.
+            self.milkyway_overlay_lon_flip = True
+            set_config_value("milkyway_overlay_lon_flip", True)
+        self.dust_map_enabled = bool(get_config_value("dust_map_enabled", False))
+        self.dust_map_path = str(get_config_value("dust_map_path", "data/sky/derived/planck_dust_opacity_eq_u16.npz"))
+        self.dust_density_strength = float(get_config_value("dust_density_strength", 0.0))
+        self.dust_extinction_strength = float(get_config_value("dust_extinction_strength", 0.65))
+        if bool(self.dust_map_enabled) and float(self.dust_density_strength) <= 0.0 and float(self.dust_extinction_strength) <= 0.0:
+            # Preset conservador perquè Planck sigui visible quan està activat.
+            self.dust_extinction_strength = 0.65
+            set_config_value("dust_extinction_strength", 0.65)
         self.scope_eye_pupil_dark_mm = 6.5
         self.scope_atmo_metrics = {}
         self.visual_magnitude_engine = VisualMagnitudeEngine()
@@ -6371,12 +6505,24 @@ class AstronomicalWidget(CustomWidgetBase):
         self.chk_sun_moon.toggled.connect(self.canvas.update)
         
         self.chk_enable_sky = QCheckBox("Estrelles"); self.chk_enable_sky.setChecked(True); self.chk_enable_sky.toggled.connect(self.canvas.update)
+        self.chk_enable_milkyway = QCheckBox("Via Lactia")
+        self.chk_enable_milkyway.setChecked(bool(self.milkyway_overlay_enabled))
+        self.chk_enable_milkyway.toggled.connect(self.on_milkyway_toggled)
+        self.chk_enable_planck_dust = QCheckBox("Pols Planck")
+        self.chk_enable_planck_dust.setChecked(bool(self.dust_map_enabled))
+        self.chk_enable_planck_dust.toggled.connect(self.on_planck_dust_toggled)
         self.chk_deep_space = QCheckBox("l'espai profund"); self.chk_deep_space.setEnabled(False) # TODO
         
-        for c in (self.chk_clima, self.chk_planets, self.chk_sun_moon, self.chk_enable_sky, self.chk_deep_space):
+        self.lbl_milkyway_status = QLabel("MW: --")
+        self.lbl_milkyway_status.setStyleSheet("font-size: 9px; color: #333;")
+        self.lbl_milkyway_status.setVisible(True)
+
+        for c in (self.chk_clima, self.chk_planets, self.chk_sun_moon, self.chk_enable_sky, self.chk_enable_milkyway, self.chk_enable_planck_dust, self.chk_deep_space):
             c.setStyleSheet(c.styleSheet() + "; font-style: normal; font-weight: normal; color: #666;" if not c.isEnabled() else "; font-style: normal; font-weight: normal; color: #000;")
             v_chk.addWidget(c)
+        v_chk.addWidget(self.lbl_milkyway_status)
         v_chk.addWidget(self.lbl_climate_fallback)
+        self._refresh_milkyway_status_indicator()
             
         l_sky.addLayout(v_chk)
 
@@ -8237,6 +8383,74 @@ class AstronomicalWidget(CustomWidgetBase):
             self._ensure_copernicus_credentials_prompt()
         self._refresh_climate_status_indicator()
         self.canvas.update()
+
+    def on_milkyway_toggled(self, checked):
+        self.milkyway_overlay_enabled = bool(checked)
+        set_config_value("milkyway_overlay_enabled", bool(self.milkyway_overlay_enabled))
+        self._refresh_milkyway_status_indicator()
+        self.canvas.update()
+
+    def on_planck_dust_toggled(self, checked):
+        self.dust_map_enabled = bool(checked)
+        set_config_value("dust_map_enabled", bool(self.dust_map_enabled))
+        if self.dust_map_enabled and float(getattr(self, "dust_density_strength", 0.0)) <= 0.0 and float(getattr(self, "dust_extinction_strength", 0.0)) <= 0.0:
+            self.dust_extinction_strength = 0.65
+            set_config_value("dust_extinction_strength", float(self.dust_extinction_strength))
+        self._refresh_milkyway_status_indicator()
+        self.canvas.update()
+
+    def _refresh_milkyway_status_indicator(self):
+        if not hasattr(self, "lbl_milkyway_status"):
+            return
+        if not hasattr(self, "canvas"):
+            return
+        status = None
+        renderer = getattr(getattr(self.canvas, "sky_renderer", None), "milkyway_overlay", None)
+        if renderer is not None and hasattr(renderer, "runtime_status"):
+            try:
+                status = renderer.runtime_status()
+            except Exception:
+                status = None
+
+        enabled = bool(getattr(self, "milkyway_overlay_enabled", True))
+        if not enabled:
+            self.lbl_milkyway_status.setText("MW: OFF")
+            return
+
+        if not isinstance(status, dict):
+            self.lbl_milkyway_status.setText("MW: ON (pending)")
+            return
+
+        tex_ok = bool(status.get("texture_loaded", False))
+        dust_req = bool(status.get("dust_requested", False))
+        dust_ok = bool(status.get("dust_loaded", False))
+        opacity = float(status.get("effective_opacity", 0.0))
+        opacity_reason = str(status.get("opacity_reason", ""))
+        rgb_gain = float(status.get("texture_rgb_gain", 1.0))
+        texture_frame = str(status.get("texture_frame", "galactic"))
+        frame_short = "gal" if texture_frame.startswith("gal") else "eq"
+        ra_off = float(status.get("ra_offset_deg", 0.0))
+        lat_flip = bool(status.get("texture_lat_flip", False))
+        lon_flip = bool(status.get("texture_lon_flip", False))
+        flip_txt = ("vf=1" if lat_flip else "vf=0") + (" hf=1" if lon_flip else " hf=0")
+        dust_den = float(status.get("dust_density_strength", 0.0))
+        dust_ext = float(status.get("dust_extinction_strength", 0.0))
+        dust_gain_txt = f"d={dust_den:.2f} e={dust_ext:.2f}"
+        if not tex_ok:
+            self.lbl_milkyway_status.setText("MW: textura NO carregada")
+            return
+        if dust_req:
+            dust_txt = "Planck OK" if dust_ok else "Planck NO"
+        else:
+            dust_txt = "Planck OFF"
+        if opacity <= 1e-4:
+            self.lbl_milkyway_status.setText(
+                f"MW: op=0.00 ({opacity_reason}) g={rgb_gain:.2f} fr={frame_short} off={ra_off:.0f} {flip_txt} {dust_gain_txt} {dust_txt}"
+            )
+            return
+        self.lbl_milkyway_status.setText(
+            f"MW: ON op={opacity:.2f} g={rgb_gain:.2f} fr={frame_short} off={ra_off:.0f} {flip_txt} {dust_gain_txt} {dust_txt}"
+        )
 
     def set_weather_remote_metno_enabled(self, enabled: bool):
         enabled = bool(enabled)
