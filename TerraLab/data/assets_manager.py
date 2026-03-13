@@ -278,6 +278,13 @@ class AssetManager:
                 write_zst=False,
                 progress_callback=progress_callback,
             )
+            no_gaia_src = Path(__file__).resolve().parents[1] / "data" / "stars" / "no_gaia_stars.json"
+            no_gaia_dst = out_dir / "no_gaia_stars.json"
+            try:
+                if (not no_gaia_dst.exists()) and no_gaia_src.exists():
+                    self._copy_file(no_gaia_src, no_gaia_dst)
+            except Exception:
+                pass
             npz_path = out_dir / "stars_catalog.npz"
             npy_path = out_dir / "stars_catalog.npy"
             zst_path = out_dir / "stars_catalog.zst"

@@ -46,6 +46,7 @@ from TerraLab.data.stars_dataset import (
     get_runtime_catalog_source_info,
     log_startup_catalog_loaded,
 )
+from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 from TerraLab.util.color import bp_rp_to_rgb_arrays
 
 try:
@@ -206,9 +207,19 @@ def _safe_int_or_default(value, default=-1):
 def _load_no_gaia_star_arrays(stars_dir):
     if np is None:
         return None
+    if stars_dir:
+        fused_flag = os.path.join(stars_dir, "stars_catalog_no_gaia_fused.flag")
+        if os.path.isfile(fused_flag):
+            return None
     candidate_paths = []
     if stars_dir:
         candidate_paths.append(os.path.join(stars_dir, NO_GAIA_STARS_JSON_NAME))
+    try:
+        candidate_paths.append(
+            os.path.join(str(runtime_data_dir_for("gaia")), NO_GAIA_STARS_JSON_NAME)
+        )
+    except Exception:
+        pass
     candidate_paths.append(
         os.path.abspath(
             os.path.join(os.path.dirname(__file__), "..", "data", "stars", NO_GAIA_STARS_JSON_NAME)
@@ -1041,11 +1052,17 @@ class CatalogLoaderWorker(QObject):
     # (celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp)
     scope_extension_ready = pyqtSignal(object, object, object, object, object, object, object, float)
     # (np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp, loaded_max_mag)
+    scope_extension_progress = pyqtSignal(float, str)
 
     @pyqtSlot(str)
     def load(self, stars_dir):
         import time
         t0 = time.time()
+
+        self.last_load_mode = "unknown"
+        self.last_source_kind = "unknown"
+        self.last_source_path = ""
+        self.last_reason = ""
 
         celestial_objects = []
         np_ra = np_dec = np_mag = np_r = np_g = np_b = np_bp_rp = None
@@ -1093,6 +1110,7 @@ class CatalogLoaderWorker(QObject):
                     else:
                         celestial_objects = []
                     runtime_loaded = True
+                    self.last_load_mode = "runtime"
                     print(
                         f"[CatalogLoader] Runtime dataset loaded: {len(np_ra)} stars "
                         f"from '{runtime_npz}' in {time.time()-t0:.3f}s"
@@ -1106,6 +1124,8 @@ class CatalogLoaderWorker(QObject):
                         src_info = get_runtime_catalog_source_info()
                         src_kind = str(src_info.get("source", "unknown"))
                         src_path = str(src_info.get("source_path", "") or "")
+                        self.last_source_kind = src_kind
+                        self.last_source_path = src_path
                         mag_min = float(np.min(np_mag)) if len(np_mag) > 0 else float("nan")
                         mag_max = float(np.max(np_mag)) if len(np_mag) > 0 else float("nan")
                         print(
@@ -1162,6 +1182,9 @@ class CatalogLoaderWorker(QObject):
                         np_ra, np_dec, np_mag, bp_rp, source_id=source_id
                     )
                     runtime_loaded = True
+                    self.last_load_mode = "base_npz"
+                    self.last_source_kind = "base_npz"
+                    self.last_source_path = str(base_entry["path"])
                     print(
                         f"[CatalogLoader] Loaded base NPZ '{os.path.basename(base_entry['path'])}' "
                         f"({len(np_ra)} stars) in {time.time()-t0:.3f}s"
@@ -1173,6 +1196,9 @@ class CatalogLoaderWorker(QObject):
 
         if (not runtime_loaded) and not celestial_objects:
             print("[CatalogLoader] Fallback to random stars")
+            self.last_load_mode = "random_fallback"
+            self.last_source_kind = "random_fallback"
+            self.last_reason = "no_catalog_source"
             import random as _rnd
             for _ in range(500):
                 celestial_objects.append(
@@ -1195,8 +1221,19 @@ class CatalogLoaderWorker(QObject):
 
         self.catalog_ready.emit(celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp)
 
-    @pyqtSlot(str, float)
-    def load_scope_extensions(self, stars_dir, loaded_max_mag):
+    @pyqtSlot(str, float, object, object, object, object, object, object, object)
+    def load_scope_extensions(
+        self,
+        stars_dir,
+        loaded_max_mag,
+        base_ra=None,
+        base_dec=None,
+        base_mag=None,
+        base_r=None,
+        base_g=None,
+        base_b=None,
+        base_bp_rp=None,
+    ):
         import time
         t0 = time.time()
 
@@ -1206,10 +1243,72 @@ class CatalogLoaderWorker(QObject):
             self.scope_extension_ready.emit(None, None, None, None, None, None, None, max_loaded)
             return
 
+        runtime_extension_npy = ""
+        if stars_dir:
+            runtime_extension_npy = os.path.join(stars_dir, "stars_catalog_extension.npy")
+        if runtime_extension_npy and os.path.isfile(runtime_extension_npy):
+            try:
+                arr = np.load(runtime_extension_npy, mmap_mode="r", allow_pickle=False)
+                if not isinstance(arr, np.ndarray) or arr.dtype.names is None:
+                    raise ValueError("stars_catalog_extension.npy is not a structured NPY")
+                names = set(arr.dtype.names or ())
+                if not {"ra", "dec", "phot_g_mean_mag"}.issubset(names):
+                    raise ValueError("stars_catalog_extension.npy missing required columns")
+
+                total_rows = int(len(arr))
+                chunk_rows = 1_500_000
+                chunks_ra = []
+                chunks_dec = []
+                chunks_mag = []
+                chunks_bp = []
+
+                self.scope_extension_progress.emit(0.0, "Muntant memòria cau d'estrelles...")
+                for start in range(0, total_rows, chunk_rows):
+                    end = min(total_rows, start + chunk_rows)
+                    ra_chunk = np.asarray(arr["ra"][start:end], dtype=np.float32)
+                    dec_chunk = np.asarray(arr["dec"][start:end], dtype=np.float32)
+                    mag_chunk = np.asarray(arr["phot_g_mean_mag"][start:end], dtype=np.float32)
+                    if "bp_rp" in names:
+                        bp_chunk = np.asarray(arr["bp_rp"][start:end], dtype=np.float32)
+                    else:
+                        bp_chunk = np.full(len(mag_chunk), 0.8, dtype=np.float32)
+
+                    mask = (
+                        np.isfinite(ra_chunk)
+                        & np.isfinite(dec_chunk)
+                        & np.isfinite(mag_chunk)
+                        & (mag_chunk > float(loaded_max_mag) + 1e-6)
+                    )
+                    if np.any(mask):
+                        chunks_ra.append(ra_chunk[mask])
+                        chunks_dec.append(dec_chunk[mask])
+                        chunks_mag.append(mag_chunk[mask])
+                        chunks_bp.append(bp_chunk[mask])
+
+                    pct = 100.0 * (float(end) / float(max(1, total_rows)))
+                    self.scope_extension_progress.emit(min(99.0, pct), f"Carregant extensio ({int(round(pct))}%)")
+
+                if chunks_ra:
+                    np_ra = np.concatenate(chunks_ra)
+                    np_dec = np.concatenate(chunks_dec)
+                    np_mag = np.concatenate(chunks_mag)
+                    np_bp_rp = np.concatenate(chunks_bp)
+
+                    order = np.argsort(np_mag, kind="mergesort")
+                    np_ra = np.asarray(np_ra[order], dtype=np.float32)
+                    np_dec = np.asarray(np_dec[order], dtype=np.float32)
+                    np_mag = np.asarray(np_mag[order], dtype=np.float32)
+                    np_bp_rp = np.asarray(np_bp_rp[order], dtype=np.float32)
+                    np_r, np_g, np_b = _bp_rp_to_rgb_arrays(np_bp_rp)
+                    max_loaded = max(max_loaded, float(np.nanmax(np_mag)))
+                self.scope_extension_progress.emit(100.0, "Extensio carregada")
+            except Exception as e:
+                print(f"[CatalogLoader] Scope extension NPY load error: {e}")
+
         entries = _discover_star_catalog_npz_entries(stars_dir)
         eps = 1e-6
         targets = [e for e in entries if float(e["max_mag"]) > float(loaded_max_mag) + eps]
-        if not targets:
+        if (np_ra is None or len(np_ra) == 0) and (not targets):
             self.scope_extension_ready.emit(None, None, None, None, None, None, None, max_loaded)
             return
 
@@ -1220,6 +1319,15 @@ class CatalogLoaderWorker(QObject):
         chunks_g = []
         chunks_b = []
         chunks_bp_rp = []
+
+        if np_ra is not None and len(np_ra) > 0:
+            chunks_ra.append(np.asarray(np_ra, dtype=np.float32))
+            chunks_dec.append(np.asarray(np_dec, dtype=np.float32))
+            chunks_mag.append(np.asarray(np_mag, dtype=np.float32))
+            chunks_r.append(np.asarray(np_r, dtype=np.float32))
+            chunks_g.append(np.asarray(np_g, dtype=np.float32))
+            chunks_b.append(np.asarray(np_b, dtype=np.float32))
+            chunks_bp_rp.append(np.asarray(np_bp_rp, dtype=np.float32))
 
         for entry in targets:
             try:
@@ -1253,6 +1361,31 @@ class CatalogLoaderWorker(QObject):
             np_g = np.concatenate(chunks_g)
             np_b = np.concatenate(chunks_b)
             np_bp_rp = np.concatenate(chunks_bp_rp)
+
+            if base_ra is not None and base_dec is not None and base_mag is not None:
+                try:
+                    b_ra = np.asarray(base_ra, dtype=np.float32)
+                    b_dec = np.asarray(base_dec, dtype=np.float32)
+                    b_mag = np.asarray(base_mag, dtype=np.float32)
+                    b_r = np.asarray(base_r, dtype=np.float32) if base_r is not None else None
+                    b_g = np.asarray(base_g, dtype=np.float32) if base_g is not None else None
+                    b_b = np.asarray(base_b, dtype=np.float32) if base_b is not None else None
+                    b_bp = np.asarray(base_bp_rp, dtype=np.float32) if base_bp_rp is not None else None
+                    if (
+                        b_r is not None and b_g is not None and b_b is not None
+                        and len(b_ra) == len(b_dec) == len(b_mag) == len(b_r) == len(b_g) == len(b_b)
+                    ):
+                        np_ra = np.concatenate((b_ra, np_ra))
+                        np_dec = np.concatenate((b_dec, np_dec))
+                        np_mag = np.concatenate((b_mag, np_mag))
+                        np_r = np.concatenate((b_r, np_r))
+                        np_g = np.concatenate((b_g, np_g))
+                        np_b = np.concatenate((b_b, np_b))
+                        if b_bp is not None and len(b_bp) == len(b_mag):
+                            np_bp_rp = np.concatenate((b_bp, np_bp_rp))
+                except Exception as merge_exc:
+                    print(f"[CatalogLoader] Scope extension merge-with-base warning: {merge_exc}")
+
             print(
                 f"[CatalogLoader] Scope extension ready: {len(np_ra)} stars "
                 f"in {time.time()-t0:.3f}s (max mag {max_loaded:.2f})"

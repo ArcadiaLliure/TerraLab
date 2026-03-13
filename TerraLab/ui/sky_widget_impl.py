@@ -88,16 +88,21 @@ from TerraLab.widgets.sky_legacy_components import (
 
 
 class ScopeIndexWarmWorker(QObject):
-    ready = pyqtSignal(object, object)
+    ready = pyqtSignal(object, object, float)
     error = pyqtSignal(str)
 
-    @pyqtSlot(object, object)
-    def build(self, ra_all, dec_all):
+    @pyqtSlot(object, object, object, float)
+    def build(self, ra_all, dec_all, mag_all, max_mag):
         try:
             from TerraLab.render.stars_renderer import build_scope_spatial_index_payload
 
-            sorted_indices, offsets = build_scope_spatial_index_payload(ra_all, dec_all)
-            self.ready.emit(sorted_indices, offsets)
+            sorted_indices, offsets = build_scope_spatial_index_payload(
+                ra_all,
+                dec_all,
+                mag_all=mag_all,
+                max_mag=float(max_mag),
+            )
+            self.ready.emit(sorted_indices, offsets, float(max_mag))
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -5836,8 +5841,21 @@ class AstronomicalWidget(CustomWidgetBase):
         self._scope_catalog_worker = None
         self._scope_index_loading = False
         self._scope_index_target_key = None
+        self._scope_index_loaded_mag_cap = 0.0
+        self._scope_index_requested_mag_cap = 0.0
+        self._scope_index_rewarm_requested = False
         self._scope_index_thread = None
         self._scope_index_worker = None
+        self._gaia_extension_status_hide_timer = QTimer(self)
+        self._gaia_extension_status_hide_timer.setSingleShot(True)
+        self._gaia_extension_status_hide_timer.timeout.connect(self._hide_gaia_extension_status_label)
+        self._gaia_extension_mtime_loaded = 0.0
+        self._gaia_extension_watch_timer = QTimer(self)
+        self._gaia_extension_watch_timer.setInterval(5000)
+        self._gaia_extension_watch_timer.timeout.connect(self._maybe_refresh_gaia_extension_catalog)
+        self._gaia_extension_watch_timer.start()
+        self._gaia_resume_prompt_shown = False
+        self._gaia_background_dialog = None
 
         # Default to Horizon View (This uses self.canvas, created in setup_content)
         self.set_horizon_view()
@@ -5866,6 +5884,7 @@ class AstronomicalWidget(CustomWidgetBase):
         QTimer.singleShot(0, lambda: self._set_scene_load_stage("base_sky"))
         QTimer.singleShot(200, self._start_async_bootstrap)
         QTimer.singleShot(0, self._maybe_run_first_time_onboarding)
+        QTimer.singleShot(1500, self._maybe_resume_pending_gaia_download)
 
     def _set_scene_load_stage(self, stage: str):
         valid = {"boot", "base_sky", "stars_ready", "horizon_preview", "scene_ready"}
@@ -5932,6 +5951,87 @@ class AstronomicalWidget(CustomWidgetBase):
             set_config_value("ui_onboarding_done", True)
             self._sync_runtime_asset_config(updated_asset_id=None)
             self._validate_checked_assets_startup()
+
+    def _gaia_tap_state_path(self) -> Path:
+        try:
+            root = Path(self.runtime_layout.get("root", Path.home())).resolve()
+        except Exception:
+            root = Path.home()
+        return root / "logs" / "gaia_tap_state.json"
+
+    def _load_pending_gaia_state(self) -> Optional[dict]:
+        state_path = self._gaia_tap_state_path()
+        if not state_path.exists():
+            return None
+        try:
+            with state_path.open("r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            if not isinstance(payload, dict):
+                return None
+            status = str(payload.get("status", "")).strip().lower()
+            phase = str(payload.get("phase", "")).strip().lower()
+            if status in {"done", "completed", "success"} or phase in {"done", "completed"}:
+                return None
+            return payload
+        except Exception:
+            return None
+
+    def _on_gaia_background_dialog_finished(self, _code: int) -> None:
+        dlg = getattr(self, "_gaia_background_dialog", None)
+        if dlg is not None and bool(getattr(dlg, "completed", False)):
+            self._sync_runtime_asset_config(updated_asset_id="gaia_catalog")
+        self._gaia_background_dialog = None
+
+    def _maybe_resume_pending_gaia_download(self) -> None:
+        if bool(getattr(self, "_gaia_resume_prompt_shown", False)):
+            return
+        self._gaia_resume_prompt_shown = True
+
+        state = self._load_pending_gaia_state()
+        if not isinstance(state, dict):
+            return
+
+        try:
+            pct = float(state.get("progress_percent", 0.0) or 0.0)
+        except Exception:
+            pct = 0.0
+        try:
+            target_mag = float(state.get("target_mag", 0.0) or 0.0)
+        except Exception:
+            target_mag = 0.0
+
+        prompt = getTraduction(
+            "Astro.GaiaResumePrompt",
+            "Hi ha una descarrega Gaia pendent ({pct:.1f}% fins ara, objectiu mag {mag:.2f}).\n\nVols reprendre-la ara en segon pla?",
+        ).format(pct=pct, mag=target_mag)
+
+        ans = QMessageBox.question(
+            self,
+            "TerraLab",
+            prompt,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if ans != QMessageBox.Yes:
+            return
+
+        dlg = AssetOnboardingDialog(self.asset_manager, "gaia_catalog", self)
+        dlg.setModal(False)
+        dlg.finished.connect(self._on_gaia_background_dialog_finished)
+        self._gaia_background_dialog = dlg
+        try:
+            dlg.start_gaia_tap_resume()
+            dlg.show()
+        except Exception as exc:
+            self._gaia_background_dialog = None
+            QMessageBox.warning(
+                self,
+                "TerraLab",
+                getTraduction(
+                    "Astro.GaiaResumeError",
+                    "No s'ha pogut reprendre la descarrega Gaia: {err}",
+                ).format(err=str(exc)),
+            )
 
     def _open_quick_welcome(self):
         dlg = WelcomeOnboardingDialog(self.asset_manager, self, mandatory=False)
@@ -6260,6 +6360,47 @@ class AstronomicalWidget(CustomWidgetBase):
         if msg != getattr(self, "_last_horizon_progress_text", ""):
             self.on_horizon_progress(msg)
 
+    def _position_gaia_extension_status_label(self):
+        lbl = getattr(self, "lbl_gaia_extension_status", None)
+        if lbl is None:
+            return
+        fm = lbl.fontMetrics()
+        text = lbl.text() or ""
+        width = min(max(320, fm.horizontalAdvance(text) + 30), max(320, self.width() - 20))
+        height = max(32, fm.height() + 12)
+        lbl.resize(width, height)
+        lbl.move(max(10, self.width() - width - 10), 10)
+
+    def _set_gaia_extension_status_label(self, message: str, *, keep_seconds: float = 0.0):
+        lbl = getattr(self, "lbl_gaia_extension_status", None)
+        if lbl is None:
+            return
+        msg = str(message or "").strip()
+        if not msg:
+            self._hide_gaia_extension_status_label()
+            return
+        lbl.setText(msg)
+        self._position_gaia_extension_status_label()
+        lbl.show()
+        lbl.raise_()
+        if keep_seconds > 0:
+            self._gaia_extension_status_hide_timer.start(int(max(1000.0, float(keep_seconds) * 1000.0)))
+        else:
+            self._gaia_extension_status_hide_timer.stop()
+
+    def _hide_gaia_extension_status_label(self):
+        lbl = getattr(self, "lbl_gaia_extension_status", None)
+        if lbl is None:
+            return
+        lbl.hide()
+
+    def _on_scope_extension_progress(self, percent: float, message: str):
+        pct = max(0.0, min(100.0, float(percent)))
+        msg = str(message or "").strip()
+        if not msg:
+            msg = "Carregant extensio d'estrelles"
+        self._set_gaia_extension_status_label(f"{msg} ({int(round(pct))}%)")
+
     def pause_updates(self):
         """Pause sky updates to free up main thread for video loading."""
         if not self._updates_paused:
@@ -6344,10 +6485,31 @@ class AstronomicalWidget(CustomWidgetBase):
                 pass
         array_rows = int(len(np_ra)) if np_ra is not None else 0
         named_rows = int(len(celestial_objects)) if celestial_objects is not None else 0
+        fallback_active = False
+        fallback_reason = ""
+        try:
+            worker = getattr(self, "_catalog_worker", None)
+            load_mode = str(getattr(worker, "last_load_mode", "unknown") or "unknown")
+            source_kind = str(getattr(worker, "last_source_kind", "unknown") or "unknown")
+            if load_mode == "random_fallback":
+                fallback_active = True
+                fallback_reason = "random_stars_fallback"
+            elif source_kind in {"json_fallback", "ecsv_fallback"}:
+                fallback_active = True
+                fallback_reason = source_kind
+            elif source_kind in {"unknown", "none"} and array_rows <= 1000:
+                fallback_active = True
+                fallback_reason = source_kind
+        except Exception:
+            fallback_active = False
+            fallback_reason = ""
+        self._stars_fallback_active = bool(fallback_active)
+        self._stars_fallback_reason = str(fallback_reason or "")
         print(
             f"[AstroWidget] Star catalog ready (async): "
             f"catalog_rows={array_rows} named_rows={named_rows}"
         )
+        self._refresh_stars_status_indicator()
         self.build_search_index()
         self._ensure_scope_catalog_loaded()
         if self.canvas.scope_mode_enabled():
@@ -6357,6 +6519,24 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.update()
         # Clean up thread
         self._catalog_thread.quit()
+
+    def _maybe_refresh_gaia_extension_catalog(self):
+        stars_dir = getattr(self, "_stars_catalog_dir", "")
+        if not stars_dir:
+            return
+        ext_path = os.path.join(stars_dir, "stars_catalog_extension.npy")
+        if not os.path.isfile(ext_path):
+            return
+        try:
+            mtime = float(os.path.getmtime(ext_path))
+        except Exception:
+            return
+        already_loaded_mag = float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG))
+        if (mtime <= float(getattr(self, "_gaia_extension_mtime_loaded", 0.0)) + 1e-6) and (already_loaded_mag > STAR_CATALOG_NAKED_EYE_MAX_MAG + 1e-3):
+            return
+        self._gaia_extension_mtime_loaded = float(mtime)
+        if not bool(getattr(self, "_scope_catalog_loading", False)):
+            self._ensure_scope_catalog_loaded()
 
     def _ensure_scope_catalog_loaded(self):
         if np is None:
@@ -6374,10 +6554,22 @@ class AstronomicalWidget(CustomWidgetBase):
         worker = CatalogLoaderWorker()
         worker.moveToThread(thread)
         worker.scope_extension_ready.connect(self._on_scope_extension_ready)
+        if hasattr(worker, "scope_extension_progress"):
+            worker.scope_extension_progress.connect(self._on_scope_extension_progress)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
         thread.started.connect(
-            lambda w=worker, s=stars_dir, m=loaded_max_mag: w.load_scope_extensions(s, m)
+            lambda w=worker, s=stars_dir, m=loaded_max_mag: w.load_scope_extensions(
+                s,
+                m,
+                getattr(self, "np_ra", None),
+                getattr(self, "np_dec", None),
+                getattr(self, "np_mag", None),
+                getattr(self, "np_r", None),
+                getattr(self, "np_g", None),
+                getattr(self, "np_b", None),
+                getattr(self, "np_bp_rp", None),
+            )
         )
         self._scope_catalog_thread = thread
         self._scope_catalog_worker = worker
@@ -6416,6 +6608,34 @@ class AstronomicalWidget(CustomWidgetBase):
         self._scope_index_worker = None
         self._scope_index_thread = None
 
+    def _scope_target_index_mag_cap(self) -> float:
+        base_cap = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
+        try:
+            catalog_cap = float(getattr(self, "_catalog_max_mag", base_cap))
+        except Exception:
+            catalog_cap = base_cap
+        catalog_cap = max(base_cap, catalog_cap)
+
+        if not self.canvas.scope_mode_enabled():
+            return min(catalog_cap, base_cap)
+
+        try:
+            ctrl = getattr(self.canvas, "scope_controller", None)
+            first_fix_pending = bool(ctrl is not None and (not bool(getattr(ctrl, "user_center_fixed_once", False))))
+        except Exception:
+            first_fix_pending = False
+        if first_fix_pending:
+            return min(catalog_cap, base_cap)
+
+        target = base_cap + 1.0
+        vm_state = getattr(self, "visual_magnitude_result", None)
+        if vm_state is not None:
+            try:
+                target = float(getattr(vm_state, "scope_limit_mag", target)) + 0.75
+            except Exception:
+                pass
+        return float(max(base_cap, min(catalog_cap, target)))
+
     def _ensure_scope_spatial_index_warmup(self):
         if np is None:
             return
@@ -6427,32 +6647,43 @@ class AstronomicalWidget(CustomWidgetBase):
 
         ra_all = getattr(self, "np_ra", None)
         dec_all = getattr(self, "np_dec", None)
+        mag_all = getattr(self, "np_mag", None)
         if ra_all is None or dec_all is None:
             return
 
+        target_mag_cap = float(self._scope_target_index_mag_cap())
         key = stars_renderer._catalog_array_key(ra_all, dec_all)
+        if stars_renderer._scope_grid_key != key:
+            self._scope_index_loaded_mag_cap = 0.0
         if (
             stars_renderer._scope_grid_key == key
             and stars_renderer._scope_grid_indices is not None
             and stars_renderer._scope_grid_offsets is not None
+            and float(getattr(self, "_scope_index_loaded_mag_cap", 0.0)) >= (target_mag_cap - 1e-3)
         ):
             return
 
         if getattr(self, "_scope_index_loading", False):
+            if target_mag_cap > float(getattr(self, "_scope_index_requested_mag_cap", 0.0)) + 0.05:
+                self._scope_index_requested_mag_cap = float(target_mag_cap)
+                self._scope_index_rewarm_requested = True
             return
 
         self._scope_index_loading = True
         self._scope_index_target_key = key
+        self._scope_index_requested_mag_cap = float(target_mag_cap)
+        self._scope_index_rewarm_requested = False
         stars_renderer.begin_scope_index_warmup(ra_all, dec_all)
 
         thread = QThread()
         worker = ScopeIndexWarmWorker()
         worker.moveToThread(thread)
         worker.ready.connect(
-            lambda sorted_indices, offsets, catalog_key=key: self._on_scope_spatial_index_ready(
+            lambda sorted_indices, offsets, ready_mag_cap, catalog_key=key: self._on_scope_spatial_index_ready(
                 catalog_key,
                 sorted_indices,
                 offsets,
+                ready_mag_cap,
             )
         )
         worker.ready.connect(thread.quit)
@@ -6460,7 +6691,14 @@ class AstronomicalWidget(CustomWidgetBase):
         worker.error.connect(thread.quit)
         thread.finished.connect(worker.deleteLater)
         thread.finished.connect(thread.deleteLater)
-        thread.started.connect(lambda w=worker, ra=ra_all, dec=dec_all: w.build(ra, dec))
+        thread.started.connect(
+            lambda w=worker, ra=ra_all, dec=dec_all, mag=mag_all, cap=target_mag_cap: w.build(
+                ra,
+                dec,
+                mag,
+                cap,
+            )
+        )
         self._scope_index_thread = thread
         self._scope_index_worker = worker
         thread.start()
@@ -6468,11 +6706,15 @@ class AstronomicalWidget(CustomWidgetBase):
             thread.setPriority(QThread.LowPriority)
         except Exception:
             pass
-        print("[AstroWidget] Scope spatial index warm-up started.")
+        print(
+            "[AstroWidget] Scope spatial index warm-up started "
+            f"(<= {target_mag_cap:.2f} mag)."
+        )
 
-    def _on_scope_spatial_index_ready(self, catalog_key, sorted_indices, offsets):
+    def _on_scope_spatial_index_ready(self, catalog_key, sorted_indices, offsets, ready_mag_cap):
         self._scope_index_loading = False
         restart_warmup = False
+        retry_deeper = False
         try:
             stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
             if stars_renderer is None:
@@ -6486,15 +6728,28 @@ class AstronomicalWidget(CustomWidgetBase):
                 restart_warmup = True
             else:
                 stars_renderer.apply_scope_spatial_index_payload(catalog_key, sorted_indices, offsets)
-                print("[AstroWidget] Scope spatial index ready.")
+                self._scope_index_loaded_mag_cap = float(max(0.0, float(ready_mag_cap)))
+                print(
+                    "[AstroWidget] Scope spatial index ready "
+                    f"(<= {float(ready_mag_cap):.2f} mag)."
+                )
                 self.canvas.update()
+                needed_mag_cap = float(self._scope_target_index_mag_cap())
+                retry_deeper = (
+                    bool(getattr(self, "_scope_index_rewarm_requested", False))
+                    or (needed_mag_cap > self._scope_index_loaded_mag_cap + 0.05)
+                )
         finally:
             self._cleanup_scope_index_warmup()
+            self._scope_index_rewarm_requested = False
         if restart_warmup:
             self._ensure_scope_spatial_index_warmup()
+        elif retry_deeper:
+            QTimer.singleShot(0, self._ensure_scope_spatial_index_warmup)
 
     def _on_scope_spatial_index_error(self, message: str):
         self._scope_index_loading = False
+        self._scope_index_rewarm_requested = False
         print(f"[AstroWidget] Scope spatial index warm-up error: {message}")
         try:
             stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
@@ -6508,26 +6763,16 @@ class AstronomicalWidget(CustomWidgetBase):
 
         try:
             if np_ra is not None and len(np_ra) > 0:
-                if hasattr(self, "np_ra") and self.np_ra is not None:
-                    self.np_ra = np.concatenate((self.np_ra, np_ra))
-                    self.np_dec = np.concatenate((self.np_dec, np_dec))
-                    self.np_mag = np.concatenate((self.np_mag, np_mag))
-                    self.np_r = np.concatenate((self.np_r, np_r))
-                    self.np_g = np.concatenate((self.np_g, np_g))
-                    self.np_b = np.concatenate((self.np_b, np_b))
-                    if np_bp_rp is not None:
-                        self.np_bp_rp = np.concatenate((getattr(self, "np_bp_rp", np.array([], dtype=np.float32)), np_bp_rp))
-                else:
-                    self.np_ra = np_ra
-                    self.np_dec = np_dec
-                    self.np_mag = np_mag
-                    self.np_r = np_r
-                    self.np_g = np_g
-                    self.np_b = np_b
-                    self.np_bp_rp = np_bp_rp
-                # Scope extension appends chunks and does not guarantee global magnitude ordering.
+                # Worker already merges base + extension in background to avoid blocking the UI thread.
+                self.np_ra = np_ra
+                self.np_dec = np_dec
+                self.np_mag = np_mag
+                self.np_r = np_r
+                self.np_g = np_g
+                self.np_b = np_b
+                self.np_bp_rp = np_bp_rp
                 self._catalog_mag_sorted = False
-                print(f"[AstroWidget] Scope extension appended: +{len(np_ra)} stars.")
+                print(f"[AstroWidget] Scope extension merged in background: {len(np_ra)} stars.")
                 self.canvas._cached_star_image = None
                 self.canvas._cached_trail_image = None
                 if self.canvas.scope_mode_enabled():
@@ -6541,16 +6786,27 @@ class AstronomicalWidget(CustomWidgetBase):
                         )
                 except Exception:
                     pass
+                self._set_gaia_extension_status_label("Finalitzat", keep_seconds=20.0)
             else:
                 print("[AstroWidget] Scope extension already up to date.")
+                ext_path = os.path.join(getattr(self, "_stars_catalog_dir", ""), "stars_catalog_extension.npy")
+                if os.path.isfile(ext_path):
+                    self._set_gaia_extension_status_label("Finalitzat", keep_seconds=20.0)
         except Exception as e:
             print(f"[AstroWidget] Scope extension merge error: {e}")
+            self._set_gaia_extension_status_label(f"Error carregant extensio: {e}", keep_seconds=20.0)
         finally:
             try:
                 self._scope_catalog_loaded_max_mag = max(
                     float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
                     float(loaded_max_mag),
                 )
+            except Exception:
+                pass
+            try:
+                ext_path = os.path.join(getattr(self, "_stars_catalog_dir", ""), "stars_catalog_extension.npy")
+                if os.path.isfile(ext_path):
+                    self._gaia_extension_mtime_loaded = float(os.path.getmtime(ext_path))
             except Exception:
                 pass
             self._cleanup_scope_catalog_loader()
@@ -6611,6 +6867,16 @@ class AstronomicalWidget(CustomWidgetBase):
         self.lbl_loading.move(10, 50)
         self.lbl_loading.resize(420, 32)
 
+        self.lbl_gaia_extension_status = QLabel("", self)
+        self.lbl_gaia_extension_status.setStyleSheet(
+            "color: #ffe680; font-weight: bold; background-color: rgba(0,0,0,140); "
+            "padding: 5px; border-radius: 4px;"
+        )
+        self.lbl_gaia_extension_status.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.lbl_gaia_extension_status.setWordWrap(False)
+        self.lbl_gaia_extension_status.hide()
+        self._position_gaia_extension_status_label()
+
     def _build_deferred_controls_ui(self):
         if getattr(self, "_deferred_controls_ready", False):
             return
@@ -6664,6 +6930,16 @@ class AstronomicalWidget(CustomWidgetBase):
             self.lbl_loading.hide()
             self.lbl_loading.move(10, 50)
             self.lbl_loading.resize(420, 32)
+        if not hasattr(self, "lbl_gaia_extension_status"):
+            self.lbl_gaia_extension_status = QLabel("", self)
+            self.lbl_gaia_extension_status.setStyleSheet(
+                "color: #ffe680; font-weight: bold; background-color: rgba(0,0,0,140); "
+                "padding: 5px; border-radius: 4px;"
+            )
+            self.lbl_gaia_extension_status.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.lbl_gaia_extension_status.setWordWrap(False)
+            self.lbl_gaia_extension_status.hide()
+            self._position_gaia_extension_status_label()
 
         # â”€â”€ THE 3 BOTTOM PANELS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         panels_layout = QHBoxLayout()
@@ -6799,6 +7075,12 @@ class AstronomicalWidget(CustomWidgetBase):
         self._climate_remote_since = None
         self._climate_fallback_show_delay_s = 2.5
         self._climate_remote_hide_delay_s = 1.2
+        self._stars_fallback_active = False
+        self._stars_fallback_reason = ""
+        self._stars_fallback_since = None
+        self._stars_primary_since = None
+        self._stars_fallback_show_delay_s = 1.2
+        self._stars_primary_hide_delay_s = 0.8
         
         self.chk_planets = QCheckBox("Planetes")
         self.chk_planets.setEnabled(True)
@@ -6815,6 +7097,12 @@ class AstronomicalWidget(CustomWidgetBase):
         self.chk_enable_sky = QCheckBox("Estrelles")
         self.chk_enable_sky.setChecked(self._load_visibility_state("estrelles", True))
         self.chk_enable_sky.toggled.connect(self.on_stars_toggled)
+        self.lbl_stars_fallback = QLabel(getTraduction("Astro.StarsFallbackActive", "Catàleg fallback"))
+        self.lbl_stars_fallback.setVisible(False)
+        self.lbl_stars_fallback.setStyleSheet(
+            "font-size: 9px; color: #8a3b00; background: rgba(255, 208, 140, 165); "
+            "border: 1px solid #a06a2f; border-radius: 6px; padding: 1px 6px;"
+        )
         self.chk_enable_milkyway = QCheckBox("Via Lactia")
         self.chk_enable_milkyway.setChecked(self._load_visibility_state("via_lactia", bool(self.milkyway_overlay_enabled)))
         self.chk_enable_milkyway.toggled.connect(self.on_milkyway_toggled)
@@ -6835,13 +7123,23 @@ class AstronomicalWidget(CustomWidgetBase):
             self.chk_light_pollution,
             self.chk_planets,
             self.chk_sun_moon,
-            self.chk_enable_sky,
             self.chk_enable_milkyway,
             self.chk_enable_planck_dust,
             self.chk_deep_space,
         ):
             c.setStyleSheet(c.styleSheet() + "; font-style: normal; font-weight: normal; color: #666;" if not c.isEnabled() else "; font-style: normal; font-weight: normal; color: #000;")
             v_chk.addWidget(c)
+        self.chk_enable_sky.setStyleSheet(
+            self.chk_enable_sky.styleSheet()
+            + ("; font-style: normal; font-weight: normal; color: #666;" if not self.chk_enable_sky.isEnabled() else "; font-style: normal; font-weight: normal; color: #000;")
+        )
+        h_stars_row = QHBoxLayout()
+        h_stars_row.setContentsMargins(0, 0, 0, 0)
+        h_stars_row.setSpacing(6)
+        h_stars_row.addWidget(self.chk_enable_sky)
+        h_stars_row.addWidget(self.lbl_stars_fallback)
+        h_stars_row.addStretch(1)
+        v_chk.addLayout(h_stars_row)
         v_chk.addWidget(self.lbl_milkyway_status)
         v_chk.addWidget(self.lbl_climate_fallback)
         self._refresh_milkyway_status_indicator()
@@ -7384,6 +7682,8 @@ class AstronomicalWidget(CustomWidgetBase):
         self._deferred_controls_ready = True
         if getattr(self, "search_index", None):
             self.build_search_index()
+        self._refresh_climate_status_indicator()
+        self._refresh_stars_status_indicator()
         QTimer.singleShot(0, self._validate_checked_assets_startup)
         QTimer.singleShot(0, self._update_button_pos)
 
@@ -8416,6 +8716,7 @@ class AstronomicalWidget(CustomWidgetBase):
 
         if run_climate_tick:
             self._refresh_climate_status_indicator()
+            self._refresh_stars_status_indicator()
         self.canvas.update()
 
     def toggle_realtime(self, checked):
@@ -8727,6 +9028,7 @@ class AstronomicalWidget(CustomWidgetBase):
             self.chk_enable_sky.setChecked(checked)
             self.chk_enable_sky.blockSignals(False)
         self._persist_visibility_state("estrelles", checked)
+        self._refresh_stars_status_indicator()
         self.canvas.update()
 
     def on_climate_toggled(self, checked):
@@ -8963,6 +9265,38 @@ class AstronomicalWidget(CustomWidgetBase):
             self.lbl_climate_fallback.setText(getTraduction("Astro.ClimateFallbackActive", "Real weather unavailable (fallback)"))
             self.lbl_climate_fallback.setToolTip(reason)
             self.lbl_climate_fallback.show()
+
+    def _refresh_stars_status_indicator(self):
+        if not hasattr(self, "lbl_stars_fallback") or not hasattr(self, "chk_enable_sky"):
+            return
+        if not bool(self.chk_enable_sky.isChecked()):
+            self.lbl_stars_fallback.hide()
+            self._stars_fallback_since = None
+            self._stars_primary_since = None
+            return
+
+        fallback_active = bool(getattr(self, "_stars_fallback_active", False))
+        fallback_reason = str(getattr(self, "_stars_fallback_reason", "") or "")
+        now_m = time.monotonic()
+
+        if not fallback_active:
+            self._stars_fallback_since = None
+            if self._stars_primary_since is None:
+                self._stars_primary_since = now_m
+            stable_s = now_m - self._stars_primary_since
+            if stable_s >= float(getattr(self, "_stars_primary_hide_delay_s", 0.8)):
+                self.lbl_stars_fallback.hide()
+            return
+
+        self._stars_primary_since = None
+        if self._stars_fallback_since is None:
+            self._stars_fallback_since = now_m
+        stable_s = now_m - self._stars_fallback_since
+        if stable_s >= float(getattr(self, "_stars_fallback_show_delay_s", 1.2)):
+            txt = getTraduction("Astro.StarsFallbackActive", "Catàleg fallback")
+            self.lbl_stars_fallback.setText(txt)
+            self.lbl_stars_fallback.setToolTip(fallback_reason)
+            self.lbl_stars_fallback.show()
 
     def get_weather_cache_path(self):
         if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
@@ -9493,6 +9827,7 @@ class AstronomicalWidget(CustomWidgetBase):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._position_startup_placeholder()
+        self._position_gaia_extension_status_label()
         # Defer position update to ensure layout geometry is final
         QTimer.singleShot(0, self._update_button_pos)
 

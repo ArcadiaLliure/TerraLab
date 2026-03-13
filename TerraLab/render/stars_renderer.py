@@ -32,6 +32,8 @@ class StarsRenderResult:
 def build_scope_spatial_index_payload(
     ra_all,
     dec_all,
+    mag_all=None,
+    max_mag: float | None = None,
     ra_bins: int = 360,
     dec_bins: int = 180,
     chunk_size: int = 1_000_000,
@@ -44,6 +46,13 @@ def build_scope_spatial_index_payload(
     if n_total <= 0:
         return np.array([], dtype=np.int32), np.zeros(num_tiles + 1, dtype=np.int64)
 
+    use_mag_cap = (
+        (max_mag is not None)
+        and (mag_all is not None)
+        and (int(len(mag_all)) == n_total)
+    )
+    max_mag_f = float(max_mag) if max_mag is not None else None
+
     counts = np.zeros(num_tiles, dtype=np.int64)
     valid_total = 0
 
@@ -52,6 +61,9 @@ def build_scope_spatial_index_payload(
         ra_chunk = np.asarray(ra_all[start:end], dtype=np.float32)
         dec_chunk = np.asarray(dec_all[start:end], dtype=np.float32)
         valid = np.isfinite(ra_chunk) & np.isfinite(dec_chunk)
+        if use_mag_cap:
+            mag_chunk = np.asarray(mag_all[start:end], dtype=np.float32)
+            valid &= np.isfinite(mag_chunk) & (mag_chunk <= max_mag_f + 1e-6)
         if not np.any(valid):
             continue
 
@@ -74,6 +86,9 @@ def build_scope_spatial_index_payload(
         ra_chunk = np.asarray(ra_all[start:end], dtype=np.float32)
         dec_chunk = np.asarray(dec_all[start:end], dtype=np.float32)
         valid = np.isfinite(ra_chunk) & np.isfinite(dec_chunk)
+        if use_mag_cap:
+            mag_chunk = np.asarray(mag_all[start:end], dtype=np.float32)
+            valid &= np.isfinite(mag_chunk) & (mag_chunk <= max_mag_f + 1e-6)
         if not np.any(valid):
             continue
 
