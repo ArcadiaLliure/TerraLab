@@ -35,6 +35,8 @@ def _resolve_light_pollution_path() -> str:
         from TerraLab.config import ConfigManager
 
         config = ConfigManager()
+        if not bool(config.get("light_pollution_enabled", True)):
+            return ""
         lp_path = config.get("dvnl_path", "")
         if lp_path and os.path.exists(lp_path):
             return lp_path

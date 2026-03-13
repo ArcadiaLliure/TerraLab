@@ -7,6 +7,7 @@ import os
 import re
 import random
 import time
+import json
 from datetime import datetime, timedelta, timezone
 
 try:
@@ -53,6 +54,7 @@ except Exception:
     load = None
 
 STAR_CATALOG_NAKED_EYE_MAX_MAG = 8.0
+NO_GAIA_STARS_JSON_NAME = "no_gaia_stars.json"
 STAR_CATALOG_FILE_RE = re.compile(
     r"^MAGNITUD_(-?\d+(?:\.\d+)?)_(-?\d+(?:\.\d+)?)_(\d+)\.npz$",
     re.IGNORECASE,
@@ -179,6 +181,248 @@ def _load_star_npz_arrays(npz_path, max_mag=None, min_mag_exclusive=None):
         "bp_rp": bp_rp,
         "source_id": source_id,
     }
+
+
+def _safe_float_or_nan(value):
+    try:
+        out = float(value)
+    except Exception:
+        return float("nan")
+    if not math.isfinite(out):
+        return float("nan")
+    return out
+
+
+def _safe_int_or_default(value, default=-1):
+    try:
+        return int(value)
+    except Exception:
+        try:
+            return int(float(value))
+        except Exception:
+            return int(default)
+
+
+def _load_no_gaia_star_arrays(stars_dir):
+    if np is None:
+        return None
+    candidate_paths = []
+    if stars_dir:
+        candidate_paths.append(os.path.join(stars_dir, NO_GAIA_STARS_JSON_NAME))
+    candidate_paths.append(
+        os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "data", "stars", NO_GAIA_STARS_JSON_NAME)
+        )
+    )
+
+    path = None
+    for cand in candidate_paths:
+        if cand and os.path.isfile(cand):
+            path = cand
+            break
+    if not path:
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except Exception as exc:
+        print(f"[CatalogLoader] no_gaia supplement skipped ({path}): {exc}")
+        return None
+
+    rows = []
+    names = []
+    if isinstance(payload, dict):
+        rows = payload.get("data") or []
+        metadata = payload.get("metadata") or []
+        for item in metadata:
+            if isinstance(item, dict):
+                name = item.get("name")
+                if name:
+                    names.append(str(name))
+    elif isinstance(payload, list):
+        rows = payload
+
+    if not rows:
+        return None
+
+    out_ra = []
+    out_dec = []
+    out_mag = []
+    out_bp = []
+    out_sid = []
+    have_sid = False
+
+    if isinstance(rows[0], dict):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            ra = _safe_float_or_nan(row.get("ra"))
+            dec = _safe_float_or_nan(row.get("dec"))
+            mag = _safe_float_or_nan(row.get("phot_g_mean_mag"))
+            if not (math.isfinite(ra) and math.isfinite(dec) and math.isfinite(mag)):
+                continue
+            bp_rp = _safe_float_or_nan(row.get("bp_rp"))
+            if not math.isfinite(bp_rp):
+                bp_rp = 0.8
+            out_ra.append(ra)
+            out_dec.append(dec)
+            out_mag.append(mag)
+            out_bp.append(bp_rp)
+            if "source_id" in row:
+                have_sid = True
+                out_sid.append(_safe_int_or_default(row.get("source_id"), -1))
+            elif have_sid:
+                out_sid.append(-1)
+    else:
+        if not names and isinstance(rows[0], (list, tuple)):
+            default = (
+                "source_id",
+                "designation",
+                "ra",
+                "dec",
+                "phot_g_mean_mag",
+                "phot_bp_mean_mag",
+                "phot_rp_mean_mag",
+                "bp_rp",
+                "pmra",
+                "pmdec",
+                "parallax",
+            )
+            names = list(default[: len(rows[0])])
+        idx = {name: i for i, name in enumerate(names)}
+        ra_i = idx.get("ra")
+        dec_i = idx.get("dec")
+        mag_i = idx.get("phot_g_mean_mag")
+        bprp_i = idx.get("bp_rp")
+        sid_i = idx.get("source_id")
+        have_sid = sid_i is not None
+        if ra_i is None or dec_i is None or mag_i is None:
+            return None
+
+        for row in rows:
+            if not isinstance(row, (list, tuple)):
+                continue
+            if max(ra_i, dec_i, mag_i) >= len(row):
+                continue
+            ra = _safe_float_or_nan(row[ra_i])
+            dec = _safe_float_or_nan(row[dec_i])
+            mag = _safe_float_or_nan(row[mag_i])
+            if not (math.isfinite(ra) and math.isfinite(dec) and math.isfinite(mag)):
+                continue
+            bp_rp = _safe_float_or_nan(row[bprp_i]) if bprp_i is not None and bprp_i < len(row) else 0.8
+            if not math.isfinite(bp_rp):
+                bp_rp = 0.8
+            out_ra.append(ra)
+            out_dec.append(dec)
+            out_mag.append(mag)
+            out_bp.append(bp_rp)
+            if have_sid:
+                sid_val = row[sid_i] if sid_i < len(row) else -1
+                out_sid.append(_safe_int_or_default(sid_val, -1))
+
+    if not out_ra:
+        return None
+
+    arrays = {
+        "ra": np.asarray(out_ra, dtype=np.float32),
+        "dec": np.asarray(out_dec, dtype=np.float32),
+        "mag": np.asarray(out_mag, dtype=np.float32),
+        "bp_rp": np.asarray(out_bp, dtype=np.float32),
+    }
+    if have_sid and len(out_sid) == len(out_ra):
+        arrays["source_id"] = np.asarray(out_sid, dtype=np.int64)
+    print(
+        f"[CatalogLoader] no-Gaia supplement source: '{path}' "
+        f"({len(out_ra)} stars)"
+    )
+    return arrays
+
+
+def _merge_sorted_array(base_arr, insert_values, insert_positions):
+    out = np.empty(len(base_arr) + len(insert_values), dtype=base_arr.dtype)
+    src = 0
+    dst = 0
+    for i, raw_pos in enumerate(insert_positions):
+        pos = int(raw_pos)
+        if pos < src:
+            pos = src
+        if pos > src:
+            seg_len = pos - src
+            out[dst : dst + seg_len] = base_arr[src:pos]
+            dst += seg_len
+            src = pos
+        out[dst] = insert_values[i]
+        dst += 1
+    if src < len(base_arr):
+        out[dst:] = base_arr[src:]
+    return out
+
+
+def _merge_sorted_catalog_with_no_gaia(stars_dir, np_ra, np_dec, np_mag, np_bp_rp, source_id=None):
+    supplement = _load_no_gaia_star_arrays(stars_dir)
+    if supplement is None:
+        return np_ra, np_dec, np_mag, np_bp_rp, source_id, 0
+
+    s_ra = np.asarray(supplement.get("ra", []), dtype=np.float32)
+    s_dec = np.asarray(supplement.get("dec", []), dtype=np.float32)
+    s_mag = np.asarray(supplement.get("mag", []), dtype=np.float32)
+    s_bp = np.asarray(supplement.get("bp_rp", []), dtype=np.float32)
+    s_sid = supplement.get("source_id")
+    if s_sid is not None:
+        s_sid = np.asarray(s_sid, dtype=np.int64)
+
+    if len(s_mag) <= 0:
+        return np_ra, np_dec, np_mag, np_bp_rp, source_id, 0
+
+    order = np.argsort(s_mag, kind="mergesort")
+    s_ra = s_ra[order]
+    s_dec = s_dec[order]
+    s_mag = s_mag[order]
+    s_bp = s_bp[order]
+    if s_sid is not None and len(s_sid) == len(order):
+        s_sid = s_sid[order]
+
+    if s_sid is not None:
+        keep = np.ones(len(s_sid), dtype=bool)
+        seen = set()
+        for i, sid in enumerate(s_sid):
+            sid_i = int(sid)
+            if sid_i > 0 and sid_i in seen:
+                keep[i] = False
+            else:
+                if sid_i > 0:
+                    seen.add(sid_i)
+        if not np.all(keep):
+            s_ra = s_ra[keep]
+            s_dec = s_dec[keep]
+            s_mag = s_mag[keep]
+            s_bp = s_bp[keep]
+            s_sid = s_sid[keep]
+
+    if len(s_mag) <= 0:
+        return np_ra, np_dec, np_mag, np_bp_rp, source_id, 0
+
+    insert_at = np.searchsorted(np_mag, s_mag, side="left")
+    merged_ra = _merge_sorted_array(np_ra, s_ra, insert_at)
+    merged_dec = _merge_sorted_array(np_dec, s_dec, insert_at)
+    merged_mag = _merge_sorted_array(np_mag, s_mag, insert_at)
+    merged_bp = _merge_sorted_array(np_bp_rp, s_bp, insert_at)
+
+    merged_sid = None
+    if source_id is not None or s_sid is not None:
+        if source_id is not None and len(source_id) == len(np_mag):
+            base_sid = np.asarray(source_id, dtype=np.int64)
+        else:
+            base_sid = np.full(len(np_mag), -1, dtype=np.int64)
+
+        if s_sid is None or len(s_sid) != len(s_mag):
+            s_sid = np.full(len(s_mag), -1, dtype=np.int64)
+        else:
+            s_sid = np.asarray(s_sid, dtype=np.int64)
+        merged_sid = _merge_sorted_array(base_sid, s_sid, insert_at)
+
+    return merged_ra, merged_dec, merged_mag, merged_bp, merged_sid, int(len(s_mag))
 
 
 def _bp_rp_to_rgb_arrays(bp_rp):
@@ -831,6 +1075,15 @@ class CatalogLoaderWorker(QObject):
                     else:
                         source_id = None
 
+                    np_ra, np_dec, np_mag, np_bp_rp, source_id, added_no_gaia = _merge_sorted_catalog_with_no_gaia(
+                        stars_dir,
+                        np.asarray(np_ra, dtype=np.float32),
+                        np.asarray(np_dec, dtype=np.float32),
+                        np.asarray(np_mag, dtype=np.float32),
+                        np.asarray(np_bp_rp, dtype=np.float32),
+                        source_id=source_id,
+                    )
+                    bp_rp = np.asarray(np_bp_rp, dtype=np.float32)
                     np_r, np_g, np_b = _bp_rp_to_rgb_arrays(bp_rp)
                     # Avoid huge dict allocations for large datasets; keep arrays as source of truth.
                     if len(np_ra) <= 500_000:
@@ -844,6 +1097,11 @@ class CatalogLoaderWorker(QObject):
                         f"[CatalogLoader] Runtime dataset loaded: {len(np_ra)} stars "
                         f"from '{runtime_npz}' in {time.time()-t0:.3f}s"
                     )
+                    if added_no_gaia > 0:
+                        print(
+                            f"[CatalogLoader] Added no-Gaia supplement: +{added_no_gaia} bright stars "
+                            f"from '{NO_GAIA_STARS_JSON_NAME}'"
+                        )
                     try:
                         src_info = get_runtime_catalog_source_info()
                         src_kind = str(src_info.get("source", "unknown"))
@@ -890,6 +1148,15 @@ class CatalogLoaderWorker(QObject):
                     np_ra = np.asarray(ra, dtype=np.float32)
                     np_dec = np.asarray(dec, dtype=np.float32)
                     np_mag = np.asarray(mag, dtype=np.float32)
+                    np_ra, np_dec, np_mag, np_bp_rp, source_id, _ = _merge_sorted_catalog_with_no_gaia(
+                        stars_dir,
+                        np.asarray(np_ra, dtype=np.float32),
+                        np.asarray(np_dec, dtype=np.float32),
+                        np.asarray(np_mag, dtype=np.float32),
+                        np.asarray(np_bp_rp, dtype=np.float32),
+                        source_id=source_id,
+                    )
+                    bp_rp = np.asarray(np_bp_rp, dtype=np.float32)
                     np_r, np_g, np_b = _bp_rp_to_rgb_arrays(bp_rp)
                     celestial_objects = _build_celestial_objects_from_arrays(
                         np_ra, np_dec, np_mag, bp_rp, source_id=source_id

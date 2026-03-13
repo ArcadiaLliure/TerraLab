@@ -27,6 +27,7 @@ class AssetSpec:
     title: str
     source_url: str
     accepted_formats: str
+    credits: str = ""
     allow_multiple: bool = False
     auto_download_url: Optional[str] = None
 
@@ -49,6 +50,7 @@ class AssetManager:
                 title="Clima MET Norway",
                 source_url="https://api.met.no/weatherapi/locationforecast/2.0/compact",
                 accepted_formats="Configuracio (User-Agent obligatori)",
+                credits="MET Norway (api.met.no) - Weather data under provider terms.",
                 allow_multiple=False,
                 auto_download_url=None,
             ),
@@ -56,7 +58,8 @@ class AssetManager:
                 asset_id="gaia_catalog",
                 title="Cataleg Gaia",
                 source_url="https://gea.esac.esa.int/archive/",
-                accepted_formats="ECSV (.ecsv) o CSV (.csv)",
+                accepted_formats="ECSV (.ecsv), CSV (.csv) o ZST (.zst)",
+                credits="ESA Gaia Archive / DPAC - Gaia DR3 terms apply.",
                 allow_multiple=True,
                 auto_download_url=None,
             ),
@@ -65,6 +68,7 @@ class AssetManager:
                 title="Via Lactia",
                 source_url="https://galaxy.phy.cmich.edu/~axel/mwpan2/mwpan2_RGB_3600.fits",
                 accepted_formats="FITS (.fits) o PNG RGBA (.png)",
+                credits="Milky Way panorama source by Axel Mellinger (mwpan2).",
                 allow_multiple=False,
                 auto_download_url="https://galaxy.phy.cmich.edu/~axel/mwpan2/mwpan2_RGB_3600.fits",
             ),
@@ -73,6 +77,7 @@ class AssetManager:
                 title="Pols Planck",
                 source_url="https://irsa.ipac.caltech.edu/data/Planck/release_2/all-sky-maps/maps/component-maps/foregrounds/COM_CompMap_Dust-GNILC-Model-Opacity_2048_R2.01.fits",
                 accepted_formats="FITS (.fits)",
+                credits="ESA / Planck Collaboration / Planck Legacy Archive.",
                 allow_multiple=False,
                 auto_download_url="https://irsa.ipac.caltech.edu/data/Planck/release_2/all-sky-maps/maps/component-maps/foregrounds/COM_CompMap_Dust-GNILC-Model-Opacity_2048_R2.01.fits",
             ),
@@ -81,6 +86,7 @@ class AssetManager:
                 title="Elevacions",
                 source_url="https://gisco-services.ec.europa.eu/dem/5degree/mosaic/EU_DEM_mosaic_5deg.ZIP",
                 accepted_formats="GeoTIFF (.tif/.tiff) o TXT/ASC (.txt/.asc), tambe ZIP",
+                credits="EU-DEM (Copernicus/EEA via GISCO services).",
                 allow_multiple=True,
                 auto_download_url="https://gisco-services.ec.europa.eu/dem/5degree/mosaic/EU_DEM_mosaic_5deg.ZIP",
             ),
@@ -89,6 +95,7 @@ class AssetManager:
                 title="Contaminacio luminica",
                 source_url="https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/15IKI5",
                 accepted_formats="GeoTIFF (.tif/.tiff)",
+                credits="VIIRS/DMSP composite via Harvard Dataverse DOI:10.7910/DVN/15IKI5.",
                 allow_multiple=False,
                 auto_download_url=None,
             ),
@@ -97,6 +104,7 @@ class AssetManager:
                 title="Cataleg NGC",
                 source_url="https://github.com/mattiaverga/OpenNGC/blob/master/database_files/NGC.csv",
                 accepted_formats="CSV (.csv)",
+                credits="OpenNGC catalogue by Mattia Verga and contributors.",
                 allow_multiple=False,
                 auto_download_url="https://raw.githubusercontent.com/mattiaverga/OpenNGC/master/database_files/NGC.csv",
             ),
@@ -115,6 +123,17 @@ class AssetManager:
         if asset_id not in self.specs:
             raise KeyError(f"Unknown asset id: {asset_id}")
         return self.specs[asset_id]
+
+    def onboarding_asset_order(self) -> List[str]:
+        return [
+            "climate_metno",
+            "gaia_catalog",
+            "milkyway_texture",
+            "planck_dust",
+            "elevation_dem",
+            "light_pollution",
+            "ngc_catalog",
+        ]
 
     def get_user_agent(self) -> str:
         return str(get_config_value("weather.metno_user_agent", "") or "").strip()
@@ -137,10 +156,12 @@ class AssetManager:
                 "path": "",
             }
         if asset_id == "gaia_catalog":
-            p = Path(layout["data_gaia"]) / "stars_catalog.npz"
-            z = Path(layout["data_gaia"]) / "stars_catalog.zst"
-            if p.exists() or z.exists():
-                return {"ready": True, "reason": "ok", "path": str(p if p.exists() else z)}
+            p_npz = Path(layout["data_gaia"]) / "stars_catalog.npz"
+            p_zst = Path(layout["data_gaia"]) / "stars_catalog.zst"
+            p_npy = Path(layout["data_gaia"]) / "stars_catalog.npy"
+            for candidate in (p_npz, p_zst, p_npy):
+                if candidate.exists():
+                    return {"ready": True, "reason": "ok", "path": str(candidate)}
             packaged_dir = Path(__file__).resolve().parents[1] / "data" / "stars"
             packaged_candidates = (
                 packaged_dir / "stars_catalog.zst",
@@ -150,7 +171,7 @@ class AssetManager:
             for candidate in packaged_candidates:
                 if candidate.exists():
                     return {"ready": True, "reason": "packaged_catalog", "path": str(candidate)}
-            return {"ready": False, "reason": "missing_catalog", "path": str(p)}
+            return {"ready": False, "reason": "missing_catalog", "path": str(p_npz)}
         if asset_id == "milkyway_texture":
             p = Path(layout["data_milkyway"]) / "milkyway_overlay.png"
             exists = p.exists()
@@ -252,11 +273,17 @@ class AssetManager:
                 [str(p) for p in paths],
                 str(out_dir),
                 output_basename="stars_catalog",
+                write_npz=True,
+                write_npy=False,
+                write_zst=False,
                 progress_callback=progress_callback,
             )
             npz_path = out_dir / "stars_catalog.npz"
-            set_config_value("gaia_catalog_path", str(npz_path))
-            self._mark_asset_state("gaia_catalog", True, str(npz_path))
+            npy_path = out_dir / "stars_catalog.npy"
+            zst_path = out_dir / "stars_catalog.zst"
+            selected_path = npz_path if npz_path.exists() else (npy_path if npy_path.exists() else zst_path)
+            set_config_value("gaia_catalog_path", str(selected_path))
+            self._mark_asset_state("gaia_catalog", True, str(selected_path))
             return {"ok": True, "summary": summary, "stored_in": str(out_dir)}
 
         if asset_id == "milkyway_texture":

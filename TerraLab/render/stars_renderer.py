@@ -183,9 +183,8 @@ class StarsRenderer:
         self._mag_order = valid_idx[order_local]
         return self._mag_sorted, self._mag_order
 
-    def _non_scope_prefilter(self, ra_all, dec_all, mag_all, pre_limit: float):
-        mag_sorted, mag_order = self._ensure_mag_index(ra_all, dec_all, mag_all)
-        if mag_sorted is None or mag_order is None or len(mag_sorted) == 0:
+    def _non_scope_prefilter(self, ra_all, dec_all, mag_all, pre_limit: float, assume_sorted: bool = False):
+        if np is None or ra_all is None or dec_all is None or mag_all is None:
             return None
 
         try:
@@ -198,6 +197,7 @@ class StarsRenderer:
                 ptr_mag,
                 int(len(mag_all)),
                 int(round(float(pre_limit) * 20.0)),
+                1 if assume_sorted else 0,
             )
         except Exception:
             cache_key = (
@@ -206,10 +206,31 @@ class StarsRenderer:
                 id(mag_all),
                 int(len(mag_all)),
                 int(round(float(pre_limit) * 20.0)),
+                1 if assume_sorted else 0,
             )
 
         if self._nonscope_prefilter_key == cache_key and self._nonscope_prefilter_indices is not None:
             return self._nonscope_prefilter_indices
+
+        if assume_sorted:
+            mag_sorted = np.asarray(mag_all, dtype=np.float32)
+            if len(mag_sorted) == 0:
+                self._nonscope_prefilter_key = cache_key
+                self._nonscope_prefilter_indices = np.array([], dtype=np.int32)
+                return self._nonscope_prefilter_indices
+            hi = int(np.searchsorted(mag_sorted, pre_limit, side="right"))
+            if hi <= 0:
+                self._nonscope_prefilter_key = cache_key
+                self._nonscope_prefilter_indices = np.array([], dtype=np.int32)
+                return self._nonscope_prefilter_indices
+            idx = np.arange(hi, dtype=np.int32)
+            self._nonscope_prefilter_key = cache_key
+            self._nonscope_prefilter_indices = idx
+            return idx
+
+        mag_sorted, mag_order = self._ensure_mag_index(ra_all, dec_all, mag_all)
+        if mag_sorted is None or mag_order is None or len(mag_sorted) == 0:
+            return None
 
         hi = int(np.searchsorted(mag_sorted, pre_limit, side="right"))
         if hi <= 0:
@@ -411,7 +432,7 @@ class StarsRenderer:
             return np.array([], dtype=np.int32), tile_count, candidate_count
         return np.asarray(candidate_idx[mask], dtype=np.int32), tile_count, candidate_count
 
-    def prime_catalog_indices(self, ra_all, dec_all=None, mag_all=None):
+    def prime_catalog_indices(self, ra_all, dec_all=None, mag_all=None, catalog_mag_sorted: bool = False):
         # Warm caches ahead of the first scope frame so the expensive setup does not happen
         # inside paintEvent.
         if np is None or ra_all is None:
@@ -421,7 +442,7 @@ class StarsRenderer:
                 self._ensure_scope_spatial_index(ra_all, dec_all)
             except Exception:
                 pass
-        if dec_all is not None and mag_all is not None:
+        if dec_all is not None and mag_all is not None and (not bool(catalog_mag_sorted)):
             try:
                 self._ensure_mag_index(ra_all, dec_all, mag_all)
             except Exception:
@@ -676,6 +697,7 @@ class StarsRenderer:
 
         scope_enabled = bool(getattr(state, "scope_enabled", False))
         interaction_active = bool(getattr(state, "interaction_active", False))
+        catalog_mag_sorted = bool(extras.get("catalog_mag_sorted", False))
         diag = getattr(ctx, "diagnostics", None)
 
         limiting_mag = self._limiting_magnitude(state)
@@ -697,6 +719,7 @@ class StarsRenderer:
         ra_pad = extras.get("scope_preselect_ra_pad_deg") if scope_enabled else None
         dec_pad = extras.get("scope_preselect_dec_pad_deg") if scope_enabled else None
         used_scope_spatial_prefilter = False
+        scope_spatial_prefilter_pending = False
         scope_tile_count = 0
         scope_tile_candidates = 0
 
@@ -723,9 +746,25 @@ class StarsRenderer:
             )
             if diag is not None:
                 diag.stop_timer("stars_scope_prefilter")
-            used_scope_spatial_prefilter = True
+            if catalog_idx is None:
+                scope_spatial_prefilter_pending = True
+                catalog_idx = self._non_scope_prefilter(
+                    ra_all,
+                    dec_all,
+                    mag_all,
+                    float(pre_limit),
+                    assume_sorted=catalog_mag_sorted,
+                )
+            else:
+                used_scope_spatial_prefilter = True
         else:
-            catalog_idx = self._non_scope_prefilter(ra_all, dec_all, mag_all, float(pre_limit))
+            catalog_idx = self._non_scope_prefilter(
+                ra_all,
+                dec_all,
+                mag_all,
+                float(pre_limit),
+                assume_sorted=catalog_mag_sorted,
+            )
 
         if catalog_idx is None or len(catalog_idx) == 0:
             return self._empty_result()
@@ -735,9 +774,11 @@ class StarsRenderer:
 
         if diag is not None:
             diag.set_counter("scope_spatial_prefilter", 1 if used_scope_spatial_prefilter else 0)
+            diag.set_counter("scope_spatial_prefilter_pending", 1 if scope_spatial_prefilter_pending else 0)
             diag.set_counter("scope_tile_count", int(scope_tile_count))
             diag.set_counter("scope_tile_candidates", int(scope_tile_candidates))
             diag.set_counter("scope_prefilter_count", int(len(catalog_idx)))
+            diag.set_counter("catalog_mag_sorted", 1 if catalog_mag_sorted else 0)
             diag.start_timer("stars_altaz")
         alt_deg, az_deg = self._cached_altaz(
             ra_all=ra_all,

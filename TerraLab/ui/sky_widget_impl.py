@@ -3043,6 +3043,7 @@ class AstroCanvas(QWidget):
             "star_brightness_boost": float(getattr(pw, "star_brightness_boost", 1.20)) if hasattr(pw, "star_brightness_boost") else 1.20,
             "scope_instrument_profile": str(getattr(pw, "scope_instrument_profile", "telescope")),
             "stars_enabled": bool(self._parent_checkbox_checked("chk_enable_sky", default=True)),
+            "catalog_mag_sorted": bool(getattr(pw, "_catalog_mag_sorted", False)),
         }
 
         mw_enabled = bool(getattr(pw, "milkyway_overlay_enabled", get_config_value("milkyway_overlay_enabled", True)))
@@ -5791,6 +5792,7 @@ class AstronomicalWidget(CustomWidgetBase):
         # Light Pollution state
         self.is_auto_bortle = bool(get_config_value("is_auto_bortle", True))
         self.auto_bortle_estimate = int(get_config_value("auto_bortle_estimate", 1))
+        self.light_pollution_enabled = bool(get_config_value("light_pollution_enabled", True))
         
         now = datetime.now()
         self.manual_year = now.year
@@ -5925,27 +5927,33 @@ class AstronomicalWidget(CustomWidgetBase):
     def _maybe_run_first_time_onboarding(self):
         if bool(get_config_value("ui_onboarding_done", False)):
             return
-        dlg = WelcomeOnboardingDialog(self, mandatory=True)
+        dlg = WelcomeOnboardingDialog(self.asset_manager, self, mandatory=True)
         if dlg.exec_() == QDialog.Accepted:
             set_config_value("ui_onboarding_done", True)
+            self._sync_runtime_asset_config(updated_asset_id=None)
+            self._validate_checked_assets_startup()
 
     def _open_quick_welcome(self):
-        dlg = WelcomeOnboardingDialog(self, mandatory=False)
-        dlg.exec_()
+        dlg = WelcomeOnboardingDialog(self.asset_manager, self, mandatory=False)
+        if dlg.exec_() == QDialog.Accepted:
+            self._sync_runtime_asset_config(updated_asset_id=None)
 
     def _open_asset_onboarding(self, asset_id: str) -> bool:
         dlg = AssetOnboardingDialog(self.asset_manager, asset_id, self)
         ok = dlg.exec_() == QDialog.Accepted and bool(getattr(dlg, "completed", False))
         if ok:
             # Keep runtime knobs in sync when onboarding modifies config paths/settings.
-            self._sync_runtime_asset_config()
+            self._sync_runtime_asset_config(updated_asset_id=str(asset_id))
         return bool(ok)
 
-    def _sync_runtime_asset_config(self):
+    def _sync_runtime_asset_config(self, updated_asset_id: Optional[str] = None):
         self.milkyway_overlay_texture_path = str(
             get_config_value("milkyway_overlay_texture_path", self.milkyway_overlay_texture_path)
         )
         self.dust_map_path = str(get_config_value("dust_map_path", self.dust_map_path))
+        self.light_pollution_enabled = bool(
+            get_config_value("light_pollution_enabled", self.light_pollution_enabled)
+        )
         if hasattr(self, "weather"):
             self.weather.set_remote_user_agent(self.asset_manager.get_user_agent())
         if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
@@ -5953,6 +5961,33 @@ class AstronomicalWidget(CustomWidgetBase):
         self._ngc_search_entries_cache = None
         if hasattr(self, "chk_deep_space") and bool(self.chk_deep_space.isChecked()):
             self.build_search_index()
+        if hasattr(self, "horizon_worker"):
+            self.horizon_worker.reload_config()
+        if str(updated_asset_id or "") == "gaia_catalog" and self.asset_manager.asset_ready("gaia_catalog"):
+            self._reload_star_catalog_async()
+
+    def _reload_star_catalog_async(self):
+        """Reload Gaia catalog after onboarding import without requiring app restart."""
+        try:
+            old_thread = getattr(self, "_catalog_thread", None)
+            if old_thread is not None and old_thread.isRunning():
+                old_thread.quit()
+                old_thread.wait(2500)
+        except Exception:
+            pass
+
+        self._stars_catalog_dir = str(Path(self.runtime_layout.get("data_gaia", get_base_dir())))
+        self._catalog_thread = QThread()
+        self._catalog_worker = CatalogLoaderWorker()
+        self._catalog_worker.moveToThread(self._catalog_thread)
+        self._catalog_worker.catalog_ready.connect(self._on_catalog_ready)
+        self._catalog_thread.started.connect(lambda: self._catalog_worker.load(self._stars_catalog_dir))
+        self._catalog_thread.start()
+        try:
+            self._catalog_thread.setPriority(QThread.LowPriority)
+        except Exception:
+            pass
+        print("[AstroWidget] Star catalog reloading in background...")
 
     def _ensure_asset_before_enable(self, checkbox: QCheckBox, checked: bool, asset_id: str) -> bool:
         checked = bool(checked)
@@ -5982,6 +6017,7 @@ class AstronomicalWidget(CustomWidgetBase):
             ("chk_enable_milkyway", "via_lactia", "milkyway_texture"),
             ("chk_enable_planck_dust", "pols_planck", "planck_dust"),
             ("chk_deep_space", "espai_profund", "ngc_catalog"),
+            ("chk_light_pollution", "contaminacio_luminica", "light_pollution"),
             ("chk_enable_village", "topografia", "elevation_dem"),
         )
         for attr_name, key, asset_id in checks:
@@ -5999,6 +6035,9 @@ class AstronomicalWidget(CustomWidgetBase):
                     self.canvas.weather.enabled = False
                 if hasattr(self, "weather"):
                     self.weather.enabled = False
+            if attr_name == "chk_light_pollution":
+                self.light_pollution_enabled = False
+                set_config_value("light_pollution_enabled", False)
         if hasattr(self, "canvas"):
             self.canvas.update()
 
@@ -6278,6 +6317,7 @@ class AstronomicalWidget(CustomWidgetBase):
     def _on_catalog_ready(self, celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp):
         """Callback when star catalog finishes loading in background."""
         self.celestial_objects = celestial_objects
+        self._catalog_mag_sorted = False
         if np_ra is not None:
             self.np_ra = np_ra
             self.np_dec = np_dec
@@ -6286,6 +6326,7 @@ class AstronomicalWidget(CustomWidgetBase):
             self.np_g = np_g
             self.np_b = np_b
             self.np_bp_rp = np_bp_rp
+            self._catalog_mag_sorted = True
             try:
                 self._scope_catalog_loaded_max_mag = max(
                     float(self._scope_catalog_loaded_max_mag),
@@ -6301,7 +6342,12 @@ class AstronomicalWidget(CustomWidgetBase):
                     )
             except Exception:
                 pass
-        print(f"[AstroWidget] Star catalog ready: {len(celestial_objects)} stars (async).")
+        array_rows = int(len(np_ra)) if np_ra is not None else 0
+        named_rows = int(len(celestial_objects)) if celestial_objects is not None else 0
+        print(
+            f"[AstroWidget] Star catalog ready (async): "
+            f"catalog_rows={array_rows} named_rows={named_rows}"
+        )
         self.build_search_index()
         self._ensure_scope_catalog_loaded()
         if self.canvas.scope_mode_enabled():
@@ -6372,6 +6418,8 @@ class AstronomicalWidget(CustomWidgetBase):
 
     def _ensure_scope_spatial_index_warmup(self):
         if np is None:
+            return
+        if not self.canvas.scope_mode_enabled():
             return
         stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
         if stars_renderer is None:
@@ -6477,10 +6525,13 @@ class AstronomicalWidget(CustomWidgetBase):
                     self.np_g = np_g
                     self.np_b = np_b
                     self.np_bp_rp = np_bp_rp
+                # Scope extension appends chunks and does not guarantee global magnitude ordering.
+                self._catalog_mag_sorted = False
                 print(f"[AstroWidget] Scope extension appended: +{len(np_ra)} stars.")
                 self.canvas._cached_star_image = None
                 self.canvas._cached_trail_image = None
-                self._ensure_scope_spatial_index_warmup()
+                if self.canvas.scope_mode_enabled():
+                    self._ensure_scope_spatial_index_warmup()
                 self.canvas.update()
                 try:
                     if np_mag is not None and len(np_mag) > 0:
@@ -6503,7 +6554,8 @@ class AstronomicalWidget(CustomWidgetBase):
             except Exception:
                 pass
             self._cleanup_scope_catalog_loader()
-            QTimer.singleShot(0, self._ensure_scope_spatial_index_warmup)
+            if self.canvas.scope_mode_enabled():
+                QTimer.singleShot(0, self._ensure_scope_spatial_index_warmup)
 
     def init_skyfield(self):
         """Legacy synchronous init. Kept for compatibility."""
@@ -6727,6 +6779,14 @@ class AstronomicalWidget(CustomWidgetBase):
         # Set state initially
         setattr(self.canvas.weather, 'enabled', bool(self.chk_clima.isChecked()))
         self.chk_clima.toggled.connect(self.on_climate_toggled)
+        self.chk_light_pollution = QCheckBox("Contaminacio luminica")
+        self.chk_light_pollution.setEnabled(True)
+        self.chk_light_pollution.setChecked(
+            self._load_visibility_state("contaminacio_luminica", bool(self.light_pollution_enabled))
+        )
+        self.chk_light_pollution.toggled.connect(self.on_light_pollution_toggled)
+        self.light_pollution_enabled = bool(self.chk_light_pollution.isChecked())
+        set_config_value("light_pollution_enabled", bool(self.light_pollution_enabled))
         self.lbl_climate_fallback = QLabel(getTraduction("Astro.ClimateFallbackActive", "Real weather unavailable (fallback)"))
         self.lbl_climate_fallback.setVisible(False)
         self.lbl_climate_fallback.setStyleSheet(
@@ -6770,7 +6830,16 @@ class AstronomicalWidget(CustomWidgetBase):
         self.lbl_milkyway_status.setStyleSheet("font-size: 9px; color: #333;")
         self.lbl_milkyway_status.setVisible(True)
 
-        for c in (self.chk_clima, self.chk_planets, self.chk_sun_moon, self.chk_enable_sky, self.chk_enable_milkyway, self.chk_enable_planck_dust, self.chk_deep_space):
+        for c in (
+            self.chk_clima,
+            self.chk_light_pollution,
+            self.chk_planets,
+            self.chk_sun_moon,
+            self.chk_enable_sky,
+            self.chk_enable_milkyway,
+            self.chk_enable_planck_dust,
+            self.chk_deep_space,
+        ):
             c.setStyleSheet(c.styleSheet() + "; font-style: normal; font-weight: normal; color: #666;" if not c.isEnabled() else "; font-style: normal; font-weight: normal; color: #000;")
             v_chk.addWidget(c)
         v_chk.addWidget(self.lbl_milkyway_status)
@@ -8680,6 +8749,34 @@ class AstronomicalWidget(CustomWidgetBase):
         self._refresh_climate_status_indicator()
         self.canvas.update()
 
+    def on_light_pollution_toggled(self, checked):
+        checked = bool(checked)
+        if checked and (not self._ensure_asset_before_enable(self.chk_light_pollution, checked, "light_pollution")):
+            checked = False
+        if checked != bool(self.chk_light_pollution.isChecked()):
+            self.chk_light_pollution.blockSignals(True)
+            self.chk_light_pollution.setChecked(checked)
+            self.chk_light_pollution.blockSignals(False)
+        self.light_pollution_enabled = bool(checked)
+        self._persist_visibility_state("contaminacio_luminica", checked)
+        set_config_value("light_pollution_enabled", bool(checked))
+        if hasattr(self, "horizon_worker"):
+            self.horizon_worker.reload_config()
+            QTimer.singleShot(
+                0,
+                lambda: QMetaObject.invokeMethod(self.horizon_worker, "initialize", Qt.QueuedConnection),
+            )
+        if checked:
+            if bool(getattr(self, "is_auto_bortle", True)):
+                QTimer.singleShot(80, self.reset_lp_to_auto)
+        else:
+            self.auto_bortle_estimate = 4
+            self.canvas.auto_bortle_estimate = 4
+            set_config_value("auto_bortle_estimate", 4)
+            if hasattr(self, "slider_light") and bool(getattr(self, "is_auto_bortle", True)):
+                self.slider_light.set_silent_value(4)
+        self.canvas.update()
+
     def on_milkyway_toggled(self, checked):
         checked = bool(checked)
         if checked and (not self._ensure_asset_before_enable(self.chk_enable_milkyway, checked, "milkyway_texture")):
@@ -8996,10 +9093,8 @@ class AstronomicalWidget(CustomWidgetBase):
                 if name and not name.lower().startswith('gaia'):
                     register_name(name, {"type": "star", "obj": star})
 
-        # Temporary patch:
-        # gaia_stars.json still carries commercial star names while the large ZST
-        # does not embed them. Use it only as an optional search supplement.
-        # If the JSON disappears later, search must still work without crashing.
+        # Optional search supplement: stars missing from Gaia (very bright / special cases).
+        # Keep this independent from the heavy Gaia runtime dataset.
         for star_info in self._load_named_star_search_entries():
             name = str(star_info.get("name", "")).strip()
             if name:
@@ -9041,7 +9136,7 @@ class AstronomicalWidget(CustomWidgetBase):
             return cached
 
         path = os.path.abspath(
-            os.path.join(os.path.dirname(__file__), "..", "data", "stars", "gaia_stars.json")
+            os.path.join(os.path.dirname(__file__), "..", "data", "stars", "no_gaia_stars.json")
         )
         if not os.path.isfile(path):
             self._named_star_search_entries_cache = []

@@ -131,12 +131,15 @@ class HorizonWorker(QObject):
                 from TerraLab.terrain.light_pollution_sampler import LightPollutionSampler
 
                 config = ConfigManager()
-                lp_path = config.get("dvnl_path", "")
-                if not lp_path or not os.path.exists(lp_path):
-                    base_dir = os.path.dirname(os.path.dirname(__file__))
-                    local_default = os.path.join(base_dir, "data", "light_pollution", "C_DVNL 2022.tif")
-                    if os.path.exists(local_default):
-                        lp_path = local_default
+                lp_enabled = bool(config.get("light_pollution_enabled", True))
+                lp_path = ""
+                if lp_enabled:
+                    lp_path = config.get("dvnl_path", "")
+                    if not lp_path or not os.path.exists(lp_path):
+                        base_dir = os.path.dirname(os.path.dirname(__file__))
+                        local_default = os.path.join(base_dir, "data", "light_pollution", "C_DVNL 2022.tif")
+                        if os.path.exists(local_default):
+                            lp_path = local_default
                 self.light_sampler = LightPollutionSampler(lp_path if lp_path and os.path.exists(lp_path) else None)
             except Exception as exc:
                 print(f"[HorizonWorker] Warning: Light pollution sampler unavailable: {exc}")

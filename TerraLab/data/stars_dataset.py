@@ -53,6 +53,10 @@ def _runtime_npy_path() -> Path:
     return _runtime_data_dir() / NPY_NAME
 
 
+def _runtime_zst_path() -> Path:
+    return _runtime_data_dir() / ZST_NAME
+
+
 def _runtime_source_log_path() -> Path:
     return _runtime_data_dir() / SOURCE_LOG_NAME
 
@@ -207,11 +211,6 @@ def _runtime_npz_to_arrays(npz_path: Path) -> Dict[str, np.ndarray]:
     return arrays
 
 
-def _sync_runtime_npy_from_npz(npz_path: Path, npy_path: Path) -> None:
-    arrays = _runtime_npz_to_arrays(npz_path)
-    _write_structured_npy(npy_path, arrays)
-
-
 def _decompress_zst_to_npz(zst_path: Path, npz_path: Path) -> None:
     if zstd is None:
         raise RuntimeError(
@@ -227,6 +226,13 @@ def _decompress_zst_to_npz(zst_path: Path, npz_path: Path) -> None:
             shutil.copyfileobj(reader, dst, length=1024 * 1024)
 
     tmp_out.replace(npz_path)
+
+
+def _remove_file_if_exists(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def _to_float_array(values: np.ndarray | Iterable, dtype: np.dtype, default: float = np.nan) -> np.ndarray:
@@ -576,11 +582,11 @@ def _build_from_json(stars_dir: Path, npz_path: Path, npy_path: Path) -> bool:
     arrays = _normalize_arrays(raw)
     if len(arrays.get("ra", [])) <= 0:
         return False
-    _write_structured_npy(npy_path, arrays)
+    _remove_file_if_exists(npy_path)
     _write_npz(npz_path, arrays)
     _source_log(
         f"source=json fallback='{JSON_FALLBACK_NAME}' stars_dir='{stars_dir}' "
-        f"-> runtime_npy='{npy_path}' runtime_npz='{npz_path}' rows={len(arrays['ra'])}"
+        f"-> runtime_npz='{npz_path}' rows={len(arrays['ra'])}"
     )
     return True
 
@@ -602,12 +608,12 @@ def _build_from_npy_sources(stars_dir: Path, npz_path: Path, runtime_npy_path: P
         arrays = _normalize_arrays(raw)
         if len(arrays.get("ra", [])) <= 0:
             continue
-        _write_structured_npy(runtime_npy_path, arrays)
         _write_npz(npz_path, arrays)
         _source_log(
-            f"source=npy path='{path}' -> runtime_npy='{runtime_npy_path}' "
-            f"runtime_npz='{npz_path}' rows={len(arrays['ra'])}"
+            f"source=npy path='{path}' -> runtime_npz='{npz_path}' rows={len(arrays['ra'])}"
         )
+        if path.resolve() != runtime_npy_path.resolve():
+            _remove_file_if_exists(runtime_npy_path)
         return True
 
     try:
@@ -623,11 +629,10 @@ def _build_from_npy_sources(stars_dir: Path, npz_path: Path, runtime_npy_path: P
     arrays = _normalize_arrays(split_raw)
     if len(arrays.get("ra", [])) <= 0:
         return False
-    _write_structured_npy(runtime_npy_path, arrays)
     _write_npz(npz_path, arrays)
+    _remove_file_if_exists(runtime_npy_path)
     _source_log(
-        f"source=split_npy stars_dir='{stars_dir}' -> runtime_npy='{runtime_npy_path}' "
-        f"runtime_npz='{npz_path}' rows={len(arrays['ra'])}"
+        f"source=split_npy stars_dir='{stars_dir}' -> runtime_npz='{npz_path}' rows={len(arrays['ra'])}"
     )
     return True
 
@@ -636,42 +641,41 @@ def ensure_stars_dataset() -> str:
     """Ensure `%APPDATA%/TerraLab/data/stars_catalog.npz` exists and return it."""
     npz_path = _runtime_npz_path()
     runtime_npy_path = _runtime_npy_path()
+    runtime_zst_path = _runtime_zst_path()
     meta_path = _runtime_meta_path()
     stars_dir = _packaged_stars_dir()
 
-    zst_path = _packaged_zst_path()
-    if zst_path.exists():
-        zst_sig = _path_signature(zst_path)
+    if runtime_zst_path.exists():
+        zst_sig = _path_signature(runtime_zst_path)
         meta = _read_runtime_meta(meta_path)
         cached_sig = meta.get("zst_signature")
         if npz_path.exists() and npz_path.is_file() and cached_sig == zst_sig:
-            _source_log(f"source=runtime_cache mode=zst runtime_npz='{npz_path}'")
+            _remove_file_if_exists(runtime_npy_path)
+            _source_log(f"source=runtime_cache mode=runtime_zst runtime_npz='{npz_path}'")
             return str(npz_path)
         try:
-            _decompress_zst_to_npz(zst_path, npz_path)
-            _sync_runtime_npy_from_npz(npz_path, runtime_npy_path)
+            _decompress_zst_to_npz(runtime_zst_path, npz_path)
+            _remove_file_if_exists(runtime_npy_path)
             _write_runtime_meta(
                 meta_path,
                 {
-                    "source": "zst",
-                    "source_path": str(zst_path),
+                    "source": "runtime_zst",
+                    "source_path": str(runtime_zst_path),
                     "source_signature": zst_sig,
                     "zst_signature": zst_sig,
                     "updated_at": datetime.now().isoformat(timespec="seconds"),
                 },
             )
             _source_log(
-                f"source=zst path='{zst_path}' -> runtime_npz='{npz_path}' "
-                f"runtime_npy='{runtime_npy_path}'"
+                f"source=runtime_zst path='{runtime_zst_path}' -> runtime_npz='{npz_path}'"
             )
             return str(npz_path)
         except Exception as exc:
-            # Continue to local fallbacks (NPY/ECSV/JSON) if ZST path is unusable.
-            _source_log(f"source=zst failed path='{zst_path}' error='{exc}' -> trying fallbacks")
-    else:
-        _source_log(f"source=zst miss file not found '{zst_path}'")
+            _source_log(f"source=runtime_zst failed path='{runtime_zst_path}' error='{exc}'")
 
+    # Fast-path: if runtime cache already exists, avoid packaged-source probing/logging.
     if npz_path.exists() and npz_path.is_file():
+        _remove_file_if_exists(runtime_npy_path)
         meta = _read_runtime_meta(meta_path)
         if not isinstance(meta, dict) or not meta.get("source"):
             _write_runtime_meta(
@@ -684,14 +688,43 @@ def ensure_stars_dataset() -> str:
         _source_log(f"source=runtime_cache runtime_npz='{npz_path}'")
         return str(npz_path)
 
+    zst_path = _packaged_zst_path()
+    if zst_path.exists():
+        zst_sig = _path_signature(zst_path)
+        meta = _read_runtime_meta(meta_path)
+        cached_sig = meta.get("zst_signature")
+        if npz_path.exists() and npz_path.is_file() and cached_sig == zst_sig:
+            _remove_file_if_exists(runtime_npy_path)
+            _source_log(f"source=runtime_cache mode=zst runtime_npz='{npz_path}'")
+            return str(npz_path)
+        try:
+            _decompress_zst_to_npz(zst_path, npz_path)
+            _remove_file_if_exists(runtime_npy_path)
+            _write_runtime_meta(
+                meta_path,
+                {
+                    "source": "zst",
+                    "source_path": str(zst_path),
+                    "source_signature": zst_sig,
+                    "zst_signature": zst_sig,
+                    "updated_at": datetime.now().isoformat(timespec="seconds"),
+                },
+            )
+            _source_log(
+                f"source=zst path='{zst_path}' -> runtime_npz='{npz_path}'"
+            )
+            return str(npz_path)
+        except Exception as exc:
+            # Continue to local fallbacks (NPY/ECSV/JSON) if ZST path is unusable.
+            _source_log(f"source=zst failed path='{zst_path}' error='{exc}' -> trying fallbacks")
+    else:
+        _source_log(f"source=zst miss file not found '{zst_path}'")
+
     packaged_npz = _packaged_npz_path()
     if packaged_npz.exists():
         npz_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(packaged_npz, npz_path)
-        try:
-            _sync_runtime_npy_from_npz(npz_path, runtime_npy_path)
-        except Exception as exc:
-            _source_log(f"source=packaged_npz npy_sync_failed error='{exc}'")
+        _remove_file_if_exists(runtime_npy_path)
         _write_runtime_meta(
             meta_path,
             _build_meta_payload(
@@ -704,11 +737,12 @@ def ensure_stars_dataset() -> str:
     _source_log(f"source=packaged_npz miss file not found '{packaged_npz}'")
 
     if _build_from_npy_sources(stars_dir, npz_path, runtime_npy_path):
+        npy_source_path = str(runtime_npy_path if runtime_npy_path.exists() else stars_dir)
         _write_runtime_meta(
             meta_path,
             _build_meta_payload(
                 source="npy_fallback",
-                source_path=str(stars_dir),
+                source_path=npy_source_path,
             ),
         )
         return str(npz_path)
