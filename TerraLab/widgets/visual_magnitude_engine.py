@@ -1,8 +1,14 @@
 from dataclasses import dataclass
+import math
 
 from TerraLab.widgets.physical_math import (
     InstrumentOpticsMath,
     VisualPhotometryMath,
+)
+from TerraLab.widgets.optica_telescopica import (
+    EXPOSURE_EYE_REFERENCE_S,
+    ISO_EYE_REFERENCE,
+    calculate_mag_limit,
 )
 
 
@@ -34,6 +40,9 @@ class VisualMagnitudeResult:
     aperture_gain_mag: float
     ntl_penalty_mag: float
     star_scale_factor: float
+    raw_sensor_limit_mag: float = 0.0
+    f_ratio: float = 1.0
+    sensor_bonus_mag: float = 0.0
 
 
 class VisualMagnitudeEngine:
@@ -73,35 +82,46 @@ class VisualMagnitudeEngine:
             manual_eye_limit_mag=float(inputs.manual_eye_limit_mag),
         )
         ntl_penalty_mag = max(0.0, 7.6 - eye_limit_mag)
-
         atmospheric_loss_mag = VisualPhotometryMath.atmospheric_loss_mag(inputs.atmospheric_loss_mag)
-        overmagnification_penalty_mag = VisualPhotometryMath.overmagnification_penalty_mag(
-            exit_pupil_mm=exit_pupil_mm,
-            is_camera=is_camera,
-        )
-        exposure_gain_mag = VisualPhotometryMath.exposure_gain_mag(
-            exposure_seconds=inputs.exposure_seconds,
-            iso=inputs.iso,
-        )
         sensor_bonus_mag = VisualPhotometryMath.sensor_bonus_mag(
             instrument_profile=instrument_profile,
             sensor_profile=sensor_profile,
             is_camera=is_camera,
         )
 
-        scope_limit_mag = VisualPhotometryMath.scope_limit_mag(
-            eye_limit_mag=eye_limit_mag,
-            aperture_gain_mag=aperture_gain_mag,
-            atmospheric_loss_mag=atmospheric_loss_mag,
-            overmagnification_penalty_mag=overmagnification_penalty_mag,
-            exposure_gain_mag=exposure_gain_mag,
-            sensor_bonus_mag=sensor_bonus_mag,
+        # Physically-driven photometric depth model (camera/scope pipeline).
+        raw_sensor_limit_mag = calculate_mag_limit(
+            focal_mm=telescope_focal_mm,
+            aperture_mm=aperture_mm,
+            iso=float(inputs.iso),
+            exposure_seconds=float(inputs.exposure_seconds),
         )
+        scope_limit_mag = (
+            raw_sensor_limit_mag
+            + float(sensor_bonus_mag)
+            - atmospheric_loss_mag
+            - ntl_penalty_mag
+        )
+        scope_limit_mag = VisualPhotometryMath.clamp(scope_limit_mag, -12.0, 22.0)
+
+        # Exposure/ISO contribution expressed as differential gain vs eye reference.
+        exposure_ratio = max(
+            1e-6,
+            (float(inputs.exposure_seconds) * max(1.0, float(inputs.iso)))
+            / (EXPOSURE_EYE_REFERENCE_S * ISO_EYE_REFERENCE),
+        )
+        exposure_gain_mag = VisualPhotometryMath.clamp(
+            1.25 * math.log10(exposure_ratio),
+            -8.0,
+            12.0,
+        )
+
         star_scale_factor = VisualPhotometryMath.star_scale_factor(
             scope_limit_mag=scope_limit_mag,
             eye_limit_mag=eye_limit_mag,
             exposure_gain_mag=exposure_gain_mag,
         )
+        f_ratio = telescope_focal_mm / max(1.0, aperture_mm)
 
         return VisualMagnitudeResult(
             eye_limit_mag=eye_limit_mag,
@@ -114,5 +134,7 @@ class VisualMagnitudeEngine:
             aperture_gain_mag=aperture_gain_mag,
             ntl_penalty_mag=ntl_penalty_mag,
             star_scale_factor=star_scale_factor,
+            raw_sensor_limit_mag=float(raw_sensor_limit_mag),
+            f_ratio=float(f_ratio),
+            sensor_bonus_mag=float(sensor_bonus_mag),
         )
-

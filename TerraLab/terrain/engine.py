@@ -136,6 +136,7 @@ class HorizonProfile:
     observer_lon: float = 0.0
     light_domes: Optional[np.ndarray] = None
     light_peak_distances: Optional[np.ndarray] = None # Distances of max light source per azimuth
+    resolved_mask: Optional[np.ndarray] = None
 
     def get_band_points(self, band_id: str):
         """Return list of (az_deg, elevation_deg) for a given band."""
@@ -162,6 +163,8 @@ class HorizonProfile:
             "light_domes": self.light_domes,
             "light_peak_distances": self.light_peak_distances,
         }
+        if self.resolved_mask is not None:
+            data["resolved_mask"] = np.asarray(self.resolved_mask, dtype=np.uint8)
         for i, b in enumerate(self.bands):
             data[f"band_{i}_id"] = b["id"]
             data[f"band_{i}_angles"] = b["angles"]
@@ -185,6 +188,9 @@ class HorizonProfile:
             })
         light_domes = d.get("light_domes", np.zeros(len(azimuths)))
         light_peak_distances = d.get("light_peak_distances", np.zeros(len(azimuths)))
+        resolved_mask = d.get("resolved_mask", None)
+        if resolved_mask is not None:
+            resolved_mask = np.asarray(resolved_mask, dtype=np.uint8).astype(bool)
         
         return HorizonProfile(
             azimuths=azimuths,
@@ -193,6 +199,7 @@ class HorizonProfile:
             observer_lon=float(d.get("observer_lon", 0.0)),
             light_domes=light_domes,
             light_peak_distances=light_peak_distances,
+            resolved_mask=resolved_mask,
         )
 
 
@@ -598,6 +605,95 @@ class HorizonBaker:
         self.eye_height = eye_height
         self.R = R
 
+    @staticmethod
+    def _build_band_buffers(n_az: int, band_defs: List[Dict]) -> List[Dict]:
+        bands = []
+        for bd in band_defs:
+            bands.append({
+                "id": bd["id"],
+                "min": bd["min"],
+                "max": bd["max"],
+                "angles": np.full(n_az, -np.inf),
+                "dists": np.zeros(n_az),
+                "heights": np.zeros(n_az),
+            })
+        return bands
+
+    def _sample_single_azimuth(
+        self,
+        az_index: int,
+        obs_x: float,
+        obs_y: float,
+        h_eye_abs: float,
+        step_m: float,
+        d_max: float,
+        bands: List[Dict],
+        sin_az: np.ndarray,
+        cos_az: np.ndarray,
+        light_domes: np.ndarray,
+        light_peak_distances: np.ndarray,
+        max_rad_per_az: np.ndarray,
+        light_sampler=None,
+    ) -> None:
+        c = sin_az[az_index]
+        s = cos_az[az_index]
+
+        NEAR_START = 0.5
+        NEAR_FACTOR = 1.50
+        d = NEAR_START
+        max_ang_so_far = -np.pi / 2.0
+        last_light_d = 0.0
+
+        while d < d_max:
+            x = obs_x + d * c
+            y = obs_y + d * s
+
+            h_terr = self.provider.get_elevation(x, y)
+            if h_terr is None:
+                h_terr = 0.0
+
+            drop = (d * d) / (2.0 * self.R)
+            h_visual = h_terr - drop - h_eye_abs
+            ang = math.atan2(h_visual, d)
+
+            if ang > max_ang_so_far:
+                max_ang_so_far = ang
+
+            if light_sampler is not None and (d - last_light_d) >= 2000.0:
+                last_light_d = d
+                if hasattr(light_sampler, 'get_radiance_utm'):
+                    rad = light_sampler.get_radiance_utm(x, y)
+                elif hasattr(self.provider, 'transform_coordinates_inverse'):
+                    lat, lon = self.provider.transform_coordinates_inverse(x, y)
+                    rad = light_sampler.get_radiance(lat, lon)
+                else:
+                    rad = 0.0
+
+                if rad and rad > 0.1:
+                    dist_mult = 1.0 / max(1.0, (d / 1000.0))
+                    if ang > (max_ang_so_far - 0.17):
+                        light_domes[az_index] += float(rad * dist_mult * 20.0)
+                        if rad > max_rad_per_az[az_index]:
+                            max_rad_per_az[az_index] = float(rad)
+                            light_peak_distances[az_index] = float(d)
+
+            for b in bands:
+                if b["min"] <= d < b["max"]:
+                    if ang > b["angles"][az_index]:
+                        b["angles"][az_index] = ang
+                        b["dists"][az_index] = d
+                        b["heights"][az_index] = h_terr
+                    break
+
+            if d < step_m:
+                d = min(d * NEAR_FACTOR, step_m)
+            elif d < 3_000:
+                d += step_m
+            elif d < 15_000:
+                d += step_m * 2
+            else:
+                d += step_m * 4
+
     def _raycast_chunk(self, args):
         """Process a chunk of azimuths for parallel execution."""
         (az_indices, sin_az_chunk, cos_az_chunk, obs_x, obs_y,
@@ -645,6 +741,124 @@ class HorizonBaker:
                     d += step_m * 4
 
         return az_indices, chunk_angles, chunk_dists, chunk_heights
+
+    def bake_progressive(
+        self,
+        obs_x: float,
+        obs_y: float,
+        obs_h_ground: Optional[float] = None,
+        step_m: float = 50,
+        d_max: float = 100_000,
+        delta_az_deg: float = 0.5,
+        band_defs: Optional[List[Dict]] = None,
+        azimuth_order: Optional[List[int]] = None,
+        progress_callback=None,
+        preview_callback=None,
+        preview_every: int = 24,
+        light_sampler=None,
+        abort_check=None,
+    ) -> Tuple[np.ndarray, List[Dict], np.ndarray, np.ndarray, np.ndarray]:
+        """
+        Compute a horizon profile incrementally.
+
+        This progressive path is intended for subprocess baking and live previews:
+        the worker can request previews after useful azimuth blocks without waiting
+        for the full 360° solve to finish.
+        """
+        import time
+
+        if obs_h_ground is None:
+            val = self.provider.get_elevation(obs_x, obs_y)
+            if val is None:
+                print("[HorizonEngine] Observer outside DEM coverage. Using 0.")
+                obs_h_ground = 0
+            else:
+                obs_h_ground = val
+
+        h_eye_abs = obs_h_ground + self.eye_height
+        azimuths = np.arange(0, 360, delta_az_deg, dtype=np.float32)
+        n_az = len(azimuths)
+        light_domes = np.zeros(n_az, dtype=np.float32)
+        light_peak_distances = np.zeros(n_az, dtype=np.float32)
+        max_rad_per_az = np.zeros(n_az, dtype=np.float32)
+        resolved_mask = np.zeros(n_az, dtype=bool)
+
+        if band_defs is None:
+            band_defs = DEFAULT_BANDS
+
+        bands = self._build_band_buffers(n_az, band_defs)
+
+        az_rads = np.deg2rad(azimuths)
+        sin_az = np.sin(az_rads)
+        cos_az = np.cos(az_rads)
+
+        if azimuth_order is None:
+            ordered_indices = list(range(n_az))
+        else:
+            ordered_indices = []
+            seen = set()
+            for idx in azimuth_order:
+                try:
+                    idx_int = int(idx)
+                except Exception:
+                    continue
+                if 0 <= idx_int < n_az and idx_int not in seen:
+                    ordered_indices.append(idx_int)
+                    seen.add(idx_int)
+            if len(ordered_indices) < n_az:
+                ordered_indices.extend(i for i in range(n_az) if i not in seen)
+
+        print(f"[HorizonEngine] Progressive bake {n_az} azimuths, max_dist={d_max / 1000:.0f}km...")
+        t0 = time.time()
+        last_preview_t = t0
+        completed = 0
+
+        for az_index in ordered_indices:
+            if abort_check and abort_check():
+                print("[HorizonEngine] Progressive bake aborted by caller.")
+                raise InterruptedError("Bake aborted")
+
+            self._sample_single_azimuth(
+                az_index=az_index,
+                obs_x=obs_x,
+                obs_y=obs_y,
+                h_eye_abs=h_eye_abs,
+                step_m=step_m,
+                d_max=d_max,
+                bands=bands,
+                sin_az=sin_az,
+                cos_az=cos_az,
+                light_domes=light_domes,
+                light_peak_distances=light_peak_distances,
+                max_rad_per_az=max_rad_per_az,
+                light_sampler=light_sampler,
+            )
+            resolved_mask[az_index] = True
+            completed += 1
+
+            progress_pct = (completed / n_az) * 100.0
+            if progress_callback:
+                progress_callback(progress_pct, f"Azimuth {completed}/{n_az}")
+
+            if preview_callback:
+                now = time.time()
+                enough_samples = completed >= preview_every and (completed % max(1, preview_every) == 0)
+                enough_time = (now - last_preview_t) >= 0.35
+                if completed == n_az or enough_samples or enough_time:
+                    preview_callback(
+                        completed,
+                        n_az,
+                        azimuths,
+                        bands,
+                        light_domes,
+                        light_peak_distances,
+                        resolved_mask,
+                    )
+                    last_preview_t = now
+
+        elapsed = time.time() - t0
+        print(f"[HorizonEngine] Progressive bake complete in {elapsed:.2f}s.")
+        return azimuths, bands, light_domes, light_peak_distances, resolved_mask
 
     def bake(
         self,
@@ -706,7 +920,6 @@ class HorizonBaker:
 
         print(f"[HorizonEngine] Baking {n_az} azimuths, max_dist={d_max / 1000:.0f}km...")
         t0 = time.time()
-        last_report = 0
 
         for i in range(n_az):
             if i % 10 == 0:
@@ -794,15 +1007,14 @@ class HorizonBaker:
                 traceback.print_exc()
                 raise e
 
-            # Progress reporting (every 5%)
-            pct = int((i + 1) / n_az * 100)
-            if pct >= last_report + 5:
-                last_report = pct
-                if progress_callback:
-                    progress_callback(pct, f"⏳ Calculando horizonte: {pct}%")
-                if pct % 25 == 0:
-                    elapsed = time.time() - t0
-                    print(f"[HorizonEngine]   {pct}% ({i+1}/{n_az} azimuths, {elapsed:.1f}s)")
+            # Progress reporting (every azimuth).
+            progress_pct = ((i + 1) / n_az) * 100.0
+            if progress_callback:
+                progress_callback(progress_pct, f"Azimuth {i + 1}/{n_az}")
+            pct_bucket = int(progress_pct)
+            if pct_bucket % 25 == 0 and abs(progress_pct - pct_bucket) < 1e-9:
+                elapsed = time.time() - t0
+                print(f"[HorizonEngine]   {pct_bucket}% ({i+1}/{n_az} azimuths, {elapsed:.1f}s)")
 
         elapsed = time.time() - t0
         print(f"[HorizonEngine] Bake complete in {elapsed:.2f}s.")

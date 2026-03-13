@@ -104,6 +104,7 @@ class AscRasterProvider(RasterProvider):
         total_tiles = len(tiles_needed)
         n_tile_workers = min(8, total_tiles or 1)
         loaded_count = 0
+        last_reported_percent = -1
         
         def _load_tile(tile):
             return self.cache.load(tile)
@@ -117,12 +118,14 @@ class AscRasterProvider(RasterProvider):
                     raise InterruptedError("Loading aborted")
                 
                 loaded_count += 1
-                if progress_callback and (loaded_count % 5 == 0 or loaded_count == total_tiles):
+                if progress_callback and total_tiles > 0:
                     percent = int(loaded_count / total_tiles * 100)
-                    msg = getTraduction("Horizon.LoadingMaps", "⏳ Carregant mapes: {loaded}/{total} ({pct}%)").format(
-                        loaded=loaded_count, total=total_tiles, pct=percent
-                    )
-                    progress_callback(percent, msg)
+                    if percent > last_reported_percent:
+                        last_reported_percent = percent
+                        msg = getTraduction("Horizon.LoadingMaps", "Loading maps: {loaded}/{total} ({pct}%)").format(
+                            loaded=loaded_count, total=total_tiles, pct=percent
+                        )
+                        progress_callback(percent, msg)
                 try:
                     future.result()
                 except Exception as e:

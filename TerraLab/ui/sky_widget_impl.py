@@ -1,0 +1,9508 @@
+﻿import math
+import os
+import time
+import random
+import json
+import unicodedata
+from pathlib import Path
+from typing import Optional
+try:
+    import numpy as np
+except ImportError:
+    np = None
+from datetime import datetime, timedelta, timezone
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
+                             QSlider, QLineEdit, QPushButton, QFrame,
+                             QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox, QMenu, QMessageBox, QInputDialog, QShortcut)
+from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, pyqtSlot, QObject, QThread, QLineF, QUrl, QEvent, QMetaObject
+from PyQt5.QtGui import QPainter, QColor, QPen, QRadialGradient, QBrush, QPainterPath, QLinearGradient, QPixmap, QFont, QTransform, QImage, QPolygonF, QDesktopServices
+
+from TerraLab.common.custom_widget_base import CustomWidgetBase
+from TerraLab.common.utils import (
+    resource_path,
+    getTraduction,
+    get_config_value,
+    set_config_value,
+    get_base_dir,
+)
+from TerraLab.common.app_paths import constellations_path
+from TerraLab.data.assets_manager import AssetManager
+from TerraLab.ui.onboarding_dialogs import AssetOnboardingDialog, WelcomeOnboardingDialog
+from TerraLab.weather.system import (WeatherSystem, WeatherPalette, 
+                            WeatherControlWidget, Cloud, Particle)
+from TerraLab.layers.village import VillageOverlay
+from TerraLab.terrain.overlay import HorizonOverlay
+from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
+from TerraLab.widgets.measurement_tools import (
+    MeasurementController,
+    TOOL_NONE,
+    TOOL_RULER,
+    TOOL_SQUARE,
+    TOOL_RECTANGLE,
+    TOOL_CIRCLE,
+)
+from TerraLab.widgets.constellation_drawing import ConstellationDrawingController
+from TerraLab.widgets.spherical_math import screen_to_sky
+from TerraLab.widgets.visual_magnitude_engine import (
+    VisualMagnitudeEngine,
+    VisualMagnitudeInputs,
+)
+from TerraLab.widgets.telescope_runtime import (
+    update_telescope_hud,
+    on_telescope_view_enabled,
+    on_resize as telescope_on_resize,
+    update_star_rendering_params,
+)
+from TerraLab.debug.diagnostics import Diagnostics
+from TerraLab.render.sky_renderer import SkyRenderer
+from TerraLab.scene.camera import Camera
+from TerraLab.scene.render_context import RenderContext
+from TerraLab.scene.scene_state import SceneState
+from TerraLab.util.math2d import clamp
+
+# Skyfield imports
+try:
+    from skyfield.api import load, wgs84, N, W, E, S
+    from skyfield import almanac
+    from skyfield.framelib import ecliptic_frame
+    SKYFIELD_AVAILABLE = True
+except ImportError:
+    SKYFIELD_AVAILABLE = False
+    print("WARNING: Skyfield not available. Install with: pip install skyfield")
+
+
+from TerraLab.widgets.sky_legacy_components import (
+    STAR_CATALOG_NAKED_EYE_MAX_MAG,
+    _discover_star_catalog_npz_entries,
+    _select_base_star_catalog_entry,
+    _load_star_npz_arrays,
+    _bp_rp_to_rgb_arrays,
+    _build_celestial_objects_from_arrays,
+    ClickableLabel,
+    AstroEngine,
+    RusticTimeBar,
+    CatalogLoaderWorker,
+    SkyfieldLoaderWorker,
+    StarRenderWorker,
+)
+
+
+class ScopeIndexWarmWorker(QObject):
+    ready = pyqtSignal(object, object)
+    error = pyqtSignal(str)
+
+    @pyqtSlot(object, object)
+    def build(self, ra_all, dec_all):
+        try:
+            from TerraLab.render.stars_renderer import build_scope_spatial_index_payload
+
+            sorted_indices, offsets = build_scope_spatial_index_payload(ra_all, dec_all)
+            self.ready.emit(sorted_indices, offsets)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class AstroCanvas(QWidget):
+    request_render_signal = pyqtSignal(dict)
+    request_trails_signal = pyqtSignal(dict)
+    
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.parent_widget = parent
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background-color: #000000;")
+        self._reported_first_useful_paint = False
+        self.setMinimumSize(800, 600)
+        self.azimuth_offset = 0    
+        self.elevation_angle = 40  # Default to Horizon 
+        self.vertical_offset_ratio = 0.3 # Default to Shift Down
+        self.zoom_level = 1.0     
+        self.base_fov_deg = 93.9  # zoom=1.0 => ~17mm equiv (sensor 36mm)
+        self.camera = Camera(
+            azimuth_offset=self.azimuth_offset,
+            elevation_angle=self.elevation_angle,
+            zoom_level=self.zoom_level,
+            vertical_offset_ratio=self.vertical_offset_ratio,
+        )
+        self.sky_renderer = SkyRenderer()
+        self.scene_diagnostics = Diagnostics()
+        self.debug_render_metrics = bool(get_config_value("debug_render_metrics", False))
+        self._last_diagnostics_log_time = 0.0
+        self.dragging = False
+        self.last_mouse_x = 0
+        self.last_mouse_y = 0
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setMouseTracking(True)
+        self.visible_stars = []
+        self.visible_stars_sx = np.array([], dtype=np.float32) if np is not None else []
+        self.visible_stars_sy = np.array([], dtype=np.float32) if np is not None else []
+        self.visible_sky_objects = []
+        self.press_pos = QPointF(0,0)
+        self._drawing_ctrl_pan_started = False
+        self._drawing_ctrl_click_pending = False
+        self._scope_camera_pan_started = False
+        self._scope_camera_click_pending = False
+        self._suppress_constellation_release_click = False
+        self.trail_start_hour = None
+        self.ut_hour = 12.0
+        self.selected_target = None
+        self.scope_camera_lock_to_target = True
+        self.scope_reticle_lock_to_target = True
+        
+        # Illusion Parameters
+        self.illusion_enabled = True
+        self.horizon_refs = 0.5
+        self.dome_flattening = 0.5
+        self.trained_observer = False
+        self.atmospheric_context = 0.5
+        self.eclipse_lock_mode = True
+        
+        # Weather System
+        self.weather = WeatherSystem(
+            self.width(),
+            self.height(),
+            latitude=float(getattr(parent, "latitude", 0.0)),
+            longitude=float(getattr(parent, "longitude", 0.0)),
+            use_remote_weather=bool(getattr(parent, "weather_use_remote_metno", True)),
+            cache_enabled=bool(getattr(parent, "weather_cache_enabled", True)),
+        )
+        
+        # Horizon Overlay (terrain/mountains â€” independent from village)
+        self.horizon_overlay = HorizonOverlay(horizon_profile_path=None, allow_procedural_fallback=False)
+        self.horizon_overlay.request_update.connect(self.update)
+        
+        # Village Overlay (houses, trees, lanterns â€” on top of terrain)
+        self.village = VillageOverlay()
+        self.village.request_update.connect(self.update)
+
+        # HintOverlay â€” toast HUD contextual per a zoom, temps i ubicaciÃ³
+        from TerraLab.widgets.hint_overlay import HintOverlay as _HintOverlay
+        self.hint_overlay = _HintOverlay(parent=self)
+
+        # Threading for Stars
+        self._cached_star_image = None
+        self._cached_trail_image = None
+        self._thread = QThread()
+        self._worker = StarRenderWorker()
+        self._worker.moveToThread(self._thread)
+        self._worker.result_ready.connect(self._on_star_result)
+        self._worker.trails_ready.connect(self._on_trail_result)
+        self.request_render_signal.connect(self._worker.render)
+        self.request_trails_signal.connect(self._worker.render_trails)
+        self._thread.start()
+        
+        self.rendering_busy = False
+        self.trail_rendering_busy = False
+        
+        # Info Label for Selection
+        self.lbl_info = QLabel("INFO", self)
+        
+        # Human Eye Reset Button
+        # Human Eye Reset Button
+        # Human Eye Reset Button
+        from PyQt5.QtWidgets import QPushButton
+        self.btn_human_eye = QPushButton("\U0001F441", self)
+        self.btn_human_eye.setFixedSize(45, 24)
+        self.btn_human_eye.setCursor(Qt.PointingHandCursor)
+        self.btn_human_eye.setToolTip("Zoom Natural (17mm)")
+        self.btn_human_eye.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 100);
+                color: white;
+                border: 1px solid rgba(255, 255, 255, 100);
+                border-radius: 12px;
+                font-size: 11px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(255, 255, 255, 50);
+            }
+        """)
+
+        self.btn_human_eye.clicked.connect(self.reset_zoom_human)
+        self.btn_human_eye.hide()
+
+        self.lbl_info.setStyleSheet("color: lime; font-size: 10px; background: rgba(0,0,0,100);")
+        self.lbl_info.move(10, 50)
+        self.lbl_info.hide()
+        
+        # Skyfield Cache
+        self._sf_cache = {'time': -1, 'data': None}
+        self._eclipse_cache = {'time': -1, 'value': 1.0}
+        self._moon_pos_cache = {}  # Cache for moon calculations
+        self._last_skyfield_update = 0  # timestamp in ms
+        # Scope solar procedural cache (normalized features, stable across zoom).
+        self._scope_solar_pattern_key = None
+        self._scope_solar_pattern = None
+
+        # Telescope scope mode and spherical measurement overlays.
+        self.scope_controller = TelescopeScopeController()
+        self.measurement_controller = MeasurementController()
+        self.constellation_controller = ConstellationDrawingController(
+            str(constellations_path())
+        )
+        self._constellation_rename_editor = None
+        self._constellation_rename_group_index = None
+
+        # Continuous key movement for scope mode.
+        self._scope_pressed_keys = set()
+        self._scope_last_tick_ms = int(time.time() * 1000)
+        self._scope_move_timer = QTimer(self)
+        self._scope_move_timer.setTimerType(Qt.PreciseTimer)
+        self._scope_move_timer.setInterval(16)  # ~60Hz
+        self._scope_move_timer.timeout.connect(self._scope_move_tick)
+
+        # Pulse repaint for selected-star marker in normal mode.
+        self._selection_pulse_timer = QTimer(self)
+        self._selection_pulse_timer.setTimerType(Qt.PreciseTimer)
+        self._selection_pulse_timer.setInterval(16)
+        self._selection_pulse_timer.timeout.connect(self._selection_pulse_tick)
+
+    def _parent_checkbox_checked(self, attr_name: str, default: bool = False) -> bool:
+        widget = getattr(self.parent_widget, attr_name, None)
+        if widget is None:
+            return bool(default)
+        try:
+            return bool(widget.isChecked())
+        except Exception:
+            return bool(default)
+
+    def reset_zoom_human(self):
+        """Reset zoom to human eye equivalent (43mm)."""
+        # Based on research article (Fotoruanopro): 43mm is the true normal.
+        f_human = 43.0
+        width_sensor = 36.0
+        
+        # Calculate horizontal FOV for 36mm sensor and 43mm lens
+        # FOV_horiz = 2 * atan(36 / (2 * 43))
+        fov_rad = 2.0 * math.atan(width_sensor / (2.0 * f_human))
+        fov_deg = math.degrees(fov_rad)
+        
+        # Logic: current_fov = base_fov / zoom
+        # zoom = base_fov / target_fov
+        if fov_deg > 0:
+            target_zoom = 100.0 / fov_deg
+            self.zoom_level = target_zoom
+            self.update()
+
+    def update_skyfield_cache(self, ut_hour, day_of_year):
+        # Throttle updates (cache for 1.5 seconds approx = 0.0004 hours)
+        # Also include day/lat/lon/zoom in validity check basically handled by loose time check? 
+        # No, zoom affects visual radius, so we must separate Astrometric Data vs Screen Data.
+        # Here we cache ASTROMETRIC data (Alt, Az, Mag, Dist, Phase).
+        # Screen projection happens every frame.
+        
+        cache_valid = False
+        last_t = self._sf_cache.get('time', -1.0)
+        
+        # Validate cache key (Day + Hour)
+        # Assuming Lat/Lon doesn't change rapidly.
+        if abs(ut_hour - last_t) < 0.0004 and self._sf_cache['data'] is not None:
+            cache_valid = True
+            
+        if cache_valid: return
+
+        # Regenerate Cache
+        if not SKYFIELD_AVAILABLE or not hasattr(self.parent_widget, 'eph'):
+            self._sf_cache['data'] = None
+            return
+
+        try:
+            ts = self.parent_widget.ts
+            eph = self.parent_widget.eph
+            observer = wgs84.latlon(self.parent_widget.latitude, self.parent_widget.longitude)
+            
+            now = datetime.now()
+            y = getattr(self.parent_widget, 'manual_year', now.year)
+            base_date = datetime(y, 1, 1) + timedelta(days=day_of_year)
+            target_dt = base_date + timedelta(hours=ut_hour)
+            t = ts.from_datetime(target_dt.replace(tzinfo=timezone.utc))
+            
+            earth = eph['earth']
+            sun = eph['sun']
+            moon = eph['moon']
+            obs_loc = earth + observer
+            
+            # Sun
+            ast_sun = obs_loc.at(t).observe(sun)
+            alt_s, az_s, _ = ast_sun.apparent().altaz()
+            d_sun_km = ast_sun.distance().km
+            
+            # Moon
+            ast_moon = obs_loc.at(t).observe(moon)
+            alt_m_real, az_m_real, _ = ast_moon.apparent().altaz()
+            d_moon_km = ast_moon.distance().km
+            sep_real = ast_sun.separation_from(ast_moon).degrees
+            
+            # Phase / Illumination
+            s_earth = earth.at(t).observe(sun)
+            m_earth = earth.at(t).observe(moon)
+            elongation = s_earth.separation_from(m_earth).degrees
+            illumination = (1 - math.cos(math.radians(elongation))) / 2
+
+            # Planets
+            planets_data = []
+            planet_defs = {
+                'mercury': ('Mercury', QColor(169, 169, 169), 4),
+                'venus': ('Venus', QColor(255, 220, 150), 7),
+                'mars': ('Mars', QColor(255, 100, 80), 5),
+                'jupiter barycenter': ('Jupiter', QColor(220, 180, 140), 12),
+                'saturn barycenter': ('Saturn', QColor(240, 210, 150), 10),
+                'uranus barycenter': ('Uranus', QColor(173, 216, 230), 6),
+                'neptune barycenter': ('Neptune', QColor(100, 100, 255), 6),
+                'pluto barycenter': ('Pluto', QColor(200, 180, 160), 3),
+            }
+            
+            for key, (name, col, sz) in planet_defs.items():
+                try:
+                    p = eph[key]
+                    ast = obs_loc.at(t).observe(p)
+                    p_alt, p_az, p_dist = ast.apparent().altaz()
+                    # No optimization skip: allow rendering planets even when viewing below horizon
+                    try:
+                        mag = self.calculate_planet_magnitude(name, p_dist.au, 0.0)
+                    except:
+                        mag = -2.0 # Fallback
+                        
+                    planets_data.append({
+                        'key': key, 'name': name, 'col': col, 'sz': sz,
+                        'alt': p_alt.degrees, 'az': p_az.degrees, 'dist_au': p_dist.au,
+                        'mag': mag
+                    })
+                except: pass
+
+            # Eclipse Factor
+            sun_rad_deg = math.degrees(math.atan(696340.0 / d_sun_km))
+            moon_rad_deg = math.degrees(math.atan(1737.4 / d_moon_km))
+            
+            # Simple Separation Factor for dimming
+            eclipse_factor = 1.0
+            if sep_real < (sun_rad_deg + moon_rad_deg):
+                 # Simple linear overlap approximation
+                 dist_deg = sep_real
+                 max_overlap = sun_rad_deg + moon_rad_deg
+                 if dist_deg < max_overlap:
+                     penetration = (max_overlap - dist_deg) / (sun_rad_deg * 2)
+                     eclipse_factor = max(0.05, 1.0 - penetration)
+
+            cache_data = {
+                'sun': {'alt': alt_s.degrees, 'az': az_s.degrees, 'dist_km': d_sun_km, 'rad_deg': sun_rad_deg},
+                'moon': {
+                    'alt': alt_m_real.degrees, 'az': az_m_real.degrees, 
+                    'dist_km': d_moon_km, 'rad_deg': moon_rad_deg, 
+                    'sep_real': sep_real, 'illumination': illumination, 'elongation': elongation
+                },
+                'planets': planets_data,
+                'eclipse_factor': eclipse_factor
+            }
+            
+            self._sf_cache = {'time': ut_hour, 'data': cache_data}
+            
+        except Exception as e:
+            # print(f"Cache Update Error: {e}")
+            self._sf_cache['data'] = None
+
+    def unproject_stereo(self, sx, sy):
+        # Inverse of Universal Stereographic (Horizon Centered)
+        w, h = self.width(), self.height()
+        scale_h = h / 2.0 * self.zoom_level
+        
+        cx = w/2.0
+        cy_base = h/2.0 + (h * self.vertical_offset_ratio)
+        
+        # View Shift
+        elev_rad = math.radians(self.elevation_angle)
+        y_center_val = 2.0 * math.tan(elev_rad / 2.0)
+        
+        # 1. Un-scale and Un-shift
+        x = (sx - cx) / scale_h
+        y = -((sy - cy_base) / scale_h) + y_center_val
+        
+        # 2. Inverse Stereo (Centered at Lat=0, Lon=0)
+        # x = 2*cos(lat)*sin(lon) / (1 + cos(lat)*cos(lon))
+        # y = 2*sin(lat)          / (1 + cos(lat)*cos(lon))
+        # Let's use robust inversion:
+        # rho = sqrt(x^2 + y^2)
+        # c = 2 * atan(rho / 2)
+        # sin_c = sin(c), cos_c = cos(c)
+        # lat = asin(cos_c * sin(lat_0) + (y*sin_c*cos(lat_0)/rho))
+        # lon = lon_0 + atan2(x*sin_c, rho*cos(lat_0)*cos_c - y*sin(lat_0)*sin_c)
+        # Here lat_0 = 0, lon_0 = 0
+        
+        rho = math.sqrt(x*x + y*y)
+        if rho < 1e-6:
+             # Center
+             return 0.0, self.azimuth_offset
+             
+        c = 2.0 * math.atan(rho / 2.0)
+        sin_c = math.sin(c)
+        cos_c = math.cos(c)
+        
+        # lat_0 = 0
+        # sin(lat_0) = 0, cos(lat_0) = 1
+        
+        lat_rad = math.asin(y * sin_c / rho)
+        lon_rad = math.atan2(x * sin_c, rho * cos_c)
+        
+        lat = math.degrees(lat_rad)
+        lon = math.degrees(lon_rad)
+        
+        # Absolute Azimuth
+        az = self.azimuth_offset + lon
+        
+        return lat, az
+        
+
+
+        # Village Overlay
+        self.village = VillageOverlay(self)
+        self.village.request_update.connect(self.update)
+        
+        # Camera Animation
+        self.target_azimuth = None
+        self.azimuth_anim_timer = QTimer(self)
+        self.azimuth_anim_timer.setInterval(16)
+        self.azimuth_anim_timer.timeout.connect(self._anim_azimuth_step)
+
+
+
+
+
+    def _anim_azimuth_step(self):
+        if self.target_azimuth is None:
+            self.azimuth_anim_timer.stop()
+            return
+            
+        current = self.azimuth_offset
+        target = self.target_azimuth
+        
+        # Shortest path logic
+        diff = (target - current + 180) % 360 - 180
+        
+        if abs(diff) < 0.1:
+            self.azimuth_offset = target
+            self.target_azimuth = None
+            self.azimuth_anim_timer.stop()
+        else:
+            # Easing
+            step = diff * 0.1
+            self.azimuth_offset = (current + step)
+            
+        self.update()
+
+    def resizeEvent(self, event):
+        self._bg_cache_key = None
+        self.weather.resize(self.width(), self.height())
+        super().resizeEvent(event)
+
+    def scope_mode_enabled(self) -> bool:
+        return bool(getattr(self.scope_controller, "enabled", False))
+
+    def measurement_tool_active(self) -> bool:
+        return getattr(self.measurement_controller, "active_tool", TOOL_NONE) != TOOL_NONE
+
+    def drawing_mode_enabled(self) -> bool:
+        return bool(getattr(self.constellation_controller, "enabled", False))
+
+    def constellation_visible(self) -> bool:
+        return bool(getattr(self.constellation_controller, "visible", True))
+
+    def set_scope_enabled(self, enabled: bool) -> None:
+        self.finish_inline_constellation_rename(apply=True)
+        if enabled:
+            if getattr(self.scope_controller, "center", None) is None:
+                # Prevent "empty sky" on activation: scope starts centered on current camera.
+                self.scope_controller.set_center((float(self.elevation_angle), float(self.azimuth_offset)))
+            self.scope_controller.activate()
+            if hasattr(self, "hint_overlay"):
+                self.hint_overlay.hide()
+        else:
+            self.scope_controller.deactivate()
+            self._scope_pressed_keys.clear()
+            self._scope_move_timer.stop()
+        self._refresh_overlay_cursor()
+        self._update_selection_pulse_timer()
+        self.update()
+
+    def set_scope_shape(self, shape: str) -> None:
+        self.scope_controller.set_shape(shape)
+        self.update()
+
+    def set_scope_speed_mode(self, mode: str) -> None:
+        self.scope_controller.set_speed_mode(mode)
+        self.update()
+
+    def set_scope_focal_mm(self, focal_mm: float) -> None:
+        self.scope_controller.set_focal_mm(focal_mm)
+        self.update()
+
+    def set_scope_sensor(self, sensor_key: str) -> None:
+        self.scope_controller.set_sensor_key(sensor_key)
+        self.update()
+
+    def set_scope_aspect_ratio(self, ratio):
+        self.scope_controller.set_aspect_ratio(ratio)
+        self.update()
+
+    def set_measurement_tool(self, tool: str) -> None:
+        self.finish_inline_constellation_rename(apply=True)
+        self.measurement_controller.set_tool(tool)
+        self._refresh_overlay_cursor()
+        self.update()
+
+    def set_constellation_draw_mode(self, enabled: bool) -> None:
+        self.finish_inline_constellation_rename(apply=True)
+        if bool(enabled) and (not self.constellation_visible()):
+            self.constellation_controller.set_visible(True)
+        self.constellation_controller.set_enabled(bool(enabled))
+        # Eraser mode is deprecated in UI; keep it hard-disabled to avoid stale runtime states.
+        self.constellation_controller.set_eraser_mode(False)
+        self._refresh_overlay_cursor()
+        self.update()
+
+    def set_constellation_visible(self, visible: bool) -> None:
+        self.finish_inline_constellation_rename(apply=True)
+        self.constellation_controller.set_visible(bool(visible))
+        if not bool(visible):
+            self.constellation_controller.set_enabled(False)
+            self.constellation_controller.set_eraser_mode(False)
+        self._refresh_overlay_cursor()
+        self.update()
+
+    def set_constellation_eraser_mode(self, enabled: bool) -> None:
+        self.constellation_controller.set_eraser_mode(bool(enabled))
+        self.update()
+
+    def create_constellation_group(self, name: Optional[str] = None) -> None:
+        self.constellation_controller.create_group(name=name)
+        self.update()
+
+    def rename_active_constellation(self, name: str) -> bool:
+        ok = self.constellation_controller.rename_active(name)
+        if ok:
+            self.update()
+        return ok
+
+    def begin_inline_constellation_rename(self, group_index: Optional[int] = None, label_rect: Optional[QRectF] = None) -> bool:
+        ctrl = self.constellation_controller
+        gi = ctrl.active_group_index if group_index is None else int(group_index)
+        if gi is None or not (0 <= int(gi) < len(ctrl.groups)):
+            return False
+        gi = int(gi)
+
+        self.finish_inline_constellation_rename(apply=True)
+
+        if label_rect is None:
+            label_rect = ctrl.get_label_rect(gi)
+        if label_rect is not None:
+            rect = QRectF(label_rect)
+            box_w = max(120, int(rect.width() + 12.0))
+            box_h = max(24, int(rect.height()))
+            x = int(round(rect.left() - 6.0))
+            y = int(round(rect.top()))
+        else:
+            box_w = 180
+            box_h = 24
+            x = int((self.width() - box_w) * 0.5)
+            y = max(22, int(self.height() - 120))
+
+        x = max(4, min(max(4, self.width() - box_w - 4), x))
+        y = max(4, min(max(4, self.height() - box_h - 4), y))
+
+        editor = QLineEdit(self)
+        editor.setGeometry(x, y, box_w, box_h)
+        editor.setText(str(ctrl.groups[gi].name))
+        editor.selectAll()
+        editor.setFocus(Qt.MouseFocusReason)
+        editor.setStyleSheet(
+            "QLineEdit {"
+            "background: rgba(10, 14, 28, 230);"
+            "color: #f5faff;"
+            "border: 1px solid rgba(140, 205, 255, 220);"
+            "border-radius: 5px;"
+            "padding: 2px 6px;"
+            "}"
+        )
+        editor.installEventFilter(self)
+        editor.returnPressed.connect(lambda: self.finish_inline_constellation_rename(apply=True))
+        editor.editingFinished.connect(lambda: self.finish_inline_constellation_rename(apply=True))
+        editor.show()
+
+        self._constellation_rename_editor = editor
+        self._constellation_rename_group_index = gi
+        return True
+
+    def finish_inline_constellation_rename(self, apply: bool = True) -> bool:
+        editor = self._constellation_rename_editor
+        gi = self._constellation_rename_group_index
+        if editor is None:
+            return False
+
+        self._constellation_rename_editor = None
+        self._constellation_rename_group_index = None
+
+        text = str(editor.text() or "").strip()
+        try:
+            editor.removeEventFilter(self)
+        except Exception:
+            pass
+        editor.hide()
+        editor.deleteLater()
+
+        renamed = False
+        if apply and text and gi is not None:
+            ctrl = self.constellation_controller
+            if 0 <= int(gi) < len(ctrl.groups):
+                ctrl.active_group_index = int(gi)
+                ctrl.selected_group_index = int(gi)
+                ctrl.selected_node_index = None
+                ctrl.selected_segment_index = None
+                renamed = bool(self.rename_active_constellation(text))
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+
+        self.setFocus(Qt.MouseFocusReason)
+        self.update()
+        return renamed
+
+    def eventFilter(self, obj, event):
+        if obj is self._constellation_rename_editor:
+            if event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape:
+                self.finish_inline_constellation_rename(apply=False)
+                return True
+            if event.type() == QEvent.FocusOut:
+                self.finish_inline_constellation_rename(apply=True)
+                return True
+        return super().eventFilter(obj, event)
+
+    def clear_measurements(self) -> None:
+        self.measurement_controller.clear()
+        self._refresh_overlay_cursor()
+        self.update()
+
+    def _refresh_overlay_cursor(self):
+        if self.scope_mode_enabled() or self.measurement_tool_active() or self.drawing_mode_enabled():
+            self.setCursor(Qt.CrossCursor)
+        else:
+            self.unsetCursor()
+
+    def _scope_move_tick(self):
+        if not self.scope_mode_enabled() or not self._scope_pressed_keys:
+            self._scope_move_timer.stop()
+            return
+        now_ms = int(time.time() * 1000)
+        dt = max(0.001, (now_ms - self._scope_last_tick_ms) / 1000.0)
+        self._scope_last_tick_ms = now_ms
+
+        rate = self.scope_controller.hold_rate_deg_per_s()
+        step = rate * dt
+        d_alt = 0.0
+        d_az = 0.0
+
+        if Qt.Key_Up in self._scope_pressed_keys:
+            d_alt += step
+        if Qt.Key_Down in self._scope_pressed_keys:
+            d_alt -= step
+        if Qt.Key_Left in self._scope_pressed_keys:
+            d_az += step
+        if Qt.Key_Right in self._scope_pressed_keys:
+            d_az -= step
+
+        if d_alt != 0.0 or d_az != 0.0:
+            self.scope_controller.nudge(d_alt, d_az)
+            self.update()
+
+    def _scope_secondary_drag_deg_per_px(self) -> float:
+        # Secondary camera drag sensitivity in scope mode follows scope speed mode.
+        if self.scope_controller.speed_mode == TelescopeScopeController.SPEED_SLOW:
+            return 0.5 / 60.0
+        return 0.5
+
+    def _scope_reticle_drag_active(self) -> bool:
+        return bool(
+            self.scope_mode_enabled()
+            and hasattr(self, "scope_controller")
+            and bool(getattr(self.scope_controller, "dragging", False))
+        )
+
+    def _camera_interaction_active(self, include_time_drag: bool = True, include_animation: bool = False) -> bool:
+        # Scope-reticle drag is an overlay interaction; it must not trigger camera/star LOD degradation.
+        dragging_time = bool(getattr(self.parent_widget, "_dragging_time", False)) if include_time_drag else False
+        anim_active = bool(hasattr(self, "anim_timer") and self.anim_timer.isActive()) if include_animation else False
+        return bool((self.dragging or dragging_time or anim_active) and (not self._scope_reticle_drag_active()))
+
+    def _selection_pulse_tick(self):
+        if self.selected_target is None or self.scope_mode_enabled():
+            if self._selection_pulse_timer.isActive():
+                self._selection_pulse_timer.stop()
+            return
+        self.update()
+
+    def _update_selection_pulse_timer(self):
+        should_run = (self.selected_target is not None) and (not self.scope_mode_enabled())
+        if should_run and (not self._selection_pulse_timer.isActive()):
+            self._selection_pulse_timer.start()
+        elif (not should_run) and self._selection_pulse_timer.isActive():
+            self._selection_pulse_timer.stop()
+
+    def _normalize_planet_key(self, value):
+        return str(value or "").strip().lower().replace(" ", "_")
+
+    def _extract_star_coords(self, star_obj):
+        if not isinstance(star_obj, dict):
+            return None
+        try:
+            ra = float(star_obj.get("ra"))
+            dec = float(star_obj.get("dec"))
+            if math.isnan(ra) or math.isnan(dec):
+                return None
+            return ra, dec
+        except Exception:
+            return None
+
+    def _resolve_star_by_index(self, idx):
+        try:
+            i = int(idx)
+        except Exception:
+            return None
+        cel_objs = getattr(self.parent_widget, "celestial_objects", [])
+        if 0 <= i < len(cel_objs):
+            return cel_objs[i]
+        pw = self.parent_widget
+        if np is not None and hasattr(pw, "np_ra") and hasattr(pw, "np_dec") and hasattr(pw, "np_mag"):
+            try:
+                if 0 <= i < len(pw.np_ra):
+                    return {
+                        "id": str(i),
+                        "name": "",
+                        "ra": float(pw.np_ra[i]),
+                        "dec": float(pw.np_dec[i]),
+                        "mag": float(pw.np_mag[i]),
+                        "bp_rp": 0.8,
+                    }
+            except Exception:
+                return None
+        return None
+
+    def _register_visible_sky_object(self, obj_type, key, name, alt, az, sx, sy, radius_px=0.0, mag=None):
+        try:
+            entry = {
+                "type": str(obj_type or "").lower(),
+                "key": str(key or "").lower(),
+                "name": str(name or ""),
+                "alt": float(alt),
+                "az": float(az) % 360.0,
+                "sx": float(sx),
+                "sy": float(sy),
+                "radius_px": max(0.0, float(radius_px)),
+            }
+            if mag is not None:
+                entry["mag"] = float(mag)
+            self.visible_sky_objects.append(entry)
+        except Exception:
+            pass
+
+    def _lookup_visible_sky_object(self, target):
+        if not isinstance(target, dict) or target.get("kind") != "sky":
+            return None
+        t = str(target.get("type", "")).lower()
+        k = str(target.get("key", "")).lower()
+        best = None
+        for item in getattr(self, "visible_sky_objects", []):
+            if str(item.get("type", "")).lower() != t:
+                continue
+            if t == "planet" and k and str(item.get("key", "")).lower() != k:
+                continue
+            best = item
+            break
+        return best
+
+    def _pick_sky_object_at(self, sx: float, sy: float, click_radius: float = 20.0):
+        x = float(sx)
+        y = float(sy)
+        best = None
+        best_score = float("inf")
+        for item in getattr(self, "visible_sky_objects", []):
+            dx = float(item.get("sx", 0.0)) - x
+            dy = float(item.get("sy", 0.0)) - y
+            d = math.hypot(dx, dy)
+            rr = max(float(click_radius), float(item.get("radius_px", 0.0)) + 5.0)
+            if d > rr:
+                continue
+            score = d / max(1.0, rr)
+            if score < best_score:
+                best = item
+                best_score = score
+
+        if best is None:
+            return None
+
+        obj_type = str(best.get("type", "")).lower()
+        if obj_type in ("sun", "moon"):
+            return {
+                "kind": "sky",
+                "type": obj_type,
+                "key": obj_type,
+                "name": best.get("name", obj_type.title()),
+                "alt": best.get("alt"),
+                "az": best.get("az"),
+            }
+
+        if obj_type == "planet":
+            pkey = self._normalize_planet_key(best.get("key"))
+            if not pkey:
+                pkey = self._normalize_planet_key(best.get("name"))
+            return {
+                "kind": "sky",
+                "type": "planet",
+                "key": pkey,
+                "name": best.get("name", pkey),
+                "alt": best.get("alt"),
+                "az": best.get("az"),
+            }
+        return None
+
+    def _pick_star_at(self, sx: float, sy: float, click_radius: float = 20.0):
+        best_star = None
+        best_dist = float(click_radius)
+        x = float(sx)
+        y = float(sy)
+
+        # Fast path: numpy screen buffers (main thread renderer).
+        try:
+            if np is not None and hasattr(self, "visible_stars_sx") and hasattr(self, "visible_stars_sy"):
+                sx_arr = self.visible_stars_sx
+                sy_arr = self.visible_stars_sy
+                if len(sx_arr) > 0 and len(sy_arr) > 0 and len(getattr(self, "visible_stars", [])) > 0:
+                    dists = np.hypot(sx_arr - x, sy_arr - y)
+                    if len(dists) > 0:
+                        i = int(np.argmin(dists))
+                        d = float(dists[i])
+                        if d <= best_dist:
+                            star = self._resolve_star_by_index(self.visible_stars[i])
+                            if star is not None:
+                                best_star = star
+                                best_dist = d
+        except Exception:
+            pass
+
+        # Worker path: list of tuples (sx, sy, star_obj)
+        vis = getattr(self, "visible_stars", None)
+        if isinstance(vis, list) and vis and isinstance(vis[0], tuple):
+            for item in vis:
+                if len(item) < 3:
+                    continue
+                try:
+                    sx_i = float(item[0])
+                    sy_i = float(item[1])
+                except Exception:
+                    continue
+                d = math.hypot(sx_i - x, sy_i - y)
+                if d > best_dist:
+                    continue
+                star = item[2]
+                if self._extract_star_coords(star) is None:
+                    continue
+                best_star = star
+                best_dist = d
+
+        return best_star
+
+    def _pick_target_at(self, sx: float, sy: float):
+        sky_target = self._pick_sky_object_at(sx, sy)
+        if sky_target is not None:
+            return sky_target
+        star = self._pick_star_at(sx, sy)
+        if star is not None:
+            return {"kind": "star", "star": star}
+        return None
+
+    def _visible_star_count_raw(self) -> int:
+        vis = getattr(self, "visible_stars", None)
+        if vis is None:
+            return 0
+        try:
+            return int(len(vis))
+        except Exception:
+            return 0
+
+    def _scope_hud_star_count(self) -> int:
+        """
+        Count stars visible inside the scope aperture only.
+        This is used for HUD display while scope mode is active.
+        """
+        if not self.scope_mode_enabled() or not hasattr(self, "scope_controller"):
+            return self._visible_star_count_raw()
+
+        ctrl = self.scope_controller
+        if (not getattr(ctrl, "enabled", False)) or getattr(ctrl, "center", None) is None or getattr(ctrl, "awaiting_center_click", False):
+            return self._visible_star_count_raw()
+
+        try:
+            boundary_sky = ctrl._boundary_points()
+            boundary_screen = ctrl._project_valid(boundary_sky, self.project_universal_stereo)
+        except Exception:
+            return self._visible_star_count_raw()
+
+        if not boundary_screen or len(boundary_screen) < 8:
+            return self._visible_star_count_raw()
+
+        hole = QPainterPath()
+        hole.moveTo(boundary_screen[0])
+        for p in boundary_screen[1:]:
+            hole.lineTo(p)
+        hole.closeSubpath()
+        rect = hole.boundingRect()
+
+        count = 0
+
+        # Fast path: numpy screen buffers.
+        try:
+            if np is not None and hasattr(self, "visible_stars_sx") and hasattr(self, "visible_stars_sy"):
+                sx_arr = np.asarray(self.visible_stars_sx)
+                sy_arr = np.asarray(self.visible_stars_sy)
+                if sx_arr.size > 0 and sy_arr.size > 0:
+                    mask = (
+                        (sx_arr >= rect.left())
+                        & (sx_arr <= rect.right())
+                        & (sy_arr >= rect.top())
+                        & (sy_arr <= rect.bottom())
+                    )
+                    idx = np.where(mask)[0]
+                    for i in idx:
+                        if hole.contains(QPointF(float(sx_arr[i]), float(sy_arr[i]))):
+                            count += 1
+                    return int(count)
+        except Exception:
+            pass
+
+        # Worker fallback: list of tuples (sx, sy, star_obj)
+        vis = getattr(self, "visible_stars", None)
+        if isinstance(vis, list) and vis and isinstance(vis[0], tuple):
+            for item in vis:
+                if len(item) < 2:
+                    continue
+                try:
+                    sx_i = float(item[0])
+                    sy_i = float(item[1])
+                except Exception:
+                    continue
+                if sx_i < rect.left() or sx_i > rect.right() or sy_i < rect.top() or sy_i > rect.bottom():
+                    continue
+                if hole.contains(QPointF(sx_i, sy_i)):
+                    count += 1
+            return int(count)
+
+        return self._visible_star_count_raw()
+
+    def _scope_contains_alt_az_mask(self, alt_deg_arr, az_deg_arr):
+        if not self.scope_mode_enabled() or not hasattr(self, "scope_controller") or np is None:
+            return None
+
+        ctrl = self.scope_controller
+        if (
+            (not getattr(ctrl, "enabled", False))
+            or getattr(ctrl, "center", None) is None
+            or getattr(ctrl, "awaiting_center_click", False)
+        ):
+            return None
+
+        try:
+            center_alt = float(ctrl.center[0])
+            center_az = float(ctrl.center[1]) % 360.0
+            fov_w, fov_h = ctrl.current_fov()
+        except Exception:
+            return None
+
+        alt = np.asarray(alt_deg_arr, dtype=np.float32)
+        az = np.asarray(az_deg_arr, dtype=np.float32) % 360.0
+
+        if getattr(ctrl, "shape", TelescopeScopeController.SHAPE_CIRCLE) == TelescopeScopeController.SHAPE_RECT:
+            half_h = 0.5 * float(fov_h)
+            half_w = 0.5 * float(fov_w)
+            cos_lat = max(0.05, math.cos(math.radians(center_alt)))
+            daz_lim = half_w / cos_lat
+            d_az = ((az - center_az + 180.0) % 360.0) - 180.0
+            return (np.abs(alt - center_alt) <= half_h) & (np.abs(d_az) <= daz_lim)
+
+        radius_deg = 0.5 * min(float(fov_w), float(fov_h))
+        c_alt = math.radians(center_alt)
+        sin_c = math.sin(c_alt)
+        cos_c = math.cos(c_alt)
+        alt_r = np.radians(alt)
+        d_az_r = np.radians(((az - center_az + 180.0) % 360.0) - 180.0)
+        cos_dist = np.sin(alt_r) * sin_c + np.cos(alt_r) * cos_c * np.cos(d_az_r)
+        cos_dist = np.clip(cos_dist, -1.0, 1.0)
+        return cos_dist >= math.cos(math.radians(radius_deg))
+
+    def _current_ut_context(self):
+        local_hour = float(self.parent_widget.get_current_hour())
+        sim_y = int(getattr(self.parent_widget, "manual_year", datetime.now().year))
+        sim_d = int(getattr(self.parent_widget, "manual_day", 0))
+        try:
+            dt_base = datetime(sim_y, 1, 1) + timedelta(days=sim_d)
+            dt_local_naive = dt_base + timedelta(hours=local_hour)
+            dt_local = dt_local_naive.astimezone()
+            dt_utc = dt_local.astimezone(timezone.utc)
+        except Exception:
+            tz_offset = datetime.now().astimezone().utcoffset().total_seconds() / 3600.0
+            dt_utc = (datetime(sim_y, 1, 1) + timedelta(days=sim_d, hours=local_hour - tz_offset)).replace(tzinfo=timezone.utc)
+        ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
+        day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+        return ut_hour, day_of_year_utc
+
+    def _ensure_scope_mode_for_shortcut(self):
+        if self.scope_mode_enabled():
+            return
+        # Reuse the same activation entry point used by the scope panel.
+        if hasattr(self.parent_widget, "activate_scope_mode"):
+            self.parent_widget.activate_scope_mode()
+            return
+
+        # Fallback path for safety if parent widget helper is unavailable.
+        self.set_scope_enabled(True)
+        if hasattr(self.parent_widget, "sync_scope_ui_state"):
+            self.parent_widget.sync_scope_ui_state(True)
+        if self.measurement_tool_active():
+            self.set_measurement_tool(TOOL_NONE)
+            if hasattr(self.parent_widget, "_sync_measure_tool_buttons"):
+                self.parent_widget._sync_measure_tool_buttons(TOOL_NONE)
+
+    def _scope_jump_to_sky(self, sky):
+        if sky is None:
+            return False
+        alt, az = float(sky[0]), float(sky[1])
+        self.scope_controller.set_center((alt, az), confirmed=True)
+        self.azimuth_offset = az % 360.0
+        self.elevation_angle = max(-90.0, min(90.0, alt))
+
+        # Keep "zoom towards target" behavior: never zoom out.
+        fov_w, fov_h = self.scope_controller.current_fov()
+        target_fov = max(0.2, min(93.9, max(fov_w, fov_h)))
+        goto_zoom = max(0.5, min(140.0, 93.9 / target_fov))
+        self.zoom_level = max(float(self.zoom_level), goto_zoom)
+
+        self._cached_star_image = None
+        self._cached_trail_image = None
+        self.setFocus()
+        self.update()
+        return True
+
+    def _goto_target(self, target):
+        if target is None:
+            return
+        self._set_selected_target(target)
+        self.scope_camera_lock_to_target = True
+        ut_hour, day_of_year_utc = self._current_ut_context()
+        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc)
+        if sky is None:
+            return
+
+        # Goto is just a shortcut into the same scope-jump flow.
+        self._ensure_scope_mode_for_shortcut()
+        self._scope_jump_to_sky(sky)
+
+    def _show_object_context_menu(self, event):
+        target = self._pick_target_at(event.x(), event.y())
+        if target is None:
+            return False
+
+        menu = QMenu(self)
+        act_goto = menu.addAction(getTraduction("Astro.ContextGoto", "Goto"))
+        chosen = menu.exec_(event.globalPos())
+        if chosen == act_goto:
+            self._goto_target(target)
+            return True
+        return False
+
+    def _set_selected_target(self, target):
+        if target is None:
+            self.selected_target = None
+            self.lbl_info.hide()
+            self.scope_reticle_lock_to_target = False
+            self._update_selection_pulse_timer()
+            return
+
+        if isinstance(target, dict) and target.get("kind") == "star":
+            star_obj = target.get("star")
+            if self._extract_star_coords(star_obj) is None:
+                return
+            self.selected_target = {"kind": "star", "star": star_obj}
+            info = (f"ID: {star_obj.get('id', 'N/A')}\n"
+                    f"Mag: {star_obj.get('mag', 0.0):.2f}\n"
+                    f"RA: {star_obj.get('ra', 0.0):.2f}\n"
+                    f"Dec: {star_obj.get('dec', 0.0):.2f}\n"
+                    f"C: {star_obj.get('bp_rp', 0):.2f}")
+        elif isinstance(target, dict) and target.get("kind") == "sky":
+            kind = str(target.get("type", "")).lower()
+            if kind not in ("sun", "moon", "planet"):
+                return
+            self.selected_target = {
+                "kind": "sky",
+                "type": kind,
+                "key": str(target.get("key", kind)).lower(),
+                "name": str(target.get("name", kind.title())),
+                "alt": float(target.get("alt", 0.0)),
+                "az": float(target.get("az", 0.0)) % 360.0,
+            }
+            if kind == "planet":
+                name_txt = self.selected_target["name"]
+            elif kind == "sun":
+                name_txt = getTraduction("Astro.SunName", "Sun")
+            else:
+                name_txt = getTraduction("Astro.MoonName", "Moon")
+            info = (f"{name_txt}\n"
+                    f"Alt: {self.selected_target['alt']:.2f}\n"
+                    f"Az: {self.selected_target['az']:.2f}")
+        elif isinstance(target, dict) and target.get("kind") == "ngc":
+            obj = target.get("obj")
+            if obj is None:
+                return
+            self.selected_target = {
+                "kind": "ngc",
+                "obj": obj,
+                "info": target.get("info"),
+            }
+            display_name = getattr(obj, "common_name", None) or getattr(obj, "name", "NGC")
+            mag_text = getattr(obj, "effective_mag", None)
+            try:
+                mag_str = f"{float(mag_text):.2f}"
+            except Exception:
+                mag_str = "N/A"
+            info = (
+                f"{display_name}\n"
+                f"RA: {float(getattr(obj, 'ra_deg', 0.0)):.2f}\n"
+                f"Dec: {float(getattr(obj, 'dec_deg', 0.0)):.2f}\n"
+                f"Mag: {mag_str}"
+            )
+        else:
+            return
+
+        self.lbl_info.setText(info)
+        self.lbl_info.adjustSize()
+        self.lbl_info.move(self.width() - self.lbl_info.width() - 20, 20)
+        self.lbl_info.show()
+        self.lbl_info.raise_()
+        # New target selection restores camera lock unless user manually overrides with Ctrl+drag.
+        self.scope_camera_lock_to_target = True
+        self.scope_reticle_lock_to_target = True
+        self._update_selection_pulse_timer()
+
+    def _set_selected_star(self, star_obj):
+        # Backward-compatible wrapper.
+        if star_obj is None:
+            self._set_selected_target(None)
+        else:
+            self._set_selected_target({"kind": "star", "star": star_obj})
+
+    def _selected_target_sky_position(self, ut_hour: float, day_of_year_utc: int):
+        target = self.selected_target
+        if not isinstance(target, dict):
+            return None
+
+        if target.get("kind") == "star":
+            return self._star_alt_az(target.get("star"), ut_hour, day_of_year_utc)
+
+        if target.get("kind") == "ngc":
+            obj = target.get("obj")
+            if obj is None:
+                return None
+            try:
+                return self._ra_dec_to_alt_az(float(obj.ra_deg), float(obj.dec_deg), ut_hour, day_of_year_utc)
+            except Exception:
+                return None
+
+        if target.get("kind") != "sky":
+            return None
+
+        data = getattr(self, "_sf_cache", {}).get("data", None)
+        t = str(target.get("type", "")).lower()
+        if isinstance(data, dict):
+            if t == "sun":
+                s = data.get("sun", {})
+                if isinstance(s, dict) and ("alt" in s) and ("az" in s):
+                    return float(s["alt"]), float(s["az"]) % 360.0
+            elif t == "moon":
+                m = data.get("moon", {})
+                if isinstance(m, dict) and ("alt" in m) and ("az" in m):
+                    return float(m["alt"]), float(m["az"]) % 360.0
+            elif t == "planet":
+                want = self._normalize_planet_key(target.get("key", ""))
+                for p in data.get("planets", []):
+                    key = self._normalize_planet_key(p.get("key", ""))
+                    if key == want or self._normalize_planet_key(p.get("name", "")) == want:
+                        return float(p.get("alt", 0.0)), float(p.get("az", 0.0)) % 360.0
+
+        # Fallback to snapshot at click-time if cache is unavailable.
+        try:
+            return float(target.get("alt")), float(target.get("az")) % 360.0
+        except Exception:
+            return None
+
+    def _star_alt_az(self, star_obj, ut_hour: float, day_of_year_utc: int):
+        coords = self._extract_star_coords(star_obj)
+        if coords is None:
+            return None
+        ra, dec = coords
+        return self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc)
+
+    def _ra_dec_to_alt_az(self, ra_deg: float, dec_deg: float, ut_hour: float, day_of_year_utc: int):
+        lat_rad = math.radians(self.parent_widget.latitude)
+        lst = (100.0 + float(day_of_year_utc) * 0.9856 + float(ut_hour) * 15.0 + self.parent_widget.longitude) % 360.0
+        ha_rad = math.radians(lst - float(ra_deg))
+        dec_rad = math.radians(float(dec_deg))
+
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        sin_dec = math.sin(dec_rad)
+        cos_dec = math.cos(dec_rad)
+        sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * math.cos(ha_rad)
+        sin_alt = max(-1.0, min(1.0, sin_alt))
+        alt = math.degrees(math.asin(sin_alt))
+
+        cos_alt = math.cos(math.radians(alt))
+        if abs(cos_alt) < 1e-10:
+            az = self.azimuth_offset % 360.0
+        else:
+            cos_az = (sin_dec - sin_alt * sin_lat) / (cos_alt * cos_lat + 1e-10)
+            cos_az = max(-1.0, min(1.0, cos_az))
+            az = math.degrees(math.acos(cos_az))
+            if math.sin(ha_rad) > 0:
+                az = 360.0 - az
+        return alt, az % 360.0
+
+    def _get_current_utc_context(self):
+        local_hour = self.parent_widget.get_current_hour()
+        sim_y = int(self.parent_widget.manual_year)
+        sim_d = int(self.parent_widget.manual_day)
+        try:
+            dt_base = datetime(sim_y, 1, 1) + timedelta(days=sim_d)
+            dt_local = (dt_base + timedelta(hours=float(local_hour))).astimezone()
+            dt_utc = dt_local.astimezone(timezone.utc)
+        except Exception:
+            tz_offset = datetime.now().astimezone().utcoffset().total_seconds() / 3600.0
+            dt_utc = (datetime(sim_y, 1, 1) + timedelta(days=sim_d, hours=float(local_hour) - tz_offset)).replace(tzinfo=timezone.utc)
+        ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
+        day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+        return ut_hour, day_of_year_utc, int(dt_utc.year), dt_utc
+
+    def _screen_to_ra_dec(self, sx: float, sy: float):
+        sky = screen_to_sky(float(sx), float(sy), self.unproject_stereo)
+        if sky is None:
+            return None
+        ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+        return self._altaz_to_ra_dec(sky[0], sky[1], ut_hour, day_of_year_utc)
+
+    def _altaz_to_ra_dec(self, alt_deg: float, az_deg: float, ut_hour: float, day_of_year_utc: int):
+        lat = math.radians(self.parent_widget.latitude)
+        alt = math.radians(float(alt_deg))
+        az = math.radians(float(az_deg) % 360.0)
+
+        sin_lat = math.sin(lat)
+        cos_lat = math.cos(lat)
+        sin_alt = math.sin(alt)
+        cos_alt = math.cos(alt)
+
+        sin_dec = sin_alt * sin_lat + cos_alt * cos_lat * math.cos(az)
+        sin_dec = max(-1.0, min(1.0, sin_dec))
+        dec = math.degrees(math.asin(sin_dec))
+        cos_dec = max(1e-10, math.cos(math.radians(dec)))
+
+        cos_ha = (sin_alt - sin_lat * sin_dec) / (cos_lat * cos_dec + 1e-10)
+        cos_ha = max(-1.0, min(1.0, cos_ha))
+        sin_ha = -math.sin(az) * cos_alt / (cos_dec + 1e-10)
+        ha_deg = math.degrees(math.atan2(sin_ha, cos_ha))
+
+        lst = (100.0 + day_of_year_utc * 0.9856 + ut_hour * 15.0 + self.parent_widget.longitude) % 360.0
+        ra = (lst - ha_deg) % 360.0
+        return ra, dec
+
+    def _format_ra_hms(self, ra_deg: float) -> str:
+        h_total = (float(ra_deg) % 360.0) / 15.0
+        h = int(h_total)
+        m_total = (h_total - h) * 60.0
+        m = int(m_total)
+        s = int(round((m_total - m) * 60.0))
+        if s >= 60:
+            s = 0
+            m += 1
+        if m >= 60:
+            m = 0
+            h = (h + 1) % 24
+        return f"{h:02d}h {m:02d}m {s:02d}s"
+
+    def _format_dec_deg(self, dec_deg: float) -> str:
+        sign = "+" if dec_deg >= 0 else "-"
+        return f"{sign}{abs(float(dec_deg)):.3f}°"
+
+    def _scope_hud_extra_lines(self, ut_hour: float, day_of_year_utc: int):
+        if not self.scope_mode_enabled():
+            return []
+        center = getattr(self.scope_controller, "center", None)
+        if center is None:
+            return []
+        ra_dec = self._altaz_to_ra_dec(center[0], center[1], ut_hour, day_of_year_utc)
+        if ra_dec is None:
+            return []
+        ra_txt = self._format_ra_hms(ra_dec[0])
+        dec_txt = self._format_dec_deg(ra_dec[1])
+        line = getTraduction("Scope.HudCoords", "RA {ra} | Dec {dec}").format(ra=ra_txt, dec=dec_txt)
+        lines = [line]
+        vm_state = getattr(self.parent_widget, "visual_magnitude_result", None)
+        if vm_state is not None:
+            scope_mlim = float(vm_state.scope_limit_mag)
+            catalog_cap = float(getattr(self.parent_widget, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG))
+            render_mlim = min(scope_mlim, catalog_cap)
+            lines.append(
+                getTraduction(
+                    "Scope.HudMagModel",
+                    "mLim {mlim:.2f} (render {rmlim:.2f}) | M {magx:.1f}x",
+                ).format(
+                    mlim=scope_mlim,
+                    rmlim=render_mlim,
+                    magx=float(vm_state.magnification),
+                )
+            )
+        metrics = getattr(self.parent_widget, "scope_atmo_metrics", {}).get("hud_metrics", {})
+        if isinstance(metrics, dict):
+            exit_p = metrics.get("exit_pupil_mm")
+            x_air = metrics.get("airmass_x")
+            k_ext = metrics.get("extinction_k")
+            loss_mag = metrics.get("loss_mag")
+            trans = metrics.get("transmission")
+
+            if exit_p is not None:
+                lines.append(
+                    getTraduction("Scope.HudExitPupil", "Exit pupil: {v:.2f} mm").format(v=float(exit_p))
+                )
+            if x_air is not None:
+                lines.append(
+                    getTraduction("Scope.HudAirmass", "Airmass X: {v:.3f}").format(v=float(x_air))
+                )
+            if k_ext is not None:
+                lines.append(
+                    getTraduction("Scope.HudExtinctionK", "Extinction k: {v:.3f}").format(v=float(k_ext))
+                )
+            if loss_mag is not None:
+                lines.append(
+                    getTraduction("Scope.HudLossMag", "Loss: {v:.3f} mag").format(v=float(loss_mag))
+                )
+            if trans is not None:
+                lines.append(
+                    getTraduction("Scope.HudTransmission", "Transmission: {v:.3f}").format(v=float(trans))
+                )
+        return lines
+
+    def _draw_selected_target_marker(self, painter: QPainter, ut_hour: float, day_of_year_utc: int):
+        if self.scope_mode_enabled() or self.selected_target is None:
+            return
+
+        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc)
+        if sky is None:
+            return
+        pt = self.project_universal_stereo(sky[0], sky[1])
+        if pt is None:
+            return
+
+        target = self.selected_target
+        body_radius = 0.0
+        if isinstance(target, dict) and target.get("kind") == "sky":
+            item = self._lookup_visible_sky_object(target)
+            if isinstance(item, dict):
+                body_radius = float(item.get("radius_px", 0.0))
+        elif isinstance(target, dict) and target.get("kind") == "ngc":
+            obj = target.get("obj")
+            if obj is not None:
+                try:
+                    ppd = max(0.02, (min(float(self.width()), float(self.height())) * 0.5 * float(self.zoom_level)) / 90.0)
+                    body_radius = max(
+                        body_radius,
+                        max(4.0, float(getattr(obj, "maj_deg", 0.10) or 0.10) * 0.5 * ppd),
+                    )
+                except Exception:
+                    pass
+
+        cx = float(pt[0])
+        cy = float(pt[1])
+        phase = 0.5 * (math.sin(time.time() * 3.2) + 1.0)
+        base_r = max(8.0, body_radius + 5.0)
+        r = base_r + 3.0 * phase
+        alpha = int(70 + 90 * (1.0 - phase))
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(255, 255, 255, max(20, alpha // 2)), 2.0))
+        painter.drawEllipse(QPointF(cx, cy), r + 2.0, r + 2.0)
+        painter.setPen(QPen(QColor(255, 255, 255, alpha), 1.0))
+        painter.drawEllipse(QPointF(cx, cy), r, r)
+        painter.restore()
+
+    def _draw_selected_star_marker(self, painter: QPainter, ut_hour: float, day_of_year_utc: int):
+        # Backward-compatible wrapper.
+        self._draw_selected_target_marker(painter, ut_hour, day_of_year_utc)
+
+    def _apply_scope_selected_target_tracking(self, ut_hour: float, day_of_year_utc: int):
+        # In scope mode, selected targets are tracked: camera and scope center follow sky motion.
+        if (not self.scope_mode_enabled()) or self.selected_target is None:
+            return
+
+        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc)
+        if sky is None:
+            return
+        alt, az = sky
+        if self.scope_reticle_lock_to_target:
+            self.scope_controller.set_center((alt, az))
+        # Camera lock is optional; user can disable it with Ctrl+drag while keeping tracking.
+        if self.scope_camera_lock_to_target and not self.dragging:
+            self.azimuth_offset = az
+            self.elevation_angle = max(-90.0, min(90.0, alt))
+
+    def _apply_scope_selected_star_tracking(self, ut_hour: float, day_of_year_utc: int):
+        # Backward-compatible wrapper.
+        self._apply_scope_selected_target_tracking(ut_hour, day_of_year_utc)
+
+    def _scope_wheel_zoom(self, steps: float) -> None:
+        if not self.scope_mode_enabled():
+            return
+        if abs(steps) < 1e-9:
+            return
+
+        current = max(1.0, float(getattr(self.scope_controller, "focal_mm", 250.0)))
+        factor = 1.12 ** steps  # wheel up => larger focal => narrower FOV
+        new_focal = max(1.0, min(20000.0, current * factor))
+        self.scope_controller.set_focal_mm(new_focal)
+
+        # Keep controls panel in sync with wheel zoom.
+        if hasattr(self.parent_widget, "sync_scope_focal_ui"):
+            self.parent_widget.sync_scope_focal_ui(new_focal)
+
+        if hasattr(self, 'hint_overlay') and not self.scope_mode_enabled():
+            fov_w, fov_h = self.scope_controller.current_fov()
+            fov_label = f"{fov_w:.2f}° x {fov_h:.2f}°"
+            txt = getTraduction("Scope.ZoomHint", "Scope {focal} mm  ·  FOV {fov}").format(
+                focal=f"{new_focal:.1f}",
+                fov=fov_label,
+            )
+            self.hint_overlay.show_hint(txt)
+
+        self.update()
+
+    def _camera_wheel_zoom(self, steps: float) -> None:
+        if abs(steps) < 1e-9:
+            return
+        factor = 1.1 ** steps
+        self.zoom_level *= factor
+        # Allow deeper zoom for high-focal framing and dense star fields.
+        self.zoom_level = max(0.5, min(140.0, self.zoom_level))
+        # Keep cached trail image during movement to avoid flickering
+        # The Fast-Path will draw on top.
+        self.update()
+
+        # Toast HUD: show FOV and 35mm-equivalent focal of current camera zoom.
+        if hasattr(self, 'hint_overlay') and not self.scope_mode_enabled():
+            fov_deg = 100.0 / self.zoom_level
+            focal_eq = 1
+            if fov_deg < 179.0:
+                focal_rad = math.radians(fov_deg)
+                focal_eq = max(1, int(round(18.0 / math.tan(focal_rad / 2.0))))
+            txt = getTraduction("HUD.ZoomHint", "FOV {fov}°  ·  {focal}mm").format(
+                fov=f"{fov_deg:.1f}", focal=focal_eq
+            )
+            self.hint_overlay.show_hint(txt)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+
+        if self.drawing_mode_enabled():
+            if (event.modifiers() & Qt.ControlModifier) and key == Qt.Key_Z:
+                if self.constellation_controller.undo():
+                    if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                        self.parent_widget._sync_constellation_controls()
+                    self.update()
+                event.accept()
+                return
+            if key == Qt.Key_Escape:
+                self.set_constellation_draw_mode(False)
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+                event.accept()
+                return
+            if key in (Qt.Key_Return, Qt.Key_Enter):
+                self.constellation_controller.finish_active_group()
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+                self.update()
+                event.accept()
+                return
+            if key in (Qt.Key_Delete, Qt.Key_Backspace):
+                if self.constellation_controller.has_deletable_selection():
+                    self.constellation_controller.delete_selected()
+                    if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                        self.parent_widget._sync_constellation_controls()
+                    self.update()
+                event.accept()
+                return
+
+        if self.scope_mode_enabled():
+            if key == Qt.Key_Escape:
+                self.set_scope_enabled(False)
+                if hasattr(self.parent_widget, "sync_scope_ui_state"):
+                    self.parent_widget.sync_scope_ui_state(False)
+                event.accept()
+                return
+
+            if key == Qt.Key_M:
+                new_mode = (
+                    TelescopeScopeController.SPEED_FAST
+                    if self.scope_controller.speed_mode == TelescopeScopeController.SPEED_SLOW
+                    else TelescopeScopeController.SPEED_SLOW
+                )
+                self.scope_controller.set_speed_mode(new_mode)
+                if hasattr(self.parent_widget, "sync_scope_speed_ui"):
+                    self.parent_widget.sync_scope_speed_ui(new_mode)
+                self.update()
+                event.accept()
+                return
+
+            if key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+                if event.isAutoRepeat():
+                    event.accept()
+                    return
+                # Discrete tap step
+                self._scope_last_tick_ms = int(time.time() * 1000)
+                step = self.scope_controller.short_step_deg()
+                d_alt = 0.0
+                d_az = 0.0
+                if key == Qt.Key_Up:
+                    d_alt = step
+                elif key == Qt.Key_Down:
+                    d_alt = -step
+                elif key == Qt.Key_Left:
+                    d_az = step
+                elif key == Qt.Key_Right:
+                    d_az = -step
+                self.scope_controller.nudge(d_alt, d_az)
+                self.update()
+                self._scope_pressed_keys.add(key)
+                if not self._scope_move_timer.isActive():
+                    self._scope_move_timer.start()
+                event.accept()
+                return
+
+        if self.measurement_tool_active() and key == Qt.Key_Escape:
+            self.measurement_controller.cancel_current()
+            self.update()
+            event.accept()
+            return
+
+        if self.measurement_tool_active() and (event.modifiers() & Qt.ControlModifier) and key == Qt.Key_Z:
+            if self.measurement_controller.undo():
+                self.update()
+            event.accept()
+            return
+
+        if self.measurement_tool_active() and key in (Qt.Key_Delete, Qt.Key_Backspace):
+            self.measurement_controller.delete_selected()
+            self.update()
+            event.accept()
+            return
+
+        if key == Qt.Key_F9:
+            self.debug_render_metrics = not bool(self.debug_render_metrics)
+            set_config_value("debug_render_metrics", bool(self.debug_render_metrics))
+            print(f"[SkyDiagnostics] debug_render_metrics={self.debug_render_metrics}")
+            event.accept()
+            return
+
+        if (event.modifiers() & Qt.ControlModifier) and (event.modifiers() & Qt.ShiftModifier) and key == Qt.Key_S:
+            if hasattr(self.parent_widget, "run_smoke_scenes"):
+                self.parent_widget.run_smoke_scenes()
+            event.accept()
+            return
+
+        if event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_L:
+            self.log_positions()
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        key = event.key()
+        if self.scope_mode_enabled() and key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+            if not event.isAutoRepeat():
+                self._scope_pressed_keys.discard(key)
+                if not self._scope_pressed_keys:
+                    self._scope_move_timer.stop()
+            event.accept()
+            return
+        super().keyReleaseEvent(event)
+
+    def log_positions(self):
+        try:
+            import os
+            log_dir = r"E:\Desarrollo\logs"
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir)
+            
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            
+            # Re-calc state
+            local_hour = self.parent_widget.get_current_hour()
+            
+            # TZ Logic (Duplicated from paintEvent for robust standalonecalc)
+            try:
+                sim_y = self.parent_widget.manual_year
+                sim_d = self.parent_widget.manual_day
+                sim_dt_start = datetime(sim_y, 1, 1) + timedelta(days=sim_d)
+                h_int = int(local_hour)
+                m_int = int((local_hour - h_int)*60)
+                sim_dt_naive = sim_dt_start.replace(hour=h_int % 24, minute=m_int % 60)
+                sim_dt_local = sim_dt_naive.astimezone() 
+                tz_offset = sim_dt_local.utcoffset().total_seconds() / 3600.0
+            except:
+                tz_offset = datetime.now().astimezone().utcoffset().total_seconds() / 3600.0
+                
+            ut_hour = (local_hour - tz_offset) % 24.0
+            
+            # Astro Calc
+            dt_utc = self.get_datetime_utc(ut_hour)
+            jd_utc = self.julian_day(dt_utc)
+            d = jd_utc - 2451545.0
+            
+            sun_ra, sun_dec = self.get_sun_ra_dec(d)
+            moon_ra, moon_dec, m_dist = self.get_moon_ra_dec(d)
+            
+            lat = self.parent_widget.latitude
+            lon = self.parent_widget.longitude
+            
+            # Topo
+            s_ra_topo, s_dec_topo, lst = self.get_topocentric_position(sun_ra, sun_dec, 149597870.7, lat, lon, jd_utc)
+            m_ra_topo, m_dec_topo, _ = self.get_topocentric_position(moon_ra, moon_dec, m_dist, lat, lon, jd_utc)
+            
+            s_alt, s_az = self.sun_alt_az_from_ra_dec(s_ra_topo, s_dec_topo, lat, lst)
+            m_alt, m_az = self.sun_alt_az_from_ra_dec(m_ra_topo, m_dec_topo, lat, lst)
+            
+            # Projected
+            pt_sun = self.project_universal_stereo(s_alt, s_az)
+            pt_moon = self.project_universal_stereo(m_alt, m_az)
+            
+            s_px = f"{pt_sun[0]:.1f}, {pt_sun[1]:.1f}" if pt_sun else "OFF_SCREEN"
+            m_px = f"{pt_moon[0]:.1f}, {pt_moon[1]:.1f}" if pt_moon else "OFF_SCREEN"
+            
+            log_line = (f"[{timestamp}] Local={local_hour:.2f}h UT={ut_hour:.2f}h | "
+                        f"SUN: Alt={s_alt:.2f} Az={s_az:.2f} Px={s_px} | "
+                        f"MOON: Alt={m_alt:.2f} Az={m_az:.2f} Px={m_px}")
+            
+            with open(os.path.join(log_dir, "pos_log_ctrl_l.txt"), "a", encoding="utf-8") as f:
+                f.write(log_line + "\n")
+                
+            # Feedback
+            self.lbl_info.setText("LOG SAVED")
+            self.lbl_info.show()
+            QTimer.singleShot(2000, self.lbl_info.hide)
+            print(f"LOG WRITTEN: {log_line}")
+        except Exception as e:
+            print(f"LOG ERROR: {e}")
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        try:
+            painter.fillRect(self.rect(), Qt.black) # Safe background
+            stage_order = {
+                "boot": 0,
+                "base_sky": 1,
+                "stars_ready": 2,
+                "horizon_preview": 3,
+                "scene_ready": 4,
+            }
+            scene_stage = getattr(self.parent_widget, "scene_load_stage", "scene_ready")
+            scene_stage_rank = stage_order.get(scene_stage, 4)
+            if scene_stage_rank >= 1 and not self._reported_first_useful_paint:
+                self._reported_first_useful_paint = True
+                if hasattr(self.parent_widget, "_on_canvas_first_useful_paint"):
+                    self.parent_widget._on_canvas_first_useful_paint()
+            if scene_stage_rank <= 0:
+                return
+
+            # Interaction mode: favor smoothness while user moves camera/scope.
+            fast_interaction = bool(
+                self._camera_interaction_active(include_time_drag=True, include_animation=True)
+                or self.scope_mode_enabled()
+            )
+            painter.setRenderHint(QPainter.Antialiasing, not fast_interaction)
+            painter.setRenderHint(QPainter.TextAntialiasing, not fast_interaction)
+
+
+            # 1. Determine Correct Time (Local -> UT) using Full Datetime
+            local_hour = self.parent_widget.get_current_hour()
+            sim_y = self.parent_widget.manual_year
+            sim_d = self.parent_widget.manual_day
+            
+            # Base start of the local day
+            try:
+                # Create a timezone-aware datetime representing the observer's local time
+                # We assume the observer's local time follows the system's timezone rules
+                dt_base = datetime(sim_y, 1, 1) + timedelta(days=sim_d)
+                dt_local_naive = dt_base + timedelta(hours=local_hour)
+                dt_local = dt_local_naive.astimezone() # System local aware
+                
+                # Convert to UTC accurately
+                dt_utc = dt_local.astimezone(timezone.utc)
+                tz_offset = dt_local.utcoffset().total_seconds() / 3600.0
+            except Exception as e:
+                # Fallback to current system offset if fails
+                tz_offset = datetime.now().astimezone().utcoffset().total_seconds() / 3600.0
+                dt_utc = (datetime(sim_y, 1, 1) + timedelta(days=sim_d, hours=local_hour-tz_offset)).replace(tzinfo=timezone.utc)
+
+            ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
+            self.ut_hour = ut_hour # Store for external access
+            # Day of year relative to UTC (Critically avoids the 24h jump at midnight crossings)
+            day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+
+            # Scope tracking for selected stars follows simulated sky time.
+            self._apply_scope_selected_target_tracking(ut_hour, day_of_year_utc)
+            
+            # Solar Hour (Apparent, Simple) for Sun
+            solar_hour = (ut_hour + self.parent_widget.longitude / 15.0) % 24.0
+            
+            # 1. Determine Effective Environment (Local vs Antipode)
+            day_of_year = self.parent_widget.manual_day
+            rise_loc, set_loc = self.calculate_sun_times(self.parent_widget.latitude, day_of_year)
+            is_day_loc = rise_loc <= solar_hour < set_loc
+            
+            # Calculate Antipodal Sun Times (-Lat, +12h)
+            rise_anti, set_anti = self.calculate_sun_times(-self.parent_widget.latitude, day_of_year)
+            solar_hour_anti = (solar_hour + 12.0) % 24.0
+            is_day_anti = rise_anti <= solar_hour_anti < set_anti
+            
+            # Compute effective variables based on observer location
+            # (We keep the environment continuous even if looking below the horizon)
+            eff_is_day = is_day_loc
+            eff_hour = solar_hour
+            eff_rise = rise_loc
+            eff_set = set_loc
+            eff_lat = self.parent_widget.latitude
+
+            
+            
+            # Draw Background using Effective Context (Altitude & Azimuth Driven)
+            # CACHE USAGE:
+            # Check chk_enable_sky
+            # Defaults for when Sky is Disabled
+            eff_sun_alt = 90.0
+            eclipse_dimming = 1.0
+
+            if True: # Always calculate sky background and celestial positions
+                # Use Day of Year relative to UTC for astronomy updates
+                day_for_astro = day_of_year_utc
+                eff_sun_alt, eff_sun_az = self.get_sun_alt_az(eff_hour, eff_lat, day_for_astro)
+                
+                # Eclipse Dimming Calculation with SMART THROTTLING
+                # Update Skyfield immediately when simulated time changes, but throttle during real-time
+                import time
+                current_time_ms = int(time.time() * 1000)
+                skyfield_update_interval = 500  # ms for real-time updates
+                
+                if SKYFIELD_AVAILABLE and hasattr(self.parent_widget, 'eph'):
+                    # Check if simulated time has changed significantly (manual time change)
+                    last_cached_hour = self._sf_cache.get('ut_hour', -999)
+                    time_changed = abs(ut_hour - last_cached_hour) > 0.001  # ~3.6 seconds in simulation
+                    
+                    # Force update if time changed OR if enough real time has passed
+                    should_update = time_changed or (current_time_ms - self._last_skyfield_update > skyfield_update_interval)
+                    
+                    if should_update:
+                        self._last_skyfield_update = current_time_ms
+                        self._sf_cache['ut_hour'] = ut_hour  # Track simulated time
+                        # Only trigger heavy Skyfield updates when needed (using UTC day)
+                        self.update_skyfield_cache(ut_hour, day_for_astro)
+                        self._eclipse_cache['value'] = self.get_eclipse_dimming_factor(ut_hour, day_for_astro)
+                        self._eclipse_cache['time'] = current_time_ms
+                
+                # Use cached eclipse dimming
+                eclipse_dimming = self._eclipse_cache.get('value', 1.0)
+    
+                # Wrap view_az (azimuth_offset) to 0..360 only for background logic/sun-pos
+                wrapped_az = self.azimuth_offset % 360.0
+            # 1. Background (Sky Gradient)
+            self.draw_background(painter, eff_sun_alt, eff_sun_az, wrapped_az, dimming=eclipse_dimming)
+            
+            # 2. Light Pollution & Ambient Glows (Drawn BEFORE stars to avoid occlusion)
+            if (not fast_interaction) and scene_stage_rank >= 3 and hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
+                self.draw_light_domes(painter, self.horizon_overlay.profile, eff_sun_alt, eclipse_dimming)
+    
+            # === WEATHER SYSTEM ===
+            # IMPORTANT: forecast/cache keys are indexed in UTC slots.
+            # We keep ephemerides untouched and only map weather indexing to UTC
+            # so manual/local timeline changes match cached forecast rows.
+            if scene_stage_rank >= 3:
+                now_weather = time.monotonic()
+                last_weather = float(getattr(self, "_last_weather_update_mono", 0.0))
+                if (not fast_interaction) or (now_weather - last_weather >= 0.20):
+                    self.weather.update_weather(day_of_year_utc, ut_hour, year=dt_utc.year)
+                    self.weather.update_thunder()
+                    self._last_weather_update_mono = now_weather
+
+            # 3. Trails
+            checked = self._parent_checkbox_checked("chk_trails", default=False)
+            if checked and eff_sun_alt < -6.0:
+                if self.trail_start_hour is None:
+                    self.trail_start_hour = ut_hour
+                self.draw_analytic_trails(painter, self.trail_start_hour, ut_hour)
+            else:
+                self.trail_start_hour = None
+    
+            # === STAR PARAMETER CALCULATION ===
+            # Calculate Ambient Light Level (0.0 = Pitch Black, 1.0 = Full Day)
+            if eff_sun_alt > 0:
+                base_light = 1.0
+            elif eff_sun_alt < -18.0:
+                base_light = 0.0
+            else:
+                base_light = 1.0 - (eff_sun_alt / -18.0)
+                base_light = max(0.0, min(1.0, base_light))
+            
+            ambient_light = base_light * eclipse_dimming
+            vm_state = self.parent_widget.recompute_visual_magnitude_model(
+                target_alt_deg=self.elevation_angle,
+                sun_alt_deg=eff_sun_alt,
+                now_utc=dt_utc,
+            )
+            
+            # Dynamic Magnitude Limit
+            # Daytime: Stars must be brighter than Sun's glare to be seen (basically only Sun/Moon)
+            if eff_sun_alt > 0: 
+                 sun_mag_limit = -10.0 # Absolute black-out for stars in daylight
+            elif eff_sun_alt > -6.0:
+                 # Civil Twilight: Fast drop in visibility
+                 t = (eff_sun_alt - 0.0) / -6.0
+                 sun_mag_limit = -10.0 + 10.0 * t # -10 at sunset, 0 at nautical
+            elif eff_sun_alt > -12.0:
+                 # Nautical Twilight: Transition to stars
+                 t = (eff_sun_alt + 6.0) / -6.0
+                 sun_mag_limit = 0.0 + 3.0 * t # 0 at start, 3.0 at nautical end
+            elif eff_sun_alt > -18.0:
+                 # Astronomical Twilight: Fine tuning
+                 t = (eff_sun_alt + 12.0) / -6.0
+                 target_mag = float(vm_state.scope_limit_mag)
+                 sun_mag_limit = 3.0 + (target_mag - 3.0) * t
+            else:
+                 sun_mag_limit = float(vm_state.scope_limit_mag)
+            
+            eclipse_bonus = (1.0 - eclipse_dimming) * 14.0
+
+            auto_bortle = bool(getattr(self.parent_widget, "is_auto_bortle", True))
+            if auto_bortle:
+                bortle_class = max(1.0, min(9.0, float(getattr(self.parent_widget, "auto_bortle_estimate", 1))))
+            else:
+                bortle_class = max(1.0, min(9.0, 1.0 + (7.6 - float(self.parent_widget.magnitude_limit)) / 0.5))
+
+            render_state = {
+                "scope_enabled": bool(self.scope_mode_enabled()),
+                "auto_bortle": auto_bortle,
+                "bortle": bortle_class,
+                "scope_mlim": float(vm_state.scope_limit_mag),
+                "manual_mlim": float(self.parent_widget.magnitude_limit),
+            }
+            update_star_rendering_params(render_state)
+            view_mag_limit = float(render_state.get("render_mag_limit", vm_state.scope_limit_mag))
+            final_mag_limit = min(sun_mag_limit + eclipse_bonus, view_mag_limit)
+
+            if not self.scope_mode_enabled():
+                self.parent_widget.auto_star_scale_multiplier = 1.0
+            ambient_light = base_light * (1.0 + (bortle_class - 1.0) * 0.04)
+            
+            # Cache Invalidation
+            if not hasattr(self, '_last_mag_limit'): self._last_mag_limit = final_mag_limit
+            if abs(self._last_mag_limit - final_mag_limit) > 0.05:
+                self._cached_star_image = None
+                self._last_mag_limit = final_mag_limit
+            
+            show_sun_moon_effects = self._parent_checkbox_checked("chk_sun_moon", default=True)
+
+            vis_factor = 1.0
+            moon_mask = None
+            # If "Sun & Moon" is hidden, suppress all lunar visual side-effects too.
+            if show_sun_moon_effects and hasattr(self, '_sf_cache') and self._sf_cache.get('data'):
+                md = self._sf_cache['data'].get('moon')
+                if md:
+                    pt_m = self.project_universal_stereo(md['alt'], md['az'])
+                    if pt_m:
+                        R_proj = min(self.width(), self.height()) / 2.0 * self.zoom_level
+                        ppd = R_proj / 90.0
+                        m_rad_deg = md.get('rad_deg', 0.25)
+                        mr_px = m_rad_deg * ppd * 10.0
+                        moon_mask = (pt_m[0], pt_m[1], mr_px)
+    
+            # 4. Stars & Celestial Objects
+            show_stars_layer = self._parent_checkbox_checked("chk_enable_sky", default=True)
+            show_milkyway_layer = self._parent_checkbox_checked("chk_enable_milkyway", default=True)
+            if scene_stage_rank >= 1 and (show_stars_layer or show_milkyway_layer):
+                self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit, eff_lat=eff_lat, day_of_year=day_for_astro)
+            
+            self.visible_sky_objects = []
+            if scene_stage_rank >= 2 and SKYFIELD_AVAILABLE and hasattr(self.parent_widget, 'eph'):
+                 self.draw_skyfield_objects(painter, ut_hour, day_for_astro, ambient_light=ambient_light, mag_limit=final_mag_limit)
+
+            # Constellations are part of sky content, so they must be occluded by terrain.
+            if scene_stage_rank >= 2:
+                self.constellation_controller.draw(
+                    painter,
+                    self.project_universal_stereo,
+                    lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                )
+                if self._parent_checkbox_checked("chk_deep_space", default=False):
+                    self.draw_ngc_overlay(painter, ut_hour, day_of_year_utc)
+
+            # Weather cloud layer goes above stars/sun/moon so overcast can occlude them.
+            # Horizon/topography will still be painted after this and remain in front.
+            w_sun_alt = eff_sun_alt
+            base_fov = 100.0
+            current_fov = base_fov / self.zoom_level
+            if scene_stage_rank >= 3:
+                self.weather.draw(
+                    painter,
+                    w_sun_alt,
+                    self.azimuth_offset,
+                    self.elevation_angle,
+                    current_fov,
+                    eclipse_dimming=eclipse_dimming,
+                    project_fn=self.project_universal_stereo,
+                )
+
+            # 5. Horizon / Topography (Drawn on top to mask everything behind mountains)
+            show_horizon = True
+            if hasattr(self.parent_widget, 'chk_enable_horizon'):
+                show_horizon = self._parent_checkbox_checked("chk_enable_horizon", default=True)
+            
+            use_detailed_topo = True
+            if hasattr(self.parent_widget, 'chk_enable_village'):
+                use_detailed_topo = self._parent_checkbox_checked("chk_enable_village", default=True)
+
+            if scene_stage_rank >= 3 and show_horizon:
+                force_flat = not use_detailed_topo
+                dome_callback = None
+                is_auto_bortle = getattr(self.parent_widget, 'is_auto_bortle', getattr(self, 'is_auto_bortle', True))
+                if (not fast_interaction) and is_auto_bortle and hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
+                    tw_factor = 1.0
+                    if eff_sun_alt >= 0: tw_factor = 0.0
+                    elif eff_sun_alt > -18.0: tw_factor = (0 - eff_sun_alt) / 18.0
+                    tw_factor *= eclipse_dimming
+                    
+                    if tw_factor > 0.01:
+                        dome_callback = lambda p, idx, dist: self._draw_single_city_dome(p, self.horizon_overlay.profile, idx, dist, tw_factor)
+
+                self.horizon_overlay.draw(
+                    painter, self.project_universal_stereo,
+                    self.width(), self.height(),
+                    self.azimuth_offset, self.zoom_level,
+                    self.elevation_angle, ut_hour,
+                    draw_flat_line=force_flat,
+                    projection_fn_numpy=self.project_universal_stereo_numpy,
+                    draw_domes_callback=dome_callback
+                )
+                if hasattr(self, '_dome_count') and self._dome_count > 0:
+                    current_time = __import__('time').time()
+                    if current_time - getattr(self, '_last_dome_log_time', 0) > 2.0:
+                        print(f"[AstroCanvas] City Domes Draw Call: {self._dome_count} centers found.")
+                        self._last_dome_log_time = current_time
+
+            # Weather already rendered once (above celestial objects, below terrain).
+
+
+            
+            # 6. Compass
+            self.draw_compass(painter)
+
+            # Selected-star marker (hidden in scope mode by design).
+            self._draw_selected_target_marker(painter, ut_hour, day_of_year_utc)
+            
+            # 7. HUD information
+            painter.setPen(QColor(255, 255, 255, 200))
+            lbl_stars = getTraduction("Astro.Stars", "STARS")
+            stars_count = self._scope_hud_star_count() if self.scope_mode_enabled() else self._visible_star_count_raw()
+            painter.drawText(20, 30, f"{lbl_stars}: {stars_count}")
+            mw_line = self._milkyway_overlay_status_line()
+            painter.setFont(QFont("Arial", 9))
+            painter.drawText(20, 45, mw_line)
+            
+            # Direction HUD
+            az = self.azimuth_offset % 360
+            dirs_keys = ["North", "NE", "East", "SE", "South", "SW", "West", "NW", "North"]
+            dirs = [getTraduction(f"Astro.{d}", d.upper()) for d in dirs_keys]
+            idx = int((az + 22.5) / 45)
+            if idx >= len(dirs): idx = 0
+                
+            direction_str = dirs[idx]
+            lbl_looking = getTraduction("Astro.Looking", "LOOKING")
+            
+            painter.setFont(QFont("Arial", 14, QFont.Bold))
+            painter.drawText(20, 68, f"{lbl_looking}: {direction_str}")
+            
+            # Lat Indicator
+            lat = self.parent_widget.latitude
+            hemi = "N" if lat >= 0 else "S"
+            painter.setFont(QFont("Arial", 10))
+            painter.drawText(20, 88, f"LAT: {abs(lat):.2f}Â° {hemi}")
+
+            # Altitude Indicator
+            alt = self.elevation_angle
+            lbl_alt = "ALT" 
+            painter.drawText(20, 108, f"{lbl_alt}: {alt:.1f}Â°")
+            
+            # Focal Length Indicator & Human Eye Button
+            # Base FOV = 100 deg (Zoom 1.0)
+            # 35mm equiv focal length: f = 36 / (2 * tan(fov_horiz/2))
+            # fov_horiz_rad = radians(100 / zoom)
+            fov_rad = math.radians(93.9 / self.zoom_level)
+            focal_length = 1.0
+            if (93.9 / self.zoom_level) < 179.0:
+                focal_length = max(1.0, 18.0 / math.tan(fov_rad / 2.0))
+            
+            # Using round() to avoid 49.99mm displaying as 49mm
+            if self.scope_mode_enabled() and hasattr(self, "scope_controller"):
+                display_focal = int(round(max(1.0, float(getattr(self.scope_controller, "focal_mm", focal_length)))))
+            else:
+                display_focal = max(1, int(round(focal_length)))
+            painter.drawText(20, 128, f"FOC: {display_focal} mm")
+            
+            # Position the eye button dynamically next to FOC text
+            # Assuming text width ~ 100px?
+            if hasattr(self, 'btn_human_eye'):
+                # Move button only if needed
+                self.btn_human_eye.move(140, 105) 
+                if not self.btn_human_eye.isVisible():
+                    self.btn_human_eye.show()
+
+            # 8. User overlays above terrain
+            self.measurement_controller.draw(
+                painter,
+                self.project_universal_stereo,
+                formatters={},
+            )
+            scope_hud_lines = self._scope_hud_extra_lines(ut_hour, day_of_year_utc)
+            self.scope_controller.draw(
+                painter,
+                self.width(),
+                self.height(),
+                self.project_universal_stereo,
+                hud_extra_lines=scope_hud_lines,
+            )
+            if hasattr(self.parent_widget, "_refresh_milkyway_status_indicator"):
+                self.parent_widget._refresh_milkyway_status_indicator()
+             
+        finally:
+            painter.end()
+
+    def get_sun_alt_az(self, hour, lat, day_of_year):
+        # Try Cache First - MUST validate time match
+        # Note: 'hour' arg is Solar Hour (Approx Local). Cache stores UT Hour.
+        # Difference is approx longitude / 15.0. We use a 0.2h (12m) tolerance.
+        if hasattr(self, '_sf_cache') and self._sf_cache.get('data') and SKYFIELD_AVAILABLE:
+            cache_t = self._sf_cache.get('time', -1.0)
+            if abs(hour - cache_t) < 0.2: 
+                s = self._sf_cache['data']['sun']
+                return s['alt'], s['az']
+        
+        # Precise calculation matching draw_sun but returning Azimuth too
+        dec_deg = -23.44 * math.cos(math.radians(360/365 * (day_of_year + 10)))
+        dec_rad = math.radians(dec_deg)
+        lat_rad = math.radians(lat)
+        
+        # Hour Angle
+        ha_deg = (hour - 12.0) * 15.0
+        ha_rad = math.radians(ha_deg)
+        
+        # Altitude
+        sin_alt = (math.sin(dec_rad) * math.sin(lat_rad) + 
+                   math.cos(dec_rad) * math.cos(lat_rad) * math.cos(ha_rad))
+        # Clamp against numerical errors
+        sin_alt = max(-1.0, min(1.0, sin_alt))
+        alt_deg = math.degrees(math.asin(sin_alt))
+        
+        # Azimuth
+        # cos(az) = (sin(dec) - sin(alt)*sin(lat)) / (cos(alt)*cos(lat))
+        # Handle Zenith singularity
+        cos_alt_val = math.cos(math.radians(alt_deg))
+        if abs(cos_alt_val) < 1e-4:
+            az_deg = 180.0
+        else:
+            cos_az = (math.sin(dec_rad) - sin_alt * math.sin(lat_rad)) / \
+                     (cos_alt_val * math.cos(lat_rad))
+            cos_az = max(-1.0, min(1.0, cos_az))
+            az_deg = math.degrees(math.acos(cos_az))
+            if math.sin(ha_rad) > 0: az_deg = 360 - az_deg
+            
+        return alt_deg, az_deg
+
+
+
+    
+    def draw_analytic_trails(self, painter, start_hour, end_hour):
+        # 1. Determine interaction state
+        pw = self.parent_widget
+        is_moving = self._camera_interaction_active(include_time_drag=True, include_animation=True)
+        
+        # 2. Draw Cached Trail Image if available
+        if self._cached_trail_image and not self._cached_trail_image.isNull():
+            painter.drawImage(0, 0, self._cached_trail_image)
+        
+        # 3. If interacting, draw a "Fast-Path" (Reduced LOD) synchronously to avoid flickering
+        if is_moving:
+            diff = end_hour - start_hour
+            if diff < -12.0: diff += 24.0
+            elif diff > 12.0: diff -= 24.0
+            
+            # Exposure must be forward-running (start -> end). 
+            # If diff is negative, it means they moved back beyond the start.
+            if diff > 0.001:
+                # Synchronous call to NumPy renderer with aggressive LOD
+                self.draw_analytic_trails_numpy(painter, start_hour, end_hour, diff, n_steps=5, limit=3.0, is_moving=True)
+            else:
+                # If negative or zero, we don't draw new trails synchronously
+                pass
+        
+        # 4. Trigger Worker for NEXT frame (if not busy)
+        if np and hasattr(pw, 'np_ra') and not self.trail_rendering_busy:
+            self.trail_rendering_busy = True
+
+            vm_trail = pw.recompute_visual_magnitude_model(
+                target_alt_deg=self.elevation_angle,
+                sun_alt_deg=-18.0,
+            )
+            auto_bortle = bool(getattr(pw, "is_auto_bortle", True))
+            if auto_bortle:
+                bortle_class = max(1.0, min(9.0, float(getattr(pw, "auto_bortle_estimate", 1))))
+            else:
+                bortle_class = max(1.0, min(9.0, 1.0 + (7.6 - float(pw.magnitude_limit)) / 0.5))
+            trail_state = {
+                "scope_enabled": bool(self.scope_mode_enabled()),
+                "auto_bortle": auto_bortle,
+                "bortle": bortle_class,
+                "scope_mlim": float(vm_trail.scope_limit_mag),
+                "manual_mlim": float(pw.magnitude_limit),
+            }
+            update_star_rendering_params(trail_state)
+            trail_mag_limit = float(trail_state.get("render_mag_limit", vm_trail.scope_limit_mag))
+            
+            params = {
+                'width': self.width(),
+                'height': self.height(),
+                'zoom_level': self.zoom_level,
+                'vertical_ratio': self.vertical_offset_ratio,
+                'elevation_angle': self.elevation_angle,
+                'azimuth_offset': self.azimuth_offset,
+                'start_hour': start_hour,
+                'end_hour': end_hour,
+                'ra': pw.np_ra,
+                'dec': pw.np_dec,
+                'mag': pw.np_mag,
+                'r': pw.np_r,
+                'g': pw.np_g,
+                'b': pw.np_b,
+                'lat_rad': math.radians(pw.latitude),
+                'day_of_year': pw.manual_day,
+                'longitude': pw.longitude,
+                'mag_limit': trail_mag_limit,
+                'is_moving': is_moving,
+                'min_diff': 0.0 # Force forward-only in worker too if needed
+            }
+            
+            # Recalculate diff for worker limit
+            diff = end_hour - start_hour
+            if diff < -12.0: diff += 24.0
+            elif diff > 12.0: diff -= 24.0
+            
+            if diff > 0.001:
+                 self.request_trails_signal.emit(params)
+            else:
+                 self.trail_rendering_busy = False # Cancel
+                 self._cached_trail_image = None # Clear if going back to start
+        
+        return
+        
+        # --- LEGACY CODE BELOW (Kept for reference, never reached) ---
+        # Determine time span
+        diff = end_hour - start_hour
+        # Handle day wrap 
+        if diff < -12.0: diff += 24.0
+        elif diff > 12.0: diff -= 24.0
+        
+        # If negligible duration, do nothing
+        if abs(diff) < 0.001: return
+        
+        # Dynamic LOD (Level of Detail) Optimization
+        # If dragging or animating, reduce quality drastically for performance
+        is_moving = self._camera_interaction_active(include_time_drag=False, include_animation=True)
+        
+        if is_moving:
+             # Low Quality: Only bright stars, few steps
+             step_density = 1.0 # 1 step per hour
+             mag_cap = 4.0      # Only stars brighter than mag 4
+        else:
+             # High Quality
+             step_density = 4.0 # 4 steps per hour (15m)
+             mag_cap = 5.5      # PERFORMANCE FIX: Valid only for bright stars
+             
+        # Steps for arc approximation 
+        n_steps = max(2, min(50, int(abs(diff) * step_density)))
+        
+        # Pre-calc LST base
+        day_of_year = self.parent_widget.manual_day
+        base_lst_0 = (100.0 + day_of_year * 0.9856 + self.parent_widget.longitude) % 360
+        
+        lat_rad = math.radians(self.parent_widget.latitude)
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        
+        # Effective limit is visual limit capped by performance cap
+        vm_trail = self.parent_widget.recompute_visual_magnitude_model(
+            target_alt_deg=self.elevation_angle,
+            sun_alt_deg=-18.0,
+        )
+        auto_bortle = bool(getattr(self.parent_widget, "is_auto_bortle", True))
+        if auto_bortle:
+            bortle_class = max(1.0, min(9.0, float(getattr(self.parent_widget, "auto_bortle_estimate", 1))))
+        else:
+            bortle_class = max(1.0, min(9.0, 1.0 + (7.6 - float(self.parent_widget.magnitude_limit)) / 0.5))
+        trail_state = {
+            "scope_enabled": bool(self.scope_mode_enabled()),
+            "auto_bortle": auto_bortle,
+            "bortle": bortle_class,
+            "scope_mlim": float(vm_trail.scope_limit_mag),
+            "manual_mlim": float(self.parent_widget.magnitude_limit),
+        }
+        update_star_rendering_params(trail_state)
+        limit = min(float(trail_state.get("render_mag_limit", vm_trail.scope_limit_mag)), mag_cap)
+        
+        # NumPy Vectorization
+        if np and hasattr(self.parent_widget, 'np_ra'):
+             self.draw_analytic_trails_numpy(painter, start_hour, end_hour, diff, n_steps, limit, is_moving)
+             return
+        
+        # Pre-calculate Step LSTs
+        step_lsts = []
+        for i in range(n_steps + 1):
+            t = float(i) / n_steps
+            h = start_hour + diff * t
+            lst = (base_lst_0 + h * 15.0) % 360
+            step_lsts.append(lst)
+            
+        # Draw Loop
+        painter.setBrush(Qt.NoBrush)
+        
+        for star in self.parent_widget.celestial_objects:
+            if star['mag'] > limit: continue
+            
+            ra = star['ra']
+            dec = star['dec']
+            
+            # Optimization: Pre-calc trig for star
+            dec_rad = math.radians(dec)
+            sin_dec = math.sin(dec_rad)
+            cos_dec = math.cos(dec_rad)
+            
+            points = []
+            valid_points = 0
+            
+            # Compute path points
+            for lst in step_lsts:
+                ha = (lst - ra)
+                ha_rad = math.radians(ha)
+                
+                # Alt/Az
+                sin_alt = (sin_dec * sin_lat + 
+                           cos_dec * cos_lat * math.cos(ha_rad))
+                
+                # Fast Asin clamp
+                if sin_alt > 1.0: sin_alt = 1.0
+                elif sin_alt < -1.0: sin_alt = -1.0
+                
+                alt = math.degrees(math.asin(sin_alt))
+                
+                cos_az = (sin_dec - sin_alt * sin_lat) / \
+                         (math.cos(math.radians(alt)) * cos_lat + 1e-10)
+                
+                # Fast Acos clamp
+                if cos_az > 1.0: cos_az = 1.0
+                elif cos_az < -1.0: cos_az = -1.0
+                
+                az = math.degrees(math.acos(cos_az))
+                if math.sin(ha_rad) > 0: az = 360 - az
+                
+                pt = self.project_universal_stereo(alt, az)
+                points.append(pt) 
+                if pt: valid_points += 1
+                
+            if valid_points < 2: continue
+            
+            # Render Path
+            path = QPainterPath()
+            first_pt = True
+            
+            # Distance threshold for breaking paths (avoiding wrapping lines)
+            # 50% of min dimension is a safe bet for a "jump" that shouldn't happen in a smooth arc
+            jump_threshold = min(self.width(), self.height()) * 0.5
+            
+            for pt in points:
+                if pt is None:
+                    first_pt = True
+                else:
+                    curr_p = QPointF(*pt)
+                    if first_pt:
+                        path.moveTo(curr_p)
+                        first_pt = False
+                    else:
+                        # Check distance to previous point
+                        last_p = path.currentPosition()
+                        dist = (curr_p - last_p).manhattanLength()
+                        if dist > jump_threshold:
+                            path.moveTo(curr_p)
+                        else:
+                            path.lineTo(curr_p)
+            
+            bp_rp = star.get('bp_rp', 0.8) 
+            color = self.get_star_color(bp_rp)
+            color.setAlpha(120 if not is_moving else 80) # Faint trails while moving
+            painter.setPen(QPen(color, 1.0))
+            painter.drawPath(path)
+
+    def draw_analytic_trails_numpy(self, painter, start_hour, end_hour, diff, n_steps, limit, is_moving):
+        pw = self.parent_widget
+        
+        # PERFORMANCE TWEAK: Cap max steps and magnitude for complex trails
+        # "Completed" trails can be heavy. 
+        if not is_moving:
+            limit = min(limit, 5.0) # Reduce from 5.5 to 5.0 (Hardly visible diff, big savings)
+            n_steps = min(n_steps, 40) # Cap steps
+        
+        # 1. Filter Stars by Magnitude
+        mask_mag = pw.np_mag < limit
+        if not np.any(mask_mag): return
+        
+        # Use subsets
+        ra = pw.np_ra[mask_mag]   # Shape (N_stars,)
+        dec = pw.np_dec[mask_mag] # Shape (N_stars,)
+        
+        # Colors (RGB)
+        f_r = pw.np_r[mask_mag]
+        f_g = pw.np_g[mask_mag]
+        f_b = pw.np_b[mask_mag]
+        
+        # 2. Prepare Time Steps
+        steps_t = np.linspace(0.0, 1.0, n_steps + 1)
+        steps_h = start_hour + diff * steps_t
+        
+        day_of_year = pw.manual_day
+        base_lst_0 = (100.0 + day_of_year * 0.9856 + pw.longitude) % 360
+        
+        step_lsts = (base_lst_0 + steps_h * 15.0) % 360
+        step_lsts = step_lsts[np.newaxis, :] 
+        
+        # 3. Physics (Broadcasting)
+        ra_col = ra[:, np.newaxis]
+        ha = step_lsts - ra_col
+        ha_rad = np.radians(ha)
+        
+        dec_rad = np.radians(dec)[:, np.newaxis]
+        
+        lat_rad = math.radians(pw.latitude)
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        
+        sin_dec = np.sin(dec_rad)
+        cos_dec = np.cos(dec_rad)
+        
+        sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * np.cos(ha_rad)
+        sin_alt = np.clip(sin_alt, -1.0, 1.0)
+        alt_rad = np.arcsin(sin_alt) 
+        
+        cos_alt = np.cos(alt_rad)
+        cos_az_num = sin_dec - sin_alt * sin_lat
+        cos_az_den = cos_alt * cos_lat + 1e-10
+        cos_az = np.clip(cos_az_num / cos_az_den, -1.0, 1.0)
+        az_rad = np.arccos(cos_az)
+        
+        sin_ha = np.sin(ha_rad)
+        az_rad = np.where(sin_ha > 0, 2*np.pi - az_rad, az_rad) 
+        
+        # 4. Projection - UNIVERSAL STEREOGRAPHIC (Horizon Centered)
+        w, h = self.width(), self.height()
+        scale_h = h / 2.0 * self.zoom_level
+        cx = w/2.0
+        cy_base = h/2.0 + (h * self.vertical_offset_ratio)
+        
+        # View Shift
+        elev_cam_rad = math.radians(self.elevation_angle)
+        y_center_val = 2.0 * math.tan(elev_cam_rad / 2.0)
+        
+        # Relative Azimuth (for projection formula)
+        cam_az_rad = math.radians(self.azimuth_offset)
+        
+        # We need to project: lat=alt_rad, lon=az_rad relative to cam_az
+        az_rel_rad = az_rad - cam_az_rad
+        
+        cos_alt = np.cos(alt_rad)
+        sin_alt = np.sin(alt_rad)
+        cos_az = np.cos(az_rel_rad)
+        sin_az = np.sin(az_rel_rad)
+        
+        denom = 1.0 + cos_alt * cos_az
+        
+        # Trails: We need to handle invalid points (behind camera)
+        # invalid mask
+        invalid = denom <= 1e-6
+        denom = np.where(invalid, 1.0, denom)
+        
+        k = 2.0 / denom
+        x = k * cos_alt * sin_az
+        y = k * sin_alt
+        
+        sx = cx + x * scale_h
+        sy = cy_base - (y - y_center_val) * scale_h
+        jump_threshold = min(w, h) * 0.5
+        
+        batches = {} # Key: (r,g,b), Value: QPainterPath
+        
+        for i in range(len(ra)):
+            row_x = sx[i]
+            row_y = sy[i]
+            row_inv = invalid[i]
+            
+            if np.all(row_inv):
+                continue
+            
+            # Get Key for batching
+            key = (int(f_r[i]), int(f_g[i]), int(f_b[i]))
+            if key not in batches:
+                batches[key] = QPainterPath()
+            path = batches[key]
+            
+            # Identify continuous segments
+            valid_idxs = np.where(~row_inv)[0]
+            if len(valid_idxs) < 2: continue
+            
+            diffs = np.diff(valid_idxs)
+            breaks = np.where(diffs > 1)[0]
+            
+            starts = [valid_idxs[0]]
+            ends = []
+            for b in breaks:
+                ends.append(valid_idxs[b])
+                starts.append(valid_idxs[b+1])
+            ends.append(valid_idxs[-1])
+            
+            for s_idx, e_idx in zip(starts, ends):
+                chunk_x = row_x[s_idx : e_idx+1]
+                chunk_y = row_y[s_idx : e_idx+1]
+                
+                if len(chunk_x) < 2: continue
+                
+                dx = np.abs(np.diff(chunk_x))
+                dy = np.abs(np.diff(chunk_y))
+                jumps = (dx + dy) > jump_threshold
+                
+                if np.any(jumps):
+                    j_locs = np.where(jumps)[0]
+                    c_starts = [0]
+                    c_ends = []
+                    for jl in j_locs:
+                        c_ends.append(jl)
+                        c_starts.append(jl+1)
+                    c_ends.append(len(chunk_x)-1)
+                    
+                    for cs, ce in zip(c_starts, c_ends):
+                        if ce >= cs:
+                             p_pts = [QPointF(float(x_val), float(y_val)) for x_val, y_val in zip(chunk_x[cs:ce+1], chunk_y[cs:ce+1])]
+                             if len(p_pts) > 1:
+                                path.addPolygon(QPolygonF(p_pts))
+                else:
+                    p_pts = [QPointF(float(x_val), float(y_val)) for x_val, y_val in zip(chunk_x, chunk_y)]
+                    if len(p_pts) > 1:
+                        path.addPolygon(QPolygonF(p_pts))
+
+        # Render Batches
+        alpha_val = 120 if not is_moving else 60
+        painter.setBrush(Qt.NoBrush)
+        painter.setRenderHint(QPainter.Antialiasing, False if is_moving else True)
+        
+        for (r, g, b), path in batches.items():
+            color = QColor(r, g, b, alpha_val)
+            painter.setPen(QPen(color, 1.0))
+            painter.drawPath(path)
+
+    def project_universal_stereo(self, alt, az):
+        # MODO STEREOGRAPHIC-HORIZON (Flat Horizon, Spherical Sky)
+        # Centers projection on Horizon (Alt=0), but shifts vertically to simulate looking up.
+        # This keeps the horizon straight but maps the Zenith to a finite point.
+        
+        w, h = self.width(), self.height()
+        
+        # Scaling
+        # Standard: Y=1 (Radius) corresponds to ~ 45 degrees vertical from center?
+        # Let's calibrate so: 1 screen height ~ 60 degree vertical
+        scale_h = h / 2.0 * self.zoom_level # Radius in pixels
+        
+        # 1. Coordinates relative to Camera Azimuth but FIXED Horizontal Plane
+        az_rel = math.radians(az - self.azimuth_offset)
+        alt_rad = math.radians(alt)
+        
+        # 2. Stereographic Projection (Center = 0,0 i.e. Looking at Horizon)
+        # Formula: x = 2*cos(lat)*sin(lon) / (1 + cos(lat)*cos(lon))
+        #          y = 2*sin(lat)          / (1 + cos(lat)*cos(lon))
+        # where lat = alt, lon = az_rel
+        
+        cos_alt = math.cos(alt_rad)
+        sin_alt = math.sin(alt_rad)
+        cos_az = math.cos(az_rel)
+        sin_az = math.sin(az_rel)
+        
+        denom = 1.0 + cos_alt * cos_az
+        if denom < 1e-6: return None # Behind camera anti-pode
+        
+        k = 2.0 / denom
+        x = k * cos_alt * sin_az
+        y = k * sin_alt
+        
+        # 3. Screen Mapping
+        elev_rad = math.radians(self.elevation_angle)
+        y_center_val = 2.0 * math.tan(elev_rad / 2.0)
+        
+        # Pixel coordinates
+        cx = w / 2.0
+        cy_base = (h / 2.0) + (h * self.vertical_offset_ratio)
+        
+        screen_x = cx + x * scale_h
+        screen_y = cy_base - (y - y_center_val) * scale_h
+        
+        return (screen_x, screen_y)
+
+    def project_universal_stereo_numpy(self, alt_array, az_array):
+        """
+        Vectorized version of project_universal_stereo using NumPy.
+        Returns: (screen_x_array, screen_y_array)
+        """
+        if np is None: return None, None
+
+        w, h = self.width(), self.height()
+        scale_h = h / 2.0 * self.zoom_level
+        cx = w / 2.0
+        cy_base = (h / 2.0) + (h * self.vertical_offset_ratio)
+
+        # 1. Coordinates relative to Camera Azimuth
+        az_rel = np.radians(az_array - self.azimuth_offset)
+        alt_rad = np.radians(alt_array)
+
+        # 2. Stereographic Projection
+        cos_alt = np.cos(alt_rad)
+        sin_alt = np.sin(alt_rad)
+        cos_az = np.cos(az_rel)
+        sin_az = np.sin(az_rel)
+
+        denom = 1.0 + cos_alt * cos_az
+        valid_mask = denom > 1e-6
+        safe_denom = np.where(valid_mask, denom, 1.0)
+        
+        k = 2.0 / safe_denom
+        x = k * cos_alt * sin_az
+        y = k * sin_alt
+
+        # 3. Screen Mapping
+        elev_rad = math.radians(self.elevation_angle)
+        y_center_val = 2.0 * math.tan(elev_rad / 2.0)
+
+        screen_x = cx + x * scale_h
+        screen_y = cy_base - (y - y_center_val) * scale_h
+        
+        screen_x = np.where(valid_mask, screen_x, np.nan)
+        screen_y = np.where(valid_mask, screen_y, np.nan)
+
+        return screen_x, screen_y
+
+# ... (inside AstronomicalWidget)
+
+    def wheelEvent(self, event):
+        degrees = event.angleDelta().y() / 8.0
+        steps = degrees / 15.0
+
+        if self.scope_mode_enabled():
+            # Scope mode mapping:
+            # - Ctrl + wheel => scope size/FOV (focal)
+            # - Wheel only    => global camera zoom
+            if event.modifiers() & Qt.ControlModifier:
+                self._scope_wheel_zoom(steps)
+            else:
+                self._camera_wheel_zoom(steps)
+            event.accept()
+            return
+
+        self._camera_wheel_zoom(steps)
+
+
+
+
+
+
+    def calculate_sun_times(self, lat, day_of_year):
+        # Approximate declination
+        dec = -23.44 * math.cos(math.radians(360/365 * (day_of_year + 10)))
+        lat_rad = math.radians(lat)
+        dec_rad = math.radians(dec)
+        
+        # Hour angle bounds
+        val = -math.tan(lat_rad) * math.tan(dec_rad)
+        val = max(-1, min(1, val)) # Clamp for polar regions
+        
+        ha_rad = math.acos(val)
+        half_day = math.degrees(ha_rad) / 15.0
+        
+        sunrise = 12.0 - half_day
+        sunset = 12.0 + half_day
+        return sunrise, sunset
+
+    def sky_color_phys(self, view_alt, view_az, sun_alt, sun_az, bortle=1, twilight_factor=1.0):
+        # 1. Base Gradient Interpolation (Zenith & Horizon)
+        # Using the simplified keyframe approach for robust base colors
+        
+        # Keyframes (Zenith Color 't', Horizon Color 'b', Sun Glow 'g')
+        # Keyframes (Zenith Color 't', Horizon Color 'b', Sun Glow 'g')
+        keyframes = [
+            # Day: Deep Blue / Desaturated Blue / White-Yellow
+            { 'alt': 20.0, 't': (0, 100, 200), 'b': (100, 180, 255), 'g': (255, 255, 220) },
+            # Golden Hour: Slate Blue / Gold / Orange
+            { 'alt': 6.0,  't': (20, 50, 90),  'b': (255, 190, 60), 'g': (255, 140, 20) },
+            # Sunset: Deep Indigo / Burning Red / Orange-Red
+            { 'alt': 0.0,  't': (25, 30, 70),  'b': (255, 70, 10), 'g': (255, 60, 0) },
+            # Civil Twilight (The "Magical" Blue/Purple Hour)
+            # Reference Image: Dark Purple/Blue Top, Band of Orange/Yellow Horizon
+            { 'alt': -4.0, 't': (10, 15, 50),  'b': (120, 60, 20), 'g': (60, 20, 5) },
+            # Civil End: Black-Blue / Deep Crimson fade
+            { 'alt': -6.0, 't': (5, 5, 25),    'b': (40, 15, 20),  'g': (10, 2, 0) },
+            # Nautical: Night / Dark Grey / None
+            { 'alt': -12.0,'t': (2, 2, 10),    'b': (10, 10, 25),  'g': (0, 0, 0) },
+            # Night
+            { 'alt': -18.0,'t': (0, 0, 5),     'b': (5, 5, 15),    'g': (0, 0, 0) }
+        ]
+        
+        # Interpolate Base Colors
+        def lerp_tup(c1, c2, f):
+            return tuple(int(a + (b - a) * f) for a, b in zip(c1, c2))
+            
+        k1 = keyframes[0]
+        k2 = keyframes[-1]
+        
+        if sun_alt >= keyframes[0]['alt']:
+            k1 = keyframes[0]; k2 = k1; factor = 0.0
+        elif sun_alt <= keyframes[-1]['alt']:
+            k1 = keyframes[-1]; k2 = k1; factor = 0.0
+        else:
+            for i in range(len(keyframes) - 1):
+                if keyframes[i]['alt'] >= sun_alt >= keyframes[i+1]['alt']:
+                    k1 = keyframes[i]
+                    k2 = keyframes[i+1]
+                    rng = k1['alt'] - k2['alt']
+                    factor = (k1['alt'] - sun_alt) / (rng + 1e-9)
+                    break
+        
+        c_zen = lerp_tup(k1['t'], k2['t'], factor)
+        c_hor = lerp_tup(k1['b'], k2['b'], factor)
+        c_sun = lerp_tup(k1['g'], k2['g'], factor)
+        
+        # 2. Azimuthal & Physics Factors
+        delta_az_rad = math.radians(abs(view_az - sun_az))
+        while delta_az_rad > math.pi: delta_az_rad -= 2*math.pi
+        delta_az_rad = abs(delta_az_rad)
+        
+        # Calculate angular distance to sun (approx) using spherical law of cosines
+        v_alt_rad = math.radians(view_alt)
+        s_alt_rad = math.radians(sun_alt)
+        
+        cos_gamma = math.sin(v_alt_rad)*math.sin(s_alt_rad) + \
+                    math.cos(v_alt_rad)*math.cos(s_alt_rad)*math.cos(delta_az_rad)
+        # Clamp
+        cos_gamma = max(-1.0, min(1.0, cos_gamma))
+        gamma_rad = math.acos(cos_gamma) # Angle in radians (0..pi)
+        
+        # --- HORIZON AZIMUTHAL VARIATION ---
+        # Modify the horizon color (c_hor) based on direction relative to sun
+        # If facing sun -> Use c_hor (Red/Orange/Gold)
+        # If facing away -> Use Dark Blue/Grey (Anti-Sun Horizon)
+        
+        # Only applies when Sun is low or setting (Golden Hour / Sunset / Twilight)
+        # Sun Alt < 15 deg and Sun Alt > -12 (Nautical End - completely gone)
+        if -12.0 < sun_alt < 15.0:
+            # Factor: 1.0 (Facing Sun) ... 0.0 (Facing Away)
+            az_factor = (math.cos(delta_az_rad) + 1.0) / 2.0 
+            # Sharpen the curve so red stays near sun
+            az_factor = math.pow(az_factor, 1.5)
+            
+            # STRENGHT FALLOFF: Fade out the azimuthal variation completely after sunset
+            # At -12.0, sun_extinction is 0.0
+            sun_extinction = 1.0
+            if sun_alt < 0:
+                sun_extinction = max(0.0, 1.0 - (abs(sun_alt) / 12.0))
+            
+            # Define Anti-Sun Horizon Color based on altitude
+            if sun_alt > 0:
+                # Day/Golden: Horizon opposite is Blue-ish/Grey
+                anti_hor = (100, 130, 170)
+            else:
+                # Twilight: Horizon opposite is deep night sky (should NOT be brighter than base)
+                # Night base horizon is (10, 10, 25) for -12. 
+                # Anti-sun should be the darkest part of the horizon.
+                anti_hor = (5, 5, 12)
+                
+            # Lerp Current Horizon (Red/Gold) towards Anti-Horizon
+            r_target = int(c_hor[0] * az_factor + anti_hor[0] * (1-az_factor))
+            g_target = int(c_hor[1] * az_factor + anti_hor[1] * (1-az_factor))
+            b_target = int(c_hor[2] * az_factor + anti_hor[2] * (1-az_factor))
+            
+            # Apply Sun Extinction (Night doesn't have azimuthal horizon color differences)
+            r_hor = int(c_hor[0] * (1-sun_extinction) + r_target * sun_extinction)
+            g_hor = int(c_hor[1] * (1-sun_extinction) + g_target * sun_extinction)
+            b_hor = int(c_hor[2] * (1-sun_extinction) + b_target * sun_extinction)
+            
+            # Update base horizon color for vertical mix
+            c_hor = (r_hor, g_hor, b_hor)
+            
+        # STERN NIGHT FILTER: Once Sun is deep underground, zero out all residual glow.
+        if sun_alt <= -12.0:
+            # Force Night Palette (Blue shifts)
+            c_zen = (0, 0, 5)
+            c_hor = (5, 5, 12)
+            c_sun = (0, 0, 0)
+        elif sun_alt <= -18.0:
+            c_zen = (0, 0, 2)
+            c_hor = (2, 2, 8)
+            c_sun = (0, 0, 0)
+
+        # 3. Composition
+        # Vertical gradient t value (0 at zenith, 1 at horizon)
+        t = 1.0 - (view_alt / 90.0)
+        t = max(0.0, min(1.0, t))
+        
+        # Mix Base Zenith -> Horizon
+        mix_t = t * t * (3 - 2*t) # Smoothstep
+        r_base = c_zen[0] * (1-mix_t) + c_hor[0] * mix_t
+        g_base = c_zen[1] * (1-mix_t) + c_hor[1] * mix_t
+        b_base = c_zen[2] * (1-mix_t) + c_hor[2] * mix_t
+        
+        # Default result
+        r, g, b = r_base, g_base, b_base
+        
+        # Subtle Background Directional Glow (NOT the main Sun Halo)
+        # This makes the sky slightly brighter/warmer in the sun's general direction
+        # without drawing a distinct disk or halo.
+        if cos_gamma > 0.0:
+            # Very wide, very soft lobe
+            dir_glow = math.pow(cos_gamma, 4.0) * 0.15 # Max 15% influence
+            
+            # PHYSICAL FALLOFF: After Nautical Twilight, the sun halo should be ZERO.
+            # Ramps from 1.0 (Day/Sunset) to 0.0 at SunAlt = -12.0
+            glow_intensity = 1.0
+            if sun_alt < 0:
+                glow_intensity = max(0.0, 1.0 - (abs(sun_alt) / 12.0))
+            
+            dir_glow *= glow_intensity
+            
+            # Use Sun Glow Color but heavily blended with Sky
+            # We add it additively but very weakly
+            r = min(255, r + c_sun[0] * dir_glow)
+            g = min(255, g + c_sun[1] * dir_glow)
+            b = min(255, b + c_sun[2] * dir_glow)
+            
+        # OPPOSITE SUN Effects (Belt of Venus / Earth Shadow)
+        # Use smooth factor instead of hard delta_az_rad > pi/2 cutoff
+        # cos(delta_az) is 1 at Sun, 0 at 90 deg, -1 at Anti-Sun
+        # We want effect to start at 90 deg (0) and max at 180 deg (1)
+        az_away_factor = max(0.0, -math.cos(delta_az_rad))
+        
+        # Belt of Venus (Pinkish Band)
+        if -10 <= sun_alt <= 2 and az_away_factor > 0:
+            angle_from_anti_sun = abs(gamma_rad - math.pi) # 0 means looking at anti-sun
+            # Only near anti-sun
+            if angle_from_anti_sun < 0.5:
+                 # Band at ~10-20 deg elevation
+                belt_center = 10.0
+                belt_dist = abs(view_alt - belt_center)
+                belt_str = math.exp(-(belt_dist*belt_dist)/100.0) * 0.2 * (1.0 - angle_from_anti_sun*2.0)
+                
+                # Modulate by azimuth factor for safety (though angle_from_anti_sun handles it mostly)
+                belt_str *= az_away_factor
+                
+                r += 60 * belt_str
+                g += 30 * belt_str
+                b += 50 * belt_str
+        
+        # Earth Shadow (Dark Blue Band at horizon opposite sun)
+        if sun_alt < 2 and az_away_factor > 0:
+            shadow_h = 6.0 + abs(sun_alt)
+            if view_alt < shadow_h:
+                shadow_f = (shadow_h - view_alt) / shadow_h
+                # Base darkening max 50%
+                darken_strength = 0.5 * shadow_f * az_away_factor
+                darken = 1.0 - darken_strength
+                
+                r *= darken
+                g *= darken
+                b *= darken
+                    
+        # Clamp
+        r, g, b = min(255, max(0, int(r))), min(255, max(0, int(g))), min(255, max(0, int(b)))
+        
+        # 4. Integrate Global Sky Glow (Bortle / Light Pollution) directly into physical model
+        # This fixes the "pyramid" shape by curving the glow along with the sky projection
+        if bortle > 2 and twilight_factor > 0.01:
+            glow_val = (bortle - 2) / 7.0 
+            glow_alpha = glow_val * twilight_factor * 0.15 # Max 15% influence to base color
+            
+            # Elevation curve (glow is stronger at horizon, fades to zenith)
+            elev_t = max(0.0, min(1.0, 1.0 - (view_alt / 90.0)))
+            # Exponential fade to avoid plateau
+            elev_falloff = math.pow(elev_t, 2.5) 
+            
+            # Urban Sky Glow color: Desaturated warm grey (Sodium/LED)
+            glow_r, glow_g, glow_b = 140, 130, 110
+            
+            # Apply additive blend based on elevation
+            strength = glow_alpha * elev_falloff
+            r = min(255, int(r + glow_r * strength))
+            g = min(255, int(g + glow_g * strength))
+            b = min(255, int(b + glow_b * strength))
+            
+        return QColor(r, g, b)
+
+    def draw_background(self, painter, sun_alt, sun_az, view_az, dimming=1.0):
+        rect = self.rect()
+        
+        # Interactive state (camera dragging or time bar dragging).
+        # Scope-reticle drag does not affect sky background quality.
+        is_interacting = self._camera_interaction_active(include_time_drag=True, include_animation=False)
+        
+        # Reduced Resolution for performance during dragging
+        # (4096 pixels -> 1024 pixels, 75% less physical sky model calculation)
+        w_res = 32 if is_interacting else 64
+        h_res = 32 if is_interacting else 64
+        
+        # Higher quantization during interaction to maximize cache hits
+        q_sun_alt = (round(sun_alt * 2) / 2.0) if not is_interacting else round(sun_alt)
+        q_sun_az = (round(sun_az / 2) * 2) if not is_interacting else (round(sun_az / 4) * 4)
+        q_view_az = (round(view_az / 2) * 2) if not is_interacting else (round(view_az / 4) * 4)
+
+        w, h = self.width(), self.height()
+        zoom = round(self.zoom_level, 2)
+        elev_q = round(self.elevation_angle, 1)
+
+        # Pre-calc Bortle for physical sky
+        is_auto_bortle = getattr(self.parent_widget, 'is_auto_bortle', getattr(self, 'is_auto_bortle', True))
+        bortle = getattr(self.parent_widget, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1)) if is_auto_bortle else 1
+        
+        twilight_factor = 1.0
+        if sun_alt >= 0: twilight_factor = 0.0
+        elif sun_alt > -18.0: twilight_factor = (0 - sun_alt) / 18.0
+        twilight_factor *= dimming
+        
+        # Quantize bortle/twilight to avoid excessive cache misses
+        t_q = round(twilight_factor * 10) / 10.0
+
+        cache_key = (q_sun_alt, q_sun_az, q_view_az, w_res, h_res, w, h, zoom, elev_q, bortle, t_q)
+        
+        if self._bg_cache_key != cache_key or self._bg_cache_pixmap is None:
+            # Regenerate using physics model
+            from PyQt5.QtGui import QImage
+            img = QImage(w_res, h_res, QImage.Format_RGB32)
+            
+            # Use Inverse Projection to get real Alt/Az for each screen pixel
+            # This is slow per-pixel, but at 64x64 it's 4096 calls -> fast enough.
+            
+            for y in range(h_res):
+                sy = y * (h / (h_res - 1.0))
+                for x in range(w_res):
+                    sx = x * (w / (w_res - 1.0))
+                    
+                    # Inverse Project (Screen -> Alt/Az)
+                    alt, az = self.unproject_stereo(sx, sy)
+                    
+                    # Convert to color
+                    col = self.sky_color_phys(alt, az, q_sun_alt, q_sun_az, bortle=bortle, twilight_factor=t_q)
+                    img.setPixelColor(x, y, col)
+            
+            self._bg_cache_pixmap = QPixmap.fromImage(img)
+            self._bg_cache_key = cache_key
+            
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(rect, self._bg_cache_pixmap)
+        
+        # Apply Dimming (Eclipse)
+        # Overlay black rect with Alpha = 1.0 - dimming
+        if dimming < 0.99:
+            alpha = int((1.0 - dimming) * 255)
+            alpha = max(0, min(255, alpha))
+            painter.fillRect(rect, QColor(0, 0, 0, alpha))
+
+
+    def draw_celestial_grid(self, painter, hour):
+        # Draw Celestial Equator (Dec = 0)
+        # Cyan Line
+        painter.setPen(QPen(QColor(0, 255, 255, 80), 1, Qt.DashLine))
+        
+        day_of_year = self.parent_widget.manual_day
+        # LST logic same as stars
+        lst = (100.0 + day_of_year * 0.9856 + hour * 15.0 + self.parent_widget.longitude) % 360
+        
+        path = QPainterPath()
+        first_pt = True
+        lat_rad = math.radians(self.parent_widget.latitude)
+        
+        steps = 72
+        for i in range(steps + 1):
+            ra = (i * 360.0 / steps)
+            # RA to Alt/Az for Dec=0
+            ha = (lst - ra)
+            ha_rad = math.radians(ha)
+            dec_rad = 0
+            
+            sin_alt = (math.cos(lat_rad) * math.cos(ha_rad)) # sin(0)=0, cos(0)=1
+            alt = math.degrees(math.asin(max(-1, min(1, sin_alt))))
+            
+            cos_az = (-sin_alt * math.sin(lat_rad)) / \
+                     (math.cos(math.radians(alt)) * math.cos(lat_rad) + 1e-10)
+            az = math.degrees(math.acos(max(-1, min(1, cos_az))))
+            if math.sin(ha_rad) > 0: az = 360 - az
+            
+            pt = self.project_universal_stereo(alt, az)
+            if pt:
+                # Avoid drawing across the back of the sphere wrapping
+                if first_pt:
+                    path.moveTo(QPointF(*pt))
+                    first_pt = False
+                else:
+                    path.lineTo(QPointF(*pt))
+            else:
+                 first_pt = True
+
+        painter.drawPath(path)
+
+    def _on_star_result(self, img, vis_stars):
+        self._cached_star_image = img
+        self.visible_stars = vis_stars # Update interactions
+        if np is not None and isinstance(vis_stars, list) and vis_stars and isinstance(vis_stars[0], tuple):
+            try:
+                self.visible_stars_sx = np.array([float(v[0]) for v in vis_stars], dtype=np.float32)
+                self.visible_stars_sy = np.array([float(v[1]) for v in vis_stars], dtype=np.float32)
+            except Exception:
+                self.visible_stars_sx = np.array([], dtype=np.float32)
+                self.visible_stars_sy = np.array([], dtype=np.float32)
+        elif np is not None:
+            self.visible_stars_sx = np.array([], dtype=np.float32)
+            self.visible_stars_sy = np.array([], dtype=np.float32)
+        self.rendering_busy = False
+        self.update() # Force repaint to show new stars immediately
+
+    def _on_trail_result(self, img):
+        self._cached_trail_image = img
+        self.trail_rendering_busy = False
+
+    def draw_stars(self, painter, hour, sun_alt, sun_az, for_trails=False, visibility_factor=1.0, moon_mask=None, mag_limit=None, eff_lat=None, day_of_year=None):
+        if np is not None:
+            self.draw_stars_numpy(
+                painter,
+                hour,
+                sun_alt,
+                sun_az,
+                mag_limit=mag_limit,
+                eff_lat=eff_lat,
+                day_of_year=day_of_year,
+            )
+            return
+
+        if visibility_factor <= 0:
+            return
+
+
+    def _sync_camera_state(self):
+        self.camera.azimuth_offset = float(self.azimuth_offset)
+        self.camera.elevation_angle = float(self.elevation_angle)
+        self.camera.zoom_level = float(self.zoom_level)
+        self.camera.vertical_offset_ratio = float(self.vertical_offset_ratio)
+
+    def _build_star_scene_state(self, hour, sun_alt, sun_az, mag_limit, eff_lat, day_of_year):
+        pw = self.parent_widget
+        if mag_limit is None:
+            mag_limit = float(getattr(pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG))
+        if eff_lat is None:
+            eff_lat = float(getattr(pw, "latitude", 0.0))
+        if day_of_year is None:
+            day_of_year = int(getattr(pw, "manual_day", 0))
+
+        self._sync_camera_state()
+        scope_enabled = bool(self.scope_mode_enabled())
+
+        extras = {
+            "star_gamma": float(getattr(pw, "star_gamma", 0.55)) if hasattr(pw, "star_gamma") else 0.55,
+            "star_brightness_boost": float(getattr(pw, "star_brightness_boost", 1.20)) if hasattr(pw, "star_brightness_boost") else 1.20,
+            "scope_instrument_profile": str(getattr(pw, "scope_instrument_profile", "telescope")),
+            "stars_enabled": bool(self._parent_checkbox_checked("chk_enable_sky", default=True)),
+            "catalog_mag_sorted": bool(getattr(pw, "_catalog_mag_sorted", False)),
+        }
+
+        mw_enabled = bool(getattr(pw, "milkyway_overlay_enabled", get_config_value("milkyway_overlay_enabled", True)))
+        mw_blend_mode = str(getattr(pw, "milkyway_overlay_blend_mode", get_config_value("milkyway_overlay_blend_mode", "add")))
+        mw_ra_offset = float(getattr(pw, "milkyway_overlay_ra_offset_deg", get_config_value("milkyway_overlay_ra_offset_deg", 180.0)))
+        mw_coord_frame = str(getattr(pw, "milkyway_overlay_coord_frame", get_config_value("milkyway_overlay_coord_frame", "galactic")))
+        mw_lat_flip = bool(getattr(pw, "milkyway_overlay_lat_flip", get_config_value("milkyway_overlay_lat_flip", True)))
+        mw_lon_flip = bool(getattr(pw, "milkyway_overlay_lon_flip", get_config_value("milkyway_overlay_lon_flip", True)))
+        mw_opacity_factor = float(getattr(pw, "milkyway_overlay_opacity", get_config_value("milkyway_overlay_opacity", 0.65)))
+        default_mw_texture = str(Path(getattr(pw, "runtime_layout", {}).get("data_milkyway", get_base_dir())) / "milkyway_overlay.png")
+        mw_texture_path = str(
+            getattr(
+                pw,
+                "milkyway_overlay_texture_path",
+                get_config_value("milkyway_overlay_texture_path", default_mw_texture),
+            )
+        )
+        mw_sample_scale = float(
+            getattr(
+                pw,
+                "milkyway_overlay_sample_scale",
+                get_config_value("milkyway_overlay_sample_scale", 1.0),
+            )
+        )
+
+        dust_map_enabled = bool(getattr(pw, "dust_map_enabled", get_config_value("dust_map_enabled", False)))
+        default_dust_map = str(Path(getattr(pw, "runtime_layout", {}).get("data_planck", get_base_dir())) / "planck_dust_opacity_eq_u16.npz")
+        dust_map_path = str(
+            getattr(
+                pw,
+                "dust_map_path",
+                get_config_value("dust_map_path", default_dust_map),
+            )
+        )
+        dust_density_strength = float(getattr(pw, "dust_density_strength", get_config_value("dust_density_strength", 0.0)))
+        dust_extinction_strength = float(getattr(pw, "dust_extinction_strength", get_config_value("dust_extinction_strength", 0.65)))
+        if bool(dust_map_enabled) and float(dust_density_strength) <= 0.0 and float(dust_extinction_strength) <= 0.0:
+            dust_extinction_strength = 0.65
+
+        scope_focal_mm = float(getattr(getattr(self, "scope_controller", None), "focal_mm", 250.0))
+        scope_aperture_mode = str(getattr(pw, "scope_aperture_input_mode", "diameter_mm"))
+        scope_aperture_f_number = float(getattr(pw, "scope_aperture_f_number", 4.0))
+        if scope_aperture_mode != "f_number":
+            aperture_mm = max(1e-6, float(getattr(pw, "scope_aperture_mm", 80.0)))
+            scope_aperture_f_number = max(0.7, float(scope_focal_mm) / aperture_mm)
+
+        extras["milkyway_overlay"] = {
+            "enabled": mw_enabled,
+            "texture_path": mw_texture_path,
+            "opacity": float(clamp(mw_opacity_factor, 0.0, 1.0)),
+            "blend_mode": mw_blend_mode,
+            "ra_offset_deg": mw_ra_offset,
+            "coord_frame": mw_coord_frame.strip().lower(),
+            "lat_flip": bool(mw_lat_flip),
+            "lon_flip": bool(mw_lon_flip),
+            "sample_scale": float(clamp(mw_sample_scale, 0.10, 1.0)),
+            "auto_opacity": True,
+            "is_auto_bortle": bool(getattr(pw, "is_auto_bortle", True)),
+            "bortle": float(getattr(pw, "auto_bortle_estimate", 1.0)),
+            "manual_mag_limit": float(getattr(pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+            "scope_enabled": bool(scope_enabled),
+            "scope_iso": float(max(1.0, float(getattr(pw, "scope_iso", 800.0)))),
+            "scope_exposure_s": float(max(1e-3, float(getattr(pw, "scope_exposure_s", 15.0)))),
+            "scope_aperture_f_number": float(max(0.1, scope_aperture_f_number)),
+            "dust_map_enabled": bool(dust_map_enabled),
+            "dust_map_path": dust_map_path,
+            "dust_density_strength": float(max(0.0, dust_density_strength)),
+            "dust_extinction_strength": float(max(0.0, dust_extinction_strength)),
+        }
+
+        vm_state = getattr(pw, "visual_magnitude_result", None)
+        if vm_state is not None:
+            try:
+                exposure_gain_mag = max(0.0, float(getattr(vm_state, "exposure_gain_mag", 0.0)))
+                aperture_gain_mag = max(0.0, float(getattr(vm_state, "aperture_gain_mag", 0.0)))
+                depth_gain_mag = max(
+                    0.0,
+                    float(getattr(vm_state, "scope_limit_mag", 0.0)) - float(getattr(vm_state, "eye_limit_mag", 0.0)),
+                )
+                iso_value = max(100.0, float(getattr(pw, "scope_iso", 100)))
+                exposure_seconds = max(0.1, float(getattr(pw, "scope_exposure_s", 1.0)))
+                iso_factor = max(0.0, min(1.0, math.log2(iso_value / 100.0) / 6.0))  # 100->0, 6400->1
+                exposure_factor = max(0.0, min(1.0, math.log2(exposure_seconds) / 5.0))  # 1s->0, 32s->1
+                depth_factor = 0.18 + 0.52 * iso_factor
+                extras["scope_exposure_gain_mag"] = exposure_gain_mag
+                extras["scope_aperture_gain_mag"] = aperture_gain_mag
+                extras["scope_depth_gain_mag"] = depth_gain_mag
+                extras["scope_limit_mag"] = float(getattr(vm_state, "scope_limit_mag", mag_limit))
+                dataset_max_mag = float(getattr(pw, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG))
+                extras["scope_dataset_max_mag"] = dataset_max_mag
+                extras["scope_iso_factor"] = float(iso_factor)
+                extras["scope_exposure_factor"] = float(exposure_factor)
+                # Photometric response gain for renderer (helps when dataset depth reaches ceiling).
+                photometric_drive = (
+                    1.05 * exposure_gain_mag * (0.40 + 0.60 * exposure_factor)
+                    + 0.28 * aperture_gain_mag
+                    + 0.22 * depth_gain_mag * depth_factor
+                )
+                extras["scope_signal_gain"] = float(max(1.0, min(6.0, 1.0 + 0.26 * photometric_drive)))
+                extras["scope_halo_gain"] = float(max(1.0, min(5.0, 1.0 + 0.22 * photometric_drive)))
+                if scope_enabled:
+                    extras["star_gamma"] = float(max(0.38, min(0.65, float(extras["star_gamma"]) - 0.05 * min(5.0, exposure_gain_mag))))
+                    extras["star_brightness_boost"] = float(
+                        max(
+                            1.10,
+                            min(
+                                3.80,
+                                float(extras["star_brightness_boost"])
+                                + 0.26 * exposure_gain_mag * (0.35 + 0.65 * exposure_factor)
+                                + 0.10 * aperture_gain_mag
+                                + 0.03 * depth_gain_mag * depth_factor,
+                            ),
+                        )
+                    )
+                    extras["scope_alpha_gain"] = float(
+                        max(
+                            1.0,
+                            min(
+                                4.8,
+                                1.0
+                                + 0.30 * exposure_gain_mag * (0.35 + 0.65 * exposure_factor)
+                                + 0.22 * iso_factor
+                                + 0.08 * aperture_gain_mag
+                                + 0.02 * depth_gain_mag * depth_factor,
+                            ),
+                        )
+                    )
+                    extras["scope_size_gain"] = float(
+                        max(
+                            0.74,
+                            min(
+                                2.2,
+                                0.90
+                                + 0.12 * exposure_gain_mag * (0.35 + 0.65 * exposure_factor)
+                                + 0.04 * aperture_gain_mag
+                                + 0.015 * depth_gain_mag * depth_factor,
+                            ),
+                        )
+                    )
+                    extras["scope_limit_extra_mag"] = float(
+                        max(
+                            0.0,
+                            min(
+                                4.0,
+                                0.55 * exposure_gain_mag * (0.30 + 0.70 * exposure_factor)
+                                + 0.10 * aperture_gain_mag
+                                + 0.08 * depth_gain_mag * depth_factor,
+                            ),
+                        )
+                    )
+            except Exception:
+                pass
+
+        if scope_enabled and hasattr(self, "scope_controller"):
+            ctrl = self.scope_controller
+            first_fix_pending = not bool(getattr(ctrl, "user_center_fixed_once", False))
+            extras["scope_first_fix_pending"] = 1 if first_fix_pending else 0
+            if first_fix_pending:
+                # Until the first explicit scope fixation, keep naked-eye density only.
+                extras["scope_force_naked_eye_until_fix"] = 1
+                extras["scope_first_fix_mag_cap"] = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
+            try:
+                fov_w_ctx, fov_h_ctx = ctrl.current_fov()
+                fov_diag_ctx = float(math.hypot(float(fov_w_ctx), float(fov_h_ctx)))
+                # Wide-field camera lenses cannot sustain deep-sky limiting magnitude from narrow setups.
+                wide_factor = max(0.0, math.log2(max(1.0, fov_diag_ctx / 9.0)))
+                fov_penalty_mag = float(min(5.5, wide_factor * 1.35))
+                extras["scope_fov_diag_deg"] = fov_diag_ctx
+                extras["scope_fov_penalty_mag"] = fov_penalty_mag
+            except Exception:
+                pass
+            center = getattr(ctrl, "center", None)
+            if center is None:
+                center = (float(self.elevation_angle), float(self.azimuth_offset))
+            if center is not None:
+                try:
+                    center_alt = float(center[0])
+                    center_az = float(center[1]) % 360.0
+                    center_ra_dec = self._altaz_to_ra_dec(center_alt, center_az, float(hour), int(day_of_year))
+                    if center_ra_dec is not None:
+                        center_ra = float(center_ra_dec[0])
+                        center_dec = float(center_ra_dec[1])
+                        fov_w, fov_h = ctrl.current_fov()
+                        half_diag = 0.5 * math.hypot(float(fov_w), float(fov_h))
+                        # Tight candidate window to avoid broad-sky scans at short focal lengths.
+                        dec_pad = min(90.0, max(3.0, half_diag * 1.30 + 2.5))
+                        ra_pad = min(180.0, dec_pad / max(0.12, math.cos(math.radians(center_dec))) + 2.0)
+                        extras["scope_center_ra_deg"] = center_ra
+                        extras["scope_center_dec_deg"] = center_dec
+                        extras["scope_preselect_dec_pad_deg"] = float(dec_pad)
+                        extras["scope_preselect_ra_pad_deg"] = float(ra_pad)
+                except Exception:
+                    pass
+
+        state = SceneState(
+            camera=self.camera,
+            latitude=float(eff_lat),
+            longitude=float(getattr(pw, "longitude", 0.0)),
+            ut_hour=float(hour),
+            day_of_year=int(day_of_year),
+            sun_alt=float(sun_alt),
+            sun_az=float(sun_az),
+            ra=getattr(pw, "np_ra", None),
+            dec=getattr(pw, "np_dec", None),
+            mag=getattr(pw, "np_mag", None),
+            bp_rp=getattr(pw, "np_bp_rp", None),
+            color_r=getattr(pw, "np_r", None),
+            color_g=getattr(pw, "np_g", None),
+            color_b=getattr(pw, "np_b", None),
+            magnitude_limit=float(mag_limit),
+            star_scale=float(getattr(pw, "star_scale", 1.0)),
+            auto_star_scale_multiplier=float(getattr(pw, "auto_star_scale_multiplier", 1.0)),
+            pure_colors=bool(getattr(pw, "pure_colors", False)),
+            spike_magnitude_threshold=float(getattr(pw, "spike_magnitude_threshold", 2.0)),
+            scope_k_fallback=float(getattr(pw, "scope_k_fallback", 0.20)),
+            bortle=float(getattr(pw, "auto_bortle_estimate", 1.0)),
+            is_auto_bortle=bool(getattr(pw, "is_auto_bortle", False)),
+            scope_enabled=scope_enabled,
+            interaction_active=bool(self._camera_interaction_active(include_time_drag=True, include_animation=False)),
+            naked_eye_cap=float(min(float(getattr(pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)), STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+            scope_mask_fn=self._scope_contains_alt_az_mask,
+            horizon_profile=getattr(getattr(self, "horizon_overlay", None), "profile", None),
+            extras=extras,
+        )
+
+        # Avoid stale screen buffers during scope reticle manipulation.
+        if state.scope_enabled and (not self.dragging):
+            state.interaction_active = False
+
+        return state
+
+    def _emit_render_diagnostics(self, stars_result):
+        if not self.debug_render_metrics:
+            return
+
+        now_t = time.time()
+        if now_t - self._last_diagnostics_log_time < 0.4:
+            return
+
+        self._last_diagnostics_log_time = now_t
+
+        fov_deg = 100.0 / max(0.001, float(self.zoom_level))
+        snap = self.scene_diagnostics.snapshot()
+        counters = snap.counters
+        timings = snap.timings_ms
+        line = (
+            f"[SkyDiagnostics] viewport={self.width()}x{self.height()} "
+            f"zoom={self.zoom_level:.2f} fov={fov_deg:.2f} "
+            f"cam_ra={self.azimuth_offset % 360.0:.2f} cam_dec={self.elevation_angle:.2f} "
+            f"total_in_view={stars_result.total_in_view} "
+            f"view_prefilter={int(counters.get('view_prefilter_count', 0))} "
+            f"view_tiles={int(counters.get('view_tile_count', 0))} "
+            f"view_tile_candidates={int(counters.get('view_tile_candidates', 0))} "
+            f"view_fov_pre={float(counters.get('view_prefilter_fov_deg', 0.0)):.2f} "
+            f"scope_prefilter={int(counters.get('scope_prefilter_count', 0))} "
+            f"scope_mask={int(counters.get('scope_after_mask', 0))} "
+            f"scope_bounds={int(counters.get('scope_after_bounds', 0))} "
+            f"scope_tiles={int(counters.get('scope_tile_count', 0))} "
+            f"scope_tile_candidates={int(counters.get('scope_tile_candidates', 0))} "
+            f"after_mag={stars_result.after_mag_cut} "
+            f"after_bucket={stars_result.after_bucket} "
+            f"avg_radius={stars_result.avg_radius:.2f} "
+            f"halos={int(counters.get('halo_count', 0))} "
+            f"halo_grad={int(counters.get('halo_gradient_count', 0))} "
+            f"halo_solid={int(counters.get('halo_solid_count', 0))} "
+            f"first_fix_pending={int(counters.get('scope_first_fix_pending', 0))} "
+            f"force_naked_eye={int(counters.get('scope_force_naked_eye', 0))} "
+            f"mLim={float(counters.get('limiting_mag', 0.0)):.2f} "
+            f"preLim={float(counters.get('pre_limit', 0.0)):.2f} "
+            f"catalogMax={float(counters.get('catalog_max_mag', -1.0)):.2f} "
+            f"ms_horizon={timings.get('renderer_horizon', 0.0):.2f} "
+            f"ms_milkyway={timings.get('renderer_milkyway', 0.0):.2f} "
+            f"ms_grid={timings.get('renderer_grid', 0.0):.2f} "
+            f"ms_view_pre={timings.get('stars_view_prefilter', 0.0):.2f} "
+            f"ms_scope_pre={timings.get('stars_scope_prefilter', 0.0):.2f} "
+            f"ms_altaz={timings.get('stars_altaz', 0.0):.2f} "
+            f"ms_proj={timings.get('stars_projection', 0.0):.2f} "
+            f"ms_stars_renderer={timings.get('renderer_stars', 0.0):.2f} "
+            f"ms_overlays={timings.get('renderer_overlays', 0.0):.2f}"
+        )
+        print(line)
+
+    def _milkyway_overlay_status_line(self) -> str:
+        renderer = getattr(getattr(self, "sky_renderer", None), "milkyway_overlay", None)
+        if renderer is None or not hasattr(renderer, "runtime_status"):
+            return "MW: n/a"
+        try:
+            status = renderer.runtime_status()
+        except Exception:
+            return "MW: status error"
+        if not isinstance(status, dict):
+            return "MW: pending"
+        if not bool(status.get("enabled", False)):
+            return "MW: OFF"
+        if not bool(status.get("texture_loaded", False)):
+            return "MW: PNG NO"
+        dust_requested = bool(status.get("dust_requested", False))
+        dust_loaded = bool(status.get("dust_loaded", False))
+        opacity = float(status.get("effective_opacity", 0.0))
+        blend_mode = str(status.get("blend_mode", "add"))
+        opacity_reason = str(status.get("opacity_reason", ""))
+        rgb_gain = float(status.get("texture_rgb_gain", 1.0))
+        texture_frame = str(status.get("texture_frame", "galactic"))
+        frame_short = "gal" if texture_frame.startswith("gal") else "eq"
+        ra_off = float(status.get("ra_offset_deg", 0.0))
+        lat_flip = bool(status.get("texture_lat_flip", False))
+        lon_flip = bool(status.get("texture_lon_flip", False))
+        flip_txt = ("vf=1" if lat_flip else "vf=0") + (" hf=1" if lon_flip else " hf=0")
+        dust_den = float(status.get("dust_density_strength", 0.0))
+        dust_ext = float(status.get("dust_extinction_strength", 0.0))
+        dust_gain_txt = f"d={dust_den:.2f} e={dust_ext:.2f}"
+        if dust_requested:
+            dust_txt = "Planck OK" if dust_loaded else "Planck NO"
+        else:
+            dust_txt = "Planck OFF"
+        if opacity <= 1e-4:
+            return (
+                f"MW: ON op=0.00 ({opacity_reason}) g={rgb_gain:.2f} "
+                f"fr={frame_short} off={ra_off:.0f} {flip_txt} {dust_gain_txt} {dust_txt}"
+            )
+        return (
+            f"MW: ON op={opacity:.2f} {blend_mode} g={rgb_gain:.2f} "
+            f"fr={frame_short} off={ra_off:.0f} {flip_txt} {dust_gain_txt} {dust_txt}"
+        )
+
+    def draw_stars_numpy(self, painter, hour, sun_alt, sun_az, mag_limit=None, eff_lat=None, day_of_year=None):
+        if np is None:
+            self.visible_stars = []
+            self.visible_stars_sx = np.array([], dtype=np.float32) if np is not None else []
+            self.visible_stars_sy = np.array([], dtype=np.float32) if np is not None else []
+            return
+
+        state = self._build_star_scene_state(
+            hour=hour,
+            sun_alt=sun_alt,
+            sun_az=sun_az,
+            mag_limit=mag_limit,
+            eff_lat=eff_lat,
+            day_of_year=day_of_year,
+        )
+
+        self.scene_diagnostics.reset()
+        ctx = RenderContext(
+            painter=painter,
+            width=self.width(),
+            height=self.height(),
+            diagnostics=self.scene_diagnostics,
+        )
+
+        stars_result = self.sky_renderer.render(ctx, state)
+
+        self.visible_stars = stars_result.visible_indices
+        self.visible_stars_sx = stars_result.visible_sx
+        self.visible_stars_sy = stars_result.visible_sy
+
+        self._emit_render_diagnostics(stars_result)
+
+    def get_star_color(self, bp_rp):
+        # Map BP-RP index to RGB
+        if bp_rp < 0.0:
+            return QColor(160, 190, 255) # Blue
+        elif bp_rp < 0.5:
+            t = (bp_rp - 0.0) / 0.5
+            return QColor(160 + int(95*t), 190 + int(65*t), 255) 
+        elif bp_rp < 1.0:
+            t = (bp_rp - 0.5) / 0.5
+            return QColor(255, 255, 255 - int(55*t)) 
+        elif bp_rp < 2.0:
+            t = (bp_rp - 1.0) / 1.0
+            return QColor(255, 255 - int(80*t), 200 - int(100*t))
+        else:
+            return QColor(255, 175, 100) # Red
+
+    # draw_sun removed (Legacy)
+
+    # get_horizon_size_multiplier removed (Superseded)
+
+    # --- Helpers Restored ---
+    def normalize_deg(self, d):
+        return d % 360.0
+
+    # --- Accurate Time & LST Methods ---
+    def get_datetime_utc(self, ut_hour):
+        # Construct UTC datetime from manual year/day/hour
+        y = self.parent_widget.manual_year
+        d = self.parent_widget.manual_day
+        dt_start = datetime(y, 1, 1, tzinfo=timezone.utc)
+        return dt_start + timedelta(days=d, hours=ut_hour)
+
+    def julian_day(self, dt):
+        # High precision JD using standard epoch
+        # J2000.0 is 2000-01-01 12:00:00 UTC = JD 2451545.0
+        
+        # Ensure dt is aware or assume UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+            
+        j2000 = datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+        diff = dt - j2000
+        return 2451545.0 + diff.total_seconds() / 86400.0
+
+    def days_since_j2000(self, ut_hour):
+        # DEPRECATED in favor of direct JD usage, but kept for legacy calls
+        dt = self.get_datetime_utc(ut_hour)
+        jd = self.julian_day(dt)
+        return jd - 2451545.0
+
+    # REMOVED manual algorithm julian_day to avoid bugs.
+    
+    def gmst_deg(self, jd):
+        # Greenwich Mean Sidereal Time in degrees
+        T = (jd - 2451545.0) / 36525.0
+        st = 280.46061837 + 360.98564736629 * (jd - 2451545.0) + \
+             0.000387933 * T*T - (T*T*T)/38710000.0
+        return st % 360.0
+
+    def lst_deg(self, jd, lon_deg):
+        # Local Sidereal Time
+        return (self.gmst_deg(jd) + lon_deg) % 360.0
+
+    def sun_alt_az_from_ra_dec(self, ra, dec, lat, lst):
+        # Standard conversion helper
+        ha = (lst - ra)
+        ha_rad = math.radians(ha)
+        lat_rad = math.radians(lat)
+        dec_rad = math.radians(dec)
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        sin_dec = math.sin(dec_rad)
+        cos_dec = math.cos(dec_rad)
+        
+        sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * math.cos(ha_rad)
+        alt = math.degrees(math.asin(max(-1, min(1, sin_alt))))
+        
+        cos_az = (sin_dec - sin_alt * sin_lat) / (math.cos(math.radians(alt)) * cos_lat + 1e-10)
+        az = math.degrees(math.acos(max(-1, min(1, cos_az))))
+        if math.sin(ha_rad) > 0: az = 360 - az
+        
+        return alt, az
+        
+    def get_sun_ra_dec(self, d):
+        # Precise Sun (Meeus Ch 25)
+        # Wraps AstroEngine for Sun
+        # d is Days since J2000 UTC. 
+        # Add Delta T (72s) for TDB based T
+        d_tdb = d + (72.0 / 86400.0)
+        T = d_tdb / 36525.0
+        
+        l, b, r = AstroEngine.get_sun_position_vsop(T)
+        ra, dec = AstroEngine.ecliptic_to_equatorial(l, b, T)
+        return ra, dec
+
+    def get_moon_ra_dec(self, d):
+        # Wraps AstroEngine for Moon
+        d_tdb = d + (72.0 / 86400.0)
+        T = d_tdb / 36525.0
+        
+        l, b, r = AstroEngine.get_moon_position_elp(T)
+        ra, dec = AstroEngine.ecliptic_to_equatorial(l, b, T)
+        return ra, dec, r
+
+    def get_topocentric_position(self, ra_geo, dec_geo, dist_km, obs_lat, obs_lon, jd):
+        return AstroEngine.get_topocentric_position(ra_geo, dec_geo, dist_km, obs_lat, obs_lon, jd)
+
+    def apply_parallax(self, ra, dec, dist_km, lat, lst):
+        # Rigorous Parallax Correction (Equatorial)
+        # 1. Constants
+        re = 6378.14 # Earth Radius km
+        # Geocentric coords of observer
+        # We assume lat is geographic, convert to geocentric phi'
+        # tan(phi') = (1-f)^2 tan(phi)
+        # f = 1/298.257
+        f = 1.0/298.257223563
+        phi_rad = math.radians(lat)
+        u = math.atan((1 - f)**2 * math.tan(phi_rad))
+        rho_sin_phi = math.sin(u) * 0.99664719 # approx height factor 1? assume sea level
+        rho_cos_phi = math.cos(u)
+        
+        # 2. HA
+        ra_rad = math.radians(ra)
+        dec_rad = math.radians(dec)
+        lst_rad = math.radians(lst)
+        ha_rad = lst_rad - ra_rad
+        
+        # 3. Horizontal Parallax
+        # sin(pi) = Re / dist
+        sin_pi = re / dist_km
+        
+        # 4. Parallax formulas (Meeus Chap 40)
+        # tan(H') = sin(H) / (cos(H) - rho*cos(phi')*sin(pi)/cos(dec))
+        # But we need Delta RA
+        
+        # A = cos(dec) * sin(H)
+        # B = cos(dec) * cos(H) - rho*cos(phi') * sin(pi)
+        # C = sin(dec) - rho*sin(phi') * sin(pi)
+        
+        # tan(H') = A / B
+        # tan(dec') = (C * cos(H')) / B  ??? No, simpler form:
+        
+        # Direct:
+        # ra' = ra - delta_ra
+        # tan(delta_ra) = (-rho*cos(phi')*sin(pi)*sin(H)) / (cos(dec) - rho*cos(phi')*sin(pi)*cos(H))
+        
+        # Let's use the atan2 approach for full quadrant safety
+        num = -rho_cos_phi * sin_pi * math.sin(ha_rad)
+        den = math.cos(dec_rad) - rho_cos_phi * sin_pi * math.cos(ha_rad)
+        delta_ra = math.atan2(num, den)
+        
+        ra_prime_rad = ra_rad + delta_ra
+        
+        # dec'
+        # tan(dec') = (sin(dec) - rho*sin(phi')*sin(pi)) * cos(delta_ra) / (cos(dec) - rho*cos(phi')*sin(pi)*cos(H))
+        # This is strictly related.
+        
+        # Alternative: Cartesian vector subtraction
+        # Moon Geo vector:
+        # X = dist * cos(dec) * cos(ra)
+        # Y = dist * cos(dec) * sin(ra)
+        # Z = dist * sin(dec)
+        
+        # Observer Geo vector (sidereal frame):
+        # Xo = Re * rho_cos_phi * cos(lst)
+        # Yo = Re * rho_cos_phi * sin(lst)
+        # Zo = Re * rho_sin_phi 
+        
+        # Topocentric Vector:
+        # Xt = X - Xo
+        # Yt = Y - Yo
+        # Zt = Z - Zo
+        
+        # Convert back
+        # Rt = sqrt(Xt^2 + Yt^2 + Zt^2)
+        # RA' = atan2(Yt, Xt)
+        # Dec' = asin(Zt / Rt)
+        
+        # This vector method is robust and handles all quadrants/singularities easily.
+        # Plus gives us Topocentric Distance if needed.
+        
+        # Geo Cartesian
+        cd = math.cos(dec_rad)
+        sd = math.sin(dec_rad)
+        cr = math.cos(ra_rad)
+        sr = math.sin(ra_rad)
+        
+        X = dist_km * cd * cr
+        Y = dist_km * cd * sr
+        Z = dist_km * sd
+        
+        # Obs Cartesian
+        cl = math.cos(lst_rad)
+        sl = math.sin(lst_rad)
+        
+        Xo = re * rho_cos_phi * cl
+        Yo = re * rho_cos_phi * sl
+        Zo = re * rho_sin_phi
+        
+        Xt = X - Xo
+        Yt = Y - Yo
+        Zt = Z - Zo
+        
+        Rt = math.sqrt(Xt*Xt + Yt*Yt + Zt*Zt)
+        ra_prime = math.degrees(math.atan2(Yt, Xt))
+        dec_prime = math.degrees(math.asin(Zt / Rt))
+        
+        return self.normalize_deg(ra_prime), dec_prime
+
+    def get_moon_projection(self, hour):
+        # Helper to get Moon screen coords and phase data
+        # Returns: (sx, sy, radius, k, angle_deg, is_waxing, alt) or None
+        
+        # 1. Calc Pos (Cached)
+        q_hour = round(hour * 60) / 60.0
+        if q_hour in self._moon_pos_cache:
+            moon_ra, moon_dec, sun_ra, sun_dec, m_dist = self._moon_pos_cache[q_hour]
+            d = 0 # Not needed if cached
+        else:
+            # Use Accurate JD based time
+            dt_utc = self.get_datetime_utc(q_hour)
+            jd_utc = self.julian_day(dt_utc)
+            d = jd_utc - 2451545.0
+            
+            moon_ra, moon_dec, m_dist = self.get_moon_ra_dec(d)
+            sun_ra, sun_dec = self.get_sun_ra_dec(d)
+            self._moon_pos_cache[q_hour] = (moon_ra, moon_dec, sun_ra, sun_dec, m_dist)
+            
+        # 2. Horizon Coords (Using Accurate LST)
+        if q_hour in self._moon_pos_cache: 
+             # Recompute LST/JD quickly? Or just do it.
+             dt_utc = self.get_datetime_utc(q_hour)
+             jd_utc = self.julian_day(dt_utc)
+             lst = self.lst_deg(jd_utc, self.parent_widget.longitude)
+        else:
+             # Should not happen as we just cached it
+             dt_utc = self.get_datetime_utc(q_hour)
+             jd_utc = self.julian_day(dt_utc)
+             lst = self.lst_deg(jd_utc, self.parent_widget.longitude)
+
+        # APPLY PARALLAX (Topocentric Shift)
+        # This aligns the moon visually with the eclipse path
+        moon_ra_topo, moon_dec_topo = self.apply_parallax(moon_ra, moon_dec, m_dist, self.parent_widget.latitude, lst)
+        
+        # Use Topocentric RA/Dec for Horizon conversion
+        ha = (lst - moon_ra_topo)
+        ha_rad = math.radians(ha)
+        lat_rad = math.radians(self.parent_widget.latitude)
+        dec_rad = math.radians(moon_dec_topo)
+        sin_dec = math.sin(dec_rad)
+        cos_dec = math.cos(dec_rad)
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        
+        sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * math.cos(ha_rad)
+        alt = math.degrees(math.asin(max(-1, min(1, sin_alt))))
+        
+        # if alt < -2.0: return None # DISABLED: Allow drawing below horizon
+        
+        cos_az = (sin_dec - sin_alt * sin_lat) / (math.cos(math.radians(alt)) * cos_lat + 1e-10)
+        az = math.degrees(math.acos(max(-1, min(1, cos_az))))
+        if math.sin(ha_rad) > 0: az = 360 - az
+        
+        # 3. Projection
+        pt = self.project_universal_stereo(alt, az)
+        if not pt: return None
+        sx, sy = pt
+        
+        # 4. Phase
+        sr_rad = math.radians(sun_ra)
+        mr_rad = math.radians(moon_ra)
+        sd_rad = math.radians(sun_dec)
+        md_rad = math.radians(moon_dec)
+        
+        cos_psi = math.sin(sd_rad)*math.sin(md_rad) + math.cos(sd_rad)*math.cos(md_rad)*math.cos(sr_rad - mr_rad)
+        k = (1.0 + cos_psi) / 2.0 
+        
+        diff_ra = (moon_ra - sun_ra) % 360
+        is_waxing = (diff_ra > 0 and diff_ra < 180)
+        
+        # 5. Angle
+        s_ha = (lst - sun_ra)
+        s_ha_rad = math.radians(s_ha)
+        s_sin_alt = math.sin(sd_rad)*sin_lat + math.cos(sd_rad)*cos_lat*math.cos(s_ha_rad)
+        s_alt = math.degrees(math.asin(max(-1, min(1, s_sin_alt))))
+        s_cos_az = (math.sin(sd_rad) - s_sin_alt*sin_lat) / (math.cos(math.radians(s_alt))*cos_lat + 1e-10)
+        s_az = math.degrees(math.acos(max(-1, min(1, s_cos_az))))
+        if math.sin(s_ha_rad) > 0: s_az = 360 - s_az
+        
+        pt_sun = self.project_universal_stereo(s_alt, s_az)
+        if pt_sun:
+            vx = pt_sun[0] - sx
+            vy = pt_sun[1] - sy
+        else:
+             vx = 1; vy = 0 
+        
+        angle_deg = math.degrees(math.atan2(vy, vx))
+        
+        # Calculate Topocentric Semidiameter (sd_topo)
+        moon_sd_deg = 0.2725 * (384400.0 / m_dist)
+        sin_pi = 6378.14 / m_dist
+        sd_topo = moon_sd_deg * (1.0 + sin_pi * math.sin(math.radians(alt)))
+        
+        # 6. Size
+        # Must MATCH Sun size logic EXACTLY for eclipses to look right.
+        # Sun logic: radius = 15 * get_horizon_size_multiplier(alt)
+        # Moon should be: radius = 15 * multiplier * (MoonSD / SunSD)
+        # Standard Sun SD ~ 0.2666 deg.
+        # Calculated Moon SD_topo is in `sd_topo`.
+        
+        sun_base_radius = 15.0 # Visual Size (Aesthetic)
+        illusion_mult = self.perceived_disc_scale(alt)
+        relative_size = sd_topo / 0.2666
+        
+        radius = sun_base_radius * illusion_mult * relative_size
+        
+        return (sx, sy, radius, k, angle_deg, is_waxing, s_alt)
+
+    # draw_moon removed (Legacy)
+
+    def _clamp01(self, val):
+        return max(0.0, min(1.0, val))
+
+    def _smoothstep(self, edge0, edge1, x):
+        t = self._clamp01((x - edge0) / (edge1 - edge0))
+        return t * t * (3.0 - 2.0 * t)
+
+    # moon_visibility_alpha removed (Legacy)
+    # _render_moon_pixmap removed (Legacy)
+
+    def draw_ground_mask(self, painter, is_day):
+        # Create a closed path for the ground (Alt <= 0)
+        ground_path = QPainterPath()
+        points = []
+        
+        # We trace 3 blocks to cover wide FOVs
+        for offset in [-360, 0, 360]:
+            for az in range(0, 361, 10): 
+                pt = self.project_universal_stereo(0, az + offset)
+                if pt:
+                    points.append(QPointF(*pt))
+                elif points:
+                    points.append(None) 
+        
+        if not points: 
+            return
+
+        # Build path closing downwards to cover the bottom of the screen
+        bottom_y = self.height() * 2.0
+        
+        first = True
+        current_block_start = None
+        
+        for p in points:
+            if p is None:
+                if not first and current_block_start:
+                    ground_path.lineTo(ground_path.currentPosition().x(), bottom_y)
+                    ground_path.lineTo(current_block_start.x(), bottom_y)
+                    ground_path.closeSubpath()
+                first = True
+                continue
+                
+            if first:
+                ground_path.moveTo(p)
+                current_block_start = p
+                first = False
+            else:
+                ground_path.lineTo(p)
+                
+        # Close the last block if open
+        if not first and current_block_start:
+             ground_path.lineTo(ground_path.currentPosition().x(), bottom_y)
+             ground_path.lineTo(current_block_start.x(), bottom_y)
+             ground_path.closeSubpath()
+        
+        # Draw Ground Mask
+        col = QColor(20, 30, 20) if is_day else QColor(5, 5, 10)
+        painter.setBrush(col)
+        painter.setPen(Qt.NoPen)
+        painter.drawPath(ground_path)
+    
+    def draw_compass(self, painter):
+        w = self.width()
+        painter.setPen(QPen(QColor(200, 200, 200, 150)))
+        font = painter.font()
+        font.setBold(True)
+        painter.setFont(font)
+        
+        # 8 Cardinal points with keys
+        dirs = [
+            (0,   "Astro.Dir.North", "North"),
+            (45,  "Astro.Dir.NE",    "NE"),
+            (90,  "Astro.Dir.East",  "East"),
+            (135, "Astro.Dir.SE",    "SE"),
+            (180, "Astro.Dir.South", "South"),
+            (225, "Astro.Dir.SW",    "SW"),
+            (270, "Astro.Dir.West",  "West"),
+            (315, "Astro.Dir.NW",    "NW")
+        ]
+        
+        # Wrap view_az (azimuth_offset) to 0..360 only for labels
+        # But use continuous projection logic for placement
+        
+        # Draw 3 blocks to cover wide viewports
+        for offset in [-360, 0, 360]:
+            for deg, key, default_text in dirs:
+                pt = self.project_universal_stereo(0, deg + offset)
+                if pt:
+                    # Cull labels way off screen to avoid overlap or weirdness
+                    if pt[0] < -200 or pt[0] > w + 200: continue
+                    
+                    label = getTraduction(key, default_text)
+                    painter.drawText(int(pt[0])-10, int(pt[1])-5, label)
+
+    def _ngc_symbol_for_type(self, obj_type: str) -> str:
+        kind = str(obj_type or "").upper()
+        if kind.startswith("G"):
+            return "🌌"
+        if "GC" in kind:
+            return "✶"
+        if "CL+N" in kind or "HII" in kind or "PN" in kind or "N" in kind:
+            return "☁"
+        if "OCL" in kind or "CL" in kind:
+            return "✨"
+        return "🔭"
+
+    def draw_ngc_overlay(self, painter: QPainter, ut_hour: float, day_of_year_utc: int) -> None:
+        parent = getattr(self, "parent_widget", None)
+        if parent is None or not hasattr(parent, "_load_ngc_search_entries"):
+            return
+
+        try:
+            catalog = parent._load_ngc_search_entries()
+        except Exception:
+            return
+        if not catalog:
+            return
+
+        # Keep overlay lightweight in real-time rendering:
+        # draw only bright/large/Messier entries and cap total markers per frame.
+        max_markers = 260 if float(self.zoom_level) < 2.0 else 420
+        marker_count = 0
+        w = float(self.width())
+        h = float(self.height())
+        ppd = max(0.02, (min(w, h) * 0.5 * float(self.zoom_level)) / 90.0)
+
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        font = painter.font()
+        if font.pointSize() > 0:
+            font.setPointSize(max(8, font.pointSize() - 1))
+        else:
+            font.setPointSize(9)
+        painter.setFont(font)
+
+        # TODO: replace marker+ellipse overlay with procedural rendering per NGC type.
+        for obj in catalog:
+            if marker_count >= max_markers:
+                break
+            try:
+                eff_mag = float(getattr(obj, "effective_mag", 99.0))
+                maj_deg = max(0.05, float(getattr(obj, "maj_deg", 0.0) or 0.0))
+                min_deg = max(0.03, float(getattr(obj, "min_deg", maj_deg) or maj_deg))
+                if not (
+                    bool(getattr(obj, "messier_nr", None))
+                    or eff_mag <= 8.8
+                    or maj_deg >= 0.30
+                ):
+                    continue
+
+                alt, az = self._ra_dec_to_alt_az(obj.ra_deg, obj.dec_deg, ut_hour, day_of_year_utc)
+                if float(alt) < -2.0:
+                    continue
+                pt = self.project_universal_stereo(alt, az)
+                if pt is None:
+                    continue
+
+                cx = float(pt[0])
+                cy = float(pt[1])
+                if cx < -140.0 or cx > (w + 140.0) or cy < -140.0 or cy > (h + 140.0):
+                    continue
+
+                rx = max(3.0, min(84.0, 0.5 * maj_deg * ppd))
+                ry = max(2.0, min(64.0, 0.5 * min_deg * ppd))
+                pa = float(getattr(obj, "pos_ang_deg", 0.0) or 0.0)
+                alpha = 210 if eff_mag <= 6.0 else (170 if eff_mag <= 8.5 else 135)
+
+                painter.save()
+                painter.translate(cx, cy)
+                painter.rotate(pa)
+                painter.setBrush(Qt.NoBrush)
+                painter.setPen(QPen(QColor(120, 190, 255, alpha), 1.2))
+                painter.drawEllipse(QPointF(0.0, 0.0), rx, ry)
+                painter.restore()
+
+                symbol = self._ngc_symbol_for_type(getattr(obj, "obj_type", ""))
+                label = getattr(obj, "common_name", None) or (
+                    f"M{obj.messier_nr}" if getattr(obj, "messier_nr", None) else getattr(obj, "name", "NGC")
+                )
+                painter.setPen(QPen(QColor(226, 236, 255, min(255, alpha + 24))))
+                painter.drawText(int(cx + rx + 6.0), int(cy - 5.0), f"{symbol} {label}")
+                marker_count += 1
+            except Exception:
+                continue
+        painter.restore()
+
+    # draw_planets removed (Unused)
+
+    def draw_satellites(self, painter, ut_hour):
+        # Demo of "Standard Satellite Magnitude Model"
+        # Simulating a hypothetical "Station" on a circular orbit
+        
+        # 1. Fake Ephemeris (Circular Orbit TLE-like)
+        # Period ~92 min. Inclination ~51.6 (ISS)
+        # Mean Anomaly based on time
+        t_ref_hr = 0.0 # UT midnight
+        dt_hr = ut_hour - t_ref_hr
+        # Wrap for day transition? simple assumption: ut_hour is today.
+        
+        period_hr = 1.55 # ~93 min
+        mean_motion = (2 * math.pi) / period_hr
+        M = (dt_hr * mean_motion) % (2*math.pi)
+        
+        # Orbit Plane (Simplified ECI)
+        inc = math.radians(51.6)
+        r_orbit = 6378 + 420 # 420km alt
+        
+        x_orb = r_orbit * math.cos(M)
+        y_orb = r_orbit * math.sin(M)
+        
+        # Rotate by Inclination (around X axis roughly)
+        # Assuming node=0 for simplicity
+        x_eci = x_orb
+        y_eci = y_orb * math.cos(inc)
+        z_eci = y_orb * math.sin(inc)
+        
+        # Earth Rotation (Greenwich Sidereal Time)
+        # Need observer ECI
+        # We have LST. LST = GMST + Lon. => GMST = LST - Lon.
+        dt_utc = self.get_datetime_utc(ut_hour)
+        jd_utc = self.julian_day(dt_utc)
+        lst = self.lst_deg(jd_utc, self.parent_widget.longitude)
+        gmst_deg = lst - self.parent_widget.longitude
+        gmst_rad = math.radians(gmst_deg)
+        
+        # Observer Position ECI
+        lat_rad = math.radians(self.parent_widget.latitude)
+        lon_rad = math.radians(self.parent_widget.longitude) # This is relative to Greenwich?
+        # Actually Obs in ECI:
+        # Theta = GMST + Lon
+        theta = gmst_rad + lon_rad
+        r_earth = 6378.0
+        ox = r_earth * math.cos(lat_rad) * math.cos(theta)
+        oy = r_earth * math.cos(lat_rad) * math.sin(theta)
+        oz = r_earth * math.sin(lat_rad)
+        
+        # Relative Vector (Range)
+        rx = x_eci - ox
+        ry = y_eci - oy
+        rz = z_eci - oz
+        dist = math.sqrt(rx*rx + ry*ry + rz*rz)
+        
+        # Check Horizon
+        # Zenit Vector (approx Obs vector normalized)
+        oz_norm = math.sqrt(ox*ox + oy*oy + oz*oz)
+        z_vec = (ox/oz_norm, oy/oz_norm, oz/oz_norm)
+        
+        # Dot product Range . Zenit
+        # If positive, it's above horizon (approx)
+        dot = (rx * z_vec[0] + ry * z_vec[1] + rz * z_vec[2])
+        if dot < 0: return # Below horizon
+        
+        # Alt/Az Calculation
+        # Convert ECI diff to Topocentric (ENU)
+        # Slant Range vector in ECI: (rx, ry, rz)
+        # Basis Vectors:
+        # Up = (cosL cosT, cosL sinT, sinL)
+        # East = (-sinT, cosT, 0)
+        # North = (-sinL cosT, -sinL sinT, cosL)
+        
+        sinT = math.sin(theta); cosT = math.cos(theta)
+        sinL = math.sin(lat_rad); cosL = math.cos(lat_rad)
+        
+        u = rx*cosL*cosT + ry*cosL*sinT + rz*sinL
+        e = -rx*sinT + ry*cosT
+        n = -rx*sinL*cosT - ry*sinL*sinT + rz*cosL
+        
+        alt = math.degrees(math.atan2(u, math.sqrt(e*e + n*n)))
+        az = math.degrees(math.atan2(e, n))
+        if az < 0: az += 360
+        
+        if alt < 10: return # Filter low passes
+        
+        # Phase Angle Calculation (for Magnitude)
+        # Sun Vector in ECI (Approx)
+        # Sun RA/Dec
+        d = jd_utc - 2451545.0
+        s_ra, s_dec = self.get_sun_ra_dec(d)
+        s_ra_rad = math.radians(s_ra)
+        s_dec_rad = math.radians(s_dec)
+        
+        # Sun ECI (Unit)
+        sx = math.cos(s_dec_rad) * math.cos(s_ra_rad) * 1.5e8 # 1 AU km
+        sy = math.cos(s_dec_rad) * math.sin(s_ra_rad) * 1.5e8
+        sz = math.sin(s_dec_rad) * 1.5e8
+        
+        # Vectors from Satellite:
+        # To Obs: (-rx, -ry, -rz) -> Norm
+        to_obs = (-rx/dist, -ry/dist, -rz/dist)
+        # To Sun: (sx-x_eci, sy-y_eci, ...) -> Norm (Sun is far, use Sun vec)
+        to_sun = (sx, sy, sz) 
+        # Normalize sun
+        s_norm = math.sqrt(sx*sx + sy*sy + sz*sz)
+        to_sun = (sx/s_norm, sy/s_norm, sz/s_norm)
+        
+        # Phase Angle (Angle between ToSun and ToObs)
+        # cos(phi) = dot(ToSun, ToObs)
+        cos_phi = to_sun[0]*to_obs[0] + to_sun[1]*to_obs[1] + to_sun[2]*to_obs[2]
+        phi = math.acos(max(-1, min(1, cos_phi)))
+        
+        # Magnitude Calculation (Std Model Eq 1)
+        mag = AstroEngine.calculate_satellite_magnitude(dist, phi, std_mag=-1.8)
+        
+        # Is Sunlit? (Simple Eclipsed Model)
+        # Check if Sat is behind Earth relative to Sun
+        # Vector Earth->Sat: (x_eci, y_eci, z_eci)
+        # Vector Earth->Sun: (sx, sy, sz)
+        # Projection of Sat onto Sun line...
+        # Simple: angle between Sat and Sun > 90?
+        # Not accurate enough. Simple check: if mag > 10, skip.
+        
+        if mag > 6.0: return # Too dim to see
+        
+        # Project
+        pt = self.project_universal_stereo(alt, az)
+        if pt:
+             # Draw Box for Satellite
+             # Intensity based on mag
+             alpha = max(50, min(255, int(255 - (mag+2)*40)))
+             c = QColor(255, 255, 255, alpha)
+             
+             painter.setPen(QPen(c, 1))
+             painter.setBrush(Qt.NoBrush)
+             
+             s = 6
+             painter.drawRect(QRectF(pt[0]-s/2, pt[1]-s/2, s, s))
+             painter.setFont(QFont("Mono", 7))
+             painter.drawText(int(pt[0])+s, int(pt[1]), f"SAT M:{mag:.1f}")
+
+
+
+
+
+    def mousePressEvent(self, event):
+        if self.drawing_mode_enabled():
+            if event.button() == Qt.LeftButton:
+                self.setFocus()
+                self.press_pos = event.pos()
+                if event.modifiers() & Qt.ControlModifier:
+                    # Drawing override: Ctrl + drag keeps normal camera navigation.
+                    self.dragging = True
+                    self.last_mouse_x = event.x()
+                    self.last_mouse_y = event.y()
+                    self._drawing_ctrl_pan_started = False
+                    self._drawing_ctrl_click_pending = True
+                else:
+                    self._drawing_ctrl_pan_started = False
+                    self._drawing_ctrl_click_pending = False
+                    ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+                    self.constellation_controller.on_left_click(
+                        event.x(),
+                        event.y(),
+                        self.project_universal_stereo,
+                        lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                        self._pick_star_at,
+                        force_add=bool(event.modifiers() & Qt.ShiftModifier),
+                        additive_select=False,
+                    )
+                    if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                        self.parent_widget._sync_constellation_controls()
+                    self.update()
+            elif event.button() == Qt.RightButton:
+                self.setFocus()
+                ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+                self.constellation_controller.on_right_click(
+                    event.x(),
+                    event.y(),
+                    self.project_universal_stereo,
+                    lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                )
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+                self.update()
+            event.accept()
+            return
+
+        if self.scope_mode_enabled():
+            if event.button() == Qt.LeftButton:
+                self.press_pos = event.pos()
+                if event.modifiers() & Qt.ControlModifier:
+                    # Ctrl + drag: move camera.
+                    # Disable camera lock but keep target tracking active for the scope itself.
+                    self.scope_camera_lock_to_target = False
+                    self.scope_controller.end_drag()
+                    self.dragging = True
+                    self.last_mouse_x = event.x()
+                    self.last_mouse_y = event.y()
+                    self._scope_camera_pan_started = False
+                    self._scope_camera_click_pending = True
+                else:
+                    # Drag without Ctrl: move scope reticle.
+                    # Manual reticle movement unlocks reticle tracking from current Goto target.
+                    self.scope_reticle_lock_to_target = False
+                    self.dragging = False
+                    self._scope_camera_pan_started = False
+                    self._scope_camera_click_pending = False
+                    # Avoid reusing a previously camera-throttled star frame while starting reticle drag.
+                    self._cached_star_image = None
+                    self.scope_controller.handle_click(event.x(), event.y(), self.unproject_stereo)
+                    self.scope_controller.start_drag(event.x(), event.y())
+                self.update()
+            event.accept()
+            return
+
+        if self.measurement_tool_active():
+            if event.button() == Qt.LeftButton:
+                self.press_pos = event.pos()
+                if event.modifiers() & Qt.ControlModifier:
+                    # Measurement override: Ctrl + drag keeps normal camera navigation.
+                    self.dragging = True
+                    self.last_mouse_x = event.x()
+                    self.last_mouse_y = event.y()
+                    self.press_pos = event.pos()
+                else:
+                    self.measurement_controller.on_mouse_press(
+                        event.x(),
+                        event.y(),
+                        self.unproject_stereo,
+                        self.project_universal_stereo,
+                    )
+                self.update()
+            event.accept()
+            return
+
+        if event.button() == Qt.LeftButton:
+            self.dragging = True
+            self.last_mouse_x = event.x()
+            self.last_mouse_y = event.y()
+            self.press_pos = event.pos()
+    
+    def mouseMoveEvent(self, event):
+        if self.drawing_mode_enabled():
+            if self.dragging:
+                dx = event.x() - self.last_mouse_x
+                dy = event.y() - self.last_mouse_y
+                if self._drawing_ctrl_click_pending and (abs(dx) + abs(dy) >= 3):
+                    self._drawing_ctrl_pan_started = True
+                if self._drawing_ctrl_pan_started:
+                    self.azimuth_offset = (self.azimuth_offset - dx * 0.5)
+                    self.elevation_angle += dy * 0.5
+                    self.elevation_angle = max(-90, min(90, self.elevation_angle))
+                self.last_mouse_x = event.x()
+                self.last_mouse_y = event.y()
+            else:
+                self.setFocus()
+                self.constellation_controller.on_mouse_move(
+                    event.x(),
+                    event.y(),
+                    self._pick_star_at,
+                    self._screen_to_ra_dec,
+                )
+            self.update()
+            event.accept()
+            return
+
+        if self.scope_mode_enabled():
+            if self.dragging:
+                dx = event.x() - self.last_mouse_x
+                dy = event.y() - self.last_mouse_y
+                if self._scope_camera_click_pending and (abs(dx) + abs(dy) >= 3):
+                    self._scope_camera_pan_started = True
+                if self._scope_camera_pan_started:
+                    sensitivity = self._scope_secondary_drag_deg_per_px()
+                    self.azimuth_offset = (self.azimuth_offset - dx * sensitivity)
+                    self.elevation_angle += dy * sensitivity
+                    self.elevation_angle = max(-90, min(90, self.elevation_angle))
+                self.last_mouse_x = event.x()
+                self.last_mouse_y = event.y()
+                self.update()
+                event.accept()
+                return
+            if self.scope_controller.drag_move(event.x(), event.y(), self.unproject_stereo):
+                self.update()
+            event.accept()
+            return
+
+        if self.measurement_tool_active():
+            if self.dragging:
+                dx = event.x() - self.last_mouse_x
+                dy = event.y() - self.last_mouse_y
+                self.azimuth_offset = (self.azimuth_offset - dx * 0.5)
+                self.elevation_angle += dy * 0.5
+                self.elevation_angle = max(-90, min(90, self.elevation_angle))
+                self.last_mouse_x = event.x()
+                self.last_mouse_y = event.y()
+                self.update()
+                event.accept()
+                return
+            consumed = self.measurement_controller.on_mouse_move(
+                event.x(),
+                event.y(),
+                self.unproject_stereo,
+                self.project_universal_stereo,
+            )
+            if not consumed:
+                self.measurement_controller.update_preview_cursor(event.x(), event.y(), self.unproject_stereo)
+            self.update()
+            event.accept()
+            return
+
+        if self.dragging:
+            dx = event.x() - self.last_mouse_x
+            dy = event.y() - self.last_mouse_y
+            self.azimuth_offset = (self.azimuth_offset - dx * 0.5) 
+            self.elevation_angle += dy * 0.5
+            self.elevation_angle = max(-90, min(90, self.elevation_angle))
+            self.last_mouse_x = event.x()
+            self.last_mouse_y = event.y()
+            # Keep cached trail image during movement to avoid flickering
+            # The Fast-Path will draw on top.
+            self.update()
+            
+    def mouseReleaseEvent(self, event):
+        if self.drawing_mode_enabled():
+            if self.dragging:
+                was_ctrl_click = bool(self._drawing_ctrl_click_pending and (not self._drawing_ctrl_pan_started))
+                self.dragging = False
+                self._drawing_ctrl_pan_started = False
+                self._drawing_ctrl_click_pending = False
+                self._cached_trail_image = None
+                if was_ctrl_click and event.button() == Qt.LeftButton:
+                    ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+                    self.constellation_controller.on_left_click(
+                        event.x(),
+                        event.y(),
+                        self.project_universal_stereo,
+                        lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                        self._pick_star_at,
+                        force_add=False,
+                        additive_select=True,
+                    )
+                    if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                        self.parent_widget._sync_constellation_controls()
+                self.update()
+            event.accept()
+            return
+
+        if self.scope_mode_enabled():
+            if event.button() == Qt.RightButton:
+                self._show_object_context_menu(event)
+                event.accept()
+                return
+            if self.dragging:
+                was_scope_click = bool(self._scope_camera_click_pending and (not self._scope_camera_pan_started))
+                self.dragging = False
+                self._scope_camera_pan_started = False
+                self._scope_camera_click_pending = False
+                # Invalidate trail cache only when movement STOPS to trigger a clean bake.
+                self._cached_trail_image = None
+                if was_scope_click and event.button() == Qt.LeftButton and (event.pos() - self.press_pos).manhattanLength() < 5:
+                    self._set_selected_target(self._pick_target_at(event.x(), event.y()))
+                self.update()
+                event.accept()
+                return
+            self.scope_controller.end_drag()
+            if event.button() == Qt.LeftButton and (event.pos() - self.press_pos).manhattanLength() < 5:
+                self._set_selected_target(self._pick_target_at(event.x(), event.y()))
+            self.update()
+            event.accept()
+            return
+
+        if self.measurement_tool_active():
+            if event.button() == Qt.RightButton:
+                self._show_object_context_menu(event)
+                event.accept()
+                return
+            if self.dragging:
+                self.dragging = False
+                # Invalidate trail cache only when movement STOPS to trigger a clean bake.
+                self._cached_trail_image = None
+                self.update()
+                event.accept()
+                return
+            if event.button() == Qt.LeftButton:
+                self.measurement_controller.on_mouse_release(
+                    event.x(),
+                    event.y(),
+                    self.unproject_stereo,
+                    self.project_universal_stereo,
+                )
+                self.update()
+            event.accept()
+            return
+
+        if event.button() == Qt.RightButton:
+            self._show_object_context_menu(event)
+            event.accept()
+            return
+
+        self.dragging = False
+        # Invalidate trail cache only when movement STOPS to trigger a clean bake
+        self._cached_trail_image = None
+        self.update()
+
+        if event.button() == Qt.LeftButton and bool(getattr(self, "_suppress_constellation_release_click", False)):
+            self._suppress_constellation_release_click = False
+            event.accept()
+            return
+        
+        # Click Detection (Min movement)
+        if (event.pos() - self.press_pos).manhattanLength() < 5:
+            if (
+                event.button() == Qt.LeftButton
+                and self.constellation_visible()
+                and (not self.scope_mode_enabled())
+                and (not self.measurement_tool_active())
+            ):
+                ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+                consumed = self.constellation_controller.on_left_click(
+                    event.x(),
+                    event.y(),
+                    self.project_universal_stereo,
+                    lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                    self._pick_star_at,
+                    force_add=False,
+                    additive_select=bool(event.modifiers() & Qt.ControlModifier),
+                    allow_when_disabled=True,
+                )
+                if consumed:
+                    if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                        self.parent_widget._sync_constellation_controls()
+                    self.update()
+                    event.accept()
+                    return
+            self._set_selected_target(self._pick_target_at(event.x(), event.y()))
+
+    def mouseDoubleClickEvent(self, event):
+        if self.drawing_mode_enabled():
+            if event.button() == Qt.LeftButton:
+                self.setFocus()
+                ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+                action = self.constellation_controller.on_double_click(
+                    event.x(),
+                    event.y(),
+                    self.project_universal_stereo,
+                    lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                    additive_select=bool(event.modifiers() & Qt.ControlModifier),
+                )
+                if isinstance(action, dict) and action.get("action") == "rename_group":
+                    if hasattr(self.parent_widget, "rename_constellation_group_by_index"):
+                        rect = action.get("label_rect")
+                        label_rect = None
+                        if isinstance(rect, (tuple, list)) and len(rect) == 4:
+                            try:
+                                label_rect = QRectF(float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+                            except Exception:
+                                label_rect = None
+                        self.parent_widget.rename_constellation_group_by_index(
+                            int(action.get("group_index", -1)),
+                            label_rect=label_rect,
+                        )
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+                self.update()
+            event.accept()
+            return
+
+        # Constellation label/segment interactions are available outside draw mode:
+        # - double click label -> rename
+        # - double click segment -> select full constellation segments
+        if (
+            event.button() == Qt.LeftButton
+            and self.constellation_visible()
+            and (not self.scope_mode_enabled())
+            and (not self.measurement_tool_active())
+        ):
+            self.setFocus()
+            ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
+            action = self.constellation_controller.on_double_click(
+                event.x(),
+                event.y(),
+                self.project_universal_stereo,
+                lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                additive_select=bool(event.modifiers() & Qt.ControlModifier),
+                allow_when_disabled=True,
+            )
+            if isinstance(action, dict) and action.get("action") != "none":
+                self._suppress_constellation_release_click = True
+                if action.get("action") == "rename_group":
+                    if hasattr(self.parent_widget, "rename_constellation_group_by_index"):
+                        rect = action.get("label_rect")
+                        label_rect = None
+                        if isinstance(rect, (tuple, list)) and len(rect) == 4:
+                            try:
+                                label_rect = QRectF(float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+                            except Exception:
+                                label_rect = None
+                        self.parent_widget.rename_constellation_group_by_index(
+                            int(action.get("group_index", -1)),
+                            label_rect=label_rect,
+                        )
+                if hasattr(self.parent_widget, "_sync_constellation_controls"):
+                    self.parent_widget._sync_constellation_controls()
+                self.update()
+                event.accept()
+                return
+
+        if self.scope_mode_enabled() and event.button() == Qt.LeftButton:
+            sky = screen_to_sky(event.x(), event.y(), self.unproject_stereo)
+            self._scope_jump_to_sky(sky)
+            event.accept()
+            return
+
+        super().mouseDoubleClickEvent(event)
+
+
+    # --- SKYFIELD INTEGRATION ---
+
+    def get_simulated_tz_offset(self, day_of_year):
+        # DST logic: ~Mar 29 (day 88) to ~Oct 25 (day 298) is Summer (+2) in Spain
+        if 88 <= day_of_year <= 298: return 2.0
+        return 1.0
+
+    def perceived_disc_scale(self, alt_deg, sun_alt_deg=None, is_trained=None, horizon_refs=None, flattening=None, atmos=None, falloff_deg=35.0):
+        # Defaults
+        if is_trained is None: is_trained = self.trained_observer
+        if horizon_refs is None: horizon_refs = self.horizon_refs
+        if flattening is None: flattening = self.dome_flattening
+        if atmos is None: atmos = self.atmospheric_context
+        
+        # Eclipse Lock Check (Blind check relies on caller, but we check global enable)
+        if not self.illusion_enabled:
+            return 1.0
+
+        # 1. Base Illusion Magnitude
+        # lerp(0.22, 0.50, horizon_refs)
+        max_illusion = 0.22 + (0.50 - 0.22) * horizon_refs
+        
+        # 2. Dome Flattening Boost
+        # lerp(1.0, 1.25, flattening)
+        max_illusion *= (1.0 + 0.25 * flattening)
+        
+        # 3. Altitude Falloff (Smoothstep logic)
+        # clamp(alt, 0, falloff) -> normalized 0..1
+        val = max(0.0, min(1.0, alt_deg / falloff_deg))
+        # Invert: 1 at horizon, 0 at falloff
+        w = 1.0 - val
+        # Smoothstep: 3x^2 - 2x^3
+        w = w * w * (3.0 - 2.0 * w)
+        
+        # 4. Trained Observer Reduction
+        if is_trained:
+            max_illusion *= 0.6
+            
+        # 5. Atmospheric Context Boost
+        illusion_val = (max_illusion * w) * (1.0 + atmos * 0.10)
+        
+        # 6. Final Scale (Base 1.0 + illusion)
+        # Limit to 1.6x max
+        scale = max(1.0, min(1.6, 1.0 + illusion_val))
+            
+        return scale
+
+    def draw_light_domes(self, painter, profile, eff_sun_alt, eclipse_dimming):
+        """Draws only the BACKGROUND atmospheric glows (Moon). City domes are interleaved via callback."""
+        if eff_sun_alt >= 0: return
+        
+        # Diagnostic Log
+        if not hasattr(self, '_last_dome_log_time'): self._last_dome_log_time = 0
+        current_time = __import__('time').time()
+        self._dome_count = 0
+        
+        if eff_sun_alt > -18.0:
+            twilight_factor = (0 - eff_sun_alt) / 18.0
+        else:
+            twilight_factor = 1.0
+        twilight_factor *= eclipse_dimming
+        if twilight_factor <= 0.01: return
+
+        show_sun_moon_effects = self._parent_checkbox_checked("chk_sun_moon", default=True)
+
+        # MOON GLOW (Only)
+        # Global Sky Glow is now handled inside sky_color_phys physically
+        if show_sun_moon_effects and self._sf_cache and self._sf_cache.get('data'):
+            m_data = self._sf_cache['data'].get('moon')
+            if m_data and m_data['alt'] > -5.0:
+                m_alt, m_az = m_data['alt'], m_data['az']
+                m_illum = m_data.get('illumination', 0.5)
+                m_pt = self.project_universal_stereo(m_alt, m_az)
+                if m_pt:
+                    mx, my = m_pt
+                    m_glow_radius = 150.0 * self.zoom_level * (1.0 + (90.0 - abs(m_alt))/90.0)
+                    m_glow_alpha = int(200 * m_illum * twilight_factor)
+                    if m_glow_alpha > 5:
+                        grad_moon = QRadialGradient(QPointF(mx, my), m_glow_radius)
+                        grad_moon.setColorAt(0.0, QColor(255, 255, 255, m_glow_alpha // 2))
+                        grad_moon.setColorAt(0.5, QColor(255, 255, 255, m_glow_alpha // 4))
+                        grad_moon.setColorAt(1.0, QColor(0, 0, 0, 0))
+                        painter.save()
+                        painter.setBrush(grad_moon)
+                        painter.setPen(Qt.NoPen)
+                        painter.drawEllipse(QPointF(mx, my), m_glow_radius, m_glow_radius)
+                        painter.restore()
+
+    def _draw_single_city_dome(self, painter, profile, idx, dist, twilight_factor):
+        # ... (Physic comments omitted for brevity)
+        import math
+        from PyQt5.QtGui import QRadialGradient, QLinearGradient, QColor, QBrush, QPainter
+        from PyQt5.QtCore import QPointF, Qt
+
+        self._dome_count += 1
+        intensity = profile.light_domes[idx]
+        if intensity < 0.2: return
+        az = profile.azimuths[idx]
+        
+        # Distance attenuation: exponential decaimient I(r) = I0 * e^(-r/R) (35km mean clear air path)
+        dist_factor = math.exp(-dist / 35000.0) 
+        
+        # 2. ObtenciÃ³ Altitud (Obstacles TopogrÃ fics a l'Azimut)
+        elev_deg = 0.0
+        for b in profile.bands:
+             elev_deg = max(elev_deg, math.degrees(b["angles"][idx]))
+        
+        pt = self.project_universal_stereo(elev_deg, az)
+        if not pt: return
+        x, y = pt
+        
+        # =========================================================================
+        # ALPHA CONFIGURATION: Adjusted to be even more subtle during night
+        CITY_DOME_ALPHA_MULTIPLIER = 1.5
+        # =========================================================================
+
+        # Base Visual intensity mapping
+        # Use log scale to compress massive high-radiance cities
+        log_intensity = math.log10(1.0 + intensity)
+        visual_intensity = log_intensity * dist_factor
+        
+        # Alpha Base Limit (Cap at 100 to avoid washing out starlight entirely)
+        alpha_base = min(100, int(visual_intensity * 60 * twilight_factor))
+        alpha_base = int(alpha_base * CITY_DOME_ALPHA_MULTIPLIER)
+        
+        # Tolera no pintar casi-invisibles
+        if alpha_base <= 2: return
+        
+        # URBAN GLOW PALETTE: Sodium/LED desaturated colors (Warm Grey/Amber)
+        # Saturation reduced from 140 to 60, Lightness from 140 to 100
+        glow_hue = 35 + min(10, intensity/500.0) 
+        c_core = QColor.fromHsl(int(glow_hue), 50, 80, int(alpha_base * 0.40))
+        c_mid  = QColor.fromHsl(int(glow_hue), 40, 60, int(alpha_base * 0.15))
+        c_fringe = QColor.fromHsl(int(glow_hue), 30, 40, int(alpha_base * 0.05))
+        c_edge = QColor(c_fringe.red(), c_fringe.green(), c_fringe.blue(), 1)
+        c_trans = QColor(0, 0, 0, 0)
+
+        # Base radius on screen: Logarithmic scaling
+        # Cap the max radius so distant massive cities don't cover the whole screen width
+        max_rad = self.width() * 0.4
+        rad_x = min(max_rad, log_intensity * 30.0 * self.zoom_level * dist_factor)
+        
+        # Squashed flat near horizon (more realistic dome shape)
+        rad_y = rad_x * 0.35 
+
+        painter.save()
+        painter.setCompositionMode(QPainter.CompositionMode_Screen) 
+        
+        # We draw it at 0,0 and apply a scale transform
+        painter.translate(x, y)
+        scale_y = rad_y / max(1.0, rad_x)
+        painter.scale(1.0, scale_y)
+        
+        grad = QRadialGradient(QPointF(0, 0), rad_x)
+        
+        # Colors: Smooth exponential-like fade
+        grad.setColorAt(0.00, c_core)
+        grad.setColorAt(0.30, c_mid)        
+        grad.setColorAt(0.60, c_fringe)     
+        grad.setColorAt(0.90, c_edge)
+        grad.setColorAt(1.00, c_trans)
+        
+        painter.setBrush(QBrush(grad))
+        painter.setPen(Qt.NoPen)
+        
+        painter.drawRect(int(-rad_x), int(-rad_x), int(rad_x * 2), int(rad_x * 2))
+        painter.restore()
+
+    def _sun_weather_dim_factor(self) -> float:
+        w = None
+        if hasattr(self.parent_widget, 'weather'):
+            w = self.parent_widget.weather
+        elif hasattr(self, 'weather'):
+            w = self.weather
+        if w is None:
+            return 0.0
+        try:
+            cover = max(0.0, min(1.0, float(getattr(w, 'current_cover', 0.0))))
+            precip = max(0.0, min(1.0, float(getattr(w, 'precip_int', 0.0))))
+            fog = max(0.0, min(1.0, float(getattr(w, 'fog_cover', 0.0))))
+            humidity = max(0.0, min(1.0, float(getattr(w, 'humidity', 0.0))))
+            dim_cover = max(0.0, (cover - 0.55) / 0.45)
+            dim_fog = min(1.0, fog * 1.10 + max(0.0, humidity - 0.80) * 0.85)
+            dim = max(dim_cover, precip * 1.20, dim_fog)
+            return max(0.0, min(1.0, dim ** 1.15))
+        except Exception:
+            return 0.0
+
+    def draw_skyfield_objects(self, painter, ut_hour, day_of_year, ambient_light=1.0, mag_limit=None):
+        if mag_limit is None: mag_limit = 6.0
+        bortle = getattr(self.parent_widget, 'auto_bortle_estimate', getattr(self, 'auto_bortle_estimate', 1))
+        # USE CACHE if available
+        if hasattr(self, '_sf_cache') and self._sf_cache['data']:
+            try:
+                data = self._sf_cache['data']
+                
+                # Physical Scaling setup
+                w, h = self.width(), self.height()
+                R_proj = min(w, h) / 2.0 * self.zoom_level
+                pixels_per_deg = R_proj / 90.0
+                celestial_scale = 10.0
+                scope_enabled = bool(self.scope_mode_enabled())
+                scope_disc_cap_px = None
+                scope_planet_cap_px = None
+
+                # Minimal anti-bloating guardrail:
+                # in wide scope fields (zoomed out), cap disc sizes so they do not
+                # explode into oversized balls.
+                if scope_enabled and hasattr(self, "scope_controller"):
+                    try:
+                        fov_w, fov_h = self.scope_controller.current_fov()
+                        fov_diag = math.hypot(float(fov_w), float(fov_h))
+                        # 0 @ narrow fields (<=6°), 1 @ very wide fields (>=32°)
+                        wide_t = max(0.0, min(1.0, (fov_diag - 6.0) / 26.0))
+                        # Keep current look at narrow FOV, progressively soften at wide FOV.
+                        celestial_scale = 10.0 - 5.8 * wide_t
+                        scope_disc_cap_px = max(3.5, 14.0 - 8.5 * wide_t)
+                        scope_planet_cap_px = max(2.0, 9.0 - 5.5 * wide_t)
+                    except Exception:
+                        pass
+                
+                # Sun Data
+                s = data['sun']
+                alt_s_deg = s['alt']
+                az_s_deg = s['az']
+                dist_s_km = s['dist_km']
+                sun_ang_radius_deg = s['rad_deg']
+                
+                # Moon Data
+                m = data['moon']
+                alt_m_real_deg = m['alt']
+                az_m_real_deg = m['az']
+                d_moon_km = m['dist_km']
+                moon_ang_radius_deg = m['rad_deg']
+                sep_real = m['sep_real']
+                
+                # ... Previous Logic for Shift ...
+                alt_m_vis = alt_m_real_deg
+                az_m_vis = az_m_real_deg
+                
+                if sep_real < 10.0:
+                    blend = max(0.0, (10.0 - sep_real) / 10.0)
+                    blend = blend * blend
+                    mult = 1.0 + (celestial_scale - 1.0) * blend
+                    d_alt = (alt_m_real_deg - alt_s_deg)
+                    d_az = (az_m_real_deg - az_s_deg)
+                    alt_m_vis = alt_s_deg + d_alt * mult
+                    az_m_vis = az_s_deg + d_az * mult
+                
+                # ... Moon Illusion ...
+                scale_s = self.perceived_disc_scale(alt_s_deg)
+                scale_m = self.perceived_disc_scale(alt_m_vis)
+                if self.eclipse_lock_mode and sep_real < 2.0:
+                     scale_s = 1.0
+                     scale_m = 1.0
+                     
+                # ... Eclipse Snap ...
+                snap_threshold = 0.1
+                if sep_real < snap_threshold:
+                    snap_strength = ((snap_threshold - sep_real) / snap_threshold) ** 2
+                    alt_m_vis = alt_m_vis * (1.0 - snap_strength) + alt_s_deg * snap_strength
+                    az_m_vis = az_m_vis * (1.0 - snap_strength) + az_s_deg * snap_strength
+
+                sun_radius_px = max(3.0, sun_ang_radius_deg * pixels_per_deg * celestial_scale * scale_s)
+                moon_radius_px = max(3.0, moon_ang_radius_deg * pixels_per_deg * celestial_scale * scale_m)
+                if scope_disc_cap_px is not None:
+                    sun_radius_px = min(sun_radius_px, float(scope_disc_cap_px))
+                    moon_radius_px = min(moon_radius_px, float(scope_disc_cap_px))
+
+                show_sun_moon = self._parent_checkbox_checked("chk_sun_moon", default=True)
+
+                # ... Sun Color (Copied logic, can optimize later) ...
+                c_zenith = QColor(255, 255, 240)
+                c_golden = QColor(255, 200, 100)
+                c_horizon = QColor(255, 60, 20)
+                c_deep = QColor(100, 20, 10)
+                
+                def interpolate_col_loc(c1, c2, t):
+                    r = c1.red() + (c2.red() - c1.red()) * t
+                    g = c1.green() + (c2.green() - c1.green()) * t
+                    b = c1.blue() + (c2.blue() - c1.blue()) * t
+                    return QColor(int(r), int(g), int(b))
+                
+                if alt_s_deg > 20.0: sun_color = c_zenith
+                elif alt_s_deg > 5.0:
+                     t_col = (20.0 - alt_s_deg) / 15.0
+                     sun_color = interpolate_col_loc(c_zenith, c_golden, t_col)
+                elif alt_s_deg > -2.0:
+                     t_col = (5.0 - alt_s_deg) / 7.0
+                     sun_color = interpolate_col_loc(c_golden, c_horizon, t_col)
+                else: sun_color = c_deep
+                
+                # Corona
+                corona_opacity = 0.0
+                dist_vis = math.hypot(alt_m_vis - alt_s_deg, az_m_vis - az_s_deg)
+                if sun_radius_px < moon_radius_px and dist_vis < (moon_radius_px - sun_radius_px):
+                    corona_opacity = 1.0
+                
+                # Weather Dimming
+                eff_sun_color = QColor(sun_color)
+                eff_corona_opacity = corona_opacity
+                dim_factor = self._sun_weather_dim_factor()
+                if dim_factor > 0.01:
+                    original_alpha = eff_sun_color.alpha()
+                    eff_sun_color.setAlpha(int(original_alpha * (1.0 - dim_factor * 0.995)))
+                    eff_corona_opacity *= (1.0 - dim_factor)
+                
+                visual_ppd = pixels_per_deg * celestial_scale
+                
+                if show_sun_moon:
+                    self.draw_sun_skyfield(painter, alt_s_deg, az_s_deg, sun_radius_px, eff_sun_color, eff_corona_opacity, visual_ppd)
+                
+                # Illumination (Approx)
+                elongation = sep_real # Roughly close enough for visual phase if not precise
+                illumination = (1 - math.cos(math.radians(elongation))) / 2
+                angle_to_sun = math.atan2(alt_s_deg - alt_m_vis, az_s_deg - az_m_vis)
+                rotation_deg = math.degrees(angle_to_sun)
+                
+                # Eclipse check
+                d_az_check = (az_m_vis - az_s_deg + 180) % 360 - 180
+                dist_vis_px = (math.hypot(alt_m_vis - alt_s_deg, d_az_check)) * pixels_per_deg
+                is_eclipsing = (dist_vis_px < (sun_radius_px + moon_radius_px))
+                
+                # Draw Moon
+                moon_tint = QColor(240, 240, 235)
+                # ... tint logic ... 
+                if alt_m_vis < 20.0:
+                     t_moon_set = max(0.0, min(1.0, (20.0 - alt_m_vis) / 20.0))
+                     r = int(240 * (1-t_moon_set) + 255 * t_moon_set)
+                     g = int(240 * (1-t_moon_set) + 200 * t_moon_set)
+                     b = int(235 * (1-t_moon_set) + 100 * t_moon_set)
+                     moon_tint = QColor(r, g, b)
+                     
+                if show_sun_moon:
+                    self.draw_moon_skyfield(painter, alt_m_vis, az_m_vis, illumination, rotation_deg, moon_radius_px, 1.0, is_eclipsing, (alt_s_deg > -6), sun_params=(alt_s_deg, az_s_deg, sun_radius_px), pixels_per_deg=visual_ppd, tint_color=moon_tint)
+                
+                # Planets
+                show_planets = self._parent_checkbox_checked("chk_planets", default=True)
+                    
+                if show_planets:
+                    for p in data['planets']:
+                        # Recompute visibility
+                        s_alt_rad = math.radians(alt_s_deg)
+                        s_az_rad = math.radians(az_s_deg)
+                        p_alt_rad = math.radians(p['alt'])
+                        p_az_rad = math.radians(p['az'])
+                        
+                        sin_p = math.sin(p_alt_rad)
+                        sin_s = math.sin(s_alt_rad)
+                        cos_p = math.cos(p_alt_rad)
+                        cos_s = math.cos(s_alt_rad)
+                        
+                        cos_gamma = sin_p*sin_s + cos_p*cos_s*math.cos(p_az_rad - s_az_rad)
+                        
+                        # Glare/Directional Modifier (Strict -4.0)
+                        dir_modifier = -4.0 * cos_gamma
+                        
+                        # Airmass Extinction for Planets
+                        h_p = max(0.1, p['alt'])
+                        airmass_p = 1.0 / (math.sin(math.radians(h_p)) + 0.15 * (h_p + 3.885)**-1.253)
+                        k_p = float(getattr(self.parent_widget, "scope_k_fallback", 0.20))
+                        p_ext = k_p * (airmass_p - 1.0)
+                        
+                        local_limit = mag_limit + dir_modifier - p_ext
+                        
+                        # Caching handles magnitude now
+                        mag = p.get('mag', -2.0)
+                        
+                        # Visibility Check (Magnitude vs Limit)
+                        # "Brighter than limit" means (mag < limit)
+                        diff = local_limit - mag
+                        fade_in = max(0.0, min(1.0, diff * 2.0))
+                        
+                        if fade_in > 0.01:
+                            p_rad = max(2.0, (p['sz']/10.0) * pixels_per_deg * 2.0)
+                            if scope_planet_cap_px is not None:
+                                p_rad = min(p_rad, float(scope_planet_cap_px))
+                            
+                            # Apply fade to alpha
+                            p_col = QColor(p['col'])
+                            p_col.setAlphaF(fade_in)
+                            
+                            self.draw_planet(painter, p['alt'], p['az'], p['name'], p_col, p_rad, mag, key=p.get('key'))
+
+                return
+            except Exception as e:
+                # print(f"Draw Cache Error: {e}")
+                pass
+        
+        # Fallback to Original Logic if no cache
+        try:
+            ts = self.parent_widget.ts
+            eph = self.parent_widget.eph
+            observer = wgs84.latlon(self.parent_widget.latitude, self.parent_widget.longitude)
+            
+            now = datetime.now()
+            y = getattr(self.parent_widget, 'manual_year', now.year)
+            base_date = datetime(y, 1, 1) + timedelta(days=day_of_year)
+            target_dt = base_date + timedelta(hours=ut_hour)
+            
+            t = ts.from_datetime(target_dt.replace(tzinfo=timezone.utc))
+            
+            # Physical Scaling setup
+            w, h = self.width(), self.height()
+            R_proj = min(w, h) / 2.0 * self.zoom_level
+            pixels_per_deg = R_proj / 90.0
+            
+            # Dynamic Scale Logic:
+            # - Zoom < 2.0 (Wide): Use Large Scale (12.0) so they are visible "icons".
+            # - Zoom > 10.0 (Tele): Use Real Scale (1.0) so geometry is perfect.
+            # Physical Scaling setup
+            w, h = self.width(), self.height()
+            R_proj = min(w, h) / 2.0 * self.zoom_level
+            pixels_per_deg = R_proj / 90.0
+            
+            earth = eph['earth']
+            sun = eph['sun']
+            moon = eph['moon']
+            obs_loc = earth + observer
+            
+            # "No alterar el tamaÃ±o mÃ¡s que por el efecto del zoom".
+            # User request: "Me gustarÃ­a que, al ampliar, tambiÃ©n se ampliara el Sol y la Luna."
+            # Previous logic (12.0 / zoom) kept the size static on screen.
+            # We now use a constant scale so it grows naturally with the camera zoom (pixels_per_deg).
+            # We use 10.0 as a base "Cinematic Scale" so it looks impressive but not overwhelming.
+            celestial_scale = 10.0
+            
+            # --- Position Retargeting (The "Shift" Fix) ---
+            # To fix contact time without shrinking:
+            # We must move the Moon visually away from the Sun so that the inflated disks
+            # touch exactly when the real disks touch.
+            # Visual_Distance = Real_Distance * celestial_scale.
+            
+            # Constants for Angular Size (km)
+            SUN_RADIUS_KM = 696340.0
+            MOON_RADIUS_KM = 1737.4
+
+            # 1. Get Sun Position (Anchor)
+            ast_sun = obs_loc.at(t).observe(sun)
+            alt_s, az_s, _ = ast_sun.apparent().altaz()
+            
+            # 2. Get Moon Position (Real)
+            ast_moon = obs_loc.at(t).observe(moon)
+            alt_m_real, az_m_real, _ = ast_moon.apparent().altaz()
+
+            # Calculate Real Angular Size
+            d_sun_km = ast_sun.distance().km
+            d_moon_km = ast_moon.distance().km
+            
+            # Formula: theta_diam = 2 * atan(r/d). We need radius (theta_diam / 2)
+            sun_ang_radius_deg = math.degrees(math.atan(SUN_RADIUS_KM / d_sun_km))
+            moon_ang_radius_deg = math.degrees(math.atan(MOON_RADIUS_KM / d_moon_km))
+            
+            # 3. Calculate Separation
+            sep_real = ast_sun.separation_from(ast_moon).degrees
+            
+            # 4. Apply Shift if near Eclipse (Blend Radius 10 deg)
+            # This prevents the Moon from being 120 deg away when it's just 10 deg away.
+            alt_m_vis = alt_m_real.degrees
+            az_m_vis = az_m_real.degrees
+            
+            if sep_real < 10.0:
+                # Calculate Expansion Factor
+                # At sep=0 (Total), Factor should be scale (to preserve centricity? actually scale doesn't matter at 0)
+                # At sep=Contact (0.5), VisualSep should be 0.5 * Scale. So Factor = Scale.
+                # So we want to separate by Scale.
+                
+                # Blend Factor: 1.0 (Full Shift) at 0 deg, 0.0 (No Shift) at 10 deg.
+                # Linear blend?
+                blend = max(0.0, (10.0 - sep_real) / 10.0)
+                blend = blend * blend # Smooth quadratic
+                
+                # Effective Multiplier
+                mult = 1.0 + (celestial_scale - 1.0) * blend
+                
+                # Apply vector expansion
+                # Approx linear logic for small angles
+                d_alt = (alt_m_real.degrees - alt_s.degrees)
+                d_az = (az_m_real.degrees - az_s.degrees)
+                # Correct Azimuth for cos(lat) not needed for small local shift approx?
+                # Better: Scale d_alt and d_az around Sun
+                
+                alt_m_vis = alt_s.degrees + d_alt * mult
+                az_m_vis = az_s.degrees + d_az * mult
+            
+            
+            # --- Moon Illusion (Perceptive Model) ---
+            scale_s = self.perceived_disc_scale(alt_s.degrees)
+            scale_m = self.perceived_disc_scale(alt_m_vis)
+            
+            # Eclipse Lock: Force 1.0 if near eclipse to ensure contact accuracy
+            if self.eclipse_lock_mode and sep_real < 2.0:
+                 scale_s = 1.0
+                 scale_m = 1.0
+                 
+            # --- ECLIPSE SNAP (Magnetic Alignment) ---
+            # Compensates for micro-misalignments (GPS precision, Delta T) to ensure 
+            # the user experiences a perfect Totality/Annularity if they are very close.
+            # Threshold: 0.1 degrees (very close conjunction)
+            snap_threshold = 0.1
+            if sep_real < snap_threshold:
+                # Strong snap when very close
+                # 0.0 at threshold -> 1.0 at 0.0 separation
+                snap_strength = ((snap_threshold - sep_real) / snap_threshold) ** 2
+                
+                # Gently pull Moon towards Sun
+                alt_m_vis = alt_m_vis * (1.0 - snap_strength) + alt_s.degrees * snap_strength
+                az_m_vis = az_m_vis * (1.0 - snap_strength) + az_s.degrees * snap_strength
+
+            # Clamp min radius
+            sun_radius_px = max(3.0, sun_ang_radius_deg * pixels_per_deg * celestial_scale * scale_s)
+            moon_radius_px = max(3.0, moon_ang_radius_deg * pixels_per_deg * celestial_scale * scale_m)
+            
+            # --- SUN COLOR (Atmospheric Extinction) ---
+            # Zenith: White/Yellow
+            # Horizon: Red/Orange
+            # Deep Horizon: Dark Red
+            s_alt_deg = alt_s.degrees
+            
+            def interpolate_col(c1, c2, t):
+                r = c1.red() + (c2.red() - c1.red()) * t
+                g = c1.green() + (c2.green() - c1.green()) * t
+                b = c1.blue() + (c2.blue() - c1.blue()) * t
+                return QColor(int(r), int(g), int(b))
+
+            c_zenith = QColor(255, 255, 240) # White-Yellow
+            c_golden = QColor(255, 200, 100) # Orange
+            c_horizon = QColor(255, 60, 20)  # Red
+            c_deep = QColor(100, 20, 10)     # Dark Red
+            
+            if s_alt_deg > 20.0:
+                 sun_color = c_zenith
+            elif s_alt_deg > 5.0:
+                 t_col = (20.0 - s_alt_deg) / 15.0 # 0..1
+                 sun_color = interpolate_col(c_zenith, c_golden, t_col)
+            elif s_alt_deg > -2.0:
+                 t_col = (5.0 - s_alt_deg) / 7.0
+                 sun_color = interpolate_col(c_golden, c_horizon, t_col)
+            else:
+                 sun_color = c_deep
+
+            # --- CORONA LOGIC ---
+            # Visible if Total Eclipse (Sep ~ 0) and Moon covers Sun
+            is_total = False
+            corona_opacity = 0.0
+            
+            # Use visual separation calculated previously
+            dist_vis = math.hypot(alt_m_vis - alt_s.degrees, az_m_vis - az_s.degrees)
+            # If visual separation is small enough that Moon covers Sun
+            if sun_radius_px < moon_radius_px and dist_vis < (moon_radius_px - sun_radius_px):
+                is_total = True
+                corona_opacity = 1.0
+            elif dist_vis < (sun_radius_px + moon_radius_px):
+                # Partial/Near
+                pass
+            
+            # Draw Sun (Background)
+            visual_ppd = pixels_per_deg * celestial_scale
+            
+            # Weather Dimming (Clouds/Rain obscuring Sun)
+            eff_sun_color = QColor(sun_color)
+            eff_corona_opacity = corona_opacity
+            dim_factor = self._sun_weather_dim_factor()
+            if dim_factor > 0.01:
+                original_alpha = eff_sun_color.alpha()
+                new_alpha = int(original_alpha * (1.0 - dim_factor * 0.995))
+                eff_sun_color.setAlpha(new_alpha)
+                eff_corona_opacity *= (1.0 - dim_factor)
+
+            self.draw_sun_skyfield(painter, alt_s.degrees, az_s.degrees, sun_radius_px, eff_sun_color, eff_corona_opacity, visual_ppd)
+            
+            s_earth = earth.at(t).observe(sun)
+            m_earth = earth.at(t).observe(moon)
+            # This is elongation (angle between Sun and Moon seen from Earth)
+            elongation = s_earth.separation_from(m_earth).degrees
+            
+            # Correct Formula for Illumination based on Elongation:
+            # Elongation 0 deg (New Moon) -> k = 0
+            # Elongation 180 deg (Full Moon) -> k = 1
+            illumination = (1 - math.cos(math.radians(elongation))) / 2
+            
+            # Rotation for phase
+            angle_to_sun = math.atan2(alt_s.degrees - alt_m_vis, az_s.degrees - az_m_vis)
+            rotation_deg = math.degrees(angle_to_sun)
+            
+            # Prepare Eclipse Flag for Transparency Logic
+            # Correct Azimuth Difference for Wrap-Around (0 vs 360)
+            d_az_check = (az_m_vis - az_s.degrees + 180) % 360 - 180
+            dist_vis_deg = math.hypot(alt_m_vis - alt_s.degrees, d_az_check)
+            dist_vis_px = dist_vis_deg * pixels_per_deg
+            
+            overlap_dist = sun_radius_px + moon_radius_px
+            is_eclipsing = (dist_vis_px < overlap_dist)
+
+            # Daytime Visibility Check
+            moon_alpha = 1.0
+            is_day = (s_alt_deg > -6.0)
+            
+            if s_alt_deg > 0: # Bright Day
+                # Check Overlap for silhouette preservation (Eclipse)
+                if is_eclipsing:
+                    moon_alpha = 1.0 # Silhouette is solid
+                else:
+                    # Fade out thin crescent in bright day
+                    moon_alpha = max(0.0, min(1.0, illumination * 2.0))
+            
+            # Moon Color Logic (Atmospheric)
+            # Normal: (240, 240, 235)
+            # Horizon: Yellow/Reddish tint
+            moon_tint = QColor(240, 240, 235)
+            if alt_m_vis < 20.0:
+                 t_moon_set = max(0.0, min(1.0, (20.0 - alt_m_vis) / 20.0))
+                 # Blend towards Orange (255, 200, 100)
+                 r = int(240 * (1-t_moon_set) + 255 * t_moon_set)
+                 g = int(240 * (1-t_moon_set) + 200 * t_moon_set)
+                 b = int(235 * (1-t_moon_set) + 100 * t_moon_set)
+                 moon_tint = QColor(r, g, b)
+
+            self.draw_moon_skyfield(painter, alt_m_vis, az_m_vis, illumination, rotation_deg, moon_radius_px, moon_alpha, is_eclipsing, is_day, sun_params=(alt_s.degrees, az_s.degrees, sun_radius_px), pixels_per_deg=visual_ppd, tint_color=moon_tint)
+            
+            # Logger (Every 30s)
+            import time
+            now_ts = time.time()
+            if not hasattr(self, 'last_log_time'): self.last_log_time = 0
+            if now_ts - self.last_log_time > 99999999999:
+                self.last_log_time = now_ts
+                off = self.get_simulated_tz_offset(day_of_year)
+                print(f"SKYFIELD LOG [UTC{off:+.0f}]: "
+                      f"SUN(Alt={alt_s.degrees:.4f}Â°, Az={az_s.degrees:.4f}Â°) | "
+                      f"MOON(Alt={alt_m_real.degrees:.4f}Â°, Az={az_m_real.degrees:.4f}Â°)")
+            
+            # 3. Planets (All times, visibility depends on Magnitude Limit)
+            # The manual check 'if s_alt_deg < -6' prevented Venus/Jupiter from appearing in Civil Twilight.
+            # Removed it. The 'mag <= local_limit' check inside handles it correctly.
+            if True:
+                planets = {
+                    'mercury': ('Mercury', QColor(169, 169, 169), 4),
+                    'venus': ('Venus', QColor(255, 220, 150), 7),
+                    'mars': ('Mars', QColor(255, 100, 80), 5),
+                    'jupiter barycenter': ('Jupiter', QColor(220, 180, 140), 12),
+                    'saturn barycenter': ('Saturn', QColor(240, 210, 150), 10),
+                    'uranus barycenter': ('Uranus', QColor(173, 216, 230), 6),
+                    'neptune barycenter': ('Neptune', QColor(100, 100, 255), 6),
+                    'pluto barycenter': ('Pluto', QColor(200, 180, 160), 3),
+                }
+                
+                for key, (name, col, sz) in planets.items():
+                    try:
+                        p = eph[key]
+                        ast = obs_loc.at(t).observe(p)
+                        alt_p, az_p, dist = ast.apparent().altaz()
+                        
+                        if alt_p.degrees > -5:
+                            # phase_angle calculation omitted for perf, assuming 0 (Full)
+                            phase_angle = 0.0
+                            mag = self.calculate_planet_magnitude(name, dist.au, phase_angle)
+                            p_rad = max(2.0, (sz/10.0) * pixels_per_deg * 2.0)
+                            
+                            # --- DIRECTIONAL VISIBILITY FOR PLANETS ---
+                            # Same logic as stars
+                            p_alt_rad = math.radians(alt_p.degrees)
+                            p_az_rad = math.radians(az_p.degrees)
+                            s_alt_rad = math.radians(alt_s.degrees) # Use variables from scope
+                            s_az_rad = math.radians(az_s.degrees)
+                            
+                            sin_p = math.sin(p_alt_rad)
+                            sin_s = math.sin(s_alt_rad)
+                            cos_p = math.cos(p_alt_rad)
+                            cos_s = math.cos(s_alt_rad)
+                            
+                            cos_gamma = sin_p*sin_s + cos_p*cos_s*math.cos(p_az_rad - s_az_rad)
+                            
+                            # PLANET SPECIFIC VISIBILITY:
+                            # Reverting to strict penalty as per user request.
+                            # Even bright planets are lost in the sun's glare if too close.
+                            dir_modifier = -1.5 * cos_gamma
+
+                            h_p = max(0.1, alt_p.degrees)
+                            airmass_p = 1.0 / (math.sin(math.radians(h_p)) + 0.15 * (h_p + 3.885)**-1.253)
+                            k_p = float(getattr(self.parent_widget, "scope_k_fallback", 0.20))
+                            p_ext = k_p * (airmass_p - 1.0)
+
+                            local_limit = mag_limit + dir_modifier - p_ext
+                            
+                            # NO HARD CUTOFF
+                            # Rely purely on the Star-Like Visibility Algorithm
+                            pass
+
+                            # Soft Fade
+                            diff = local_limit - mag
+                            fade_in = max(0.0, min(1.0, diff * 2.0))
+                            
+                            if fade_in > 0.01:
+                                # Clone color to apply alpha
+                                p_col = QColor(col)
+                                p_col.setAlphaF(fade_in)
+                                self.draw_planet(painter, alt_p.degrees, az_p.degrees, name, p_col, p_rad, mag, key=key)
+                    except: continue
+
+            # 4. Satellites
+            if hasattr(self.parent_widget, 'show_satellites') and self.parent_widget.show_satellites:
+                for sat_def in self.parent_widget.satellites:
+                    try:
+                        sat = sat_def['obj']
+                        topo = (sat - obs_loc).at(t)
+                        alt_sat, az_sat, dist_sat = topo.altaz()
+                        if alt_sat.degrees > 0:
+                            mag = sat_def.get('std_mag', -1.8)
+                            self.draw_satellite(painter, alt_sat.degrees, az_sat.degrees, sat_def['name'], mag)
+                    except: pass
+
+        except Exception as e:
+            # print(f"Skyfield Error: {e}")
+            pass
+
+    def perceived_disc_scale(self, altitude):
+        # ... logic ...
+        return 1.0
+
+# ... (Previous code) ...
+
+    def update_loop(self):
+        # Keep the main update loop at 60 FPS for smooth movement.
+        target_interval_ms = 16
+        try:
+            if bool(getattr(self, "_updates_paused", False)):
+                return
+        except Exception:
+            target_interval_ms = 16
+
+        if hasattr(self, "timer") and self.timer.interval() != target_interval_ms:
+            self.timer.setInterval(target_interval_ms)
+
+        if self.use_real_time:
+            now = datetime.now()
+            # Sync Day & Year
+            self.manual_year = now.year
+            self.manual_day = (now - datetime(now.year, 1, 1)).days
+            if hasattr(self, 'lbl_date'):
+               self.lbl_date.setText(self.format_date(self.manual_day))
+            
+            # Sync Gradient
+            if hasattr(self, 'time_bar'):
+                self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
+            
+            # Sync Time
+            h = now.hour + now.minute/60.0 + now.second/3600.0
+            if hasattr(self, 'time_bar'):
+                self.time_bar.set_time(h)
+        else:
+            # Manual Mode: "Time keeps running forward"
+            # Increment manual_hour by elapsed time
+            # Timer interval varies, so usage of constant '0.1' is wrong if we change FPS?
+            # We should measure actual dt.
+            # For simplicity, we assume the interval is respected or we use current interval.
+            
+            dt_sec = self.timer.interval() / 1000.0
+            dt_hours = dt_sec / 3600.0
+            self.manual_hour = (self.manual_hour + dt_hours) % 24.0
+            if hasattr(self, 'time_bar'):
+                self.time_bar.set_time(self.manual_hour)
+        
+        self.canvas.update()
+
+    def get_refracted_body_path(self, radius, alt, pixels_per_deg):
+        """
+        Generates a QPainterPath representing the body.
+        
+        SIMPLIFICATION: We have disabled differential refraction (squashing) 
+        to ensure perfect geometric overlap during eclipses. 
+        The Sun and Moon will remain perfect circles.
+        The 'lift' effect is already handled by Skyfield's altitude positioning.
+        """
+        path = QPainterPath()
+        path.addEllipse(QPointF(0,0), radius, radius)
+        return path
+
+    def _get_scope_solar_pattern(self):
+        """
+        Build (or reuse) a normalized procedural pattern for scope solar rendering.
+        The pattern is keyed by day and independent from pixel radius so zoom only scales,
+        without "jumping" sunspot positions.
+        """
+        key = (
+            int(getattr(self.parent_widget, "manual_year", 2026)),
+            int(getattr(self.parent_widget, "manual_day", 0)),
+        )
+        if self._scope_solar_pattern_key == key and self._scope_solar_pattern is not None:
+            return self._scope_solar_pattern
+
+        seed = key[0] * 1000 + key[1]
+        rng_grain = random.Random(seed + 101)
+        rng_spots = random.Random(seed + 907)
+
+        # Keep counts fixed so zoom changes do not alter RNG phase/order.
+        grain_count = 180
+        grains = []
+        for _ in range(grain_count):
+            ang = rng_grain.random() * math.tau
+            rad_n = 0.05 + 0.92 * math.sqrt(rng_grain.random())
+            radius_n = 0.006 + 0.015 * rng_grain.random()
+            alpha = int(6 + 18 * rng_grain.random())
+            grains.append((ang, rad_n, radius_n, alpha))
+
+        # Day-dependent but zoom-invariant sunspot groups.
+        spot_groups = 3 + int(rng_spots.random() * 5)  # 3..7
+        spots = []
+        for _ in range(spot_groups):
+            ang = rng_spots.random() * math.tau
+            rad_n = 0.10 + 0.70 * rng_spots.random()
+            pen_w_n = 0.07 + 0.06 * rng_spots.random()
+            pen_h_ratio = 0.55 + 0.35 * rng_spots.random()
+            umb_w_ratio = 0.35 + 0.25 * rng_spots.random()
+            umb_h_ratio = 0.35 + 0.25 * rng_spots.random()
+            rot_deg = rng_spots.uniform(0.0, 180.0)
+
+            micro = []
+            n_micro = 1 + int(rng_spots.random() * 3)
+            for _j in range(n_micro):
+                da = rng_spots.random() * math.tau
+                dr_mul = 0.7 + 1.3 * rng_spots.random()
+                mr_mul = 0.10 + 0.10 * rng_spots.random()
+                micro.append((da, dr_mul, mr_mul))
+
+            spots.append(
+                {
+                    "ang": ang,
+                    "rad_n": rad_n,
+                    "pen_w_n": pen_w_n,
+                    "pen_h_ratio": pen_h_ratio,
+                    "umb_w_ratio": umb_w_ratio,
+                    "umb_h_ratio": umb_h_ratio,
+                    "rot_deg": rot_deg,
+                    "micro": micro,
+                }
+            )
+
+        self._scope_solar_pattern_key = key
+        self._scope_solar_pattern = {"grains": grains, "spots": spots}
+        return self._scope_solar_pattern
+
+    def _draw_scope_solar_disc(self, painter, radius):
+        # Procedural solar-filter look for scope mode: full disk + sunspots.
+        rr = max(2.0, float(radius))
+        painter.save()
+        disk_path = QPainterPath()
+        disk_path.addEllipse(QPointF(0, 0), rr, rr)
+        painter.setClipPath(disk_path)
+        painter.setPen(Qt.NoPen)
+
+        # Base filtered sun disk.
+        base_grad = QRadialGradient(0, 0, rr)
+        base_grad.setColorAt(0.0, QColor(255, 247, 210, 255))
+        base_grad.setColorAt(0.7, QColor(247, 214, 150, 255))
+        base_grad.setColorAt(1.0, QColor(215, 160, 95, 255))
+        painter.setBrush(QBrush(base_grad))
+        painter.drawEllipse(QPointF(0, 0), rr, rr)
+
+        pattern = self._get_scope_solar_pattern()
+
+        # Gentle texture granulation (normalized, zoom-stable).
+        for ang, rad_n, radius_n, a in pattern["grains"]:
+            rad = rr * rad_n
+            gx = math.cos(ang) * rad
+            gy = math.sin(ang) * rad
+            gr = max(0.6, rr * radius_n)
+            painter.setBrush(QColor(255, 233, 170, a))
+            painter.drawEllipse(QPointF(gx, gy), gr, gr)
+
+        # Sunspot groups (umbra + penumbra), stable across zoom for the same day.
+        for group in pattern["spots"]:
+            ang = group["ang"]
+            rad = rr * group["rad_n"]
+            cx = math.cos(ang) * rad
+            cy = math.sin(ang) * rad
+
+            pen_w = rr * group["pen_w_n"]
+            pen_h = pen_w * group["pen_h_ratio"]
+            umb_w = pen_w * group["umb_w_ratio"]
+            umb_h = pen_h * group["umb_h_ratio"]
+            rot = group["rot_deg"]
+
+            painter.save()
+            painter.translate(cx, cy)
+            painter.rotate(rot)
+            painter.setBrush(QColor(95, 70, 45, 140))
+            painter.drawEllipse(QPointF(0, 0), pen_w, pen_h)
+            painter.setBrush(QColor(45, 32, 20, 190))
+            painter.drawEllipse(QPointF(0, 0), umb_w, umb_h)
+            painter.restore()
+
+            # Secondary tiny spots around the main group.
+            for da, dr_mul, mr_mul in group["micro"]:
+                dr = pen_w * dr_mul
+                mx = cx + math.cos(da) * dr
+                my = cy + math.sin(da) * dr
+                mr = max(0.8, pen_w * mr_mul)
+                painter.setBrush(QColor(60, 42, 26, 150))
+                painter.drawEllipse(QPointF(mx, my), mr, mr)
+
+        # Limb darkening.
+        limb_grad = QRadialGradient(0, 0, rr)
+        limb_grad.setColorAt(0.6, QColor(0, 0, 0, 0))
+        limb_grad.setColorAt(0.92, QColor(70, 45, 25, 60))
+        limb_grad.setColorAt(1.0, QColor(60, 35, 20, 120))
+        painter.setBrush(QBrush(limb_grad))
+        painter.drawEllipse(QPointF(0, 0), rr, rr)
+
+        painter.setClipping(False)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(255, 235, 180, 120), 0.8))
+        painter.drawEllipse(QPointF(0, 0), rr, rr)
+        painter.restore()
+
+    def draw_sun_skyfield(self, painter, alt, az, radius, color, corona_opacity, pixels_per_deg):
+        pt = self.project_universal_stereo(alt, az)
+        if not pt: return
+        x, y = pt
+        self._register_visible_sky_object("sun", "sun", getTraduction("Astro.SunName", "Sun"), alt, az, x, y, radius)
+
+        if self.scope_mode_enabled():
+            painter.save()
+            painter.translate(x, y)
+            self._draw_scope_solar_disc(painter, radius)
+            painter.restore()
+            return
+
+        sun_alpha_factor = max(0.0, min(1.0, QColor(color).alphaF()))
+        if sun_alpha_factor <= 0.01:
+            return
+        
+        # 1. Corona (Intense & Sharp)
+        if corona_opacity > 0.01 and sun_alpha_factor > 0.04:
+            painter.setBrush(Qt.NoBrush)
+            grad = QRadialGradient(x, y, radius * 12.0) # Larger 12x
+            # Very Punchy
+            c_scale = sun_alpha_factor * sun_alpha_factor
+            grad.setColorAt(0.0, QColor(255, 255, 255, int(255 * corona_opacity * c_scale))) # Solid Center
+            grad.setColorAt(0.1, QColor(200, 220, 255, int(220 * corona_opacity * c_scale)))
+            grad.setColorAt(0.25, QColor(100, 100, 255, int(100 * corona_opacity * c_scale)))
+            grad.setColorAt(1.0, QColor(0, 0, 50, 0))
+            painter.setBrush(QBrush(grad))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QPointF(x, y), radius*12, radius*12)
+        
+        # 2. Atmospheric Refraction Logic
+        # Use centralized helper
+        path = self.get_refracted_body_path(radius, alt, pixels_per_deg)
+        
+        painter.save()
+        painter.translate(x, y)
+        
+        # Prepare Gradient for Sun Body (White hot center -> Limb Darkening -> Atmosphere Tint)
+        body_grad = QRadialGradient(0, 0, radius)
+        
+        # Core stays white-ish unless VERY low
+        alpha_core = int(255 * sun_alpha_factor)
+        core_col = QColor(255, 255, 255, alpha_core)
+        if alt < 5.0:
+            # At sunset, even the core gets tinted
+            t_set = (5.0 - alt) / 5.0 # 0..1
+            # Blend White -> Yellow/Red
+            core_col = QColor(255, 255 - int(50*t_set), 255 - int(100*t_set), alpha_core)
+            
+        body_grad.setColorAt(0.0, core_col)
+        # Push the core further out (0.85) for a more "Solid Disk" look
+        body_mid = QColor(255, 255, 240, alpha_core) if alt > 10 else QColor(color.lighter(120))
+        body_mid.setAlpha(alpha_core)
+        body_grad.setColorAt(0.85, body_mid)
+        body_grad.setColorAt(1.0, color) # Limb color matches atmosphere
+        
+        painter.setBrush(QBrush(body_grad))
+        painter.setPen(Qt.NoPen)
+        
+        # REMOVED Opacity Dimming. 
+        # We want a SOLID disk even at sunset, just darker in color.
+        # Physics says it dims, but Art says "Don't make it a ghost".
+        
+        painter.drawPath(path)
+        painter.setOpacity(1.0) # Ensure full opacity for glow logic
+        
+        # 3. Stellarium-style Bloom/Glow (Only if not in Totality)
+        if corona_opacity < 0.9 and sun_alpha_factor > 0.05:
+             # Huge, smooth radial gradient (No discrete rings)
+             glow_radius = radius * 15.0 
+             glow_grad = QRadialGradient(0, 0, glow_radius)
+             
+             # Core Glare (Blinding) -> Halo -> Atmosphere
+             # Alpha is kept somewhat high at core to simulate brightness
+             base_alpha = 180 if alt > 10 else 100
+             
+             g_scale = sun_alpha_factor * sun_alpha_factor
+             glow_grad.setColorAt(0.0, QColor(255, 255, 255, int(255 * g_scale))) # Blind white
+             glow_grad.setColorAt(0.05, QColor(color.red(), color.green(), color.blue(), int(200 * g_scale))) # Very bright aura
+             glow_grad.setColorAt(0.1, QColor(color.red(), color.green(), color.blue(), int(100 * g_scale))) # Aura
+             glow_grad.setColorAt(0.4, QColor(color.red(), color.green(), color.blue(), int(30 * g_scale)))  # General glow
+             glow_grad.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))   # Fade out
+             
+             painter.setBrush(QBrush(glow_grad))
+             painter.setCompositionMode(QPainter.CompositionMode_Screen) # Additive blending for light
+             painter.drawEllipse(QPointF(0,0), glow_radius, glow_radius)
+             painter.setCompositionMode(QPainter.CompositionMode_SourceOver) # Restore
+
+        painter.restore()
+
+    def draw_moon_skyfield(self, painter, alt, az, illum, rotation_deg, radius, alpha, is_eclipsing=False, is_day=False, sun_params=None, pixels_per_deg=None, tint_color=None):
+        if alpha <= 0.01: return
+        pt = self.project_universal_stereo(alt, az)
+        if not pt: return
+        x, y = pt
+        self._register_visible_sky_object("moon", "moon", getTraduction("Astro.MoonName", "Moon"), alt, az, x, y, radius)
+        r = radius
+        
+        # Default PPD if missing
+        if pixels_per_deg is None:
+             pixels_per_deg = radius / 0.26 # Fallback estimation
+        
+        # Get sun altitude from sun_params for sky color calculation
+        sun_alt_for_sky = -18.0  # Default to night
+        sun_az_for_sky = 0.0
+        if sun_params:
+            sun_alt_for_sky = sun_params[0]
+            sun_az_for_sky = sun_params[1]
+        
+        # 0. OCCULTATION (Night Only: Block Stars)
+        # The moon is solid object. At night, its unlit part blocks stars.
+        # Use sky color instead of black so it appears "transparent" while still occluding stars.
+        if not is_day and not is_eclipsing:
+            painter.save()
+            painter.setOpacity(1.0)
+            painter.translate(x, y)
+            
+            # Get sky color at moon's position for natural blending
+            sky_col = self.sky_color_phys(alt, az, sun_alt_for_sky, sun_az_for_sky)
+            painter.setBrush(sky_col)
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(QPointF(0,0), r, r)
+            painter.restore()
+
+        # Atmospheric Blend (Daytime Transparency)
+        # During the day, the atmosphere is IN FRONT of the moon, lowering contrast.
+        # We simulate this by letting the sky background bleed through.
+        effective_alpha = alpha
+        if is_day:
+            effective_alpha = min(alpha, 0.85)
+
+        painter.setOpacity(effective_alpha)
+        
+        # 1. Dark Body Logic
+        # - Eclipsing: Opaque Black, BUT CLIPPED to Sun. (The "Bite")
+        # - Normal: Transparent.
+        if is_eclipsing and sun_params:
+            s_alt, s_az, s_rad = sun_params
+            pt_s = self.project_universal_stereo(s_alt, s_az)
+            if pt_s:
+                sx, sy = pt_s
+                
+                # Create Sun Path (Refracted) using exact same logic as draw_sun
+                raw_s_path = self.get_refracted_body_path(s_rad, s_alt, pixels_per_deg)
+                
+                t_s = QTransform()
+                t_s.translate(sx, sy)
+                final_s_path = t_s.map(raw_s_path)
+                
+                # Create Moon Path (Refracted!) matching Sun's physics
+                # CRITICAL Fix for Totality:
+                # 1. Use Sun's Altitude (s_alt) for the Moon's refraction shape. 
+                #    This ensures identical atmospheric "squash" for both.
+                # 2. If Moon is physically larger (Totality), ensure mask is slightly larger to kill artifacts.
+                
+                target_r = r
+                if r >= s_rad:
+                    target_r = max(r, s_rad + 1.0)
+                
+                # Using s_alt instead of alt guarantees the shapes match like puzzle pieces
+                raw_m_path = self.get_refracted_body_path(target_r, s_alt, pixels_per_deg)
+                
+                t_m = QTransform()
+                t_m.translate(x, y)
+                final_m_path = t_m.map(raw_m_path)
+                
+                # INTERSECTION (The Bite)
+                # Intersection of Refracted Sun and Refracted Moon
+                bite_path = final_s_path.intersected(final_m_path)
+                
+                painter.setBrush(QColor(15, 15, 20)) 
+                painter.setPen(Qt.NoPen)
+                painter.drawPath(bite_path)
+        
+        # 2. Lit Part (Phase)
+        # 2. Lit Part (Phase)
+        if illum > 0.01:
+            # Base color defined later
+            painter.save()
+            painter.translate(x, y)
+            painter.rotate(-rotation_deg) # Rotate to face Sun
+            
+            # Using QPainterPath for transparency support
+            path = QPainterPath()
+            path.arcMoveTo(-r, -r, 2*r, 2*r, 90)
+            path.arcTo(-r, -r, 2*r, 2*r, 90, 180) # Semicircle bright side
+            
+            # Ellipse part
+            # Illum > 0.5: Add Ellipse.
+            # Illum < 0.5: Subtract Ellipse.
+            ell_path = QPainterPath()
+            w_ell = abs((2.0 * illum - 1.0) * r)
+            ell_path.addEllipse(QPointF(0,0), w_ell, r)
+            
+            final_path = QPainterPath()
+            if illum >= 0.5:
+                # Gibbous: Semicircle + Ellipse
+                final_path = path.united(ell_path)
+            else:
+                # Crescent: Semicircle - Ellipse
+                final_path = path.subtracted(ell_path)
+            
+            painter.setPen(Qt.NoPen)
+            
+            # Organic Style: 
+            # 1. Base Color (Tinted)
+            base_col = tint_color if tint_color else QColor(240, 240, 235)
+            painter.setBrush(base_col)
+            painter.drawPath(final_path)
+            
+            # 2. Features (Craters/Maria) - Clipped to Lit Part
+            painter.setClipPath(final_path)
+            
+            # Rotate BACK so features stay "upright" while the terminator moves
+            # (Simplification: Fixed orientation relative to Zenith)
+            painter.rotate(rotation_deg) 
+            
+            # Derived Maria Color (Darker version of base)
+            m_r, m_g, m_b = base_col.red(), base_col.green(), base_col.blue()
+            maria_col = QColor(max(0, m_r - 20), max(0, m_g - 20), max(0, m_b - 10))
+            
+            painter.setBrush(maria_col) # Maria Color
+            painter.setPen(Qt.NoPen)
+            
+            # Draw Stylized Craters (Fixed positions relative to Moon center)
+            # Mare Imbrium
+            painter.drawEllipse(QPointF(-r*0.2, -r*0.4), r*0.25, r*0.25)
+            # Mare Serenitatis
+            painter.drawEllipse(QPointF(r*0.2, -r*0.3), r*0.2, r*0.2)
+            # Mare Tranquillitatis
+            painter.drawEllipse(QPointF(r*0.3, -r*0.1), r*0.22, r*0.22)
+            # Oceanus Procellarum (Left side large patch)
+            painter.drawEllipse(QPointF(-r*0.5, -r*0.1), r*0.3, r*0.5)
+            # Tycho (Bottom crater)
+            painter.setBrush(QColor(230, 230, 235))
+            painter.drawEllipse(QPointF(0, r*0.6), r*0.1, r*0.1)
+            
+            painter.restore()
+
+        # 3. Earthshine removed as per user request (was looking like a bubble)
+        pass
+
+        painter.setOpacity(1.0)
+
+    def draw_planet(self, painter, alt, az, name, col, sz, mag, key=None):
+        pt = self.project_universal_stereo(alt, az)
+        if not pt: return
+        x, y = pt
+        pkey = self._normalize_planet_key(key if key is not None else name)
+        self._register_visible_sky_object("planet", pkey, name, alt, az, x, y, sz, mag=mag)
+        painter.setBrush(col)
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(QPointF(x,y), sz, sz)
+        painter.setPen(col)
+        painter.drawText(int(x)+10, int(y), f"{name} {mag:.1f}")
+
+    def draw_satellite(self, painter, alt, az, name, mag):
+        pt = self.project_universal_stereo(alt, az)
+        if not pt: return
+        x, y = pt
+        painter.setPen(QPen(Qt.red, 2))
+        painter.drawPoint(QPointF(x,y))
+        painter.setPen(Qt.white)
+        painter.drawText(int(x)+5, int(y)-5, f"{name} {mag:.1f}")
+
+    def calculate_planet_magnitude(self, name, d_au, phase):
+        # Revised Base Magnitudes (Normalized to ~1 AU distance + Albedo)
+        # Formula uses +5*log10(d), so Base must handle the subtraction of distance modulus.
+        # e.g. Saturn at 9AU: 5*log(9) = +4.77. Target Mag ~0.5. Base should be -4.3.
+        base = {
+            'Mercury': -0.6, 'Venus': -4.4, 
+            'Mars': -0.5, # Adjusted (was -2.0)
+            'Jupiter': -5.8, # Adjusted (was -2.7)
+            'Saturn': -4.3, # Adjusted (was 0.5)
+            'Uranus': -0.7, 'Neptune': 0.5, 'Pluto': 6.0
+        }.get(name, 0)
+        return base + 5*math.log10(d_au) + 0.01*phase
+
+
+    def get_eclipse_dimming_factor(self, ut_hour, day_of_year):
+        """
+        Calculates the dimming factor (0.0 to 1.0) based on Eclipse state (Total vs Annular).
+        1.0 = Full Light
+        0.0 = Total Darkness
+        """
+        try:
+            ts = self.parent_widget.ts
+            eph = self.parent_widget.eph
+            observer = wgs84.latlon(self.parent_widget.latitude, self.parent_widget.longitude)
+            
+            now = datetime.now()
+            y = getattr(self.parent_widget, 'manual_year', now.year)
+            base_date = datetime(y, 1, 1) + timedelta(days=day_of_year)
+            target_dt = base_date + timedelta(hours=ut_hour)
+            
+            t = ts.from_datetime(target_dt.replace(tzinfo=timezone.utc))
+            
+            earth = eph['earth']
+            sun = eph['sun']
+            moon = eph['moon']
+            obs_loc = earth + observer
+            
+            # 1. Get Positions & Distances
+            ast_sun = obs_loc.at(t).observe(sun)
+            ast_moon = obs_loc.at(t).observe(moon)
+            
+            d_sun_km = ast_sun.distance().km
+            d_moon_km = ast_moon.distance().km
+            
+            # 2. Angular Radii (Degrees)
+            SUN_RADIUS_KM = 696340.0
+            MOON_RADIUS_KM = 1737.4
+            
+            r_sun = math.degrees(math.atan(SUN_RADIUS_KM / d_sun_km))
+            r_moon = math.degrees(math.atan(MOON_RADIUS_KM / d_moon_km))
+            
+            # 3. Separation
+            sep = ast_sun.separation_from(ast_moon).degrees
+            
+            # 4. Eclipse Factor Logic
+            # max_dist: Touch point
+            max_dist = r_sun + r_moon
+            
+            # No eclipse
+            if sep >= max_dist: return 1.0
+            
+            # Full containment point (Moon inside Sun OR Sun inside Moon)
+            min_dist = abs(r_sun - r_moon)
+            
+            # Calculate "Contained Factor" (The darkest it can get for this alignment)
+            if r_moon >= r_sun:
+                # Total Eclipse possible -> 0.0 (Darkness)
+                # But allow a tiny ambient light (0.05)
+                contained_factor = 0.05 
+            else:
+                # Annular Eclipse -> Light reduced by covered area
+                # Area = pi * r^2
+                area_sun = r_sun * r_sun
+                area_moon = r_moon * r_moon
+                ratio = area_moon / area_sun
+                contained_factor = 1.0 - ratio # Remaining light
+                
+            # Interpolate based on separation
+            if sep <= min_dist:
+                # Fully contained state
+                return contained_factor
+            else:
+                # Partial Phase (Linear interpolation between 1.0 and contained_factor)
+                # Range: [min_dist, max_dist]
+                # t = 0 at min_dist (darkest), 1 at max_dist (brightest)
+                t = (sep - min_dist) / (max_dist - min_dist)
+                return contained_factor + (1.0 - contained_factor) * t
+                
+        except Exception as e:
+            # print(f"Eclipse Calc Error: {e}")
+            return 1.0
+
+
+class AstronomicalWidget(CustomWidgetBase):
+    request_render_signal = pyqtSignal()
+    request_trails_signal = pyqtSignal()
+    # Signal to start baking in background thread
+    request_horizon_bake = pyqtSignal(object)
+
+    def __init__(self, parent=None, **kwargs):
+        # 1. Initialize properties required by UI/Canvas
+        self.asset_manager = AssetManager()
+        self.runtime_layout = dict(getattr(self.asset_manager, "layout", {}))
+
+        self.latitude = float(get_config_value("observer_lat", 41.189795))
+        self.longitude = float(get_config_value("observer_lon", 1.210058))
+        # Manual naked-eye limit used in manual LP mode.
+        self.magnitude_limit = float(get_config_value("manual_eye_limit_mag", 8.0))
+        self.spike_magnitude_threshold = 3.2
+        self.star_scale = 0.5
+        self.auto_star_scale_multiplier = 1.0
+
+        # Visual magnitude engine parameters.
+        self.scope_aperture_mm = float(get_config_value("scope_aperture_mm", 80.0))
+        self.scope_aperture_f_number = float(get_config_value("scope_aperture_f_number", 4.0))
+        self.scope_aperture_input_mode = str(
+            get_config_value("scope_aperture_input_mode", "diameter_mm")
+        )
+        if self.scope_aperture_input_mode not in ("diameter_mm", "f_number"):
+            self.scope_aperture_input_mode = "diameter_mm"
+        self.scope_instrument_profile = str(
+            get_config_value("scope_instrument_profile", "telescope")
+        )
+        if self.scope_instrument_profile not in ("telescope", "camera_aps_c", "camera_full_frame"):
+            self.scope_instrument_profile = "telescope"
+        self.scope_eyepiece_mm = float(get_config_value("scope_eyepiece_mm", 20.0))
+        self.scope_iso = int(get_config_value("scope_iso", 800))
+        self.scope_exposure_s = float(get_config_value("scope_exposure_s", 2.0))
+        self.scope_k_fallback = float(get_config_value("scope_k_fallback", 0.20))
+        self.milkyway_overlay_enabled = bool(get_config_value("milkyway_overlay_enabled", True))
+        self.milkyway_overlay_blend_mode = str(get_config_value("milkyway_overlay_blend_mode", "add"))
+        # L'asset Gaia inclòs porta el nucli prop del centre horitzontal del PNG.
+        # Amb equirectangular clàssic (lon 0 a l'esquerra) cal un desplaçament de 180°.
+        self.milkyway_overlay_ra_offset_deg = float(get_config_value("milkyway_overlay_ra_offset_deg", 180.0))
+        self.milkyway_overlay_coord_frame = str(get_config_value("milkyway_overlay_coord_frame", "galactic"))
+        self.milkyway_overlay_lat_flip = bool(get_config_value("milkyway_overlay_lat_flip", True))
+        self.milkyway_overlay_lon_flip = bool(get_config_value("milkyway_overlay_lon_flip", True))
+        self.milkyway_overlay_opacity = float(get_config_value("milkyway_overlay_opacity", 0.65))
+        default_mw_texture = str(Path(self.runtime_layout.get("data_milkyway", get_base_dir())) / "milkyway_overlay.png")
+        self.milkyway_overlay_texture_path = str(
+            get_config_value("milkyway_overlay_texture_path", default_mw_texture)
+        )
+        self.milkyway_overlay_sample_scale = float(get_config_value("milkyway_overlay_sample_scale", 1.0))
+        # Migration from previous low-quality default (0.35): prefer full-resolution sampling.
+        if self.milkyway_overlay_sample_scale <= 0.35 + 1e-6:
+            self.milkyway_overlay_sample_scale = 1.0
+            set_config_value("milkyway_overlay_sample_scale", 1.0)
+        tex_name = os.path.basename(str(self.milkyway_overlay_texture_path)).lower()
+        if (
+            str(self.milkyway_overlay_coord_frame).strip().lower().startswith("gal")
+            and tex_name in ("milkyway_overlay.png", "via_negra.png")
+            and abs(float(self.milkyway_overlay_ra_offset_deg)) < 1e-6
+        ):
+            # Migració conservadora: els assets galàctics inclosos tenen lon 0 al centre del mapa.
+            self.milkyway_overlay_ra_offset_deg = 180.0
+            set_config_value("milkyway_overlay_ra_offset_deg", 180.0)
+        if str(self.milkyway_overlay_coord_frame).strip().lower().startswith("gal") and tex_name == "milkyway_overlay.png":
+            # Migració conservadora: aquest asset concret ve amb latitud galàctica invertida.
+            self.milkyway_overlay_lat_flip = True
+            set_config_value("milkyway_overlay_lat_flip", True)
+            # Migració conservadora: aquest asset concret porta longitud galàctica invertida.
+            self.milkyway_overlay_lon_flip = True
+            set_config_value("milkyway_overlay_lon_flip", True)
+        self.dust_map_enabled = bool(get_config_value("dust_map_enabled", False))
+        default_dust_map = str(Path(self.runtime_layout.get("data_planck", get_base_dir())) / "planck_dust_opacity_eq_u16.npz")
+        self.dust_map_path = str(get_config_value("dust_map_path", default_dust_map))
+        self.dust_density_strength = float(get_config_value("dust_density_strength", 0.0))
+        self.dust_extinction_strength = float(get_config_value("dust_extinction_strength", 0.65))
+        if bool(self.dust_map_enabled) and float(self.dust_density_strength) <= 0.0 and float(self.dust_extinction_strength) <= 0.0:
+            # Preset conservador perquè Planck sigui visible quan està activat.
+            self.dust_extinction_strength = 0.65
+            set_config_value("dust_extinction_strength", 0.65)
+        self.scope_eye_pupil_dark_mm = 6.5
+        self.scope_atmo_metrics = {}
+        self.visual_magnitude_engine = VisualMagnitudeEngine()
+        self.visual_magnitude_result = None
+        
+        self.celestial_objects = []
+        self.use_real_time = True
+        self.manual_hour = 12.0
+        self.pure_colors = False
+        
+        # Light Pollution state
+        self.is_auto_bortle = bool(get_config_value("is_auto_bortle", True))
+        self.auto_bortle_estimate = int(get_config_value("auto_bortle_estimate", 1))
+        self.light_pollution_enabled = bool(get_config_value("light_pollution_enabled", True))
+        
+        now = datetime.now()
+        self.manual_year = now.year
+        self.manual_day = (now - datetime(now.year, 1, 1)).days
+
+        # Weather runtime flags (persisted in config).
+        # - weather_use_remote_metno: enables/disables real forecast provider.
+        # - weather_cache_enabled: enables/disables disk cache reuse for weather data.
+        self.weather_use_remote_metno = bool(get_config_value("weather_use_remote_metno", True))
+        self.weather_cache_enabled = bool(get_config_value("weather_cache_enabled", True))
+        
+        # Weather needs to exist before setup_content -> AstroCanvas -> WeatherControlWidget
+        self.weather = WeatherSystem(
+            800,
+            600,
+            latitude=self.latitude,
+            longitude=self.longitude,
+            use_remote_weather=self.weather_use_remote_metno,
+            cache_enabled=self.weather_cache_enabled,
+        )
+        self.weather.set_remote_user_agent(self.asset_manager.get_user_agent())
+        self.scene_load_stage = "boot"
+        self._active_horizon_job_id = None
+        self._deferred_controls_ready = False
+        self._deferred_controls_build_scheduled = False
+
+        # 2. Init Base Widget (Calls setup_ui -> setup_content)
+        super().__init__(title="Astronomy", parent=parent, **kwargs)
+        self._startup_placeholder_visible = True
+        self._create_startup_placeholder()
+        self._position_startup_placeholder()
+        
+        # 3. Post-UI initialization â€” ASYNC (non-blocking)
+        self.show_satellites = False
+        self.satellites = []
+        self._stars_catalog_dir = str(Path(self.runtime_layout.get("data_gaia", get_base_dir())))
+        self._scope_catalog_loading = False
+        self._scope_catalog_loaded_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
+        self._catalog_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
+        self._scope_catalog_thread = None
+        self._scope_catalog_worker = None
+        self._scope_index_loading = False
+        self._scope_index_target_key = None
+        self._scope_index_thread = None
+        self._scope_index_worker = None
+
+        # Default to Horizon View (This uses self.canvas, created in setup_content)
+        self.set_horizon_view()
+                
+        self.timer = QTimer()
+        self.timer.setTimerType(Qt.PreciseTimer)
+        self.timer.timeout.connect(self.update_loop)
+        # 60 FPS base cadence for smooth movement.
+        self.timer.start(16)
+        
+        self.anim_timer = QTimer()
+        self.anim_timer.setTimerType(Qt.PreciseTimer)
+        self.anim_timer.timeout.connect(self.animate_view)
+        self.target_azimuth = None
+        
+        # Performance mode flag
+        self._updates_paused = False
+        self._saved_interval = 16
+
+        # Debounce timer for bake requests (Avoid UI freeze and worker flooding)
+        self.bake_debounce_timer = QTimer()
+        self.bake_debounce_timer.setSingleShot(True)
+        self.bake_debounce_timer.timeout.connect(self._do_delayed_bake)
+        self._last_horizon_progress_text = ""
+
+        QTimer.singleShot(0, lambda: self._set_scene_load_stage("base_sky"))
+        QTimer.singleShot(200, self._start_async_bootstrap)
+        QTimer.singleShot(0, self._maybe_run_first_time_onboarding)
+
+    def _set_scene_load_stage(self, stage: str):
+        valid = {"boot", "base_sky", "stars_ready", "horizon_preview", "scene_ready"}
+        if stage not in valid:
+            return
+        if getattr(self, "scene_load_stage", None) == stage:
+            return
+        self.scene_load_stage = stage
+        if hasattr(self, "canvas"):
+            self.canvas.update()
+
+    def _create_startup_placeholder(self):
+        if hasattr(self, "_startup_placeholder"):
+            return
+        self._startup_placeholder = QFrame(self)
+        self._startup_placeholder.setObjectName("startupPlaceholder")
+        self._startup_placeholder.setStyleSheet(
+            "QFrame#startupPlaceholder { background-color: #000000; }"
+        )
+        layout = QVBoxLayout(self._startup_placeholder)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.addStretch(1)
+        title = QLabel("TerraLab", self._startup_placeholder)
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("color: #eef4ff; font-size: 28px; font-weight: bold; background: transparent;")
+        subtitle = QLabel("Initializing sky...", self._startup_placeholder)
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet("color: #8ea3c2; font-size: 14px; background: transparent;")
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+        layout.addStretch(2)
+        self._startup_placeholder.show()
+        self._startup_placeholder.raise_()
+
+    def _position_startup_placeholder(self):
+        if not hasattr(self, "_startup_placeholder"):
+            return
+        self._startup_placeholder.setGeometry(self.rect())
+        self._startup_placeholder.raise_()
+
+    def _hide_startup_placeholder(self):
+        if getattr(self, "_startup_placeholder_visible", False) and hasattr(self, "_startup_placeholder"):
+            self._startup_placeholder_visible = False
+            self._startup_placeholder.hide()
+
+    def _schedule_deferred_controls_build(self):
+        if getattr(self, "_deferred_controls_ready", False):
+            return
+        if getattr(self, "_deferred_controls_build_scheduled", False):
+            return
+        self._deferred_controls_build_scheduled = True
+        QTimer.singleShot(60, self._build_deferred_controls_ui)
+
+    def _on_canvas_first_useful_paint(self):
+        self._hide_startup_placeholder()
+        self._start_async_bootstrap()
+        self._schedule_deferred_controls_build()
+
+    def _maybe_run_first_time_onboarding(self):
+        if bool(get_config_value("ui_onboarding_done", False)):
+            return
+        dlg = WelcomeOnboardingDialog(self.asset_manager, self, mandatory=True)
+        if dlg.exec_() == QDialog.Accepted:
+            set_config_value("ui_onboarding_done", True)
+            self._sync_runtime_asset_config(updated_asset_id=None)
+            self._validate_checked_assets_startup()
+
+    def _open_quick_welcome(self):
+        dlg = WelcomeOnboardingDialog(self.asset_manager, self, mandatory=False)
+        if dlg.exec_() == QDialog.Accepted:
+            self._sync_runtime_asset_config(updated_asset_id=None)
+
+    def _open_asset_onboarding(self, asset_id: str) -> bool:
+        dlg = AssetOnboardingDialog(self.asset_manager, asset_id, self)
+        ok = dlg.exec_() == QDialog.Accepted and bool(getattr(dlg, "completed", False))
+        if ok:
+            # Keep runtime knobs in sync when onboarding modifies config paths/settings.
+            self._sync_runtime_asset_config(updated_asset_id=str(asset_id))
+        return bool(ok)
+
+    def _sync_runtime_asset_config(self, updated_asset_id: Optional[str] = None):
+        self.milkyway_overlay_texture_path = str(
+            get_config_value("milkyway_overlay_texture_path", self.milkyway_overlay_texture_path)
+        )
+        self.dust_map_path = str(get_config_value("dust_map_path", self.dust_map_path))
+        self.light_pollution_enabled = bool(
+            get_config_value("light_pollution_enabled", self.light_pollution_enabled)
+        )
+        if hasattr(self, "weather"):
+            self.weather.set_remote_user_agent(self.asset_manager.get_user_agent())
+        if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+            self.canvas.weather.set_remote_user_agent(self.asset_manager.get_user_agent())
+        self._ngc_search_entries_cache = None
+        if hasattr(self, "chk_deep_space") and bool(self.chk_deep_space.isChecked()):
+            self.build_search_index()
+        if hasattr(self, "horizon_worker"):
+            self.horizon_worker.reload_config()
+        if str(updated_asset_id or "") == "gaia_catalog" and self.asset_manager.asset_ready("gaia_catalog"):
+            self._reload_star_catalog_async()
+
+    def _reload_star_catalog_async(self):
+        """Reload Gaia catalog after onboarding import without requiring app restart."""
+        try:
+            old_thread = getattr(self, "_catalog_thread", None)
+            if old_thread is not None and old_thread.isRunning():
+                old_thread.quit()
+                old_thread.wait(2500)
+        except Exception:
+            pass
+
+        self._stars_catalog_dir = str(Path(self.runtime_layout.get("data_gaia", get_base_dir())))
+        self._catalog_thread = QThread()
+        self._catalog_worker = CatalogLoaderWorker()
+        self._catalog_worker.moveToThread(self._catalog_thread)
+        self._catalog_worker.catalog_ready.connect(self._on_catalog_ready)
+        self._catalog_thread.started.connect(lambda: self._catalog_worker.load(self._stars_catalog_dir))
+        self._catalog_thread.start()
+        try:
+            self._catalog_thread.setPriority(QThread.LowPriority)
+        except Exception:
+            pass
+        print("[AstroWidget] Star catalog reloading in background...")
+
+    def _ensure_asset_before_enable(self, checkbox: QCheckBox, checked: bool, asset_id: str) -> bool:
+        checked = bool(checked)
+        if not checked:
+            return False
+        if self.asset_manager.asset_ready(asset_id):
+            return True
+        ok = self._open_asset_onboarding(asset_id)
+        if ok:
+            return True
+        checkbox.blockSignals(True)
+        checkbox.setChecked(False)
+        checkbox.blockSignals(False)
+        return False
+
+    def _persist_visibility_state(self, key: str, checked: bool) -> None:
+        set_config_value(f"ui.visibility.{key}", bool(checked))
+
+    def _load_visibility_state(self, key: str, default: bool) -> bool:
+        return bool(get_config_value(f"ui.visibility.{key}", default))
+
+    def _validate_checked_assets_startup(self):
+        """Disable persisted layer toggles whose required asset is currently missing."""
+        checks = (
+            ("chk_clima", "clima", "climate_metno"),
+            ("chk_enable_sky", "estrelles", "gaia_catalog"),
+            ("chk_enable_milkyway", "via_lactia", "milkyway_texture"),
+            ("chk_enable_planck_dust", "pols_planck", "planck_dust"),
+            ("chk_deep_space", "espai_profund", "ngc_catalog"),
+            ("chk_light_pollution", "contaminacio_luminica", "light_pollution"),
+            ("chk_enable_village", "topografia", "elevation_dem"),
+        )
+        for attr_name, key, asset_id in checks:
+            chk = getattr(self, attr_name, None)
+            if chk is None:
+                continue
+            if (not bool(chk.isChecked())) or self.asset_manager.asset_ready(asset_id):
+                continue
+            chk.blockSignals(True)
+            chk.setChecked(False)
+            chk.blockSignals(False)
+            self._persist_visibility_state(key, False)
+            if attr_name == "chk_clima":
+                if hasattr(self.canvas, "weather"):
+                    self.canvas.weather.enabled = False
+                if hasattr(self, "weather"):
+                    self.weather.enabled = False
+            if attr_name == "chk_light_pollution":
+                self.light_pollution_enabled = False
+                set_config_value("light_pollution_enabled", False)
+        if hasattr(self, "canvas"):
+            self.canvas.update()
+
+    def _start_async_bootstrap(self):
+        if getattr(self, "_async_bootstrap_started", False):
+            return
+        self._async_bootstrap_started = True
+
+        # --- Async Skyfield loading ---
+        if SKYFIELD_AVAILABLE:
+            self._skyfield_thread = QThread()
+            self._skyfield_worker = SkyfieldLoaderWorker()
+            self._skyfield_worker.moveToThread(self._skyfield_thread)
+            self._skyfield_worker.skyfield_ready.connect(self._on_skyfield_ready)
+            self._skyfield_thread.started.connect(self._skyfield_worker.load)
+            self._skyfield_thread.start()
+            try:
+                self._skyfield_thread.setPriority(QThread.LowPriority)
+            except Exception:
+                pass
+            print("[AstroWidget] Skyfield loading in background...")
+
+        # --- Async Catalog loading ---
+        self._catalog_thread = QThread()
+        self._catalog_worker = CatalogLoaderWorker()
+        self._catalog_worker.moveToThread(self._catalog_thread)
+        self._catalog_worker.catalog_ready.connect(self._on_catalog_ready)
+        self._catalog_thread.started.connect(lambda: self._catalog_worker.load(self._stars_catalog_dir))
+        self._catalog_thread.start()
+        try:
+            self._catalog_thread.setPriority(QThread.LowPriority)
+        except Exception:
+            pass
+        print("[AstroWidget] Star catalog loading in background...")
+
+        # --- Horizon worker bootstrap ---
+        from TerraLab.terrain.worker import HorizonWorker
+
+        self.horizon_thread = QThread()
+        self.horizon_worker = HorizonWorker()
+        saved_offset = float(get_config_value("observer_offset", 0.0))
+        self.horizon_worker.set_observer_offset(saved_offset)
+        self.horizon_worker.moveToThread(self.horizon_thread)
+
+        self.horizon_worker.profile_ready.connect(self.on_horizon_profile_ready)
+        self.horizon_worker.preview_ready.connect(self.on_horizon_preview_ready)
+        self.horizon_worker.progress_state.connect(self.on_horizon_progress_state)
+        self.horizon_worker.error_occurred.connect(lambda err: print(f"[HorizonWorker] THREAD ERROR: {err}"))
+        self.request_horizon_bake.connect(self.horizon_worker.request_bake)
+
+        print("[AstroWidget] Starting Horizon Thread... (Path managed by Worker)")
+        self.horizon_thread.start()
+        try:
+            self.horizon_thread.setPriority(QThread.LowPriority)
+        except Exception:
+            pass
+        print(
+            f"[AstroWidget] Horizon Thread started. ID: "
+            f"{int(self.horizon_thread.currentThreadId()) if self.horizon_thread.currentThreadId() else 'N/A'}"
+        )
+
+        def trigger_bake():
+            print(f"[AstroWidget] Emitting bake request for {self.latitude}, {self.longitude}")
+            self._begin_horizon_bake()
+
+        QTimer.singleShot(300, lambda: QMetaObject.invokeMethod(self.horizon_worker, "initialize", Qt.QueuedConnection))
+        QTimer.singleShot(900, trigger_bake)
+
+    def _build_horizon_bake_job(self) -> dict:
+        from TerraLab.common.utils import get_config_value
+        import uuid
+
+        try:
+            n_bands = int(get_config_value("horizon_quality", 20))
+        except Exception:
+            n_bands = 20
+        current_fov = 100.0 / max(0.001, float(getattr(self.canvas, "zoom_level", 1.0)))
+        return {
+            "job_id": uuid.uuid4().hex,
+            "lat": float(self.latitude),
+            "lon": float(self.longitude),
+            "observer_offset": float(getattr(self.horizon_worker, "observer_offset", 0.0)),
+            "bands": max(1, int(n_bands)),
+            "view_azimuth": float(getattr(self.canvas, "azimuth_offset", 180.0)) % 360.0,
+            "view_fov_deg": float(current_fov),
+            "view_elevation": float(getattr(self.canvas, "elevation_angle", 0.0)),
+        }
+
+    def _begin_horizon_bake(self):
+        if not hasattr(self, "horizon_worker"):
+            return
+        self.horizon_worker.abort_current_job()
+        self._active_horizon_job_id = None
+        if hasattr(self.canvas, "horizon_overlay"):
+            self.canvas.horizon_overlay.clear_profile()
+        target_stage = "stars_ready" if hasattr(self, "np_ra") else "base_sky"
+        self._set_scene_load_stage(target_stage)
+        job = self._build_horizon_bake_job()
+        self._active_horizon_job_id = str(job["job_id"])
+        self.on_horizon_progress_state(
+            {
+                "job_id": self._active_horizon_job_id,
+                "phase": "prepare",
+                "percent": 0.0,
+                "current": 0,
+                "total": int(round(360.0 / 0.5)),
+            }
+        )
+        self.request_horizon_bake.emit(job)
+
+    def on_horizon_progress_state(self, state):
+        if not isinstance(state, dict):
+            return
+        job_id = str(state.get("job_id", "") or "")
+        if job_id and getattr(self, "_active_horizon_job_id", None) and job_id != self._active_horizon_job_id:
+            return
+        percent = max(0.0, min(100.0, float(state.get("percent", 0.0))))
+        percent_text = f"{percent:.1f}"
+        if percent_text.endswith(".0"):
+            percent_text = percent_text[:-2]
+        current = state.get("current")
+        total = state.get("total")
+        msg = getTraduction("Horizon.CalculatingHorizon", "Calculating horizon: {pct}%").format(pct=percent_text)
+        if current is not None and total:
+            msg = f"{msg} · {int(current)}/{int(total)}"
+        self.on_horizon_progress(msg)
+
+    def on_horizon_preview_ready(self, payload):
+        if not isinstance(payload, dict):
+            return
+        job_id = str(payload.get("job_id", "") or "")
+        if job_id and job_id != getattr(self, "_active_horizon_job_id", None):
+            return
+        profile = payload.get("profile")
+        if profile is None:
+            return
+        layer_defs = None
+        band_defs = getattr(profile, "_band_defs", None)
+        if band_defs is not None:
+            try:
+                from TerraLab.terrain.overlay import generate_layer_defs
+                layer_defs = generate_layer_defs(band_defs)
+            except Exception as exc:
+                print(f"[AstroWidget] Warning: Could not generate preview layer_defs: {exc}")
+        if hasattr(self.canvas, "horizon_overlay"):
+            self.canvas.horizon_overlay.set_profile(profile, layer_defs=layer_defs)
+        if getattr(self, "scene_load_stage", "base_sky") != "scene_ready":
+            self._set_scene_load_stage("horizon_preview")
+
+    def on_horizon_profile_ready(self, profile):
+        """Callback when background worker finishes baking horizon."""
+        if isinstance(profile, dict):
+            job_id = str(profile.get("job_id", "") or "")
+            if job_id and job_id != getattr(self, "_active_horizon_job_id", None):
+                return
+            profile = profile.get("profile")
+        if profile is None:
+            return
+        print(f"[AstroWidget] New Horizon Profile received! Bands: {len(profile.bands)}")
+        # Hide Loading Label
+        if hasattr(self, 'lbl_loading'):
+            self.lbl_loading.hide()
+            
+        # Build matching layer_defs from band_defs attached by the worker
+        layer_defs = None
+        band_defs = getattr(profile, '_band_defs', None)
+        if band_defs is not None:
+            try:
+                from TerraLab.terrain.overlay import generate_layer_defs
+                layer_defs = generate_layer_defs(band_defs)
+            except Exception as e:
+                print(f"[AstroWidget] Warning: Could not generate layer_defs: {e}")
+            
+        # Update Horizon Overlay (Background Mountains)
+        if hasattr(self.canvas, 'horizon_overlay'):
+            self.canvas.horizon_overlay.set_profile(profile, layer_defs=layer_defs)
+            
+        # Update Village Overlay (Foreground Objects)
+        if hasattr(self.canvas, 'village'):
+             self.canvas.village.set_profile(profile)
+             
+        # Refresh the UI altitude label now that the worker has safely initialized the DEM data
+        self.update_altitude_label()
+        
+        # Initial Bortle Sync if in Auto mode
+        if getattr(self, 'is_auto_bortle', True):
+            self.reset_lp_to_auto()
+        self._set_scene_load_stage("scene_ready")
+        self.canvas.update()
+
+
+    def on_horizon_progress(self, msg):
+        """Update loading label with progress message."""
+        self._last_horizon_progress_text = str(msg or "")
+        if hasattr(self, 'lbl_loading'):
+            if not msg:
+                self.lbl_loading.hide()
+                return
+            self.lbl_loading.setText(msg)
+            fm = self.lbl_loading.fontMetrics()
+            required_w = fm.horizontalAdvance(msg) + 28
+            required_h = max(fm.height() + 12, 32)
+            self.lbl_loading.resize(
+                min(max(required_w, 360), max(360, self.width() - 20)),
+                required_h,
+            )
+            if self.lbl_loading.isHidden():
+                self.lbl_loading.show()
+                self.lbl_loading.raise_()
+            self.lbl_loading.repaint()
+
+    def _poll_horizon_progress(self):
+        if not hasattr(self, "horizon_worker"):
+            return
+        try:
+            msg = self.horizon_worker.get_progress_text()
+        except Exception:
+            return
+        msg = str(msg or "")
+        if msg != getattr(self, "_last_horizon_progress_text", ""):
+            self.on_horizon_progress(msg)
+
+    def pause_updates(self):
+        """Pause sky updates to free up main thread for video loading."""
+        if not self._updates_paused:
+            self._updates_paused = True
+            self._saved_interval = self.timer.interval()
+            self.timer.stop()
+            print("[SKY] Updates PAUSED for video loading")
+    
+    def resume_updates(self):
+        """Resume sky updates after video has loaded."""
+        if self._updates_paused:
+            self._updates_paused = False
+            self.timer.start(self._saved_interval)
+            print("[SKY] Updates RESUMED")
+    
+    def set_low_fps_mode(self, low=True):
+        """Switch to low FPS mode (5 FPS) when video is playing."""
+        if low:
+            self.timer.setInterval(200)  # 5 FPS
+        else:
+            self.timer.setInterval(16)   # 60 FPS
+
+    def _on_skyfield_ready(self, ts, eph):
+        """Callback when Skyfield finishes loading in background."""
+        if ts is not None and eph is not None:
+            self.ts = ts
+            self.eph = eph
+            print("[AstroWidget] Skyfield ready (async).")
+            if self.show_satellites:
+                # Only show loading label if not blocking (i.e., if satellites are being loaded)
+                if hasattr(self, 'lbl_loading'):
+                    self.lbl_loading.show()
+                self.load_satellites_from_tle()
+            self.canvas.update()
+        else:
+            print("[AstroWidget] Skyfield failed to load.")
+        # Clean up thread
+        self._skyfield_thread.quit()
+
+    def _do_delayed_bake(self):
+        """Actually sends the bake request after debouncing."""
+        if hasattr(self, 'horizon_worker'):
+             self.horizon_worker.abort_current_job()
+             
+        # SAVE CONFIG ONLY HERE (Avoid disk spam)
+        from TerraLab.common.utils import set_config_value
+        offset_val = self.spin_extra_height.value()
+        set_config_value("observer_offset", offset_val)
+        set_config_value("observer_lat", self.latitude)
+        set_config_value("observer_lon", self.longitude)
+             
+        print(f"[AstroWidget] Emitting debounced bake request for {self.latitude}, {self.longitude}")
+        self._begin_horizon_bake()
+    
+    def _on_catalog_ready(self, celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp):
+        """Callback when star catalog finishes loading in background."""
+        self.celestial_objects = celestial_objects
+        self._catalog_mag_sorted = False
+        if np_ra is not None:
+            self.np_ra = np_ra
+            self.np_dec = np_dec
+            self.np_mag = np_mag
+            self.np_r = np_r
+            self.np_g = np_g
+            self.np_b = np_b
+            self.np_bp_rp = np_bp_rp
+            self._catalog_mag_sorted = True
+            try:
+                self._scope_catalog_loaded_max_mag = max(
+                    float(self._scope_catalog_loaded_max_mag),
+                    float(STAR_CATALOG_NAKED_EYE_MAX_MAG),
+                )
+            except Exception:
+                pass
+            try:
+                if np_mag is not None and len(np_mag) > 0:
+                    self._catalog_max_mag = max(
+                        float(getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                        float(np.nanmax(np.asarray(np_mag, dtype=np.float32))),
+                    )
+            except Exception:
+                pass
+        array_rows = int(len(np_ra)) if np_ra is not None else 0
+        named_rows = int(len(celestial_objects)) if celestial_objects is not None else 0
+        print(
+            f"[AstroWidget] Star catalog ready (async): "
+            f"catalog_rows={array_rows} named_rows={named_rows}"
+        )
+        self.build_search_index()
+        self._ensure_scope_catalog_loaded()
+        if self.canvas.scope_mode_enabled():
+            self._ensure_scope_spatial_index_warmup()
+        if getattr(self, "scene_load_stage", "boot") in {"boot", "base_sky"}:
+            self._set_scene_load_stage("stars_ready")
+        self.canvas.update()
+        # Clean up thread
+        self._catalog_thread.quit()
+
+    def _ensure_scope_catalog_loaded(self):
+        if np is None:
+            return
+        if getattr(self, "_scope_catalog_loading", False):
+            return
+        stars_dir = getattr(self, "_stars_catalog_dir", "")
+        if not stars_dir or not os.path.isdir(stars_dir):
+            return
+
+        loaded_max_mag = float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG))
+        self._scope_catalog_loading = True
+
+        thread = QThread()
+        worker = CatalogLoaderWorker()
+        worker.moveToThread(thread)
+        worker.scope_extension_ready.connect(self._on_scope_extension_ready)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(
+            lambda w=worker, s=stars_dir, m=loaded_max_mag: w.load_scope_extensions(s, m)
+        )
+        self._scope_catalog_thread = thread
+        self._scope_catalog_worker = worker
+        thread.start()
+        try:
+            thread.setPriority(QThread.LowPriority)
+        except Exception:
+            pass
+        print(f"[AstroWidget] Scope catalog extension loading from > {loaded_max_mag:.2f} mag...")
+
+    def _cleanup_scope_catalog_loader(self):
+        thread = getattr(self, "_scope_catalog_thread", None)
+        if thread is not None:
+            try:
+                thread.quit()
+            except Exception:
+                pass
+            try:
+                thread.wait(3000)
+            except Exception:
+                pass
+        self._scope_catalog_worker = None
+        self._scope_catalog_thread = None
+
+    def _cleanup_scope_index_warmup(self):
+        thread = getattr(self, "_scope_index_thread", None)
+        if thread is not None:
+            try:
+                thread.quit()
+            except Exception:
+                pass
+            try:
+                thread.wait(3000)
+            except Exception:
+                pass
+        self._scope_index_worker = None
+        self._scope_index_thread = None
+
+    def _ensure_scope_spatial_index_warmup(self):
+        if np is None:
+            return
+        if not self.canvas.scope_mode_enabled():
+            return
+        stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
+        if stars_renderer is None:
+            return
+
+        ra_all = getattr(self, "np_ra", None)
+        dec_all = getattr(self, "np_dec", None)
+        if ra_all is None or dec_all is None:
+            return
+
+        key = stars_renderer._catalog_array_key(ra_all, dec_all)
+        if (
+            stars_renderer._scope_grid_key == key
+            and stars_renderer._scope_grid_indices is not None
+            and stars_renderer._scope_grid_offsets is not None
+        ):
+            return
+
+        if getattr(self, "_scope_index_loading", False):
+            return
+
+        self._scope_index_loading = True
+        self._scope_index_target_key = key
+        stars_renderer.begin_scope_index_warmup(ra_all, dec_all)
+
+        thread = QThread()
+        worker = ScopeIndexWarmWorker()
+        worker.moveToThread(thread)
+        worker.ready.connect(
+            lambda sorted_indices, offsets, catalog_key=key: self._on_scope_spatial_index_ready(
+                catalog_key,
+                sorted_indices,
+                offsets,
+            )
+        )
+        worker.ready.connect(thread.quit)
+        worker.error.connect(self._on_scope_spatial_index_error)
+        worker.error.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+        thread.started.connect(lambda w=worker, ra=ra_all, dec=dec_all: w.build(ra, dec))
+        self._scope_index_thread = thread
+        self._scope_index_worker = worker
+        thread.start()
+        try:
+            thread.setPriority(QThread.LowPriority)
+        except Exception:
+            pass
+        print("[AstroWidget] Scope spatial index warm-up started.")
+
+    def _on_scope_spatial_index_ready(self, catalog_key, sorted_indices, offsets):
+        self._scope_index_loading = False
+        restart_warmup = False
+        try:
+            stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
+            if stars_renderer is None:
+                return
+            current_key = stars_renderer._catalog_array_key(
+                getattr(self, "np_ra", None),
+                getattr(self, "np_dec", None),
+            )
+            if current_key != catalog_key:
+                stars_renderer.clear_scope_index_warmup(catalog_key)
+                restart_warmup = True
+            else:
+                stars_renderer.apply_scope_spatial_index_payload(catalog_key, sorted_indices, offsets)
+                print("[AstroWidget] Scope spatial index ready.")
+                self.canvas.update()
+        finally:
+            self._cleanup_scope_index_warmup()
+        if restart_warmup:
+            self._ensure_scope_spatial_index_warmup()
+
+    def _on_scope_spatial_index_error(self, message: str):
+        self._scope_index_loading = False
+        print(f"[AstroWidget] Scope spatial index warm-up error: {message}")
+        try:
+            stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
+            if stars_renderer is not None:
+                stars_renderer.clear_scope_index_warmup(self._scope_index_target_key)
+        finally:
+            self._cleanup_scope_index_warmup()
+
+    def _on_scope_extension_ready(self, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp, loaded_max_mag):
+        self._scope_catalog_loading = False
+
+        try:
+            if np_ra is not None and len(np_ra) > 0:
+                if hasattr(self, "np_ra") and self.np_ra is not None:
+                    self.np_ra = np.concatenate((self.np_ra, np_ra))
+                    self.np_dec = np.concatenate((self.np_dec, np_dec))
+                    self.np_mag = np.concatenate((self.np_mag, np_mag))
+                    self.np_r = np.concatenate((self.np_r, np_r))
+                    self.np_g = np.concatenate((self.np_g, np_g))
+                    self.np_b = np.concatenate((self.np_b, np_b))
+                    if np_bp_rp is not None:
+                        self.np_bp_rp = np.concatenate((getattr(self, "np_bp_rp", np.array([], dtype=np.float32)), np_bp_rp))
+                else:
+                    self.np_ra = np_ra
+                    self.np_dec = np_dec
+                    self.np_mag = np_mag
+                    self.np_r = np_r
+                    self.np_g = np_g
+                    self.np_b = np_b
+                    self.np_bp_rp = np_bp_rp
+                # Scope extension appends chunks and does not guarantee global magnitude ordering.
+                self._catalog_mag_sorted = False
+                print(f"[AstroWidget] Scope extension appended: +{len(np_ra)} stars.")
+                self.canvas._cached_star_image = None
+                self.canvas._cached_trail_image = None
+                if self.canvas.scope_mode_enabled():
+                    self._ensure_scope_spatial_index_warmup()
+                self.canvas.update()
+                try:
+                    if np_mag is not None and len(np_mag) > 0:
+                        self._catalog_max_mag = max(
+                            float(getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                            float(np.nanmax(np.asarray(np_mag, dtype=np.float32))),
+                        )
+                except Exception:
+                    pass
+            else:
+                print("[AstroWidget] Scope extension already up to date.")
+        except Exception as e:
+            print(f"[AstroWidget] Scope extension merge error: {e}")
+        finally:
+            try:
+                self._scope_catalog_loaded_max_mag = max(
+                    float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                    float(loaded_max_mag),
+                )
+            except Exception:
+                pass
+            self._cleanup_scope_catalog_loader()
+            if self.canvas.scope_mode_enabled():
+                QTimer.singleShot(0, self._ensure_scope_spatial_index_warmup)
+
+    def init_skyfield(self):
+        """Legacy synchronous init. Kept for compatibility."""
+        try:
+            self.ts = load.timescale()
+            self.eph = load('de421.bsp')
+            print("Skyfield Initialized.")
+        except Exception as e:
+            print(f"Skyfield Error: {e}")
+            
+    def load_satellites_from_tle(self):
+        if not SKYFIELD_AVAILABLE: return
+        try:
+            from skyfield.api import EarthSatellite
+            # ISS TLE (Example - normally from CelesTrak)
+            line1 = "1 25544U 98067A   23015.53927649  .00010079  00000-0  18231-3 0  9993"
+            line2 = "2 25544  51.6421  42.5312 0005527  38.8344 321.3283 15.49830575378370"
+            iss = EarthSatellite(line1, line2, 'ISS', self.ts)
+            
+            self.satellites = [{
+                'name': 'ISS',
+                'obj': iss,
+                'std_mag': -1.8
+            }]
+        except Exception as e:
+            print(f"Sat Load Error: {e}")
+
+    def toggle_satellites(self, checked):
+        self.show_satellites = checked
+        if checked and not self.satellites and SKYFIELD_AVAILABLE:
+            self.load_satellites_from_tle()
+        self.canvas.update()
+
+    def setup_content(self):
+        if hasattr(self, 'title_bar'):
+            self.title_bar.hide()
+
+        layout = self.content_layout
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.canvas = AstroCanvas(self)
+        layout.addWidget(self.canvas, 1)
+
+        # Loading indicator stays available from the first visible frame.
+        self.lbl_loading = QLabel(getTraduction("Astro.LoadingTopography", "? Carregant topografia..."), self)
+        self.lbl_loading.setStyleSheet(
+            "color: yellow; font-weight: bold; background-color: rgba(0,0,0,100); "
+            "padding: 5px; border-radius: 4px;"
+        )
+        self.lbl_loading.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.lbl_loading.setWordWrap(False)
+        self.lbl_loading.hide()
+        self.lbl_loading.move(10, 50)
+        self.lbl_loading.resize(420, 32)
+
+    def _build_deferred_controls_ui(self):
+        if getattr(self, "_deferred_controls_ready", False):
+            return
+        self._deferred_controls_build_scheduled = False
+        # Hide standard window decorations since this is a wallpaper/panel
+        if hasattr(self, 'title_bar'):
+            self.title_bar.hide()
+
+        # Use the content layout provided by CustomWidgetBase
+        layout = self.content_layout
+        layout.setContentsMargins(0,0,0,0)
+
+        if not hasattr(self, "canvas"):
+            self.canvas = AstroCanvas(self)
+            layout.addWidget(self.canvas, 1)
+        self._shortcut_delete_constellation = QShortcut(Qt.Key_Delete, self)
+        self._shortcut_delete_constellation.setContext(Qt.WidgetWithChildrenShortcut)
+        self._shortcut_delete_constellation.activated.connect(self._delete_constellation_shortcut)
+        self._shortcut_backspace_constellation = QShortcut(Qt.Key_Backspace, self)
+        self._shortcut_backspace_constellation.setContext(Qt.WidgetWithChildrenShortcut)
+        self._shortcut_backspace_constellation.activated.connect(self._delete_constellation_shortcut)
+        self._shortcut_finish_constellation = QShortcut(Qt.Key_Return, self)
+        self._shortcut_finish_constellation.setContext(Qt.WidgetWithChildrenShortcut)
+        self._shortcut_finish_constellation.activated.connect(self._finish_constellation_shortcut)
+        self._shortcut_finish_constellation_enter = QShortcut(Qt.Key_Enter, self)
+        self._shortcut_finish_constellation_enter.setContext(Qt.WidgetWithChildrenShortcut)
+        self._shortcut_finish_constellation_enter.activated.connect(self._finish_constellation_shortcut)
+             
+        # === Compact Layout ===
+        
+        # Main Layout is Vertical inside the frame
+        frame_layout = QVBoxLayout()
+        frame_layout.setSpacing(0) 
+        # === CUSTOM MOCKUP LAYOUT (3 HORIZONTAL PANELS) ===
+        frame_layout = QVBoxLayout()
+        frame_layout.setSpacing(5)
+        frame_layout.setContentsMargins(5, 5, 5, 5)
+
+        # â”€â”€ TIME BAR (At the top) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        self.time_bar = RusticTimeBar()
+        self.time_bar.valueChanged.connect(self.on_time_bar_change)
+        self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
+        frame_layout.addWidget(self.time_bar)
+
+        # Loading indicator (absolute, sobre canvas)
+        if not hasattr(self, "lbl_loading"):
+            self.lbl_loading = QLabel(getTraduction("Astro.LoadingTopography", "? Carregant topografia..."), self)
+            self.lbl_loading.setStyleSheet("color: yellow; font-weight: bold; background-color: rgba(0,0,0,100); padding: 5px; border-radius: 4px;")
+            self.lbl_loading.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.lbl_loading.setWordWrap(False)
+            self.lbl_loading.hide()
+            self.lbl_loading.move(10, 50)
+            self.lbl_loading.resize(420, 32)
+
+        # â”€â”€ THE 3 BOTTOM PANELS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        panels_layout = QHBoxLayout()
+        panels_layout.setSpacing(10)
+        panels_layout.setContentsMargins(0, 0, 0, 0)
+        
+        gb_style = """
+            QGroupBox { border: 1px solid #777; border-radius: 3px; margin-top: 1.2em; }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #000; font-weight: bold; }
+            QLabel { font-size: 10px; color: #000; font-style: normal; font-weight: normal; }
+            QCheckBox { font-size: 10px; color: #000; font-style: normal; font-weight: normal; }
+        """
+
+        # 1. LOCALITZACIÃ“ =====================================================
+        gb_loc = QGroupBox("Localització")
+        gb_loc.setStyleSheet(gb_style)
+        l_loc = QHBoxLayout(gb_loc)
+        l_loc.setSpacing(15)
+
+        # Col: inputs (Lat, Lon, Alt) + Button
+        l_coord = QVBoxLayout()
+        l_coord.setSpacing(2)
+        
+        h_latlon = QHBoxLayout()
+        v_inputs = QVBoxLayout()
+        v_inputs.setSpacing(2)
+        
+        h_lat = QHBoxLayout(); h_lat.addWidget(QLabel("Latitud")); self.txt_lat = QLineEdit(str(self.latitude))
+        self.txt_lat.setFixedWidth(60); self.txt_lat.returnPressed.connect(self.update_location); h_lat.addWidget(self.txt_lat)
+        v_inputs.addLayout(h_lat)
+
+        h_lon = QHBoxLayout(); h_lon.addWidget(QLabel("Longitud")); self.txt_lon = QLineEdit(str(self.longitude))
+        self.txt_lon.setFixedWidth(60); self.txt_lon.returnPressed.connect(self.update_location); h_lon.addWidget(self.txt_lon)
+        v_inputs.addLayout(h_lon)
+        h_latlon.addLayout(v_inputs)
+        
+        # Lock/Pin button
+        self.btn_relocate = QPushButton("??")
+        self.btn_relocate.setFixedSize(24, 40)
+        self.btn_relocate.setToolTip(getTraduction("Astro.Relocate", "Reubicar"))
+        self.btn_relocate.clicked.connect(self.request_relocation)
+        h_latlon.addWidget(self.btn_relocate)
+        l_coord.addLayout(h_latlon)
+
+        h_alt = QHBoxLayout()
+        lbl_alt = QLabel("Alçada\naddicional")
+        lbl_alt.setStyleSheet("font-size: 9px; line-height: 1;")
+        h_alt.addWidget(lbl_alt)
+        from PyQt5.QtWidgets import QDoubleSpinBox
+        from TerraLab.common.utils import get_config_value
+        self.spin_extra_height = QDoubleSpinBox()
+        self.spin_extra_height.setRange(0.0, 10000.0)
+        self.spin_extra_height.setSingleStep(0.5); self.spin_extra_height.setDecimals(1); self.spin_extra_height.setFixedWidth(50)
+        self.spin_extra_height.setValue(float(get_config_value("observer_offset", 0.0)))
+        self.spin_extra_height.valueChanged.connect(self.on_extra_height_changed)
+        h_alt.addWidget(self.spin_extra_height)
+        l_coord.addLayout(h_alt)
+        
+        self.lbl_altitude_info = QLabel("--")
+        self.lbl_altitude_info.hide() # Hidden as per Mockup
+        l_coord.addWidget(self.lbl_altitude_info)
+        l_loc.addLayout(l_coord)
+
+        # Col: Calendar Mockup
+        l_date = QVBoxLayout()
+        # Create a container with black background
+        cal_container = QFrame()
+        cal_container.setStyleSheet("border: 1px solid #555; background: #e0e0e0; border-radius: 4px;")
+        
+        cal_layout = QHBoxLayout(cal_container)
+        cal_layout.setContentsMargins(5, 5, 5, 5)
+        cal_layout.setSpacing(4)
+        
+        self.btn_prev_day = QPushButton("<")
+        self.btn_prev_day.setFixedSize(20, 20); self.btn_prev_day.clicked.connect(self.prev_day)
+        cal_layout.addWidget(self.btn_prev_day)
+        
+        self.lbl_date = ClickableLabel(self.format_date(self.manual_day))
+        self.lbl_date.setAlignment(Qt.AlignCenter)
+        self.lbl_date.setCursor(Qt.PointingHandCursor)
+        self.lbl_date.setStyleSheet("color: #000; font-style: normal; font-size: 11px; font-weight: bold; border: none; background: transparent;")
+        self.lbl_date.clicked.connect(self.open_calendar)
+        cal_layout.addWidget(self.lbl_date, 1) # Expand
+        
+        self.btn_next_day = QPushButton(">")
+        self.btn_next_day.setFixedSize(20, 20); self.btn_next_day.clicked.connect(self.next_day)
+        cal_layout.addWidget(self.btn_next_day)
+        
+        l_date.addWidget(cal_container)
+        
+        self.btn_realtime = QPushButton("Temps real")
+        self.btn_realtime.setCheckable(True); self.btn_realtime.toggled.connect(self.toggle_realtime)
+        self.btn_realtime.setStyleSheet("border-radius: 4px; border: 1px solid #777; font-style: normal; color: #000; background: #ddd; padding: 3px;")
+        l_date.addWidget(self.btn_realtime)
+        
+        l_date.addStretch(1)
+        l_loc.addLayout(l_date)
+        
+        # Proportional distribution by feature density:
+        # Location / Sky / Ground = 1 / 4 / 1
+        panels_layout.addWidget(gb_loc, 1)
+
+        # 2. VISIÃ“ DEL CEL ====================================================
+        gb_sky = QGroupBox("Visió del cel")
+        gb_sky.setStyleSheet(gb_style)
+        l_sky = QHBoxLayout(gb_sky)
+        l_sky.setSpacing(15)
+
+        # Col 1: Checks
+        v_chk = QVBoxLayout(); v_chk.setSpacing(1)
+        self.chk_clima = QCheckBox(getTraduction("Astro.Climate", "Climate")); self.chk_clima.setEnabled(True)
+        self.chk_clima.setChecked(self._load_visibility_state("clima", False))
+        # Set state initially
+        setattr(self.canvas.weather, 'enabled', bool(self.chk_clima.isChecked()))
+        self.chk_clima.toggled.connect(self.on_climate_toggled)
+        self.chk_light_pollution = QCheckBox("Contaminacio luminica")
+        self.chk_light_pollution.setEnabled(True)
+        self.chk_light_pollution.setChecked(
+            self._load_visibility_state("contaminacio_luminica", bool(self.light_pollution_enabled))
+        )
+        self.chk_light_pollution.toggled.connect(self.on_light_pollution_toggled)
+        self.light_pollution_enabled = bool(self.chk_light_pollution.isChecked())
+        set_config_value("light_pollution_enabled", bool(self.light_pollution_enabled))
+        self.lbl_climate_fallback = QLabel(getTraduction("Astro.ClimateFallbackActive", "Real weather unavailable (fallback)"))
+        self.lbl_climate_fallback.setVisible(False)
+        self.lbl_climate_fallback.setStyleSheet(
+            "font-size: 9px; color: #8a3b00; background: rgba(255, 208, 140, 165); "
+            "border: 1px solid #a06a2f; border-radius: 6px; padding: 1px 6px;"
+        )
+        # Anti-flicker state for climate fallback badge:
+        # show only after fallback persists, hide only after remote is stable.
+        self._climate_fallback_since = None
+        self._climate_remote_since = None
+        self._climate_fallback_show_delay_s = 2.5
+        self._climate_remote_hide_delay_s = 1.2
+        
+        self.chk_planets = QCheckBox("Planetes")
+        self.chk_planets.setEnabled(True)
+        self.chk_planets.setChecked(self._load_visibility_state("planetes", True))
+        self.chk_planets.toggled.connect(self.canvas.update)
+        self.chk_planets.toggled.connect(lambda c: self._persist_visibility_state("planetes", c))
+        
+        self.chk_sun_moon = QCheckBox("Sol i Lluna")
+        self.chk_sun_moon.setEnabled(True)
+        self.chk_sun_moon.setChecked(self._load_visibility_state("sol_i_lluna", True))
+        self.chk_sun_moon.toggled.connect(self.canvas.update)
+        self.chk_sun_moon.toggled.connect(lambda c: self._persist_visibility_state("sol_i_lluna", c))
+        
+        self.chk_enable_sky = QCheckBox("Estrelles")
+        self.chk_enable_sky.setChecked(self._load_visibility_state("estrelles", True))
+        self.chk_enable_sky.toggled.connect(self.on_stars_toggled)
+        self.chk_enable_milkyway = QCheckBox("Via Lactia")
+        self.chk_enable_milkyway.setChecked(self._load_visibility_state("via_lactia", bool(self.milkyway_overlay_enabled)))
+        self.chk_enable_milkyway.toggled.connect(self.on_milkyway_toggled)
+        self.chk_enable_planck_dust = QCheckBox("Pols Planck")
+        self.chk_enable_planck_dust.setChecked(self._load_visibility_state("pols_planck", bool(self.dust_map_enabled)))
+        self.chk_enable_planck_dust.toggled.connect(self.on_planck_dust_toggled)
+        self.chk_deep_space = QCheckBox("l'espai profund")
+        self.chk_deep_space.setEnabled(True)
+        self.chk_deep_space.setChecked(self._load_visibility_state("espai_profund", False))
+        self.chk_deep_space.toggled.connect(self.on_deep_space_toggled)
+        
+        self.lbl_milkyway_status = QLabel("MW: --")
+        self.lbl_milkyway_status.setStyleSheet("font-size: 9px; color: #333;")
+        self.lbl_milkyway_status.setVisible(True)
+
+        for c in (
+            self.chk_clima,
+            self.chk_light_pollution,
+            self.chk_planets,
+            self.chk_sun_moon,
+            self.chk_enable_sky,
+            self.chk_enable_milkyway,
+            self.chk_enable_planck_dust,
+            self.chk_deep_space,
+        ):
+            c.setStyleSheet(c.styleSheet() + "; font-style: normal; font-weight: normal; color: #666;" if not c.isEnabled() else "; font-style: normal; font-weight: normal; color: #000;")
+            v_chk.addWidget(c)
+        v_chk.addWidget(self.lbl_milkyway_status)
+        v_chk.addWidget(self.lbl_climate_fallback)
+        self._refresh_milkyway_status_indicator()
+            
+        l_sky.addLayout(v_chk)
+
+        # Col 2: Sliders
+        v_sld = QVBoxLayout(); v_sld.setSpacing(2)
+        self.chk_pure_colors = QCheckBox("Colors purs")
+        self.chk_pure_colors.setStyleSheet("font-style: normal; font-weight: normal;")
+        self.chk_pure_colors.toggled.connect(self.toggle_pure_colors)
+        v_sld.addWidget(self.chk_pure_colors)
+
+        def make_sld(layout, label, r, val, cb, with_reset=False):
+            h = QHBoxLayout(); h.setSpacing(4)
+            l = QLabel(label); l.setStyleSheet("font-style: normal; font-weight: normal; min-width: 65px;")
+            h.addWidget(l)
+            
+            l_min = QLabel(str(r[0])); l_min.setStyleSheet("font-size: 8px; color: #000;")
+            h.addWidget(l_min)
+            
+            s = QSlider(Qt.Horizontal); s.setRange(*r); s.setValue(val); s.setMinimumWidth(80)
+            h.addWidget(s)
+            
+            l_max = QLabel(str(r[1])); l_max.setStyleSheet("font-size: 8px; color: #000;")
+            h.addWidget(l_max)
+            
+            l_curr = QLabel(f"[{val}]"); l_curr.setStyleSheet("font-size: 9px; color: #000; min-width: 30px;")
+            h.addWidget(l_curr)
+            
+            # Attach labels to slider for dynamic updates
+            s._lbl_min = l_min
+            s._lbl_max = l_max
+            s._lbl_curr = l_curr
+            
+            btn_res = None
+            if with_reset:
+                from PyQt5.QtWidgets import QToolButton
+                btn_res = QToolButton()
+                btn_res.setText("?")
+                btn_res.setStyleSheet("font-size: 14px; border: none; font-weight: bold; color: #333;")
+                btn_res.setCursor(Qt.PointingHandCursor)
+                h.addWidget(btn_res)
+
+            def on_changed(new_val):
+                l_curr.setText(f"[{new_val}]")
+                if cb: cb(new_val)
+                
+            s.valueChanged.connect(on_changed)
+            
+            def set_silent_value(new_val):
+                s.blockSignals(True)
+                s.setValue(new_val)
+                s.blockSignals(False)
+                l_curr.setText(f"[{new_val}]")
+            s.set_silent_value = set_silent_value
+            
+            layout.addLayout(h)
+            if with_reset:
+                return s, l, btn_res
+            return s, l
+
+        self.slider_size, _ = make_sld(v_sld, "Mida", (5, 40), int(self.star_scale*10), self.update_star_scale)
+        self.slider_spikes, _ = make_sld(v_sld, "Puntes", (-30, 70), int(self.spike_magnitude_threshold*10), self.update_spikes)
+        
+        # Unified Light Pollution / Magnitude Control
+        l_shared = QVBoxLayout()
+        h_ctrl = QHBoxLayout(); h_ctrl.setSpacing(5)
+        
+        from PyQt5.QtWidgets import QComboBox
+        self.combo_lp_mode = QComboBox()
+        self.combo_lp_mode.addItems([
+            getTraduction("Astro.AutoMode", "Automatic"),
+            getTraduction("Astro.ManualMode", "Manual"),
+        ])
+        self.combo_lp_mode.setToolTip(
+            getTraduction(
+                "Astro.LPModeTooltip",
+                "Visibility mode: Automatic (satellite Bortle) / Manual (eye limiting magnitude)",
+            )
+        )
+        self.combo_lp_mode.setStyleSheet("font-size: 10px; min-width: 80px; max-width: 100px; height: 22px;")
+        self.combo_lp_mode.currentIndexChanged.connect(self.on_lp_mode_changed)
+        h_ctrl.addWidget(self.combo_lp_mode)
+        
+        self.slider_light, self.lbl_light_text, self.btn_res_lp = make_sld(
+            h_ctrl,
+            getTraduction("Astro.BortleLabel", "Bortle"),
+            (1, 9),
+            1,
+            self.update_lp_slider,
+            with_reset=True,
+        )
+        self.btn_res_lp.setToolTip(getTraduction("Astro.ResetByLocation", "Reset by location"))
+        self.btn_res_lp.clicked.connect(self.reset_lp_to_auto)
+        
+        # Force an initial sync of Bortle if possible
+        QTimer.singleShot(500, self.update_altitude_label) 
+        l_shared.addLayout(h_ctrl)
+        v_sld.addLayout(l_shared)
+        
+        self.combo_lp_mode.blockSignals(True)
+        self.combo_lp_mode.setCurrentIndex(0 if self.is_auto_bortle else 1)
+        self.combo_lp_mode.blockSignals(False)
+        self.on_lp_mode_changed(self.combo_lp_mode.currentIndex())
+        self.ambient_light = 1.0 
+        l_sky.addLayout(v_sld)
+
+        # Col 3: Circumpolar + Search
+        v_ext = QVBoxLayout(); v_ext.setSpacing(4)
+        self.chk_trails = QPushButton(getTraduction("Astro.StartCircumpolar", "Iniciar circumpolar"))
+        self.chk_trails.setCheckable(True)
+        self.chk_trails.setStyleSheet("font-size: 10px; font-weight: normal; font-style: normal; border-radius: 8px; border: 1px solid #888; padding: 2px;")
+        self.chk_trails.toggled.connect(self.on_trails_toggled)
+        self._update_circumpolar_button_text()
+        v_ext.addWidget(self.chk_trails)
+
+        self.lbl_trail_time = QLabel("")
+        self.lbl_trail_time.setStyleSheet("font-weight: normal; color: #000; font-size: 10px;")
+        self.lbl_trail_time.setAlignment(Qt.AlignCenter)
+        v_ext.addWidget(self.lbl_trail_time)
+        v_ext.addStretch()
+
+        self.txt_search = QLineEdit()
+        self.txt_search.setPlaceholderText(getTraduction("Astro.SearchPlaceholder", "Search object..."))
+        self.txt_search.setStyleSheet("font-weight: normal; font-style: normal; border-radius: 4px; padding: 2px;")
+        self.txt_search.returnPressed.connect(self.on_search_triggered)
+        v_ext.addWidget(self.txt_search)
+
+        self.btn_quick_welcome = QPushButton("Benvinguda / Guia rapida")
+        self.btn_quick_welcome.setStyleSheet("font-size: 10px; font-weight: normal;")
+        self.btn_quick_welcome.clicked.connect(self._open_quick_welcome)
+        v_ext.addWidget(self.btn_quick_welcome)
+
+        # Telescope / Tools entry points
+        h_overlays = QHBoxLayout()
+        h_overlays.setSpacing(4)
+        self.btn_scope_panel = QPushButton(getTraduction("Astro.ScopeButton", "Tube / Telescope"))
+        self.btn_scope_panel.setCheckable(True)
+        self.btn_scope_panel.setStyleSheet("font-size: 10px; font-weight: normal;")
+        self.btn_scope_panel.toggled.connect(self.toggle_scope_panel)
+        h_overlays.addWidget(self.btn_scope_panel)
+
+        self.btn_tools_panel = QPushButton(getTraduction("Astro.ToolsButton", "Tools"))
+        self.btn_tools_panel.setCheckable(True)
+        self.btn_tools_panel.setStyleSheet("font-size: 10px; font-weight: normal;")
+        self.btn_tools_panel.toggled.connect(self.toggle_tools_panel)
+        h_overlays.addWidget(self.btn_tools_panel)
+        v_ext.addLayout(h_overlays)
+
+        # Telescope panel
+        self.scope_panel = QFrame()
+        self.scope_panel.setStyleSheet("border: 1px solid #999; border-radius: 4px;")
+        v_scope = QVBoxLayout(self.scope_panel)
+        v_scope.setSpacing(3)
+        v_scope.setContentsMargins(4, 4, 4, 4)
+
+        from PyQt5.QtWidgets import QDoubleSpinBox, QComboBox, QSpinBox
+
+        h_focal = QHBoxLayout()
+        h_focal.addWidget(QLabel(getTraduction("Astro.ScopeFocal", "Focal (mm)")))
+        self.scope_focal_spin = QDoubleSpinBox()
+        self.scope_focal_spin.setRange(1.0, 20000.0)
+        self.scope_focal_spin.setDecimals(1)
+        self.scope_focal_spin.setSingleStep(10.0)
+        self.scope_focal_spin.setValue(250.0)
+        self.scope_focal_spin.setFixedWidth(74)
+        self.scope_focal_spin.valueChanged.connect(lambda v: self.canvas.set_scope_focal_mm(v))
+        h_focal.addWidget(self.scope_focal_spin)
+        v_scope.addLayout(h_focal)
+
+        h_instrument = QHBoxLayout()
+        self.scope_instrument_label = QLabel(getTraduction("Astro.ScopeInstrumentProfile", "Instrument"))
+        h_instrument.addWidget(self.scope_instrument_label)
+        self.scope_instrument_combo = QComboBox()
+        self.scope_instrument_combo.addItem(
+            getTraduction("Astro.ScopeInstrumentTelescope", "Telescope"),
+            "telescope",
+        )
+        self.scope_instrument_combo.addItem(
+            getTraduction("Astro.ScopeInstrumentAPSC", "APS-C"),
+            "camera_aps_c",
+        )
+        self.scope_instrument_combo.addItem(
+            getTraduction("Astro.ScopeInstrumentFullFrame", "Full Frame"),
+            "camera_full_frame",
+        )
+        instrument_index = 0
+        for i in range(self.scope_instrument_combo.count()):
+            if self.scope_instrument_combo.itemData(i) == self.scope_instrument_profile:
+                instrument_index = i
+                break
+        self.scope_instrument_combo.setCurrentIndex(instrument_index)
+        self.scope_instrument_combo.currentIndexChanged.connect(self.on_scope_instrument_changed)
+        h_instrument.addWidget(self.scope_instrument_combo)
+        v_scope.addLayout(h_instrument)
+
+        h_aperture_mode = QHBoxLayout()
+        self.scope_aperture_mode_label = QLabel(getTraduction("Astro.ScopeApertureInput", "Aperture input"))
+        h_aperture_mode.addWidget(self.scope_aperture_mode_label)
+        self.scope_aperture_mode_combo = QComboBox()
+        self.scope_aperture_mode_combo.addItem(
+            getTraduction("Astro.ScopeApertureModeMM", "Diameter (mm)"),
+            "diameter_mm",
+        )
+        self.scope_aperture_mode_combo.addItem(
+            getTraduction("Astro.ScopeApertureModeF", "f/ number"),
+            "f_number",
+        )
+        mode_index = 0 if self.scope_aperture_input_mode == "diameter_mm" else 1
+        self.scope_aperture_mode_combo.setCurrentIndex(mode_index)
+        self.scope_aperture_mode_combo.currentIndexChanged.connect(self.on_scope_aperture_mode_changed)
+        h_aperture_mode.addWidget(self.scope_aperture_mode_combo)
+        v_scope.addLayout(h_aperture_mode)
+
+        h_aperture = QHBoxLayout()
+        self.scope_aperture_label = QLabel(getTraduction("Astro.ScopeAperture", "Aperture (mm)"))
+        h_aperture.addWidget(self.scope_aperture_label)
+        self.scope_aperture_spin = QDoubleSpinBox()
+        self.scope_aperture_spin.setFixedWidth(74)
+        self.scope_aperture_spin.valueChanged.connect(self._on_scope_aperture_changed)
+        h_aperture.addWidget(self.scope_aperture_spin)
+        v_scope.addLayout(h_aperture)
+        self._sync_scope_aperture_controls()
+
+        h_eyepiece = QHBoxLayout()
+        self.scope_eyepiece_label = QLabel(getTraduction("Astro.ScopeEyepiece", "Eyepiece (mm)"))
+        h_eyepiece.addWidget(self.scope_eyepiece_label)
+        self.scope_eyepiece_spin = QDoubleSpinBox()
+        self.scope_eyepiece_spin.setRange(2.0, 80.0)
+        self.scope_eyepiece_spin.setDecimals(1)
+        self.scope_eyepiece_spin.setSingleStep(0.5)
+        self.scope_eyepiece_spin.setValue(self.scope_eyepiece_mm)
+        self.scope_eyepiece_spin.setFixedWidth(74)
+        self.scope_eyepiece_spin.valueChanged.connect(self._on_scope_eyepiece_changed)
+        h_eyepiece.addWidget(self.scope_eyepiece_spin)
+        v_scope.addLayout(h_eyepiece)
+
+        h_iso = QHBoxLayout()
+        h_iso.addWidget(QLabel(getTraduction("Astro.ScopeISO", "ISO")))
+        self.scope_iso_spin = QSpinBox()
+        self.scope_iso_spin.setRange(100, 51200)
+        self.scope_iso_spin.setSingleStep(100)
+        self.scope_iso_spin.setValue(int(self.scope_iso))
+        self.scope_iso_spin.setFixedWidth(74)
+        self.scope_iso_spin.valueChanged.connect(self._on_scope_iso_changed)
+        h_iso.addWidget(self.scope_iso_spin)
+        v_scope.addLayout(h_iso)
+
+        h_exp = QHBoxLayout()
+        h_exp.addWidget(QLabel(getTraduction("Astro.ScopeExposure", "Exposure (s)")))
+        self.scope_exposure_spin = QDoubleSpinBox()
+        self.scope_exposure_spin.setRange(0.1, 60000.0)
+        self.scope_exposure_spin.setDecimals(1)
+        self.scope_exposure_spin.setSingleStep(0.5)
+        self.scope_exposure_spin.setValue(self.scope_exposure_s)
+        self.scope_exposure_spin.setFixedWidth(74)
+        self.scope_exposure_spin.valueChanged.connect(self._on_scope_exposure_changed)
+        h_exp.addWidget(self.scope_exposure_spin)
+        v_scope.addLayout(h_exp)
+
+        h_ra = QHBoxLayout()
+        h_ra.addWidget(QLabel(getTraduction("Astro.ScopeInputRA", "RA")))
+        self.scope_ra_h_spin = QSpinBox()
+        self.scope_ra_h_spin.setRange(0, 23)
+        self.scope_ra_h_spin.setFixedWidth(48)
+        h_ra.addWidget(self.scope_ra_h_spin)
+        h_ra.addWidget(QLabel("h"))
+        self.scope_ra_m_spin = QSpinBox()
+        self.scope_ra_m_spin.setRange(0, 59)
+        self.scope_ra_m_spin.setFixedWidth(48)
+        h_ra.addWidget(self.scope_ra_m_spin)
+        h_ra.addWidget(QLabel("m"))
+        self.scope_ra_s_spin = QDoubleSpinBox()
+        self.scope_ra_s_spin.setRange(0.0, 59.9)
+        self.scope_ra_s_spin.setDecimals(1)
+        self.scope_ra_s_spin.setSingleStep(0.1)
+        self.scope_ra_s_spin.setFixedWidth(58)
+        h_ra.addWidget(self.scope_ra_s_spin)
+        h_ra.addWidget(QLabel("s"))
+        v_scope.addLayout(h_ra)
+
+        h_dec = QHBoxLayout()
+        h_dec.addWidget(QLabel(getTraduction("Astro.ScopeInputDec", "Dec")))
+        self.scope_dec_sign_combo = QComboBox()
+        self.scope_dec_sign_combo.addItem("+")
+        self.scope_dec_sign_combo.addItem("-")
+        self.scope_dec_sign_combo.setFixedWidth(44)
+        h_dec.addWidget(self.scope_dec_sign_combo)
+        self.scope_dec_d_spin = QSpinBox()
+        self.scope_dec_d_spin.setRange(0, 90)
+        self.scope_dec_d_spin.setFixedWidth(48)
+        h_dec.addWidget(self.scope_dec_d_spin)
+        h_dec.addWidget(QLabel("°"))
+        self.scope_dec_m_spin = QSpinBox()
+        self.scope_dec_m_spin.setRange(0, 59)
+        self.scope_dec_m_spin.setFixedWidth(48)
+        h_dec.addWidget(self.scope_dec_m_spin)
+        h_dec.addWidget(QLabel("'"))
+        self.scope_dec_s_spin = QDoubleSpinBox()
+        self.scope_dec_s_spin.setRange(0.0, 59.9)
+        self.scope_dec_s_spin.setDecimals(1)
+        self.scope_dec_s_spin.setSingleStep(0.1)
+        self.scope_dec_s_spin.setFixedWidth(58)
+        h_dec.addWidget(self.scope_dec_s_spin)
+        h_dec.addWidget(QLabel("\""))
+        v_scope.addLayout(h_dec)
+
+        self.btn_scope_goto_radec = QPushButton(getTraduction("Astro.ScopeGotoRaDec", "Go RA/Dec"))
+        self.btn_scope_goto_radec.clicked.connect(self.on_scope_goto_radec)
+        v_scope.addWidget(self.btn_scope_goto_radec)
+
+        h_shape = QHBoxLayout()
+        h_shape.addWidget(QLabel(getTraduction("Astro.ScopeShape", "Format")))
+        self.scope_shape_combo = QComboBox()
+        self.scope_shape_combo.addItem(getTraduction("Astro.ScopeCircle", "Circle"), TelescopeScopeController.SHAPE_CIRCLE)
+        self.scope_shape_combo.addItem(getTraduction("Astro.ScopeRectangle", "Rectangle"), TelescopeScopeController.SHAPE_RECT)
+        self.scope_shape_combo.currentIndexChanged.connect(self.on_scope_shape_changed)
+        h_shape.addWidget(self.scope_shape_combo)
+        v_scope.addLayout(h_shape)
+
+        h_sensor = QHBoxLayout()
+        h_sensor.addWidget(QLabel(getTraduction("Astro.ScopeSensor", "Sensor")))
+        self.scope_sensor_combo = QComboBox()
+        self.scope_sensor_combo.addItem(getTraduction("Astro.ScopeSensorTiny", "Sensor 1/2.8"), "tiny")
+        self.scope_sensor_combo.addItem(getTraduction("Astro.ScopeSensorAPSC", "APS-C"), "aps_c")
+        self.scope_sensor_combo.addItem(getTraduction("Astro.ScopeSensorFullFrame", "Full Frame"), "full_frame")
+        self.scope_sensor_combo.currentIndexChanged.connect(self.on_scope_sensor_changed)
+        h_sensor.addWidget(self.scope_sensor_combo)
+        v_scope.addLayout(h_sensor)
+        self._sync_scope_instrument_controls()
+
+        h_aspect = QHBoxLayout()
+        h_aspect.addWidget(QLabel(getTraduction("Astro.ScopeAspect", "Aspect")))
+        self.scope_aspect_combo = QComboBox()
+        self.scope_aspect_combo.addItem(getTraduction("Astro.ScopeAspectAuto", "Auto (sensor)"), None)
+        self.scope_aspect_combo.addItem("1:1", 1.0)
+        self.scope_aspect_combo.addItem("4:3", 4.0 / 3.0)
+        self.scope_aspect_combo.addItem("3:2", 3.0 / 2.0)
+        self.scope_aspect_combo.addItem("16:9", 16.0 / 9.0)
+        self.scope_aspect_combo.addItem("21:9", 21.0 / 9.0)
+        self.scope_aspect_combo.addItem(getTraduction("Astro.ScopeAspectCustom", "Custom"), "custom")
+        self.scope_aspect_combo.currentIndexChanged.connect(self.on_scope_aspect_changed)
+        h_aspect.addWidget(self.scope_aspect_combo)
+        self.scope_aspect_custom_spin = QDoubleSpinBox()
+        self.scope_aspect_custom_spin.setRange(0.2, 5.0)
+        self.scope_aspect_custom_spin.setDecimals(3)
+        self.scope_aspect_custom_spin.setSingleStep(0.05)
+        self.scope_aspect_custom_spin.setValue(1.5)
+        self.scope_aspect_custom_spin.setFixedWidth(68)
+        self.scope_aspect_custom_spin.valueChanged.connect(self.on_scope_aspect_custom_changed)
+        h_aspect.addWidget(self.scope_aspect_custom_spin)
+        v_scope.addLayout(h_aspect)
+
+        h_speed = QHBoxLayout()
+        h_speed.addWidget(QLabel(getTraduction("Astro.ScopeMoveMode", "Movement")))
+        self.scope_speed_combo = QComboBox()
+        self.scope_speed_combo.addItem(getTraduction("Astro.ScopeSlow", "Slow"), TelescopeScopeController.SPEED_SLOW)
+        self.scope_speed_combo.addItem(getTraduction("Astro.ScopeFast", "Fast"), TelescopeScopeController.SPEED_FAST)
+        self.scope_speed_combo.currentIndexChanged.connect(self.on_scope_speed_changed)
+        h_speed.addWidget(self.scope_speed_combo)
+        v_scope.addLayout(h_speed)
+
+        h_scope_actions = QHBoxLayout()
+        self.btn_scope_activate = QPushButton(getTraduction("Astro.ScopeActivate", "Activate scope"))
+        self.btn_scope_activate.clicked.connect(self.activate_scope_mode)
+        h_scope_actions.addWidget(self.btn_scope_activate)
+        self.btn_scope_exit = QPushButton(getTraduction("Astro.ScopeExit", "Exit"))
+        self.btn_scope_exit.clicked.connect(self.exit_scope_mode)
+        h_scope_actions.addWidget(self.btn_scope_exit)
+        v_scope.addLayout(h_scope_actions)
+        self.scope_aspect_custom_spin.setEnabled(False)
+        self._sync_scope_aspect_controls(self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex()))
+        self._sync_scope_coord_inputs_from_canvas()
+        self.scope_panel.hide()
+        v_ext.addWidget(self.scope_panel)
+
+        # Measurement tools panel
+        self.tools_panel = QFrame()
+        self.tools_panel.setStyleSheet("border: 1px solid #999; border-radius: 4px;")
+        v_tools = QVBoxLayout(self.tools_panel)
+        v_tools.setSpacing(3)
+        v_tools.setContentsMargins(4, 4, 4, 4)
+
+        self.lbl_measure_section = QLabel(getTraduction("Astro.MeasureToolsSection", "Measurement tools"))
+        self.lbl_measure_section.setStyleSheet("font-size: 9px; font-weight: bold; color: #4a3a20;")
+        v_tools.addWidget(self.lbl_measure_section)
+
+        h_tool_row_1 = QHBoxLayout()
+        self.btn_tool_ruler = QPushButton(getTraduction("Astro.ToolRuler", "Ruler"))
+        self.btn_tool_ruler.setCheckable(True)
+        self.btn_tool_ruler.clicked.connect(lambda: self.select_measurement_tool(TOOL_RULER))
+        h_tool_row_1.addWidget(self.btn_tool_ruler)
+        self.btn_tool_square = QPushButton(getTraduction("Astro.ToolSquare", "Square"))
+        self.btn_tool_square.setCheckable(True)
+        self.btn_tool_square.clicked.connect(lambda: self.select_measurement_tool(TOOL_SQUARE))
+        h_tool_row_1.addWidget(self.btn_tool_square)
+        v_tools.addLayout(h_tool_row_1)
+
+        h_tool_row_2 = QHBoxLayout()
+        self.btn_tool_rect = QPushButton(getTraduction("Astro.ToolRectangle", "Rectangle"))
+        self.btn_tool_rect.setCheckable(True)
+        self.btn_tool_rect.clicked.connect(lambda: self.select_measurement_tool(TOOL_RECTANGLE))
+        h_tool_row_2.addWidget(self.btn_tool_rect)
+        self.btn_tool_circle = QPushButton(getTraduction("Astro.ToolCircle", "Circle"))
+        self.btn_tool_circle.setCheckable(True)
+        self.btn_tool_circle.clicked.connect(lambda: self.select_measurement_tool(TOOL_CIRCLE))
+        h_tool_row_2.addWidget(self.btn_tool_circle)
+        v_tools.addLayout(h_tool_row_2)
+
+        self.btn_tool_clear = QPushButton(getTraduction("Astro.ToolClear", "Clear"))
+        self.btn_tool_clear.clicked.connect(self.clear_measurement_overlays)
+        v_tools.addWidget(self.btn_tool_clear)
+
+        sep_tools = QFrame()
+        sep_tools.setFrameShape(QFrame.HLine)
+        sep_tools.setFrameShadow(QFrame.Sunken)
+        sep_tools.setStyleSheet("color: rgba(106, 82, 48, 120);")
+        v_tools.addWidget(sep_tools)
+
+        self.lbl_const_section = QLabel(getTraduction("Astro.ConstellationToolsSection", "Constellation tools"))
+        self.lbl_const_section.setStyleSheet("font-size: 9px; font-weight: bold; color: #4a3a20;")
+        v_tools.addWidget(self.lbl_const_section)
+
+        h_const_vis = QHBoxLayout()
+        self.btn_const_visibility = QPushButton(getTraduction("Astro.ConstellationVisibility", "Show constellations"))
+        self.btn_const_visibility.setCheckable(True)
+        self.btn_const_visibility.setChecked(True)
+        self.btn_const_visibility.setStyleSheet(
+            "QPushButton { color: #2f2515; }"
+            "QPushButton:checked { color: #2f2515; }"
+        )
+        self.btn_const_visibility.toggled.connect(self.toggle_constellation_visibility)
+        h_const_vis.addWidget(self.btn_const_visibility)
+        v_tools.addLayout(h_const_vis)
+
+        h_const_row_1 = QHBoxLayout()
+        self.btn_const_draw = QPushButton(getTraduction("Astro.ConstellationDrawMode", "Draw mode"))
+        self.btn_const_draw.setCheckable(True)
+        self.btn_const_draw.toggled.connect(self.toggle_constellation_draw_mode)
+        h_const_row_1.addWidget(self.btn_const_draw)
+        self.btn_const_new = QPushButton(getTraduction("Astro.ConstellationNew", "New constellation"))
+        self.btn_const_new.clicked.connect(self.constellation_primary_action)
+        h_const_row_1.addWidget(self.btn_const_new)
+        v_tools.addLayout(h_const_row_1)
+
+        h_const_row_2 = QHBoxLayout()
+        self.btn_const_eraser = QPushButton(getTraduction("Astro.ConstellationDeleteAll", "Delete all"))
+        self.btn_const_eraser.clicked.connect(self.delete_constellation_action)
+        h_const_row_2.addWidget(self.btn_const_eraser)
+        self.btn_const_rename = QPushButton(getTraduction("Astro.ConstellationRename", "Rename"))
+        self.btn_const_rename.clicked.connect(self.rename_constellation_group)
+        h_const_row_2.addWidget(self.btn_const_rename)
+        v_tools.addLayout(h_const_row_2)
+
+        self.lbl_constellation_state = QLabel("")
+        self.lbl_constellation_state.setStyleSheet("font-size: 9px; color: #6a5738;")
+        v_tools.addWidget(self.lbl_constellation_state)
+        self.tools_panel.hide()
+        v_ext.addWidget(self.tools_panel)
+        self.sync_scope_ui_state(False)
+        self._sync_measure_tool_buttons(TOOL_NONE)
+        self._sync_constellation_controls()
+
+        l_sky.addLayout(v_ext)
+
+        panels_layout.addWidget(gb_sky, 4)
+
+        # 3. VISIÃ“ DEL TERRA ================================================
+        gb_earth = QGroupBox("Visió del terra")
+        gb_earth.setStyleSheet(gb_style)
+        v_earth = QVBoxLayout(gb_earth)
+        v_earth.setSpacing(6)
+
+        self.chk_enable_horizon = QCheckBox("Horitzó")
+        self.chk_enable_horizon.setStyleSheet("font-style: normal; font-weight: normal;")
+        self.chk_enable_horizon.setChecked(self._load_visibility_state("horitzo", True))
+        self.chk_enable_horizon.toggled.connect(self.canvas.update)
+        self.chk_enable_horizon.toggled.connect(lambda c: self._persist_visibility_state("horitzo", c))
+        v_earth.addWidget(self.chk_enable_horizon)
+
+        self.chk_enable_village = QCheckBox("Topografia")
+        self.chk_enable_village.setStyleSheet("font-style: normal; font-weight: normal;")
+        self.chk_enable_village.setChecked(self._load_visibility_state("topografia", True))
+        self.chk_enable_village.toggled.connect(self.canvas.update)
+        self.chk_enable_village.toggled.connect(self.on_topography_toggled)
+        v_earth.addWidget(self.chk_enable_village)
+
+        h_lay = QHBoxLayout()
+        l_lay = QLabel("Nombre\nde capes")
+        l_lay.setStyleSheet("font-style: normal; font-weight: normal; font-size: 9px; line-height: 1;")
+        h_lay.addWidget(l_lay)
+        from PyQt5.QtWidgets import QComboBox
+        self.combo_layers = QComboBox()
+        self.combo_layers.addItems(["10", "20", "40", "60", "80"])
+        self.combo_layers.setFixedWidth(40)
+        self.combo_layers.setStyleSheet("font-style: normal; font-weight: normal;")
+        try:
+            curr_layers = int(get_config_value("horizon_quality", 80))
+        except:
+            curr_layers = 80
+        self.combo_layers.setCurrentText(str(curr_layers))
+        self.combo_layers.currentTextChanged.connect(self.on_layers_changed)
+        h_lay.addWidget(self.combo_layers)
+        v_earth.addLayout(h_lay)
+
+        v_earth.addStretch()
+        panels_layout.addWidget(gb_earth, 1)
+
+        self.panels_widget = QWidget()
+        self.panels_widget.setLayout(panels_layout)
+        frame_layout.addWidget(self.panels_widget)
+
+        # â”€â”€ KEEP EXISTING VARIABLES FOR COMPATIBILITY (HIDDEN) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        self.btn_view = QPushButton(); self.btn_view.hide()
+        self.btn_terrain = QPushButton(); self.btn_terrain.hide()
+        self.chk_illusion = QCheckBox(); self.chk_illusion.hide()
+        self.slider_href = QSlider(); self.slider_href.hide()
+        self.slider_flat = QSlider(); self.slider_flat.hide()
+        self.chk_trained = QCheckBox(); self.chk_trained.hide()
+        self.chk_lock = QCheckBox(); self.chk_lock.hide()
+        
+        # Add to main layout
+        self.frame_controls = QFrame()
+
+        self.frame_controls.setObjectName("controlFrame")
+        self.frame_controls.setLayout(frame_layout)
+        layout.addWidget(self.frame_controls)
+
+        # --- FLOATING TAB BUTTON (Absolute Positioned) ---
+        # Parented to self, NOT in layout. 
+        self.btn_collapse = QPushButton("-", self) 
+        self.btn_collapse.setFixedSize(30, 24)
+        self.btn_collapse.setCursor(Qt.PointingHandCursor)
+        self.btn_collapse.clicked.connect(self.toggle_controls)
+        self.btn_collapse.show()
+        
+        # Apply Themes
+        self.update_custom_theme()
+        self._deferred_controls_ready = True
+        if getattr(self, "search_index", None):
+            self.build_search_index()
+        QTimer.singleShot(0, self._validate_checked_assets_startup)
+        QTimer.singleShot(0, self._update_button_pos)
+
+    def apply_styles(self):
+        super().apply_styles()
+        self.update_custom_theme()
+
+    def update_custom_theme(self):
+        t = self.current_theme
+        # Extract colors or defaults
+        bg = t.get('content_bg', t.get('widget_background', 'rgba(20, 20, 30, 220)'))
+        txt = t.get('title_text_color', t.get('text_primary', 'white'))
+        border = t.get('widget_border_color', '#555')
+        
+        # Ensure bg has alpha if needed, or just use as is
+        
+        self.panel_style = f"""
+            #controlFrame {{
+                background-color: {bg}; 
+                color: {txt}; 
+                border: 1px solid {border};
+                border-radius: 8px;
+            }}
+            #controlFrame QLineEdit {{ background: rgba(0,0,0,50); color: {txt}; border: 1px solid {border}; border-radius: 4px; padding: 2px; }}
+            #controlFrame QLineEdit:focus {{ border: 2px solid {txt}; }}
+            #controlFrame QPushButton {{ background: rgba(255,255,255,20); border: 1px solid {border}; border-radius: 3px; color: {txt}; font-weight: bold; }}
+            #controlFrame QPushButton:hover {{ background: rgba(255,255,255,50); }}
+            #controlFrame QPushButton:checked {{ background: rgba(100,200,255,100); color: white; }}
+            #controlFrame QLabel {{ color: {txt}; }}
+            #controlFrame QCheckBox {{ color: {txt}; }}
+            #controlFrame QSlider::handle:horizontal {{ background: {border}; border: 1px solid {txt}; width: 10px; margin: -2px 0; border-radius: 5px; }}
+            #controlFrame QSlider::groove:horizontal {{ border: 1px solid #999; height: 4px; background: rgba(255,255,255,50); margin: 2px 0; }}
+        """
+        
+        if hasattr(self, 'frame_controls'):
+            self.frame_controls.setStyleSheet(self.panel_style)
+            
+        if hasattr(self, 'btn_collapse'):
+            # Tab Style
+            self.btn_collapse.setStyleSheet(f"""
+                QPushButton {{ 
+                    background-color: {bg}; 
+                    color: {txt}; 
+                    border: 1px solid {border}; 
+                    border-bottom: 2px solid {bg}; 
+                    font-size: 16px; 
+                    font-weight: bold;
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                    border-bottom-left-radius: 0px;
+                    border-bottom-right-radius: 0px;
+                    margin-bottom: -1px; 
+                    padding-bottom: 2px;
+                }}
+                QPushButton:hover {{ background-color: {bg}; border: 1px solid rgba(255,255,255,200); }}
+            """)
+
+    def toggle_scope_panel(self, checked):
+        if checked:
+            if hasattr(self, 'btn_tools_panel'):
+                self.btn_tools_panel.blockSignals(True)
+                self.btn_tools_panel.setChecked(False)
+                self.btn_tools_panel.blockSignals(False)
+            if hasattr(self, 'tools_panel'):
+                self.tools_panel.hide()
+            self._sync_scope_coord_inputs_from_canvas()
+        if hasattr(self, 'scope_panel'):
+            self.scope_panel.setVisible(checked)
+        QTimer.singleShot(0, self._update_button_pos)
+
+    def toggle_tools_panel(self, checked):
+        if checked:
+            if hasattr(self, 'btn_scope_panel'):
+                self.btn_scope_panel.blockSignals(True)
+                self.btn_scope_panel.setChecked(False)
+                self.btn_scope_panel.blockSignals(False)
+            if hasattr(self, 'scope_panel'):
+                self.scope_panel.hide()
+        if hasattr(self, 'tools_panel'):
+            self.tools_panel.setVisible(checked)
+        QTimer.singleShot(0, self._update_button_pos)
+
+    def on_scope_shape_changed(self, index):
+        shape = self.scope_shape_combo.itemData(index)
+        self.canvas.set_scope_shape(shape)
+        self._sync_scope_aspect_controls(shape)
+        self._apply_scope_aspect_from_ui()
+
+    def on_scope_instrument_changed(self, index):
+        mode = self.scope_instrument_combo.itemData(index)
+        if mode not in ("telescope", "camera_aps_c", "camera_full_frame"):
+            mode = "telescope"
+        self.scope_instrument_profile = str(mode)
+        self._sync_scope_instrument_controls()
+        self._persist_visual_magnitude_settings()
+        self._apply_scope_aspect_from_ui()
+        self.canvas.update()
+
+    def _set_scope_sensor_key(self, sensor_key: str):
+        if not hasattr(self, "scope_sensor_combo"):
+            return
+        idx = -1
+        for i in range(self.scope_sensor_combo.count()):
+            if self.scope_sensor_combo.itemData(i) == sensor_key:
+                idx = i
+                break
+        if idx < 0:
+            return
+        self.scope_sensor_combo.blockSignals(True)
+        self.scope_sensor_combo.setCurrentIndex(idx)
+        self.scope_sensor_combo.blockSignals(False)
+        self.canvas.set_scope_sensor(sensor_key)
+        self._apply_scope_aspect_from_ui()
+
+    def _sync_scope_instrument_controls(self):
+        profile = str(getattr(self, "scope_instrument_profile", "telescope"))
+        is_telescope = profile == "telescope"
+
+        if hasattr(self, "scope_eyepiece_label"):
+            self.scope_eyepiece_label.setVisible(is_telescope)
+        if hasattr(self, "scope_eyepiece_spin"):
+            self.scope_eyepiece_spin.setVisible(is_telescope)
+
+        if is_telescope:
+            if hasattr(self, "scope_aperture_mode_label"):
+                self.scope_aperture_mode_label.setVisible(True)
+            if hasattr(self, "scope_aperture_mode_combo"):
+                self.scope_aperture_mode_combo.setVisible(True)
+                self.scope_aperture_mode_combo.setEnabled(True)
+        else:
+            # Camera profiles use f/ input and do not use eyepiece magnification.
+            self.scope_aperture_input_mode = "f_number"
+            if hasattr(self, "scope_aperture_mode_combo"):
+                self.scope_aperture_mode_combo.blockSignals(True)
+                for i in range(self.scope_aperture_mode_combo.count()):
+                    if self.scope_aperture_mode_combo.itemData(i) == "f_number":
+                        self.scope_aperture_mode_combo.setCurrentIndex(i)
+                        break
+                self.scope_aperture_mode_combo.blockSignals(False)
+                self.scope_aperture_mode_combo.setEnabled(False)
+                self.scope_aperture_mode_combo.setVisible(False)
+            if hasattr(self, "scope_aperture_mode_label"):
+                self.scope_aperture_mode_label.setVisible(False)
+
+        if profile == "camera_aps_c":
+            self._set_scope_sensor_key("aps_c")
+            self.scope_sensor_combo.setEnabled(False)
+        elif profile == "camera_full_frame":
+            self._set_scope_sensor_key("full_frame")
+            self.scope_sensor_combo.setEnabled(False)
+        else:
+            self.scope_sensor_combo.setEnabled(True)
+
+        self._sync_scope_aperture_controls()
+
+    def on_scope_sensor_changed(self, index):
+        sensor = self.scope_sensor_combo.itemData(index)
+        self.canvas.set_scope_sensor(sensor)
+        self._apply_scope_aspect_from_ui()
+
+    def on_scope_aspect_changed(self, index):
+        self._apply_scope_aspect_from_ui()
+
+    def on_scope_aspect_custom_changed(self, value):
+        _ = value
+        self._apply_scope_aspect_from_ui()
+
+    def on_scope_speed_changed(self, index):
+        mode = self.scope_speed_combo.itemData(index)
+        self.canvas.set_scope_speed_mode(mode)
+
+    def on_scope_aperture_mode_changed(self, index):
+        if str(getattr(self, "scope_instrument_profile", "telescope")) != "telescope":
+            self.scope_aperture_input_mode = "f_number"
+            self._sync_scope_aperture_controls()
+            self._persist_visual_magnitude_settings()
+            self.canvas.update()
+            return
+        mode = self.scope_aperture_mode_combo.itemData(index)
+        if mode not in ("diameter_mm", "f_number"):
+            mode = "diameter_mm"
+        self.scope_aperture_input_mode = str(mode)
+        self._sync_scope_aperture_controls()
+        self._persist_visual_magnitude_settings()
+        self.canvas.update()
+
+    def _sync_scope_aperture_controls(self):
+        if not hasattr(self, "scope_aperture_spin") or not hasattr(self, "scope_aperture_label"):
+            return
+        mode = str(getattr(self, "scope_aperture_input_mode", "diameter_mm"))
+        spin = self.scope_aperture_spin
+        if mode == "f_number":
+            self.scope_aperture_label.setText(getTraduction("Astro.ScopeFNumber", "f/"))
+            spin.blockSignals(True)
+            spin.setRange(0.7, 64.0)
+            spin.setDecimals(1)
+            spin.setSingleStep(0.1)
+            spin.setValue(float(getattr(self, "scope_aperture_f_number", 4.0)))
+            spin.blockSignals(False)
+        else:
+            self.scope_aperture_label.setText(getTraduction("Astro.ScopeAperture", "Aperture (mm)"))
+            spin.blockSignals(True)
+            spin.setRange(10.0, 2000.0)
+            spin.setDecimals(1)
+            spin.setSingleStep(5.0)
+            spin.setValue(float(getattr(self, "scope_aperture_mm", 80.0)))
+            spin.blockSignals(False)
+
+    def _effective_scope_aperture_mm(self, focal_mm: float = None) -> float:
+        mode = str(getattr(self, "scope_aperture_input_mode", "diameter_mm"))
+        if focal_mm is None:
+            if hasattr(self, "scope_focal_spin"):
+                focal_mm = float(self.scope_focal_spin.value())
+            else:
+                focal_mm = 250.0
+        focal_mm = max(1.0, float(focal_mm))
+        if mode == "f_number":
+            f_number = max(0.7, float(getattr(self, "scope_aperture_f_number", 4.0)))
+            return max(1.0, focal_mm / f_number)
+        return max(1.0, float(getattr(self, "scope_aperture_mm", 80.0)))
+
+    def _persist_visual_magnitude_settings(self):
+        set_config_value("manual_eye_limit_mag", float(self.magnitude_limit))
+        set_config_value("scope_instrument_profile", str(self.scope_instrument_profile))
+        set_config_value("scope_aperture_mm", float(self.scope_aperture_mm))
+        set_config_value("scope_aperture_f_number", float(self.scope_aperture_f_number))
+        set_config_value("scope_aperture_input_mode", str(self.scope_aperture_input_mode))
+        set_config_value("scope_eyepiece_mm", float(self.scope_eyepiece_mm))
+        set_config_value("scope_iso", int(self.scope_iso))
+        set_config_value("scope_exposure_s", float(self.scope_exposure_s))
+
+    def _on_scope_aperture_changed(self, value):
+        if str(getattr(self, "scope_aperture_input_mode", "diameter_mm")) == "f_number":
+            self.scope_aperture_f_number = float(value)
+        else:
+            self.scope_aperture_mm = float(value)
+        self._persist_visual_magnitude_settings()
+        self.canvas.update()
+
+    def _on_scope_eyepiece_changed(self, value):
+        self.scope_eyepiece_mm = float(value)
+        self._persist_visual_magnitude_settings()
+        self.canvas.update()
+
+    def _on_scope_iso_changed(self, value):
+        self.scope_iso = int(value)
+        self._persist_visual_magnitude_settings()
+        self.canvas.update()
+
+    def _on_scope_exposure_changed(self, value):
+        self.scope_exposure_s = float(value)
+        self._persist_visual_magnitude_settings()
+        self.canvas.update()
+
+    def _scope_coord_inputs_have_focus(self) -> bool:
+        fields = [
+            "scope_ra_h_spin",
+            "scope_ra_m_spin",
+            "scope_ra_s_spin",
+            "scope_dec_sign_combo",
+            "scope_dec_d_spin",
+            "scope_dec_m_spin",
+            "scope_dec_s_spin",
+        ]
+        for name in fields:
+            w = getattr(self, name, None)
+            if w is not None and hasattr(w, "hasFocus") and w.hasFocus():
+                return True
+        return False
+
+    def _set_scope_coord_inputs(self, ra_deg: float, dec_deg: float) -> None:
+        if not hasattr(self, "scope_ra_h_spin"):
+            return
+        h_total = (float(ra_deg) % 360.0) / 15.0
+        h = int(h_total)
+        m_total = (h_total - h) * 60.0
+        m = int(m_total)
+        s = (m_total - m) * 60.0
+        if s >= 59.95:
+            s = 0.0
+            m += 1
+        if m >= 60:
+            m = 0
+            h = (h + 1) % 24
+
+        dec_v = abs(float(dec_deg))
+        d = int(dec_v)
+        dm_total = (dec_v - d) * 60.0
+        dm = int(dm_total)
+        ds = (dm_total - dm) * 60.0
+        if ds >= 59.95:
+            ds = 0.0
+            dm += 1
+        if dm >= 60:
+            dm = 0
+            d = min(90, d + 1)
+
+        widgets = [
+            self.scope_ra_h_spin,
+            self.scope_ra_m_spin,
+            self.scope_ra_s_spin,
+            self.scope_dec_sign_combo,
+            self.scope_dec_d_spin,
+            self.scope_dec_m_spin,
+            self.scope_dec_s_spin,
+        ]
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            self.scope_ra_h_spin.setValue(h)
+            self.scope_ra_m_spin.setValue(m)
+            self.scope_ra_s_spin.setValue(round(float(s), 1))
+            self.scope_dec_sign_combo.setCurrentIndex(0 if float(dec_deg) >= 0.0 else 1)
+            self.scope_dec_d_spin.setValue(d)
+            self.scope_dec_m_spin.setValue(dm)
+            self.scope_dec_s_spin.setValue(round(float(ds), 1))
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+
+    def _sync_scope_coord_inputs_from_canvas(self) -> None:
+        if not hasattr(self, "scope_ra_h_spin"):
+            return
+        if self._scope_coord_inputs_have_focus():
+            return
+        center = getattr(getattr(self, "canvas", None), "scope_controller", None)
+        center = getattr(center, "center", None)
+        if center is None:
+            return
+        try:
+            ut_hour, day_of_year_utc = self.canvas._current_ut_context()
+            ra_dec = self.canvas._altaz_to_ra_dec(center[0], center[1], ut_hour, day_of_year_utc)
+            if ra_dec is None:
+                return
+            self._set_scope_coord_inputs(float(ra_dec[0]), float(ra_dec[1]))
+        except Exception:
+            return
+
+    def on_scope_goto_radec(self) -> None:
+        if not hasattr(self, "scope_ra_h_spin"):
+            return
+        ra_h = int(self.scope_ra_h_spin.value())
+        ra_m = int(self.scope_ra_m_spin.value())
+        ra_s = float(self.scope_ra_s_spin.value())
+        dec_sign = 1.0 if self.scope_dec_sign_combo.currentText() != "-" else -1.0
+        dec_d = int(self.scope_dec_d_spin.value())
+        dec_m = int(self.scope_dec_m_spin.value())
+        dec_s = float(self.scope_dec_s_spin.value())
+
+        ra_deg = (ra_h + (ra_m / 60.0) + (ra_s / 3600.0)) * 15.0
+        dec_deg = dec_sign * (dec_d + (dec_m / 60.0) + (dec_s / 3600.0))
+
+        try:
+            ut_hour, day_of_year_utc = self.canvas._current_ut_context()
+            sky = self.canvas._ra_dec_to_alt_az(ra_deg, dec_deg, ut_hour, day_of_year_utc)
+            if sky is None:
+                return
+            if not self.canvas.scope_mode_enabled():
+                self.activate_scope_mode()
+            self.canvas._scope_jump_to_sky(sky)
+            self._set_scope_coord_inputs(ra_deg, dec_deg)
+        except Exception:
+            return
+
+    def _estimate_eye_pupil_mm(self, sun_alt_deg: float) -> float:
+        if sun_alt_deg >= 0.0:
+            return 2.2
+        if sun_alt_deg <= -18.0:
+            return float(self.scope_eye_pupil_dark_mm)
+        t = (0.0 - sun_alt_deg) / 18.0
+        return 2.2 + (float(self.scope_eye_pupil_dark_mm) - 2.2) * t
+
+    def recompute_visual_magnitude_model(self, target_alt_deg=None, sun_alt_deg=-18.0, now_utc=None):
+        if target_alt_deg is None:
+            target_alt_deg = getattr(self.canvas, "elevation_angle", 40.0)
+
+        if self.is_auto_bortle:
+            bortle_class = float(self.auto_bortle_estimate)
+        else:
+            # Approximate inverse mapping from naked-eye limit to Bortle class.
+            bortle_class = 1.0 + (7.6 - float(self.magnitude_limit)) / 0.5
+        bortle_class = max(1.0, min(9.0, bortle_class))
+
+        focal_mm = float(getattr(self.canvas.scope_controller, "focal_mm", 250.0))
+        if hasattr(self, "scope_focal_spin"):
+            try:
+                focal_mm = float(self.scope_focal_spin.value())
+            except Exception:
+                pass
+        aperture_mm_effective = self._effective_scope_aperture_mm(focal_mm)
+        instrument_profile = str(getattr(self, "scope_instrument_profile", "telescope"))
+        eyepiece_mm = float(self.scope_eyepiece_mm if instrument_profile == "telescope" else focal_mm)
+
+        scope_enabled = bool(getattr(self.canvas, "scope_mode_enabled", lambda: False)())
+        runtime_state = {
+            "scope_enabled": scope_enabled,
+            "lat": float(self.latitude),
+            "lon": float(self.longitude),
+            "h_deg": float(target_alt_deg),
+            "focal_mm": float(focal_mm),
+            "aperture_mm": float(aperture_mm_effective),
+            "ocular_mm": eyepiece_mm,
+            "instrument_profile": instrument_profile,
+            "k_fallback": float(self.scope_k_fallback),
+            "weather_enabled": bool(getattr(self.canvas.weather, "enabled", False)),
+            "copernicus_api_key": str(get_config_value("copernicus_api_key", "") or ""),
+            "copernicus_api_url": str(get_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api") or ""),
+            "now_utc": now_utc,
+            "_wx_cache": self.scope_atmo_metrics.get("_wx_cache", {}),
+        }
+        if scope_enabled:
+            update_telescope_hud(runtime_state)
+            self.scope_atmo_metrics = dict(runtime_state)
+            hud_metrics = runtime_state.get("hud_metrics", {})
+            atmo_loss = hud_metrics.get("loss_mag")
+        else:
+            hud_metrics = self.scope_atmo_metrics.get("hud_metrics", {})
+            atmo_loss = None
+
+        if atmo_loss is None:
+            atmo_loss = 0.0
+
+        sensor_profile = str(getattr(self.canvas.scope_controller, "sensor_key", "tiny"))
+        if hasattr(self, "scope_sensor_combo"):
+            try:
+                current_sensor = self.scope_sensor_combo.itemData(self.scope_sensor_combo.currentIndex())
+                if current_sensor:
+                    sensor_profile = str(current_sensor)
+            except Exception:
+                pass
+
+        inputs = VisualMagnitudeInputs(
+            aperture_mm=aperture_mm_effective,
+            telescope_focal_mm=focal_mm,
+            eyepiece_focal_mm=eyepiece_mm,
+            eye_pupil_mm=self._estimate_eye_pupil_mm(float(sun_alt_deg)),
+            atmospheric_loss_mag=float(atmo_loss),
+            auto_bortle=bool(self.is_auto_bortle),
+            bortle_class=bortle_class,
+            manual_eye_limit_mag=float(self.magnitude_limit),
+            exposure_seconds=float(self.scope_exposure_s),
+            iso=float(self.scope_iso),
+            instrument_profile=instrument_profile,
+            sensor_profile=sensor_profile,
+        )
+        result = self.visual_magnitude_engine.compute(inputs)
+        self.visual_magnitude_result = result
+        self.auto_star_scale_multiplier = float(result.star_scale_factor) if scope_enabled else 1.0
+        return result
+
+    def _sync_scope_aspect_controls(self, shape: str):
+        is_rect = shape == TelescopeScopeController.SHAPE_RECT
+        if hasattr(self, 'scope_aspect_combo'):
+            self.scope_aspect_combo.setEnabled(is_rect)
+        if hasattr(self, 'scope_aspect_custom_spin') and hasattr(self, 'scope_aspect_combo'):
+            is_custom = self.scope_aspect_combo.itemData(self.scope_aspect_combo.currentIndex()) == "custom"
+            self.scope_aspect_custom_spin.setEnabled(is_rect and is_custom)
+
+    def _apply_scope_aspect_from_ui(self):
+        if not hasattr(self, 'scope_aspect_combo'):
+            return
+        shape = self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex())
+        self._sync_scope_aspect_controls(shape)
+        if shape != TelescopeScopeController.SHAPE_RECT:
+            self.canvas.set_scope_aspect_ratio(None)
+            return
+
+        data = self.scope_aspect_combo.itemData(self.scope_aspect_combo.currentIndex())
+        if data is None:
+            self.canvas.set_scope_aspect_ratio(None)
+            return
+        if data == "custom":
+            self.canvas.set_scope_aspect_ratio(self.scope_aspect_custom_spin.value())
+            return
+        self.canvas.set_scope_aspect_ratio(float(data))
+
+    def sync_scope_speed_ui(self, mode: str):
+        if not hasattr(self, 'scope_speed_combo'):
+            return
+        for i in range(self.scope_speed_combo.count()):
+            if self.scope_speed_combo.itemData(i) == mode:
+                self.scope_speed_combo.blockSignals(True)
+                self.scope_speed_combo.setCurrentIndex(i)
+                self.scope_speed_combo.blockSignals(False)
+                break
+
+    def sync_scope_focal_ui(self, focal_mm: float):
+        if not hasattr(self, 'scope_focal_spin'):
+            return
+        spin = self.scope_focal_spin
+        v = float(max(spin.minimum(), min(spin.maximum(), focal_mm)))
+        spin.blockSignals(True)
+        spin.setValue(v)
+        spin.blockSignals(False)
+
+    def activate_scope_mode(self):
+        # Scope mode remaps navigation to pointing control.
+        self._ensure_scope_catalog_loaded()
+        self._ensure_scope_spatial_index_warmup()
+        self.canvas.setUpdatesEnabled(False)
+        try:
+            self.canvas.set_scope_focal_mm(self.scope_focal_spin.value())
+            self.canvas.set_scope_shape(self.scope_shape_combo.itemData(self.scope_shape_combo.currentIndex()))
+            self.canvas.set_scope_sensor(self.scope_sensor_combo.itemData(self.scope_sensor_combo.currentIndex()))
+            self._apply_scope_aspect_from_ui()
+            self.canvas.set_scope_speed_mode(self.scope_speed_combo.itemData(self.scope_speed_combo.currentIndex()))
+            self.canvas.set_scope_enabled(True)
+            instrument_profile = str(getattr(self, "scope_instrument_profile", "telescope"))
+            eyepiece_mm = float(self.scope_eyepiece_mm if instrument_profile == "telescope" else self.scope_focal_spin.value())
+            aperture_mm_effective = self._effective_scope_aperture_mm(self.scope_focal_spin.value())
+            on_telescope_view_enabled(
+                {
+                    "scope_enabled": True,
+                    "lat": float(self.latitude),
+                    "lon": float(self.longitude),
+                    "h_deg": float(self.canvas.elevation_angle),
+                    "focal_mm": float(self.scope_focal_spin.value()),
+                    "aperture_mm": float(aperture_mm_effective),
+                    "ocular_mm": eyepiece_mm,
+                    "instrument_profile": instrument_profile,
+                    "k_fallback": float(self.scope_k_fallback),
+                    "weather_enabled": bool(getattr(self.canvas.weather, "enabled", False)),
+                    "copernicus_api_key": str(get_config_value("copernicus_api_key", "") or ""),
+                    "copernicus_api_url": str(get_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api") or ""),
+                },
+                allow_remote_fetch=False,
+            )
+            self._sync_scope_coord_inputs_from_canvas()
+            self.canvas.setFocus()
+            self.sync_scope_ui_state(True)
+
+            # Optional: deactivate measurement input when entering scope mode.
+            self.canvas.set_measurement_tool(TOOL_NONE)
+            self._sync_measure_tool_buttons(TOOL_NONE)
+            self.canvas.set_constellation_draw_mode(False)
+            self._sync_constellation_controls()
+        finally:
+            self.canvas.setUpdatesEnabled(True)
+            self.canvas.update()
+        QTimer.singleShot(0, self._update_button_pos)
+
+    def exit_scope_mode(self):
+        self.canvas.set_scope_enabled(False)
+        self.sync_scope_ui_state(False)
+        QTimer.singleShot(0, self._update_button_pos)
+
+    def sync_scope_ui_state(self, enabled: bool):
+        if hasattr(self, 'btn_scope_activate'):
+            self.btn_scope_activate.setEnabled(not enabled)
+        if hasattr(self, 'btn_scope_exit'):
+            self.btn_scope_exit.setEnabled(enabled)
+
+    def _sync_measure_tool_buttons(self, active_tool: str):
+        tool_buttons = [
+            (getattr(self, 'btn_tool_ruler', None), TOOL_RULER),
+            (getattr(self, 'btn_tool_square', None), TOOL_SQUARE),
+            (getattr(self, 'btn_tool_rect', None), TOOL_RECTANGLE),
+            (getattr(self, 'btn_tool_circle', None), TOOL_CIRCLE),
+        ]
+        for btn, key in tool_buttons:
+            if btn is None:
+                continue
+            btn.blockSignals(True)
+            btn.setChecked(active_tool == key)
+            btn.blockSignals(False)
+
+    def _sync_constellation_controls(self):
+        if not hasattr(self, "canvas"):
+            return
+        ctrl = self.canvas.constellation_controller
+        draw_enabled = bool(getattr(ctrl, "enabled", False))
+        visible_enabled = bool(getattr(ctrl, "visible", True))
+        drawing_active = bool(getattr(ctrl, "group_drawing_active", False)) and draw_enabled
+        selected_groups = len(getattr(ctrl, "selected_group_indices", set()) or set())
+
+        if hasattr(self, "btn_const_visibility"):
+            self.btn_const_visibility.blockSignals(True)
+            self.btn_const_visibility.setChecked(visible_enabled)
+            self.btn_const_visibility.blockSignals(False)
+
+        if hasattr(self, "btn_const_draw"):
+            self.btn_const_draw.blockSignals(True)
+            self.btn_const_draw.setChecked(draw_enabled)
+            self.btn_const_draw.setEnabled(visible_enabled)
+            self.btn_const_draw.blockSignals(False)
+        if hasattr(self, "btn_const_eraser"):
+            if selected_groups > 1:
+                self.btn_const_eraser.setText(
+                    getTraduction("Astro.ConstellationDeleteSelected", "Delete selected ({n})").format(
+                        n=selected_groups
+                    )
+                )
+            else:
+                self.btn_const_eraser.setText(getTraduction("Astro.ConstellationDeleteAll", "Delete all"))
+            self.btn_const_eraser.setEnabled(visible_enabled and (len(getattr(ctrl, "groups", [])) > 0))
+        if hasattr(self, "btn_const_new"):
+            self.btn_const_new.setText(
+                getTraduction("Astro.ConstellationFinish", "Finish constellation")
+                if drawing_active
+                else getTraduction("Astro.ConstellationNew", "New constellation")
+            )
+            self.btn_const_new.setEnabled(visible_enabled)
+        if hasattr(self, "btn_const_rename"):
+            self.btn_const_rename.setEnabled(visible_enabled)
+
+        if hasattr(self, "lbl_constellation_state"):
+            total = len(getattr(ctrl, "groups", []))
+            active = getattr(ctrl, "active_group_index", None)
+            active_txt = "-"
+            if active is not None and 0 <= active < total:
+                active_txt = str(ctrl.groups[active].name)
+            self.lbl_constellation_state.setText(
+                getTraduction("Astro.ConstellationStatus", "Groups: {n} | Active: {name}").format(
+                    n=total,
+                    name=active_txt,
+                )
+            )
+
+    def _delete_constellation_shortcut(self):
+        if not hasattr(self, "canvas"):
+            return
+        if not self.canvas.drawing_mode_enabled():
+            return
+        ctrl = self.canvas.constellation_controller
+        if not ctrl.has_deletable_selection():
+            return
+        deleted = ctrl.delete_selected()
+        if deleted:
+            self.canvas.update()
+            self._sync_constellation_controls()
+
+    def _finish_constellation_shortcut(self):
+        if not hasattr(self, "canvas"):
+            return
+        if not self.canvas.drawing_mode_enabled():
+            return
+        self.finish_constellation_group()
+
+    def toggle_constellation_visibility(self, checked: bool):
+        visible = bool(checked)
+        self.canvas.set_constellation_visible(visible)
+        if not visible:
+            self.canvas.set_constellation_draw_mode(False)
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def toggle_constellation_draw_mode(self, checked: bool):
+        enabled = bool(checked)
+        if enabled:
+            self.exit_scope_mode()
+            self.canvas.set_measurement_tool(TOOL_NONE)
+            self._sync_measure_tool_buttons(TOOL_NONE)
+        self.canvas.set_constellation_draw_mode(enabled)
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def delete_constellation_action(self):
+        ctrl = self.canvas.constellation_controller
+        deleted = False
+        selected_groups = len(getattr(ctrl, "selected_group_indices", set()) or set())
+        if selected_groups > 1:
+            deleted = ctrl.delete_selected_groups() > 0
+        else:
+            if len(getattr(ctrl, "groups", [])) > 0:
+                ctrl.clear_all()
+                deleted = True
+        if deleted:
+            self.canvas.update()
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def toggle_constellation_eraser_mode(self, checked: bool):
+        # Legacy no-op: eraser mode has been replaced by selection + delete actions.
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def constellation_primary_action(self):
+        ctrl = self.canvas.constellation_controller
+        if bool(getattr(ctrl, "group_drawing_active", False)):
+            self.finish_constellation_group()
+            return
+        self.create_constellation_group()
+
+    def create_constellation_group(self):
+        default_name = self.canvas.constellation_controller.next_default_name()
+        title = getTraduction("Astro.ConstellationDialogTitle", "Constellation")
+        prompt = getTraduction("Astro.ConstellationNamePrompt", "Name")
+        name, ok = QInputDialog.getText(self, title, prompt, text=default_name)
+        if not ok:
+            return
+        final_name = str(name or "").strip() or default_name
+        self.canvas.create_constellation_group(final_name)
+        self.canvas.set_constellation_draw_mode(True)
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def finish_constellation_group(self):
+        ctrl = self.canvas.constellation_controller
+        if not bool(getattr(ctrl, "group_drawing_active", False)):
+            return
+        ctrl.finish_active_group()
+        self.canvas.update()
+        self.canvas.setFocus()
+        self._sync_constellation_controls()
+
+    def rename_constellation_group(self):
+        ctrl = self.canvas.constellation_controller
+        gi = getattr(ctrl, "active_group_index", None)
+        if gi is None or not (0 <= gi < len(ctrl.groups)):
+            return
+        self.canvas.begin_inline_constellation_rename(group_index=int(gi))
+        self._sync_constellation_controls()
+
+    def rename_constellation_group_by_index(self, group_index: int, label_rect: Optional[QRectF] = None):
+        ctrl = self.canvas.constellation_controller
+        gi = int(group_index)
+        if not (0 <= gi < len(ctrl.groups)):
+            return
+        ctrl.active_group_index = gi
+        ctrl.selected_group_index = gi
+        ctrl.selected_node_index = None
+        ctrl.selected_segment_index = None
+        self.canvas.begin_inline_constellation_rename(group_index=gi, label_rect=label_rect)
+        self._sync_constellation_controls()
+
+    def select_measurement_tool(self, tool: str):
+        current = self.canvas.measurement_controller.active_tool
+        if current == tool:
+            self.canvas.set_measurement_tool(TOOL_NONE)
+            self._sync_measure_tool_buttons(TOOL_NONE)
+            return
+
+        # Single active tool at a time.
+        self.canvas.set_measurement_tool(tool)
+        self.canvas.setFocus()
+        self._sync_measure_tool_buttons(tool)
+
+        # Measurement and scope mode should not compete for mouse/keys.
+        self.exit_scope_mode()
+        self.canvas.set_constellation_draw_mode(False)
+        self._sync_constellation_controls()
+
+    def clear_measurement_overlays(self):
+        self.canvas.clear_measurements()
+        self._sync_measure_tool_buttons(self.canvas.measurement_controller.active_tool)
+
+    def on_time_bar_change(self, val):
+        self.use_real_time = False
+        self.btn_realtime.setChecked(False)
+        self.manual_hour = val
+        self._last_seek_hour = val
+        self.canvas.update()
+        self.canvas.update()
+
+        # â”€ Toast HUD: mostra hora local i UT durant el drag â”€
+        if hasattr(self.canvas, 'hint_overlay'):
+            from datetime import datetime, timezone
+            # val is LOCAL time (as it represents the time bar)
+            tz_off = round(datetime.now().astimezone().utcoffset().total_seconds() / 3600.0, 1)
+            ut_h = (val - tz_off) % 24
+            
+            lh = f"{int(val % 24):02d}:{int((val % 1)*60):02d}"
+            uth = f"{int(ut_h):02d}:{int((ut_h % 1)*60):02d}"
+            
+            txt = getTraduction("HUD.TimeHint", "?? {local_h} local  ·  UT {ut_h}").format(
+                local_h=lh, ut_h=uth
+            )
+            self.canvas.hint_overlay.show_hint(txt)
+
+    def request_relocation(self):
+        """User changed location: trigger full bake."""
+        try:
+            new_lat = float(self.txt_lat.text())
+            new_lon = float(self.txt_lon.text())
+            
+            # Keep sky orientation stable when crossing hemispheres.
+            old_hemi_n = self.latitude >= 0
+            new_hemi_n = new_lat >= 0
+            if old_hemi_n != new_hemi_n:
+                self.canvas.azimuth_offset = (self.canvas.azimuth_offset + 180) % 360
+            
+            self.latitude = new_lat
+            self.longitude = new_lon
+
+            if hasattr(self, "weather"):
+                self.weather.set_location(self.latitude, self.longitude)
+            if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+                self.canvas.weather.set_location(self.latitude, self.longitude)
+            
+            # Use debouncer for location changes too
+            self.bake_debounce_timer.start(1500) # 1.5s debounce
+            
+            # Feedback
+            if hasattr(self, 'lbl_loading'):
+                self.on_horizon_progress_state(
+                    {
+                        "job_id": getattr(self, "_active_horizon_job_id", "") or "",
+                        "phase": "prepare",
+                        "percent": 0.0,
+                        "current": 0,
+                        "total": int(round(360.0 / 0.5)),
+                    }
+                )
+            
+            # Update internal params
+            self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
+            
+            # --- Fast Local Lookups for UI Feedback ---
+            if hasattr(self, 'horizon_worker'):
+                # Update Altitude
+                bare = self.horizon_worker.get_bare_elevation(self.latitude, self.longitude)
+                self._last_dem_elevation = bare
+                self.update_altitude_label()
+                
+                # Update Bortle (Automatic Mode)
+                auto_bortle = self.horizon_worker.get_bortle_estimate(self.latitude, self.longitude)
+                self.canvas.auto_bortle_estimate = auto_bortle
+                if self.is_auto_bortle:
+                    self.slider_light.set_silent_value(auto_bortle)
+            
+            # Heavy bake is triggered by debounce timer to avoid duplicate work.
+
+            # â”€ Toast HUD: mostra nova ubicaciÃ³ i altitud si disponible â”€
+            if hasattr(self.canvas, 'hint_overlay'):
+                dem_m  = getattr(self, '_last_dem_elevation', None)
+                offset = getattr(self, '_observer_offset', 0.0)
+                if dem_m is not None:
+                    txt = getTraduction(
+                        "HUD.LocationHint",
+                        "?? {lat}°, {lon}°  ·  {dem} m + {offset} m"
+                    ).format(
+                        lat=f"{self.latitude:.4f}",
+                        lon=f"{self.longitude:.4f}",
+                        dem=int(dem_m),
+                        offset=int(offset)
+                    )
+                else:
+                    txt = f"ðŸ“ {self.latitude:.4f}Â°, {self.longitude:.4f}Â°"
+                self.canvas.hint_overlay.show_hint(txt)
+
+        except ValueError:
+            print("[AstroWidget] Invalid Lat/Lon")
+
+            
+    def update_location(self):
+        """Called by ReturnPressed on line edits."""
+        self.request_relocation()
+        
+    def prev_day(self):
+        self.manual_day = (self.manual_day - 1) % 365
+        self.lbl_date.setText(self.format_date(self.manual_day))
+        self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
+        self.canvas.update()
+        
+    def next_day(self):
+        self.manual_day = (self.manual_day + 1) % 365
+        self.lbl_date.setText(self.format_date(self.manual_day))
+        self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
+        self.canvas.update()
+
+    def load_catalog(self):
+        local_dir = os.path.dirname(os.path.abspath(__file__))
+        stars_dir = os.path.normpath(os.path.join(local_dir, '..', 'data', 'stars'))
+
+        self.celestial_objects = []
+        if np is not None:
+            try:
+                entries = _discover_star_catalog_npz_entries(stars_dir)
+                base_entry = _select_base_star_catalog_entry(entries, max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG)
+                if base_entry is not None:
+                    base = _load_star_npz_arrays(
+                        base_entry["path"],
+                        max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                    )
+                    if len(base["ra"]) > 0:
+                        order = np.argsort(base["mag"], kind="mergesort")
+                        ra = base["ra"][order]
+                        dec = base["dec"][order]
+                        mag = base["mag"][order]
+                        bp_rp = base["bp_rp"][order]
+                        sid = base["source_id"][order] if base["source_id"] is not None else None
+                        self.celestial_objects = _build_celestial_objects_from_arrays(
+                            ra,
+                            dec,
+                            mag,
+                            bp_rp,
+                            source_id=sid,
+                        )
+                        self.np_ra = np.asarray(ra, dtype=np.float32)
+                        self.np_dec = np.asarray(dec, dtype=np.float32)
+                        self.np_mag = np.asarray(mag, dtype=np.float32)
+                        self.np_r, self.np_g, self.np_b = _bp_rp_to_rgb_arrays(bp_rp)
+                        self._scope_catalog_loaded_max_mag = max(
+                            float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                            float(STAR_CATALOG_NAKED_EYE_MAX_MAG),
+                        )
+                        print(
+                            f"Loaded base NPZ catalog: {len(self.np_ra)} stars "
+                            f"from {os.path.basename(base_entry['path'])}."
+                        )
+            except Exception as e:
+                print(f"Error loading base NPZ catalog: {e}")
+
+        if not self.celestial_objects:
+            print("Fallback to Random Stars")
+            import random
+            for _ in range(500):
+                self.celestial_objects.append({
+                    'id': 'rnd',
+                    'ra': random.uniform(0, 360), 'dec': random.uniform(-90, 90), 
+                    'mag': random.uniform(1.0, 6.0), 'bp_rp': random.uniform(-0.5, 2.0)
+                })
+                
+        self.celestial_objects.sort(key=lambda x: x['mag'])
+
+        if np:
+            try:
+                self.np_ra = np.array([s['ra'] for s in self.celestial_objects], dtype=np.float32)
+                self.np_dec = np.array([s['dec'] for s in self.celestial_objects], dtype=np.float32)
+                self.np_mag = np.array([s['mag'] for s in self.celestial_objects], dtype=np.float32)
+                bprp = np.array([s.get('bp_rp', 0.8) for s in self.celestial_objects], dtype=np.float32)
+                self.np_r, self.np_g, self.np_b = _bp_rp_to_rgb_arrays(bprp)
+                print(f"NumPy Optimization: {len(self.np_ra)} stars vectorized.")
+            except Exception as e:
+                print(f"NumPy Init Error: {e}")
+                if hasattr(self, 'np_ra'): del self.np_ra
+        
+    def update_loop(self):
+        # Keep the main update loop at 60 FPS for smooth movement.
+        target_interval_ms = 16
+        try:
+            if bool(getattr(self, "_updates_paused", False)):
+                return
+        except Exception:
+            target_interval_ms = 16
+
+        if hasattr(self, "timer") and self.timer.interval() != target_interval_ms:
+            self.timer.setInterval(target_interval_ms)
+
+        now_mono = time.monotonic()
+        hud_tick_s = 0.10      # 10 Hz for lightweight widget updates.
+        scope_tick_s = 0.08    # ~12.5 Hz for scope coord spinboxes.
+        climate_tick_s = 0.50  # 2 Hz is enough for climate status badge.
+
+        last_hud = float(getattr(self, "_last_hud_tick_mono", 0.0))
+        last_scope = float(getattr(self, "_last_scope_tick_mono", 0.0))
+        last_climate = float(getattr(self, "_last_climate_tick_mono", 0.0))
+
+        run_hud_tick = (now_mono - last_hud) >= hud_tick_s
+        run_scope_tick = (now_mono - last_scope) >= scope_tick_s
+        run_climate_tick = (now_mono - last_climate) >= climate_tick_s
+
+        if run_hud_tick:
+            self._last_hud_tick_mono = now_mono
+        if run_scope_tick:
+            self._last_scope_tick_mono = now_mono
+        if run_climate_tick:
+            self._last_climate_tick_mono = now_mono
+
+        if self.use_real_time:
+            now = datetime.now()
+            # Sync Day & Year
+            prev_year = int(getattr(self, "manual_year", now.year))
+            prev_day = int(getattr(self, "manual_day", 0))
+            self.manual_year = now.year
+            self.manual_day = (now - datetime(now.year, 1, 1)).days
+            day_changed = (self.manual_year != prev_year) or (self.manual_day != prev_day)
+            if day_changed and hasattr(self, "lbl_date"):
+                self.lbl_date.setText(self.format_date(self.manual_day))
+
+            # Rebuild time bar gradient only when day changes.
+            if day_changed and hasattr(self, "time_bar"):
+                self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
+
+            # Sync Time
+            h = now.hour + now.minute/60.0 + now.second/3600.0
+            if run_hud_tick and hasattr(self, "time_bar") and self.time_bar.isVisible():
+                self.time_bar.set_time(h)
+        else:
+            # Manual Mode: "Time keeps running forward"
+            # Increment manual_hour by elapsed time
+            dt_hours = max(0.001, float(getattr(self.timer, "interval", lambda: 16)())) / 1000.0 / 3600.0
+            self.manual_hour += dt_hours
+            if self.manual_hour >= 24.0:
+                 self.manual_hour -= 24.0
+                 self.manual_day += 1
+            elif self.manual_hour < 0:
+                 self.manual_hour += 24.0
+                 self.manual_day -= 1
+            if run_hud_tick and hasattr(self, "time_bar") and self.time_bar.isVisible():
+                self.time_bar.set_time(self.manual_hour)
+            
+        # Update trails elapsed time based on simulation time
+        if run_hud_tick and hasattr(self, 'chk_trails') and self.chk_trails.isChecked() and hasattr(self.canvas, 'trail_start_hour') and \
+           self.canvas.trail_start_hour is not None and hasattr(self.canvas, 'ut_hour'):
+            # Calculate simulation duration between start and current
+            start = self.canvas.trail_start_hour
+            end = self.canvas.ut_hour
+            
+            diff = end - start
+            # Shortest path wrap-around (handles midnight)
+            if diff < -12.0: diff += 24.0
+            elif diff > 12.0: diff -= 24.0
+            
+            # Exposure is only positive "forward" from start
+            # If they go back beyond start, we show 0.
+            self.trails_accumulated_seconds = max(0.0, diff * 3600.0)
+            elapsed = int(self.trails_accumulated_seconds)
+            if elapsed < 60:
+                if hasattr(self, "lbl_trail_time"):
+                    self.lbl_trail_time.setText(f"{elapsed}s")
+            elif elapsed < 3600:
+                m = elapsed // 60
+                s = elapsed % 60
+                if hasattr(self, "lbl_trail_time"):
+                    self.lbl_trail_time.setText(f"{m}m {s}s")
+            else:
+                h = elapsed // 3600
+                m = (elapsed % 3600) // 60
+                if hasattr(self, "lbl_trail_time"):
+                    self.lbl_trail_time.setText(f"{h}h {m}m")
+        elif run_hud_tick:
+            if hasattr(self, 'trails_accumulated_seconds'):
+                delattr(self, 'trails_accumulated_seconds')
+            if hasattr(self, 'lbl_trail_time'):
+                self.lbl_trail_time.setText("")
+
+        if run_scope_tick and hasattr(self, "scope_panel") and self.scope_panel.isVisible():
+            self._sync_scope_coord_inputs_from_canvas()
+
+        if run_climate_tick:
+            self._refresh_climate_status_indicator()
+        self.canvas.update()
+
+    def toggle_realtime(self, checked):
+        self.use_real_time = checked
+        self.canvas.update()
+
+    def toggle_view(self):
+        # Toggle between Zenith (90) and Horizon (20)
+        current = self.canvas.elevation_angle
+        if abs(current - 90) < 5:
+            self.set_horizon_view()
+        else:
+            self.set_zenith_view()
+            
+    def set_horizon_view(self):
+        self.canvas.elevation_angle = 0.1 # Low angle for landscape
+        self.canvas.vertical_offset_ratio = 0.35 # Horizon lower-third rule
+        self.canvas.zoom_level = 1 # Wider FOV (~220 degrees)
+        if self.latitude >= 0:
+            self.canvas.azimuth_offset = 180 # Facing South (North Hemi)
+        else:
+            self.canvas.azimuth_offset = 0   # Facing North (South Hemi)
+        if hasattr(self, "btn_view"):
+            self.btn_view.setText(getTraduction("Astro.ViewZenith", "Cénit"))
+        self.canvas.update()
+        
+    def set_zenith_view(self):
+        self.canvas.elevation_angle = 90 # Dome view up
+        self.canvas.vertical_offset_ratio = 0.0 # Center
+        self.canvas.zoom_level = 1.0 # Wide Fisheye
+        self.canvas.azimuth_offset = 0
+        if hasattr(self, "btn_view"):
+            self.btn_view.setText(getTraduction("Astro.ViewHorizontal", "Horizonte"))
+        self.canvas.update()
+        
+    def on_extra_height_changed(self, val):
+        # Update worker state immediately for synchronous altitude label feedback
+        if hasattr(self, 'horizon_worker'):
+            self.horizon_worker.set_observer_offset(val)
+            self.update_altitude_label()
+            # Start debounce timer for the heavy topography recalculation
+            # 1.5s debounce for spinbox as requested (let the user stop for a second)
+            self.bake_debounce_timer.start(1500) 
+
+    def update_altitude_label(self):
+        if hasattr(self, 'horizon_worker'):
+            bare = self.horizon_worker.get_bare_elevation(self.latitude, self.longitude)
+            offset = self.spin_extra_height.value() if hasattr(self, "spin_extra_height") else 0.0
+            if bare is not None:
+                total = bare + offset
+                tpl = getTraduction("Astro.AltitudeInfo", "Altitud terreno: {dem} m | Total observador: {total} m")
+                if hasattr(self, "lbl_altitude_info"):
+                    self.lbl_altitude_info.setText(tpl.format(dem=f"{bare:.1f}", total=f"{total:.1f}"))
+            else:
+                fallback_str = getTraduction("Astro.AltitudeInfo", "Altitud terreno: {dem} m | Total observador: {total} m")
+                fallback_str = fallback_str.replace("{dem}", "--").replace("{total}", "--")
+                if hasattr(self, "lbl_altitude_info"):
+                    self.lbl_altitude_info.setText(fallback_str)
+
+    def update_star_scale(self, val):
+        self.star_scale = val / 10.0
+        self.canvas.update()
+
+    def toggle_pure_colors(self, checked):
+        self.pure_colors = checked
+        self.canvas.update()
+
+    def update_spikes(self, val):
+        self.spike_magnitude_threshold = val / 10.0
+        print(f"[DEBUG] Spike threshold updated to: {self.spike_magnitude_threshold} (slider val: {val})")
+        self.canvas.update()
+
+    def on_layers_changed(self, text):
+        """Update layer count from UI combo box and trigger a re-bake."""
+        try:
+            val = int(text)
+            from TerraLab.common.utils import set_config_value
+            set_config_value("horizon_quality", val)
+            if hasattr(self, 'horizon_worker'):
+                self.horizon_worker.reload_config()
+            self.request_relocation()
+        except ValueError:
+            pass
+
+    def configure_terrain(self):
+
+        """Open DEM configuration dialog."""
+        from TerraLab.widgets.terrain_config_dialog import TerrainConfigDialog
+        dlg = TerrainConfigDialog(self)
+        if dlg.exec_() == QDialog.Accepted:
+            # Re-read config in worker
+            if hasattr(self, 'horizon_worker'):
+                self.horizon_worker.reload_config()
+            # Trigger re-bake
+            self.request_relocation()
+
+    def update_illusion_enabled(self, checked):
+        self.canvas.illusion_enabled = checked
+        self.canvas.update()
+
+    def update_horizon_refs(self, val):
+        self.canvas.horizon_refs = val / 100.0
+        self.canvas.update()
+
+    def update_dome_flattening(self, val):
+        self.canvas.dome_flattening = val / 100.0
+        self.canvas.update()
+        
+    def update_trained_observer(self, checked):
+        self.canvas.trained_observer = checked
+        self.canvas.update()
+        
+    def update_eclipse_lock(self, checked):
+        self.canvas.eclipse_lock_mode = checked
+        self.canvas.update()
+        
+    def animate_view(self):
+        running = False
+        
+        # 1. Azimuth Animation
+        if self.target_azimuth is not None:
+            # Normalize Input First to avoid "Unwinding" large rotations
+            self.canvas.azimuth_offset %= 360
+            
+            current = self.canvas.azimuth_offset
+            diff = self.target_azimuth - current
+            # Normalize -180..180 (Shortest Path)
+            diff = (diff + 180) % 360 - 180
+            
+            if abs(diff) < 0.5:
+                self.canvas.azimuth_offset = self.target_azimuth
+                self.target_azimuth = None
+            else:
+                running = True
+                # More agile speed (0.25)
+                step = diff * 0.25
+                # Min speed to snap
+                if abs(step) < 0.5: step = 0.5 if step > 0 else -0.5
+                self.canvas.azimuth_offset = (current + step) % 360
+
+        # 2. Elevation Animation
+        if getattr(self, 'target_elevation', None) is not None:
+            current_el = self.canvas.elevation_angle
+            diff_el = self.target_elevation - current_el
+            
+            if abs(diff_el) < 0.5:
+                self.canvas.elevation_angle = self.target_elevation
+                self.target_elevation = None
+            else:
+                running = True
+                step_el = diff_el * 0.1
+                if abs(step_el) < 0.5: step_el = 0.5 if step_el > 0 else -0.5
+                self.canvas.elevation_angle = current_el + step_el
+
+        if not running:
+            self.anim_timer.stop()
+            self.canvas.dragging = False
+        else:
+            self.canvas.dragging = True
+            
+        self.canvas.update()
+
+    def on_trails_toggled(self, checked):
+        self._update_circumpolar_button_text()
+        if checked:
+            self.target_azimuth = 0 # Rotate to North
+            # Point to Polaris (Altitude = Latitude)
+            self.target_elevation = self.latitude 
+        else:
+            self.target_azimuth = 180 # Return to South
+            self.target_elevation = 40 # Default nice view
+            
+        self.anim_timer.start(16) # ~60 FPS
+
+    def _update_circumpolar_button_text(self):
+        if not hasattr(self, "chk_trails"):
+            return
+        checked = bool(self.chk_trails.isChecked())
+        if checked:
+            self.chk_trails.setText(getTraduction("Astro.StopCircumpolar", "Aturar circumpolar"))
+        else:
+            self.chk_trails.setText(getTraduction("Astro.StartCircumpolar", "Iniciar circumpolar"))
+
+    def get_month_name(self, month_idx):
+        # Manual translation since locale might be erratic
+        months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        keys = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", 
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        
+        m_en = months[month_idx - 1]
+        return getTraduction(f"Month.{keys[month_idx-1]}", m_en)
+
+    def format_date(self, day_index):
+        # Conversion using manual_year
+        date = datetime(self.manual_year, 1, 1) + timedelta(days=int(day_index))
+        # Custom localized format
+        month_name = self.get_month_name(date.month)
+        return f"{date.day} {month_name} {date.year}"
+
+    def update_date(self, val):
+        self.use_real_time = False
+        self.btn_realtime.setChecked(False)
+        self.manual_day = val
+        self.lbl_date.setText(self.format_date(val))
+        
+        # Sync Gradient
+        self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
+        self.canvas.update()
+
+    def prev_day(self):
+        self.update_date(self.manual_day - 1)
+
+    def next_day(self):
+        self.update_date(self.manual_day + 1)
+        # Update gradient when date changes
+        self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
+        self.canvas.update()
+
+    def open_calendar(self):
+        # Open a popup calendar to select date
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Data")
+        dlg.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint) # Popup + Frameless for integration feel
+        
+        # Style to match dark theme
+        dlg.setStyleSheet("""
+            QDialog { background: #222; border: 1px solid #555; border-radius: 4px; }
+            QCalendarWidget QWidget { alternate-background-color: #333; color: white; }
+            QCalendarWidget QToolButton { color: white; icon-size: 20px; }
+            QCalendarWidget QMenu { background-color: #333; color: white; }
+            QCalendarWidget QSpinBox { color: white; background: #444; selection-background-color: #666; }
+            QCalendarWidget QAbstractItemView:enabled { color: white; background: #222; selection-background-color: #0078d7; selection-color: white; }
+            QCalendarWidget QAbstractItemView:disabled { color: #555; }
+        """)
+        
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(0,0,0,0)
+        
+        cal = QCalendarWidget()
+        cal.setGridVisible(False)
+        cal.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+        
+        # Set current date based on manual_day (Day of Year)
+        current_date = datetime(self.manual_year, 1, 1) + timedelta(days=self.manual_day)
+        from PyQt5.QtCore import QDate
+        cal.setSelectedDate(QDate(current_date.year, current_date.month, current_date.day))
+        
+        def on_date_selected():
+            qdate = cal.selectedDate()
+            # Update Year
+            self.manual_year = qdate.year()
+            
+            # Convert back to day of year
+            d = datetime(qdate.year(), qdate.month(), qdate.day())
+            start_of_year = datetime(qdate.year(), 1, 1)
+            day_idx = (d - start_of_year).days
+            self.update_date(day_idx)
+            dlg.accept()
+            
+        cal.clicked.connect(on_date_selected)
+        cal.activated.connect(on_date_selected) # Double click
+        
+        layout.addWidget(cal)
+        
+        # Smart Positioning
+        pos = self.lbl_date.mapToGlobal(QPointF(0, self.lbl_date.height()).toPoint())
+        
+        # Ensure it doesn't fall off screen bottom
+        screen = QApplication.primaryScreen().geometry()
+        sz = cal.sizeHint()
+        if pos.y() + sz.height() > screen.bottom():
+             # Move ABOVE the label if not enough space below
+             pos = self.lbl_date.mapToGlobal(QPointF(0, 0).toPoint())
+             pos.setY(pos.y() - sz.height() - 5)
+             
+        dlg.move(pos)
+        dlg.exec_()
+
+    def on_lp_mode_changed(self, index):
+        """index 0 = Automatic (Bortle), index 1 = Manual (Magnitud)."""
+        self.is_auto_bortle = (index == 0)
+        set_config_value("is_auto_bortle", bool(self.is_auto_bortle))
+        
+        if self.is_auto_bortle:
+            self.lbl_light_text.setText(getTraduction("Astro.BortleLabel", "Bortle"))
+            self.slider_light.setRange(1, 9)
+            if hasattr(self.slider_light, '_lbl_min'):
+                self.slider_light._lbl_min.setText("1")
+                self.slider_light._lbl_max.setText("9")
+            auto_val = getattr(self.canvas, 'auto_bortle_estimate', 4)
+            self.slider_light.set_silent_value(int(auto_val))
+        else:
+            self.lbl_light_text.setText(getTraduction("Astro.MagnitudeLabel", "Magnitude"))
+            self.slider_light.setRange(-270, 100) # -27.0 to 10.0
+            if hasattr(self.slider_light, '_lbl_min'):
+                self.slider_light._lbl_min.setText("-27")
+                self.slider_light._lbl_max.setText("10")
+            self.slider_light.set_silent_value(int(self.magnitude_limit * 10))
+            
+        self.canvas.update()
+
+    def on_stars_toggled(self, checked):
+        checked = bool(checked)
+        if checked and (not self._ensure_asset_before_enable(self.chk_enable_sky, checked, "gaia_catalog")):
+            checked = False
+        if checked != bool(self.chk_enable_sky.isChecked()):
+            self.chk_enable_sky.blockSignals(True)
+            self.chk_enable_sky.setChecked(checked)
+            self.chk_enable_sky.blockSignals(False)
+        self._persist_visibility_state("estrelles", checked)
+        self.canvas.update()
+
+    def on_climate_toggled(self, checked):
+        checked = bool(checked)
+        if checked and (not self._ensure_asset_before_enable(self.chk_clima, checked, "climate_metno")):
+            checked = False
+        if checked != bool(self.chk_clima.isChecked()):
+            self.chk_clima.blockSignals(True)
+            self.chk_clima.setChecked(checked)
+            self.chk_clima.blockSignals(False)
+        self._persist_visibility_state("clima", checked)
+        if hasattr(self.canvas, "weather"):
+            self.canvas.weather.enabled = checked
+            self.canvas.weather.set_remote_user_agent(self.asset_manager.get_user_agent())
+        if hasattr(self, "weather"):
+            self.weather.enabled = checked
+            self.weather.set_remote_user_agent(self.asset_manager.get_user_agent())
+        if checked:
+            self._ensure_copernicus_credentials_prompt()
+        self._refresh_climate_status_indicator()
+        self.canvas.update()
+
+    def on_light_pollution_toggled(self, checked):
+        checked = bool(checked)
+        if checked and (not self._ensure_asset_before_enable(self.chk_light_pollution, checked, "light_pollution")):
+            checked = False
+        if checked != bool(self.chk_light_pollution.isChecked()):
+            self.chk_light_pollution.blockSignals(True)
+            self.chk_light_pollution.setChecked(checked)
+            self.chk_light_pollution.blockSignals(False)
+        self.light_pollution_enabled = bool(checked)
+        self._persist_visibility_state("contaminacio_luminica", checked)
+        set_config_value("light_pollution_enabled", bool(checked))
+        if hasattr(self, "horizon_worker"):
+            self.horizon_worker.reload_config()
+            QTimer.singleShot(
+                0,
+                lambda: QMetaObject.invokeMethod(self.horizon_worker, "initialize", Qt.QueuedConnection),
+            )
+        if checked:
+            if bool(getattr(self, "is_auto_bortle", True)):
+                QTimer.singleShot(80, self.reset_lp_to_auto)
+        else:
+            self.auto_bortle_estimate = 4
+            self.canvas.auto_bortle_estimate = 4
+            set_config_value("auto_bortle_estimate", 4)
+            if hasattr(self, "slider_light") and bool(getattr(self, "is_auto_bortle", True)):
+                self.slider_light.set_silent_value(4)
+        self.canvas.update()
+
+    def on_milkyway_toggled(self, checked):
+        checked = bool(checked)
+        if checked and (not self._ensure_asset_before_enable(self.chk_enable_milkyway, checked, "milkyway_texture")):
+            checked = False
+        if checked != bool(self.chk_enable_milkyway.isChecked()):
+            self.chk_enable_milkyway.blockSignals(True)
+            self.chk_enable_milkyway.setChecked(checked)
+            self.chk_enable_milkyway.blockSignals(False)
+        self._persist_visibility_state("via_lactia", checked)
+        self.milkyway_overlay_enabled = bool(checked)
+        set_config_value("milkyway_overlay_enabled", bool(self.milkyway_overlay_enabled))
+        self._refresh_milkyway_status_indicator()
+        self.canvas.update()
+
+    def on_planck_dust_toggled(self, checked):
+        checked = bool(checked)
+        if checked and (not self._ensure_asset_before_enable(self.chk_enable_planck_dust, checked, "planck_dust")):
+            checked = False
+        if checked != bool(self.chk_enable_planck_dust.isChecked()):
+            self.chk_enable_planck_dust.blockSignals(True)
+            self.chk_enable_planck_dust.setChecked(checked)
+            self.chk_enable_planck_dust.blockSignals(False)
+        self._persist_visibility_state("pols_planck", checked)
+        self.dust_map_enabled = bool(checked)
+        set_config_value("dust_map_enabled", bool(self.dust_map_enabled))
+        if self.dust_map_enabled and float(getattr(self, "dust_density_strength", 0.0)) <= 0.0 and float(getattr(self, "dust_extinction_strength", 0.0)) <= 0.0:
+            self.dust_extinction_strength = 0.65
+            set_config_value("dust_extinction_strength", float(self.dust_extinction_strength))
+        self._refresh_milkyway_status_indicator()
+        self.canvas.update()
+
+    def on_deep_space_toggled(self, checked):
+        checked = bool(checked)
+        if checked and (not self._ensure_asset_before_enable(self.chk_deep_space, checked, "ngc_catalog")):
+            checked = False
+        if checked != bool(self.chk_deep_space.isChecked()):
+            self.chk_deep_space.blockSignals(True)
+            self.chk_deep_space.setChecked(checked)
+            self.chk_deep_space.blockSignals(False)
+        self._persist_visibility_state("espai_profund", checked)
+        self._ngc_search_entries_cache = None
+        self.build_search_index()
+        self.canvas.update()
+
+    def on_topography_toggled(self, checked):
+        checked = bool(checked)
+        if checked and (not self._ensure_asset_before_enable(self.chk_enable_village, checked, "elevation_dem")):
+            checked = False
+        if checked != bool(self.chk_enable_village.isChecked()):
+            self.chk_enable_village.blockSignals(True)
+            self.chk_enable_village.setChecked(checked)
+            self.chk_enable_village.blockSignals(False)
+        self._persist_visibility_state("topografia", checked)
+        self.canvas.update()
+
+    def _refresh_milkyway_status_indicator(self):
+        if not hasattr(self, "lbl_milkyway_status"):
+            return
+        if not hasattr(self, "canvas"):
+            return
+        status = None
+        renderer = getattr(getattr(self.canvas, "sky_renderer", None), "milkyway_overlay", None)
+        if renderer is not None and hasattr(renderer, "runtime_status"):
+            try:
+                status = renderer.runtime_status()
+            except Exception:
+                status = None
+
+        enabled = bool(getattr(self, "milkyway_overlay_enabled", True))
+        if not enabled:
+            self.lbl_milkyway_status.setText("MW: OFF")
+            return
+
+        if not isinstance(status, dict):
+            self.lbl_milkyway_status.setText("MW: ON (pending)")
+            return
+
+        tex_ok = bool(status.get("texture_loaded", False))
+        dust_req = bool(status.get("dust_requested", False))
+        dust_ok = bool(status.get("dust_loaded", False))
+        opacity = float(status.get("effective_opacity", 0.0))
+        opacity_reason = str(status.get("opacity_reason", ""))
+        rgb_gain = float(status.get("texture_rgb_gain", 1.0))
+        texture_frame = str(status.get("texture_frame", "galactic"))
+        frame_short = "gal" if texture_frame.startswith("gal") else "eq"
+        ra_off = float(status.get("ra_offset_deg", 0.0))
+        lat_flip = bool(status.get("texture_lat_flip", False))
+        lon_flip = bool(status.get("texture_lon_flip", False))
+        flip_txt = ("vf=1" if lat_flip else "vf=0") + (" hf=1" if lon_flip else " hf=0")
+        dust_den = float(status.get("dust_density_strength", 0.0))
+        dust_ext = float(status.get("dust_extinction_strength", 0.0))
+        dust_gain_txt = f"d={dust_den:.2f} e={dust_ext:.2f}"
+        if not tex_ok:
+            self.lbl_milkyway_status.setText("MW: textura NO carregada")
+            return
+        if dust_req:
+            dust_txt = "Planck OK" if dust_ok else "Planck NO"
+        else:
+            dust_txt = "Planck OFF"
+        if opacity <= 1e-4:
+            self.lbl_milkyway_status.setText(
+                f"MW: op=0.00 ({opacity_reason}) g={rgb_gain:.2f} fr={frame_short} off={ra_off:.0f} {flip_txt} {dust_gain_txt} {dust_txt}"
+            )
+            return
+        self.lbl_milkyway_status.setText(
+            f"MW: ON op={opacity:.2f} g={rgb_gain:.2f} fr={frame_short} off={ra_off:.0f} {flip_txt} {dust_gain_txt} {dust_txt}"
+        )
+
+    def set_weather_remote_metno_enabled(self, enabled: bool):
+        enabled = bool(enabled)
+        if enabled and not self.asset_manager.asset_ready("climate_metno"):
+            self._open_asset_onboarding("climate_metno")
+            enabled = self.asset_manager.asset_ready("climate_metno")
+        self.weather_use_remote_metno = enabled
+        set_config_value("weather_use_remote_metno", enabled)
+        if hasattr(self, "weather"):
+            self.weather.set_remote_weather_enabled(enabled)
+            self.weather.set_remote_user_agent(self.asset_manager.get_user_agent())
+        if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+            self.canvas.weather.set_remote_weather_enabled(enabled)
+            self.canvas.weather.set_remote_user_agent(self.asset_manager.get_user_agent())
+        self._refresh_climate_status_indicator()
+
+    def set_weather_cache_enabled(self, enabled: bool):
+        enabled = bool(enabled)
+        self.weather_cache_enabled = enabled
+        set_config_value("weather_cache_enabled", enabled)
+        if hasattr(self, "weather"):
+            self.weather.set_cache_enabled(enabled)
+        if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+            self.canvas.weather.set_cache_enabled(enabled)
+        self._refresh_climate_status_indicator()
+
+    def _active_weather_system(self):
+        if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+            return self.canvas.weather
+        if hasattr(self, "weather"):
+            return self.weather
+        return None
+
+    def _refresh_climate_status_indicator(self):
+        if not hasattr(self, "lbl_climate_fallback") or not hasattr(self, "chk_clima"):
+            return
+        if not bool(self.chk_clima.isChecked()):
+            self.lbl_climate_fallback.hide()
+            self._climate_fallback_since = None
+            self._climate_remote_since = None
+            return
+
+        weather = self._active_weather_system()
+        source = "fallback"
+        reason = ""
+        if weather is not None and hasattr(weather, "get_runtime_status"):
+            try:
+                status = weather.get_runtime_status()
+                source = str(status.get("source", "fallback"))
+                reason = str(status.get("reason", "") or "")
+                if bool(status.get("requires_user_agent", False)):
+                    reason = "missing_user_agent"
+            except Exception:
+                source = "fallback"
+                reason = "status_error"
+        elif weather is None:
+            reason = "weather_missing"
+
+        now_m = time.monotonic()
+        is_remote = source == "remote"
+
+        if is_remote:
+            self._climate_fallback_since = None
+            if self._climate_remote_since is None:
+                self._climate_remote_since = now_m
+            remote_stable_s = now_m - self._climate_remote_since
+            if remote_stable_s >= float(getattr(self, "_climate_remote_hide_delay_s", 1.2)):
+                self.lbl_climate_fallback.hide()
+            return
+
+        # Fallback branch.
+        self._climate_remote_since = None
+        if self._climate_fallback_since is None:
+            self._climate_fallback_since = now_m
+        fallback_stable_s = now_m - self._climate_fallback_since
+        if fallback_stable_s >= float(getattr(self, "_climate_fallback_show_delay_s", 2.5)):
+            self.lbl_climate_fallback.setText(getTraduction("Astro.ClimateFallbackActive", "Real weather unavailable (fallback)"))
+            self.lbl_climate_fallback.setToolTip(reason)
+            self.lbl_climate_fallback.show()
+
+    def get_weather_cache_path(self):
+        if hasattr(self, "canvas") and hasattr(self.canvas, "weather"):
+            return self.canvas.weather.get_cache_path()
+        if hasattr(self, "weather"):
+            return self.weather.get_cache_path()
+        return None
+
+    def _ensure_copernicus_credentials_prompt(self):
+        if bool(get_config_value("copernicus_informed", False)):
+            return
+
+        title = getTraduction("Astro.CopernicusDialogTitle", "Copernicus Climate setup")
+        intro = getTraduction(
+            "Astro.CopernicusDialogIntro",
+            "To enable online climate and aerosol data, create a free CDS account and generate your API key.",
+        )
+        url_text = getTraduction("Astro.CopernicusDialogUrl", "Open guide")
+        key_prompt = getTraduction("Astro.CopernicusDialogKeyPrompt", "Paste your CDS API key")
+        key_ok = getTraduction("Astro.CopernicusDialogSaved", "API key saved in local config.")
+        key_empty = getTraduction("Astro.CopernicusDialogEmpty", "No key entered. Offline fallback will be used.")
+        copernicus_url = "https://cds.climate.copernicus.eu/how-to-api"
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle(title)
+        msg.setText(intro)
+        msg.setInformativeText(copernicus_url)
+        open_btn = msg.addButton(url_text, QMessageBox.ActionRole)
+        enter_btn = msg.addButton(getTraduction("Astro.CopernicusDialogEnterKey", "Enter API key"), QMessageBox.AcceptRole)
+        skip_btn = msg.addButton(getTraduction("Astro.CopernicusDialogSkip", "Skip"), QMessageBox.RejectRole)
+        msg.exec_()
+
+        clicked = msg.clickedButton()
+        if clicked is open_btn:
+            QDesktopServices.openUrl(QUrl(copernicus_url))
+            clicked = enter_btn
+
+        if clicked is enter_btn:
+            current_key = str(get_config_value("copernicus_api_key", "") or "")
+            key, ok = QInputDialog.getText(self, title, key_prompt, text=current_key)
+            key = str(key or "").strip()
+            if ok and key:
+                set_config_value("copernicus_api_key", key)
+                set_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api")
+                QMessageBox.information(self, title, key_ok)
+            else:
+                QMessageBox.information(self, title, key_empty)
+        elif clicked is skip_btn:
+            # Keep offline fallback mode until user enters the key manually.
+            pass
+
+        # The user has already been informed at least once.
+        set_config_value("copernicus_informed", True)
+
+    def reset_lp_to_auto(self):
+        """Action for the reset button: pulls the current satellite estimate."""
+        if not self.horizon_worker: return
+        val = self.horizon_worker.get_bortle_estimate(self.latitude, self.longitude)
+        print(f"[AstroWidget] Resetting LP to auto-estimated Bortle: {val}")
+        self.combo_lp_mode.setCurrentIndex(0) # Switch to Auto mode
+        self.slider_light.set_silent_value(val)
+        self.auto_bortle_estimate = val
+        self.canvas.auto_bortle_estimate = val
+        set_config_value("auto_bortle_estimate", int(val))
+        if hasattr(self.canvas, 'weather'):
+            self.canvas.weather.set_bortle(val)
+        self.canvas.update()
+
+    def update_lp_slider(self, val):
+        if self.is_auto_bortle:
+            self.auto_bortle_estimate = val
+            self.canvas.auto_bortle_estimate = val
+            set_config_value("auto_bortle_estimate", int(val))
+            if hasattr(self.canvas, 'weather'):
+                self.canvas.weather.set_bortle(val)
+        else:
+            # Manual mode: Sliders acts as Magnitude Filter
+            self.magnitude_limit = val / 10.0
+            set_config_value("manual_eye_limit_mag", float(self.magnitude_limit))
+        self.canvas.update()
+
+    def update_magnitude(self, val):
+        # Mag slider 10-200 -> 1.0-20.0
+        self.magnitude_limit = val / 10.0
+        set_config_value("manual_eye_limit_mag", float(self.magnitude_limit))
+        self.canvas.update()
+
+    def build_search_index(self):
+        """Builds a search index of planets and named stars for QCompleter."""
+        self.search_index = {}
+        self.search_lookup = {}
+
+        def register_name(name: str, info: dict) -> None:
+            if not name:
+                return
+            n = str(name).strip()
+            if not n:
+                return
+            self.search_index[n] = info
+            k = self._normalize_search_key(n)
+            if k and k not in self.search_lookup:
+                self.search_lookup[k] = info
+
+        # 1. PLANETS + aliases in supported languages and non-accented variants.
+        planet_aliases = {
+            "sun": ["Sol", "Sun", "Soleil", "Sole"],
+            "moon": ["Lluna", "Luna", "Moon", "Lune"],
+            "mercury": ["Mercuri", "Mercurio", "Mercury", "Mercure"],
+            "venus": ["Venus"],
+            "mars": ["Mart", "Marte", "Mars"],
+            "jupiter": ["Jupiter", "Júpiter"],
+            "saturn": ["Saturn", "Saturno"],
+            "uranus": ["Urà", "Ura", "Urano", "Uranus"],
+            "neptune": ["Neptú", "Neptu", "Neptuno", "Neptune"],
+            "pluto": ["Plutó", "Pluto", "Plutón", "Pluton"],
+        }
+        for key, aliases in planet_aliases.items():
+            canon = aliases[0]
+            info = {"type": "planet", "key": key, "name": canon}
+            for alias in aliases:
+                register_name(alias, info)
+
+        # 2. NAMED STARS
+        if hasattr(self, 'celestial_objects'):
+            for star in self.celestial_objects:
+                name = str(star.get('name', '')).strip()
+                if name and not name.lower().startswith('gaia'):
+                    register_name(name, {"type": "star", "obj": star})
+
+        # Optional search supplement: stars missing from Gaia (very bright / special cases).
+        # Keep this independent from the heavy Gaia runtime dataset.
+        for star_info in self._load_named_star_search_entries():
+            name = str(star_info.get("name", "")).strip()
+            if name:
+                register_name(name, {"type": "star", "obj": star_info})
+
+        # 3. OPENNGC / MESSIER (only when deep-space layer is enabled)
+        if hasattr(self, "chk_deep_space") and bool(self.chk_deep_space.isChecked()):
+            for obj in self._load_ngc_search_entries():
+                info = {"type": "ngc", "obj": obj, "name": obj.common_name or obj.name}
+                try:
+                    from TerraLab.astro.ngc_catalog import iter_ngc_aliases
+
+                    for alias in iter_ngc_aliases(obj):
+                        register_name(alias, info)
+                except Exception as exc:
+                    print(f"[AstroWidget] Warning: failed to register NGC aliases for {obj.name}: {exc}")
+
+        # 4. SETUP QCOMPLETER
+        names = sorted(list(self.search_index.keys()), key=lambda x: x.lower())
+        self._attach_search_completer(names)
+        print(f"[AstroWidget] Search index built: {len(self.search_index)} objects.")
+
+    def _attach_search_completer(self, names):
+        if not hasattr(self, "txt_search"):
+            return
+        from PyQt5.QtWidgets import QCompleter
+        from PyQt5.QtCore import Qt
+
+        completer = QCompleter(names, self)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)
+        self.txt_search.setCompleter(completer)
+        completer.activated[str].connect(self.on_search_triggered)
+        self.txt_search.setEnabled(True)
+
+    def _load_named_star_search_entries(self):
+        cached = getattr(self, "_named_star_search_entries_cache", None)
+        if cached is not None:
+            return cached
+
+        path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", "data", "stars", "no_gaia_stars.json")
+        )
+        if not os.path.isfile(path):
+            self._named_star_search_entries_cache = []
+            return self._named_star_search_entries_cache
+
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+        except Exception as exc:
+            print(f"[AstroWidget] Named-star search supplement skipped: {exc}")
+            self._named_star_search_entries_cache = []
+            return self._named_star_search_entries_cache
+
+        rows = []
+        names = []
+        if isinstance(payload, dict):
+            rows = payload.get("data") or []
+            metadata = payload.get("metadata") or []
+            for item in metadata:
+                if isinstance(item, dict):
+                    names.append(str(item.get("name", "")))
+        elif isinstance(payload, list):
+            rows = payload
+
+        if not rows or not names:
+            self._named_star_search_entries_cache = []
+            return self._named_star_search_entries_cache
+
+        idx = {name: i for i, name in enumerate(names)}
+        name_i = idx.get("designation")
+        ra_i = idx.get("ra")
+        dec_i = idx.get("dec")
+        sid_i = idx.get("source_id")
+        if name_i is None or ra_i is None or dec_i is None:
+            self._named_star_search_entries_cache = []
+            return self._named_star_search_entries_cache
+
+        out = []
+        for row in rows:
+            if not isinstance(row, (list, tuple)):
+                continue
+            if max(name_i, ra_i, dec_i) >= len(row):
+                continue
+            try:
+                name = str(row[name_i] or "").strip()
+                if (not name) or name.lower().startswith("gaia dr3 "):
+                    continue
+                ra = float(row[ra_i])
+                dec = float(row[dec_i])
+                if not math.isfinite(ra) or not math.isfinite(dec):
+                    continue
+                info = {"name": name, "ra": ra, "dec": dec}
+                if sid_i is not None and sid_i < len(row):
+                    try:
+                        info["source_id"] = int(row[sid_i])
+                    except Exception:
+                        pass
+                out.append(info)
+            except Exception:
+                continue
+
+        self._named_star_search_entries_cache = out
+        return self._named_star_search_entries_cache
+
+    def _load_ngc_search_entries(self):
+        cached = getattr(self, "_ngc_search_entries_cache", None)
+        if cached is not None:
+            return cached
+
+        path = getattr(self, "_astro_ngc_catalog_path", "")
+        if not path:
+            cfg_path = str(get_config_value("ngc_catalog_path", "") or "").strip()
+            if cfg_path and os.path.isfile(cfg_path):
+                path = cfg_path
+        if not path:
+            runtime_path = Path(self.runtime_layout.get("data_ngc", get_base_dir())) / "openngc_catalog.csv"
+            if runtime_path.exists():
+                path = str(runtime_path)
+            else:
+                path = os.path.abspath(
+                    os.path.join(os.path.dirname(__file__), "..", "data", "sky", "openngc_catalog.csv")
+                )
+        if not os.path.isfile(path):
+            self._ngc_search_entries_cache = []
+            return self._ngc_search_entries_cache
+
+        try:
+            from TerraLab.astro.ngc_catalog import load_ngc_catalog
+
+            self._ngc_search_entries_cache = load_ngc_catalog(path)
+        except Exception as exc:
+            print(f"[AstroWidget] Warning: could not load OpenNGC search entries: {exc}")
+            self._ngc_search_entries_cache = []
+        return self._ngc_search_entries_cache
+
+    @staticmethod
+    def _normalize_search_key(text: str) -> str:
+        lowered = (text or "").strip().lower()
+        folded = unicodedata.normalize("NFKD", lowered)
+        return "".join(ch for ch in folded if not unicodedata.combining(ch))
+
+    def _prepare_skyfield_cache_for_search(self):
+        """Force a fresh cache sample so planet search can resolve current Alt/Az."""
+        if not SKYFIELD_AVAILABLE or not hasattr(self, 'canvas') or not hasattr(self, 'eph'):
+            return None
+
+        try:
+            local_hour = float(self.get_current_hour())
+            sim_day = int(self.manual_day)
+            sim_year = int(getattr(self, 'manual_year', datetime.now().year))
+            tz_offset = self.canvas.get_simulated_tz_offset(sim_day)
+            dt_utc = (datetime(sim_year, 1, 1) + timedelta(days=sim_day, hours=local_hour - tz_offset)).replace(tzinfo=timezone.utc)
+            ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
+            day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+            self.canvas.update_skyfield_cache(ut_hour, day_of_year_utc)
+        except Exception as ex:
+            print(f"[AstroWidget] Search cache update failed: {ex}")
+
+        sf_cache = getattr(self.canvas, '_sf_cache', None)
+        if isinstance(sf_cache, dict):
+            return sf_cache.get('data')
+        return None
+
+    def on_search_triggered(self, text_override=None):
+        raw = text_override if isinstance(text_override, str) else self.txt_search.text()
+        text = str(raw).strip()
+        if not text:
+            return
+
+        info = self.search_index.get(text)
+        if not info:
+            norm = self._normalize_search_key(text)
+            info = getattr(self, 'search_lookup', {}).get(norm)
+            if info is None:
+                for k in sorted(getattr(self, 'search_lookup', {}).keys()):
+                    if norm and norm in k:
+                        info = self.search_lookup[k]
+                        break
+
+        if info:
+            self.center_on_object(info)
+        else:
+            msg = getTraduction("Astro.SearchNotFound", "Object '{name}' not found in index.").format(name=text)
+            print(f"[AstroWidget] {msg}")
+
+    def center_on_object(self, info):
+        """Snap the searched object into view and mark it immediately."""
+        az = alt = None
+
+        if info["type"] == "star":
+            star = info["obj"]
+            az, alt = self.get_horizontal_coords(star['ra'], star['dec'])
+            selected_payload = {"kind": "star", "obj": star, "info": info}
+        elif info["type"] == "planet":
+            selected_payload = {"kind": "planet", "obj": info.get("obj"), "info": info}
+            data = self._prepare_skyfield_cache_for_search()
+            if data:
+                p_key = self._normalize_search_key(info.get('key', ''))
+                target_name = self._normalize_search_key(info.get('name', ''))
+
+                if p_key == 'sun' or target_name == 'sol':
+                    sun = data.get('sun', {})
+                    az = sun.get('az')
+                    alt = sun.get('alt')
+                elif p_key == 'moon' or target_name in ('lluna', 'luna', 'moon'):
+                    moon = data.get('moon', {})
+                    az = moon.get('az')
+                    alt = moon.get('alt')
+                else:
+                    for p in data.get('planets', []):
+                        p_key_low = self._normalize_search_key(p.get('key', ''))
+                        p_name_low = self._normalize_search_key(p.get('name', ''))
+                        if p_key_low.startswith(p_key) or p_name_low == target_name:
+                            az = p.get('az')
+                            alt = p.get('alt')
+                            break
+        elif info["type"] == "ngc":
+            obj = info["obj"]
+            az, alt = self.get_horizontal_coords(obj.ra_deg, obj.dec_deg)
+            selected_payload = {"kind": "ngc", "obj": obj, "info": info}
+        else:
+            selected_payload = {"kind": str(info.get("type", "object")), "obj": info.get("obj"), "info": info}
+
+        if az is not None and alt is not None:
+            az %= 360.0
+            self.target_azimuth = None
+            self.target_elevation = None
+            if hasattr(self, "anim_timer"):
+                self.anim_timer.stop()
+            if hasattr(self.canvas, "_set_selected_target"):
+                self.canvas._set_selected_target(selected_payload)
+            self.canvas.azimuth_offset = az
+            self.canvas.elevation_angle = alt
+            self.canvas.dragging = False
+            if self.canvas.scope_mode_enabled():
+                self.canvas.scope_controller.set_center((alt, az))
+
+            if alt < -5 and hasattr(self.canvas, 'hint_overlay'):
+                hint = getTraduction("Astro.ObjectBelowHorizon", "Object below horizon ({alt:.1f} deg)").format(alt=alt)
+                self.canvas.hint_overlay.show_hint(hint)
+
+            self.canvas.update()
+
+    def get_horizontal_coords(self, ra, dec):
+        """Helper to convert RA/Dec to Az/Alt for current time/location."""
+        h = self.time_bar.current_hour 
+        day = self.manual_day
+        lat = self.latitude
+        lon = self.longitude
+        
+        lst = (100.0 + day * 0.9856 + h * 15.0 + lon) % 360
+        ha = (lst - ra)
+        
+        lat_rad = math.radians(lat)
+        ha_rad = math.radians(ha)
+        dec_rad = math.radians(dec)
+        
+        sin_lat = math.sin(lat_rad)
+        cos_lat = math.cos(lat_rad)
+        sin_dec = math.sin(dec_rad)
+        cos_dec = math.cos(dec_rad)
+        
+        sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * math.cos(ha_rad)
+        sin_alt = max(-1.0, min(1.0, sin_alt))
+        alt_deg = math.degrees(math.asin(sin_alt))
+        
+        cos_alt = math.cos(math.radians(alt_deg))
+        cos_az_num = sin_dec - sin_alt * sin_lat
+        cos_az_den = cos_alt * cos_lat + 1e-10
+        cos_az = max(-1.0, min(1.0, cos_az_num / cos_az_den))
+        az_deg = math.degrees(math.acos(cos_az))
+        
+        if math.sin(ha_rad) > 0:
+            az_deg = 360.0 - az_deg
+            
+        return az_deg, alt_deg
+
+    def run_smoke_scenes(self):
+        """Run lightweight render smoke scenes and print diagnostics only."""
+        if not hasattr(self, "canvas"):
+            return
+
+        c = self.canvas
+        prev = {
+            "zoom": float(c.zoom_level),
+            "az": float(c.azimuth_offset),
+            "el": float(c.elevation_angle),
+            "scope_enabled": bool(c.scope_mode_enabled()),
+            "scope_center": tuple(c.scope_controller.center) if getattr(c.scope_controller, "center", None) else None,
+            "use_real_time": bool(getattr(self, "use_real_time", False)),
+            "manual_hour": float(getattr(self, "manual_hour", 22.0)),
+            "timebar_hour": float(getattr(self.time_bar, "current_hour", 22.0)),
+        }
+
+        scenes = [
+            {"name": "normal", "zoom": 1.0, "az": 180.0, "el": 35.0, "scope": False},
+            {"name": "telescope", "zoom": 12.0, "az": 180.0, "el": 45.0, "scope": True},
+            {"name": "high_density", "zoom": 24.0, "az": 180.0, "el": 60.0, "scope": False},
+        ]
+
+        print("[SmokeScenes] start")
+        try:
+            # Force night context for meaningful star counters.
+            self.use_real_time = False
+            self.manual_hour = 22.0
+            self.time_bar.set_time(22.0)
+            for scene in scenes:
+                c.zoom_level = float(scene["zoom"])
+                c.azimuth_offset = float(scene["az"])
+                c.elevation_angle = float(scene["el"])
+                c.set_scope_enabled(bool(scene["scope"]))
+                if scene["scope"] and getattr(c.scope_controller, "center", None) is None:
+                    c.scope_controller.set_center((float(scene["el"]), float(scene["az"])))
+
+                c.debug_render_metrics = True
+                c.update()
+                QApplication.processEvents()
+                c.repaint()
+                QApplication.processEvents()
+
+                stars_count = c._scope_hud_star_count() if c.scope_mode_enabled() else c._visible_star_count_raw()
+                snap = c.scene_diagnostics.snapshot()
+                fov = 100.0 / max(0.001, float(c.zoom_level))
+                print(
+                    f"[SmokeScenes] {scene['name']} viewport={c.width()}x{c.height()} "
+                    f"zoom={c.zoom_level:.2f} fov={fov:.2f} cam_ra={c.azimuth_offset % 360.0:.2f} "
+                    f"cam_dec={c.elevation_angle:.2f} stars_hud={stars_count} "
+                    f"total_in_view={snap.counters.get('total_in_view', 0)} "
+                    f"after_mag={snap.counters.get('after_mag_cut', 0)} "
+                    f"after_bucket={snap.counters.get('after_bucket', 0)} "
+                    f"avg_radius={snap.counters.get('avg_radius', 0)} "
+                    f"ms_stars_renderer={snap.timings_ms.get('renderer_stars', 0.0):.2f}"
+                )
+        finally:
+            c.zoom_level = prev["zoom"]
+            c.azimuth_offset = prev["az"]
+            c.elevation_angle = prev["el"]
+            c.set_scope_enabled(prev["scope_enabled"])
+            if prev["scope_center"] is not None:
+                c.scope_controller.set_center(prev["scope_center"])
+            self.use_real_time = prev["use_real_time"]
+            self.manual_hour = prev["manual_hour"]
+            self.time_bar.set_time(prev["timebar_hour"])
+            c.update()
+            QApplication.processEvents()
+            print("[SmokeScenes] done")
+
+    def toggle_controls(self):
+        if not hasattr(self, 'panels_widget'): return
+        
+        # Current state based on panel visibility
+        is_visible = self.panels_widget.isVisible() 
+        should_hide = is_visible # If visible, we want to hide
+
+        # Toggle Panels
+        self.panels_widget.setVisible(not should_hide)
+        
+        # Update styling/transparency
+        if should_hide:
+            # COLLAPSED STATE: Transparent background, no border
+            # Only time bar is visible (row 2)
+            self.frame_controls.setStyleSheet("QFrame { background: transparent; border: none; }")
+            self.time_bar.setVisible(True) # Keep timebar
+            self.btn_collapse.setText("+") 
+        else:
+            # EXPANDED STATE: Restore Theme Style
+            self.update_custom_theme()
+            self.btn_collapse.setText("-")
+            
+        # Force layout update to recalculate geometry of frame_controls
+        self.layout().activate()
+        QApplication.processEvents()
+        
+        # Manually update button position
+        self._update_button_pos()
+
+    def _update_button_pos(self):
+        if hasattr(self, 'frame_controls') and hasattr(self, 'btn_collapse'):
+            rect = self.frame_controls.geometry()
+            state = {
+                "panel_x": int(rect.x()),
+                "panel_y": int(rect.y()),
+                "panel_w": int(rect.width()),
+                "button_w": int(self.btn_collapse.width()),
+                "button_h": int(self.btn_collapse.height()),
+                "margin_right": 20,
+                "overlap_top": 1,
+            }
+            telescope_on_resize(state)
+            bx, by = state.get("collapse_button_pos", (rect.right(), rect.top()))
+            self.btn_collapse.move(bx, by)
+            self.btn_collapse.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_startup_placeholder()
+        # Defer position update to ensure layout geometry is final
+        QTimer.singleShot(0, self._update_button_pos)
+
+    def get_current_hour(self):
+        if self.use_real_time:
+            n = datetime.now()
+            return n.hour + n.minute/60.0
+        return self.manual_hour
+"""  """
+
+
+
+

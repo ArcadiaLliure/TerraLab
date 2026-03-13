@@ -10,6 +10,7 @@ import os
 import numpy as np
 import rasterio
 from rasterio.windows import from_bounds
+from rasterio.crs import CRS
 import threading
 import math
 
@@ -50,7 +51,7 @@ class LightPollutionSampler:
         Uses a quick window extraction from the DVNL file.
         """
         if not self.raster_path or not os.path.exists(self.raster_path):
-            return 18.0, 8 # Brighter default if missing file
+            return 21.0, 4
 
         try:
             # 1. Try Cache First
@@ -93,10 +94,12 @@ class LightPollutionSampler:
             with RASTERIO_LOCK:
                 with rasterio.open(self.raster_path) as src:
                     from pyproj import Transformer
-                    trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+                    src_crs = self._resolve_src_crs(src)
+                    is_geographic = bool(getattr(src_crs, "is_geographic", False))
+                    trans = Transformer.from_crs("EPSG:4326", src_crs, always_xy=True)
                     x_cen, y_cen = trans.transform(lon, lat)
                     
-                    if src.crs.is_geographic:
+                    if is_geographic:
                         r_proj = self.radius_km / 111.32
                     else:
                         r_proj = self.radius_km * 1000.0
@@ -108,9 +111,33 @@ class LightPollutionSampler:
                     return sqm, bortle
                 
         except Exception as e:
-            # If everything fails, don't return 4 (Suburban), return something that looks like the real area
-            # Or just return 18.0 (Bortle 8).
-            return 18.0, 8
+            print(f"[LPSampler] estimate_zenith_sqm error: {e}")
+            return 21.0, 4
+
+    @staticmethod
+    def _guess_missing_crs(src) -> CRS:
+        try:
+            b = src.bounds
+            x_span = abs(float(b.right) - float(b.left))
+            y_span = abs(float(b.top) - float(b.bottom))
+            max_abs = max(abs(float(b.left)), abs(float(b.right)), abs(float(b.top)), abs(float(b.bottom)))
+            # Likely geographic degrees.
+            if max_abs <= 360.0 and x_span <= 360.0 and y_span <= 180.0:
+                return CRS.from_epsg(4326)
+            # Likely projected metric world map (common in DVNL products).
+            if max_abs <= 21000000.0 and x_span > 1000000.0 and y_span > 1000000.0:
+                return CRS.from_epsg(3857)
+        except Exception:
+            pass
+        # Conservative default.
+        return CRS.from_epsg(4326)
+
+    def _resolve_src_crs(self, src) -> CRS:
+        if src.crs is not None:
+            return src.crs
+        guessed = self._guess_missing_crs(src)
+        print(f"[LPSampler] Warning: raster without CRS. Using guessed CRS={guessed}.")
+        return guessed
 
     def _process_array_to_sqm(self, arr: np.ndarray) -> tuple[float, int]:
         try:
@@ -179,12 +206,13 @@ class LightPollutionSampler:
             with RASTERIO_LOCK:
                 with rasterio.open(self.raster_path) as src:
                     from pyproj import Transformer
-                    self._src_crs = src.crs
-                    self._is_geographic = src.crs.is_geographic
+                    resolved_crs = self._resolve_src_crs(src)
+                    self._src_crs = resolved_crs
+                    self._is_geographic = bool(getattr(resolved_crs, "is_geographic", False))
                     
                     # Atomically update transformers
-                    new_trans = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
-                    new_utm_trans = Transformer.from_crs(input_crs, src.crs, always_xy=True)
+                    new_trans = Transformer.from_crs("EPSG:4326", resolved_crs, always_xy=True)
+                    new_utm_trans = Transformer.from_crs(input_crs, resolved_crs, always_xy=True)
                     
                     x_cen, y_cen = new_trans.transform(lon, lat)
                     
