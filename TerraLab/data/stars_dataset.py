@@ -1,4 +1,4 @@
-"""Runtime access for packaged stars dataset (ZST/ECSV/NPY/JSON -> NPZ in APPDATA)."""
+"""Runtime access for packaged stars dataset (ZST/ECSV/NPY/JSON -> NPY in APPDATA)."""
 
 from __future__ import annotations
 
@@ -156,7 +156,7 @@ def get_runtime_catalog_source_info() -> Dict[str, object]:
     return info
 
 
-def log_startup_catalog_loaded(runtime_npz: str, rows: int, mag_min: float, mag_max: float) -> None:
+def log_startup_catalog_loaded(runtime_catalog_path: str, rows: int, mag_min: float, mag_max: float) -> None:
     """Emit a startup log line that clearly states which catalog source was loaded."""
     info = get_runtime_catalog_source_info()
     source = str(info.get("source", "unknown"))
@@ -165,7 +165,7 @@ def log_startup_catalog_loaded(runtime_npz: str, rows: int, mag_min: float, mag_
         "startup_catalog "
         f"source={source} "
         f"source_path='{source_path}' "
-        f"runtime_npz='{runtime_npz}' "
+        f"runtime_catalog='{runtime_catalog_path}' "
         f"rows={int(rows)} "
         f"mag_min={float(mag_min):.6f} "
         f"mag_max={float(mag_max):.6f}"
@@ -211,21 +211,25 @@ def _runtime_npz_to_arrays(npz_path: Path) -> Dict[str, np.ndarray]:
     return arrays
 
 
-def _decompress_zst_to_npz(zst_path: Path, npz_path: Path) -> None:
+def _decompress_zst_to_file(zst_path: Path, out_path: Path) -> None:
     if zstd is None:
         raise RuntimeError(
             "zstandard is required to unpack stars_catalog.zst. Install with: pip install zstandard"
         )
 
-    npz_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_out = npz_path.with_suffix(npz_path.suffix + ".tmp")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_out = out_path.with_suffix(out_path.suffix + ".tmp")
 
     dctx = zstd.ZstdDecompressor()
     with zst_path.open("rb") as src, tmp_out.open("wb") as dst:
         with dctx.stream_reader(src) as reader:
             shutil.copyfileobj(reader, dst, length=1024 * 1024)
 
-    tmp_out.replace(npz_path)
+    tmp_out.replace(out_path)
+
+
+def _decompress_zst_to_npz(zst_path: Path, npz_path: Path) -> None:
+    _decompress_zst_to_file(zst_path, npz_path)
 
 
 def _remove_file_if_exists(path: Path) -> None:
@@ -393,6 +397,12 @@ def _write_structured_npy(npy_path: Path, arrays: Dict[str, np.ndarray]) -> None
     tmp_out.replace(npy_path)
 
 
+def _ensure_runtime_npy_from_arrays(npy_path: Path, arrays: Dict[str, np.ndarray]) -> None:
+    if len(arrays.get("ra", [])) <= 0:
+        raise ValueError("Empty arrays cannot be written to runtime NPY.")
+    _write_structured_npy(npy_path, arrays)
+
+
 def _read_structured_npy(path: Path) -> Dict[str, np.ndarray] | None:
     try:
         arr = np.load(path, allow_pickle=False)
@@ -477,7 +487,7 @@ def _read_ecsv_columns(path: Path) -> Dict[str, np.ndarray]:
     return {k: np.asarray(v) for k, v in cols.items()}
 
 
-def _build_from_ecsv(stars_dir: Path, npz_path: Path) -> bool:
+def _build_from_ecsv(stars_dir: Path, runtime_npy_path: Path) -> bool:
     ecsv_files = sorted(stars_dir.glob("*.ecsv"))
     if not ecsv_files:
         _source_log(f"source=ecsv miss no *.ecsv files in '{stars_dir}'")
@@ -499,9 +509,9 @@ def _build_from_ecsv(stars_dir: Path, npz_path: Path) -> bool:
     merged = _concat_chunks(chunks)
     if len(merged.get("ra", [])) <= 0:
         return False
-    _write_npz(npz_path, merged)
+    _ensure_runtime_npy_from_arrays(runtime_npy_path, merged)
     _source_log(
-        f"source=ecsv stars_dir='{stars_dir}' -> runtime_npz='{npz_path}' "
+        f"source=ecsv stars_dir='{stars_dir}' -> runtime_npy='{runtime_npy_path}' "
         f"rows={len(merged['ra'])}"
     )
     return True
@@ -575,23 +585,22 @@ def _read_gaia_json(stars_dir: Path) -> Dict[str, np.ndarray] | None:
     return out
 
 
-def _build_from_json(stars_dir: Path, npz_path: Path, npy_path: Path) -> bool:
+def _build_from_json(stars_dir: Path, runtime_npy_path: Path) -> bool:
     raw = _read_gaia_json(stars_dir)
     if raw is None:
         return False
     arrays = _normalize_arrays(raw)
     if len(arrays.get("ra", [])) <= 0:
         return False
-    _remove_file_if_exists(npy_path)
-    _write_npz(npz_path, arrays)
+    _ensure_runtime_npy_from_arrays(runtime_npy_path, arrays)
     _source_log(
         f"source=json fallback='{JSON_FALLBACK_NAME}' stars_dir='{stars_dir}' "
-        f"-> runtime_npz='{npz_path}' rows={len(arrays['ra'])}"
+        f"-> runtime_npy='{runtime_npy_path}' rows={len(arrays['ra'])}"
     )
     return True
 
 
-def _build_from_npy_sources(stars_dir: Path, npz_path: Path, runtime_npy_path: Path) -> bool:
+def _build_from_npy_sources(stars_dir: Path, runtime_npy_path: Path) -> bool:
     npy_candidates = [
         runtime_npy_path,
         stars_dir / NPY_NAME,
@@ -608,12 +617,10 @@ def _build_from_npy_sources(stars_dir: Path, npz_path: Path, runtime_npy_path: P
         arrays = _normalize_arrays(raw)
         if len(arrays.get("ra", [])) <= 0:
             continue
-        _write_npz(npz_path, arrays)
+        _ensure_runtime_npy_from_arrays(runtime_npy_path, arrays)
         _source_log(
-            f"source=npy path='{path}' -> runtime_npz='{npz_path}' rows={len(arrays['ra'])}"
+            f"source=npy path='{path}' -> runtime_npy='{runtime_npy_path}' rows={len(arrays['ra'])}"
         )
-        if path.resolve() != runtime_npy_path.resolve():
-            _remove_file_if_exists(runtime_npy_path)
         return True
 
     try:
@@ -629,125 +636,118 @@ def _build_from_npy_sources(stars_dir: Path, npz_path: Path, runtime_npy_path: P
     arrays = _normalize_arrays(split_raw)
     if len(arrays.get("ra", [])) <= 0:
         return False
-    _write_npz(npz_path, arrays)
-    _remove_file_if_exists(runtime_npy_path)
+    _ensure_runtime_npy_from_arrays(runtime_npy_path, arrays)
     _source_log(
-        f"source=split_npy stars_dir='{stars_dir}' -> runtime_npz='{npz_path}' rows={len(arrays['ra'])}"
+        f"source=split_npy stars_dir='{stars_dir}' -> runtime_npy='{runtime_npy_path}' rows={len(arrays['ra'])}"
     )
     return True
 
 
 def ensure_stars_dataset() -> str:
-    """Ensure `%APPDATA%/TerraLab/data/stars_catalog.npz` exists and return it."""
-    npz_path = _runtime_npz_path()
+    """Ensure `%APPDATA%/TerraLab/data/stars_catalog.npy` exists and return it."""
     runtime_npy_path = _runtime_npy_path()
+    runtime_npz_path = _runtime_npz_path()
     runtime_zst_path = _runtime_zst_path()
     meta_path = _runtime_meta_path()
     stars_dir = _packaged_stars_dir()
 
-    if runtime_zst_path.exists():
-        zst_sig = _path_signature(runtime_zst_path)
-        meta = _read_runtime_meta(meta_path)
-        cached_sig = meta.get("zst_signature")
-        if npz_path.exists() and npz_path.is_file() and cached_sig == zst_sig:
-            _remove_file_if_exists(runtime_npy_path)
-            _source_log(f"source=runtime_cache mode=runtime_zst runtime_npz='{npz_path}'")
-            return str(npz_path)
-        try:
-            _decompress_zst_to_npz(runtime_zst_path, npz_path)
-            _remove_file_if_exists(runtime_npy_path)
-            _write_runtime_meta(
-                meta_path,
-                {
-                    "source": "runtime_zst",
-                    "source_path": str(runtime_zst_path),
-                    "source_signature": zst_sig,
-                    "zst_signature": zst_sig,
-                    "updated_at": datetime.now().isoformat(timespec="seconds"),
-                },
-            )
-            _source_log(
-                f"source=runtime_zst path='{runtime_zst_path}' -> runtime_npz='{npz_path}'"
-            )
-            return str(npz_path)
-        except Exception as exc:
-            _source_log(f"source=runtime_zst failed path='{runtime_zst_path}' error='{exc}'")
-
-    # Fast-path: if runtime cache already exists, avoid packaged-source probing/logging.
-    if npz_path.exists() and npz_path.is_file():
-        _remove_file_if_exists(runtime_npy_path)
-        meta = _read_runtime_meta(meta_path)
-        if not isinstance(meta, dict) or not meta.get("source"):
-            _write_runtime_meta(
-                meta_path,
-                _build_meta_payload(
-                    source="runtime_cache",
-                    source_path=str(npz_path),
-                ),
-            )
-        _source_log(f"source=runtime_cache runtime_npz='{npz_path}'")
-        return str(npz_path)
-
-    zst_path = _packaged_zst_path()
-    if zst_path.exists():
-        zst_sig = _path_signature(zst_path)
-        meta = _read_runtime_meta(meta_path)
-        cached_sig = meta.get("zst_signature")
-        if npz_path.exists() and npz_path.is_file() and cached_sig == zst_sig:
-            _remove_file_if_exists(runtime_npy_path)
-            _source_log(f"source=runtime_cache mode=zst runtime_npz='{npz_path}'")
-            return str(npz_path)
-        try:
-            _decompress_zst_to_npz(zst_path, npz_path)
-            _remove_file_if_exists(runtime_npy_path)
-            _write_runtime_meta(
-                meta_path,
-                {
-                    "source": "zst",
-                    "source_path": str(zst_path),
-                    "source_signature": zst_sig,
-                    "zst_signature": zst_sig,
-                    "updated_at": datetime.now().isoformat(timespec="seconds"),
-                },
-            )
-            _source_log(
-                f"source=zst path='{zst_path}' -> runtime_npz='{npz_path}'"
-            )
-            return str(npz_path)
-        except Exception as exc:
-            # Continue to local fallbacks (NPY/ECSV/JSON) if ZST path is unusable.
-            _source_log(f"source=zst failed path='{zst_path}' error='{exc}' -> trying fallbacks")
-    else:
-        _source_log(f"source=zst miss file not found '{zst_path}'")
-
-    packaged_npz = _packaged_npz_path()
-    if packaged_npz.exists():
-        npz_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(packaged_npz, npz_path)
-        _remove_file_if_exists(runtime_npy_path)
+    def _persist_npy(arrays: Dict[str, np.ndarray], source: str, source_path: str) -> str:
+        _ensure_runtime_npy_from_arrays(runtime_npy_path, arrays)
         _write_runtime_meta(
             meta_path,
             _build_meta_payload(
-                source="packaged_npz",
-                source_path=str(packaged_npz),
+                source=source,
+                source_path=source_path,
             ),
         )
-        _source_log(f"source=packaged_npz path='{packaged_npz}' -> runtime_npz='{npz_path}'")
-        return str(npz_path)
-    _source_log(f"source=packaged_npz miss file not found '{packaged_npz}'")
+        _source_log(f"source={source} path='{source_path}' -> runtime_npy='{runtime_npy_path}'")
+        return str(runtime_npy_path)
 
-    if _build_from_npy_sources(stars_dir, npz_path, runtime_npy_path):
-        npy_source_path = str(runtime_npy_path if runtime_npy_path.exists() else stars_dir)
+    if runtime_npy_path.exists() and runtime_npy_path.is_file():
+        _write_runtime_meta(
+            meta_path,
+            _build_meta_payload(
+                source="runtime_cache",
+                source_path=str(runtime_npy_path),
+            ),
+        )
+        _source_log(f"source=runtime_cache runtime_npy='{runtime_npy_path}'")
+        return str(runtime_npy_path)
+
+    if runtime_npz_path.exists() and runtime_npz_path.is_file():
+        try:
+            arrays = _runtime_npz_to_arrays(runtime_npz_path)
+            out = _persist_npy(arrays, "runtime_npz_migrated", str(runtime_npz_path))
+            _remove_file_if_exists(runtime_npz_path)
+            return out
+        except Exception as exc:
+            _source_log(f"source=runtime_npz_migrated failed path='{runtime_npz_path}' error='{exc}'")
+
+    if runtime_zst_path.exists() and runtime_zst_path.is_file():
+        tmp_unpack = runtime_npy_path.with_suffix(".zst.unpack.tmp")
+        try:
+            _decompress_zst_to_file(runtime_zst_path, tmp_unpack)
+            raw = _read_structured_npy(tmp_unpack)
+            if raw is not None:
+                arrays = _normalize_arrays(raw)
+            else:
+                arrays = _runtime_npz_to_arrays(tmp_unpack)
+            out = _persist_npy(arrays, "runtime_zst", str(runtime_zst_path))
+            _remove_file_if_exists(tmp_unpack)
+            return out
+        except Exception as exc:
+            _remove_file_if_exists(tmp_unpack)
+            _source_log(f"source=runtime_zst failed path='{runtime_zst_path}' error='{exc}'")
+
+    packaged_npy = stars_dir / NPY_NAME
+    if packaged_npy.exists() and packaged_npy.is_file():
+        try:
+            raw = _read_structured_npy(packaged_npy)
+            if raw is not None:
+                arrays = _normalize_arrays(raw)
+                return _persist_npy(arrays, "packaged_npy", str(packaged_npy))
+        except Exception as exc:
+            _source_log(f"source=packaged_npy failed path='{packaged_npy}' error='{exc}'")
+
+    packaged_npz = _packaged_npz_path()
+    if packaged_npz.exists() and packaged_npz.is_file():
+        try:
+            arrays = _runtime_npz_to_arrays(packaged_npz)
+            return _persist_npy(arrays, "packaged_npz_migrated", str(packaged_npz))
+        except Exception as exc:
+            _source_log(f"source=packaged_npz_migrated failed path='{packaged_npz}' error='{exc}'")
+
+    zst_path = _packaged_zst_path()
+    if zst_path.exists() and zst_path.is_file():
+        tmp_unpack = runtime_npy_path.with_suffix(".packaged_zst.unpack.tmp")
+        try:
+            _decompress_zst_to_file(zst_path, tmp_unpack)
+            raw = _read_structured_npy(tmp_unpack)
+            if raw is not None:
+                arrays = _normalize_arrays(raw)
+            else:
+                arrays = _runtime_npz_to_arrays(tmp_unpack)
+            out = _persist_npy(arrays, "packaged_zst", str(zst_path))
+            _remove_file_if_exists(tmp_unpack)
+            return out
+        except Exception as exc:
+            _remove_file_if_exists(tmp_unpack)
+            _source_log(f"source=packaged_zst failed path='{zst_path}' error='{exc}'")
+    else:
+        _source_log(f"source=packaged_zst miss file not found '{zst_path}'")
+
+    if _build_from_npy_sources(stars_dir, runtime_npy_path):
         _write_runtime_meta(
             meta_path,
             _build_meta_payload(
                 source="npy_fallback",
-                source_path=npy_source_path,
+                source_path=str(runtime_npy_path),
             ),
         )
-        return str(npz_path)
+        _source_log(f"source=npy_fallback runtime_npy='{runtime_npy_path}'")
+        return str(runtime_npy_path)
 
-    if _build_from_ecsv(stars_dir, npz_path):
+    if _build_from_ecsv(stars_dir, runtime_npy_path):
         _write_runtime_meta(
             meta_path,
             _build_meta_payload(
@@ -755,9 +755,9 @@ def ensure_stars_dataset() -> str:
                 source_path=str(stars_dir),
             ),
         )
-        return str(npz_path)
+        return str(runtime_npy_path)
 
-    if _build_from_json(stars_dir, npz_path, runtime_npy_path):
+    if _build_from_json(stars_dir, runtime_npy_path):
         _write_runtime_meta(
             meta_path,
             _build_meta_payload(
@@ -765,62 +765,36 @@ def ensure_stars_dataset() -> str:
                 source_path=str(stars_dir / JSON_FALLBACK_NAME),
             ),
         )
-        return str(npz_path)
+        return str(runtime_npy_path)
 
     _source_log(f"source=none no dataset source found in stars_dir='{stars_dir}'")
     raise FileNotFoundError(
         "No stars dataset source found. Expected one of: "
-        f"{ZST_NAME}, {NPY_NAME}/gaia_cache_*.npy, *.ecsv, {JSON_FALLBACK_NAME} "
+        f"{NPY_NAME}, {ZST_NAME}, gaia_cache_*.npy, *.ecsv, {JSON_FALLBACK_NAME} "
         f"in '{stars_dir}'."
     )
 
-
-def _pick_first(npz_obj, keys):
-    for key in keys:
-        if key in npz_obj:
-            return npz_obj[key]
-    return None
-
-
 def load_stars_dataset(npz_path: str | None = None) -> Dict[str, np.ndarray]:
-    """Load stars dataset arrays from ensured runtime NPZ."""
+    """Load stars dataset arrays from ensured runtime NPY/NPZ."""
     path = Path(npz_path) if npz_path else Path(ensure_stars_dataset())
-    with np.load(path, allow_pickle=False) as data:
-        ra_raw = _pick_first(data, ("ra", "RA"))
-        dec_raw = _pick_first(data, ("dec", "DEC"))
-        mag_raw = _pick_first(data, ("phot_g_mean_mag", "mag", "g_mag"))
-        bp_rp_raw = _pick_first(data, ("bp_rp", "bprp"))
+    suffix = path.suffix.lower()
+    if suffix == ".npy":
+        raw = _read_structured_npy(path)
+        if raw is None:
+            raise ValueError(f"Dataset NPY missing required arrays (ra/dec/mag): {path}")
+        out = _normalize_arrays(raw)
+        if len(out.get("ra", [])) <= 0:
+            raise ValueError(f"Dataset NPY normalized to empty arrays: {path}")
+        return out
 
-        if ra_raw is None or dec_raw is None or mag_raw is None:
-            raise ValueError(f"Dataset NPZ missing required arrays (ra/dec/mag): {path}")
+    if suffix == ".npz":
+        return _runtime_npz_to_arrays(path)
 
-        ra = np.asarray(ra_raw, dtype=np.float64)
-        dec = np.asarray(dec_raw, dtype=np.float64)
-        mag = np.asarray(mag_raw, dtype=np.float32)
-
-        if bp_rp_raw is None:
-            bp_rp = np.full(len(mag), 0.8, dtype=np.float32)
-        else:
-            bp_rp = np.asarray(bp_rp_raw, dtype=np.float32)
-            if len(bp_rp) != len(mag):
-                bp_rp = np.full(len(mag), 0.8, dtype=np.float32)
-        bp_rp = np.nan_to_num(bp_rp, nan=0.8, posinf=2.5, neginf=-0.5)
-
-        out: Dict[str, np.ndarray] = {
-            "ra": ra,
-            "dec": dec,
-            "phot_g_mean_mag": mag,
-            "bp_rp": bp_rp,
-        }
-
-        for optional_name in ("pmra", "pmdec", "parallax", "source_id"):
-            if optional_name in data:
-                out[optional_name] = np.asarray(data[optional_name])
-
-    valid = np.isfinite(out["ra"]) & np.isfinite(out["dec"]) & np.isfinite(out["phot_g_mean_mag"])
-    if not np.all(valid):
-        for key, arr in list(out.items()):
-            if hasattr(arr, "__len__") and len(arr) == len(valid):
-                out[key] = arr[valid]
-
-    return out
+    # Backward compatibility for unknown extension inputs.
+    raw = _read_structured_npy(path)
+    if raw is not None:
+        out = _normalize_arrays(raw)
+        if len(out.get("ra", [])) <= 0:
+            raise ValueError(f"Dataset normalized to empty arrays: {path}")
+        return out
+    return _runtime_npz_to_arrays(path)

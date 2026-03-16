@@ -174,6 +174,7 @@ class TelescopeScopeController:
         height: int,
         project_fn: Callable[[float, float], Optional[Tuple[float, float]]],
         hud_extra_lines: Optional[List[str]] = None,
+        capture_overlay_text: Optional[str] = None,
     ) -> None:
         if not self.enabled:
             return
@@ -222,6 +223,23 @@ class TelescopeScopeController:
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(0, 0, 0, 138))
         painter.drawPath(outside)
+
+        # Optional capture overlay while deep catalog is loading.
+        if capture_overlay_text:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 72))
+            painter.drawRect(QRectF(0.0, 0.0, float(width), float(height)))
+            txt = str(capture_overlay_text).strip()
+            if txt:
+                box_w = min(float(width) - 24.0, 360.0)
+                box_h = 36.0
+                box_x = max(12.0, (float(width) - box_w) * 0.5)
+                box_y = max(12.0, float(height) * 0.15)
+                box = QRectF(box_x, box_y, box_w, box_h)
+                painter.setBrush(QColor(0, 0, 0, 150))
+                painter.drawRoundedRect(box, 8.0, 8.0)
+                painter.setPen(QColor(255, 255, 255, 235))
+                painter.drawText(box.adjusted(10.0, 0.0, -10.0, 0.0), Qt.AlignCenter, txt)
 
         # Border + glow
         painter.setBrush(Qt.NoBrush)

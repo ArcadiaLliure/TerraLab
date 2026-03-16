@@ -330,9 +330,12 @@ def build_gaia_catalog_from_tables(
     *,
     output_basename: str = "stars_catalog",
     zst_level: int = 12,
-    write_npz: bool = True,
-    write_npy: bool = False,
-    write_zst: bool = True,
+    write_npz: bool = False,
+    write_npy: bool = True,
+    write_zst: bool = False,
+    build_healpy_index: bool = False,
+    healpy_nside: int = 512,
+    healpy_chunk_rows: int = 2_000_000,
     progress_callback: Optional[ProgressFn] = None,
 ) -> Dict[str, object]:
     paths = [Path(p) for p in input_paths if str(p).strip()]
@@ -456,6 +459,24 @@ def build_gaia_catalog_from_tables(
     else:
         final_rows = int(total_rows)
 
+    healpy_output_npy = None
+    healpy_output_index = None
+    if bool(build_healpy_index):
+        if not bool(write_npy):
+            raise ValueError("build_healpy_index requires write_npy=True")
+        _progress(progress_callback, 96.0, "Construint index HEALPix...")
+        from TerraLab.util.build_healpy_index import build_healpy_catalog_index
+
+        healpy_output_npy = out_dir / f"{output_basename}_healpy.npy"
+        healpy_output_index = out_dir / f"{output_basename}_healpy.idx.npz"
+        build_healpy_catalog_index(
+            input_npy=npy_path,
+            output_npy=healpy_output_npy,
+            output_index=healpy_output_index,
+            nside=int(healpy_nside),
+            chunk_rows=int(healpy_chunk_rows),
+        )
+
     _progress(progress_callback, 100.0, "Cataleg Gaia preparat.")
 
     return {
@@ -463,9 +484,15 @@ def build_gaia_catalog_from_tables(
         "output_npz": str(npz_path) if bool(write_npz) and npz_path.exists() else None,
         "output_npy": str(npy_path) if bool(write_npy) and npy_path.exists() else None,
         "output_zst": str(zst_path) if zst_written else None,
+        "output_healpy_npy": str(healpy_output_npy) if healpy_output_npy and healpy_output_npy.exists() else None,
+        "output_healpy_index": (
+            str(healpy_output_index) if healpy_output_index and healpy_output_index.exists() else None
+        ),
         "write_npz": bool(write_npz),
         "write_npy": bool(write_npy),
         "write_zst": bool(write_zst),
+        "build_healpy_index": bool(build_healpy_index),
+        "healpy_nside": int(healpy_nside) if bool(build_healpy_index) else None,
         "zst_written": bool(zst_written),
     }
 

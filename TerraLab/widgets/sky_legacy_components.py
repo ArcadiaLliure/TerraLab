@@ -46,6 +46,7 @@ from TerraLab.data.stars_dataset import (
     get_runtime_catalog_source_info,
     log_startup_catalog_loaded,
 )
+from TerraLab.common.utils import get_config_value
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 from TerraLab.util.color import bp_rp_to_rgb_arrays
 
@@ -436,8 +437,278 @@ def _merge_sorted_catalog_with_no_gaia(stars_dir, np_ra, np_dec, np_mag, np_bp_r
     return merged_ra, merged_dec, merged_mag, merged_bp, merged_sid, int(len(s_mag))
 
 
+def _load_structured_npy_subset_by_mag(npy_path, max_mag, chunk_rows=2_000_000):
+    """Load only stars up to `max_mag` from structured runtime NPY (chunked scan)."""
+    if np is None:
+        return None
+    try:
+        arr = np.load(npy_path, mmap_mode="r", allow_pickle=False)
+    except Exception:
+        return None
+
+    if not isinstance(arr, np.ndarray) or arr.dtype.names is None:
+        return None
+    names = set(arr.dtype.names or ())
+    if not {"ra", "dec", "phot_g_mean_mag"}.issubset(names):
+        return None
+
+    total_rows = int(len(arr))
+    if total_rows <= 0:
+        return {
+            "ra": np.empty(0, dtype=np.float32),
+            "dec": np.empty(0, dtype=np.float32),
+            "mag": np.empty(0, dtype=np.float32),
+            "bp_rp": np.empty(0, dtype=np.float32),
+            "source_id": None,
+            "total_rows": 0,
+            "full_mag_max": float("nan"),
+        }
+
+    cap = float(max_mag)
+    chunk_rows = max(100_000, int(chunk_rows))
+    has_bp = "bp_rp" in names
+    has_sid = "source_id" in names
+
+    ra_parts = []
+    dec_parts = []
+    mag_parts = []
+    bp_parts = []
+    sid_parts = [] if has_sid else None
+    full_mag_max = float("nan")
+
+    for start in range(0, total_rows, chunk_rows):
+        end = min(total_rows, start + chunk_rows)
+        mag_chunk = np.asarray(arr["phot_g_mean_mag"][start:end], dtype=np.float32)
+        finite_mag = np.isfinite(mag_chunk)
+        if np.any(finite_mag):
+            chunk_max = float(np.max(mag_chunk[finite_mag]))
+            if (not np.isfinite(full_mag_max)) or chunk_max > full_mag_max:
+                full_mag_max = chunk_max
+
+        ra_chunk = np.asarray(arr["ra"][start:end], dtype=np.float32)
+        dec_chunk = np.asarray(arr["dec"][start:end], dtype=np.float32)
+        mask = finite_mag & (mag_chunk <= cap + 1e-6) & np.isfinite(ra_chunk) & np.isfinite(dec_chunk)
+        if not np.any(mask):
+            continue
+
+        ra_parts.append(ra_chunk[mask])
+        dec_parts.append(dec_chunk[mask])
+        mag_parts.append(mag_chunk[mask])
+
+        if has_bp:
+            bp_chunk = np.asarray(arr["bp_rp"][start:end], dtype=np.float32)
+            bp_parts.append(bp_chunk[mask])
+        else:
+            bp_parts.append(np.full(int(np.count_nonzero(mask)), 0.8, dtype=np.float32))
+
+        if has_sid and sid_parts is not None:
+            sid_chunk = np.asarray(arr["source_id"][start:end], dtype=np.int64)
+            sid_parts.append(sid_chunk[mask])
+
+    if ra_parts:
+        ra = np.concatenate(ra_parts)
+        dec = np.concatenate(dec_parts)
+        mag = np.concatenate(mag_parts)
+        bp = np.concatenate(bp_parts)
+        source_id = np.concatenate(sid_parts) if has_sid and sid_parts else None
+    else:
+        ra = np.empty(0, dtype=np.float32)
+        dec = np.empty(0, dtype=np.float32)
+        mag = np.empty(0, dtype=np.float32)
+        bp = np.empty(0, dtype=np.float32)
+        source_id = None
+
+    return {
+        "ra": np.asarray(ra, dtype=np.float32),
+        "dec": np.asarray(dec, dtype=np.float32),
+        "mag": np.asarray(mag, dtype=np.float32),
+        "bp_rp": np.asarray(bp, dtype=np.float32),
+        "source_id": source_id,
+        "total_rows": int(total_rows),
+        "full_mag_max": float(full_mag_max),
+    }
+
+
 def _bp_rp_to_rgb_arrays(bp_rp):
     return bp_rp_to_rgb_arrays(bp_rp)
+
+
+def _write_scope_runtime_mmap_bundle(
+    stars_dir: str,
+    source_id,
+    ra,
+    dec,
+    mag,
+    bp_rp,
+    r_arr,
+    g_arr,
+    b_arr,
+) -> Dict[str, str]:
+    n = int(len(ra))
+    if n <= 0:
+        raise ValueError("Cannot write empty scope runtime bundle")
+
+    out_dir = os.path.join(str(stars_dir), "cache", "scope")
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = int(time.time() * 1000.0)
+
+    catalog_path = os.path.join(out_dir, f"scope_runtime_sorted_catalog_{stamp}.npy")
+    r_path = os.path.join(out_dir, f"scope_runtime_sorted_r_{stamp}.npy")
+    g_path = os.path.join(out_dir, f"scope_runtime_sorted_g_{stamp}.npy")
+    b_path = os.path.join(out_dir, f"scope_runtime_sorted_b_{stamp}.npy")
+
+    dtype = np.dtype(
+        [
+            ("source_id", np.int64),
+            ("ra", np.float64),
+            ("dec", np.float64),
+            ("phot_g_mean_mag", np.float32),
+            ("bp_rp", np.float32),
+        ]
+    )
+    tmp_catalog = catalog_path + ".tmp"
+    mm_cat = np.lib.format.open_memmap(tmp_catalog, mode="w+", dtype=dtype, shape=(n,))
+    mm_cat["source_id"] = np.asarray(source_id if source_id is not None else np.full(n, -1, dtype=np.int64), dtype=np.int64)
+    mm_cat["ra"] = np.asarray(ra, dtype=np.float64)
+    mm_cat["dec"] = np.asarray(dec, dtype=np.float64)
+    mm_cat["phot_g_mean_mag"] = np.asarray(mag, dtype=np.float32)
+    mm_cat["bp_rp"] = np.asarray(bp_rp, dtype=np.float32)
+    del mm_cat
+    os.replace(tmp_catalog, catalog_path)
+
+    for arr, path in ((r_arr, r_path), (g_arr, g_path), (b_arr, b_path)):
+        tmp_path = path + ".tmp"
+        mm_c = np.lib.format.open_memmap(tmp_path, mode="w+", dtype=np.uint8, shape=(n,))
+        mm_c[:] = np.asarray(arr, dtype=np.uint8)
+        del mm_c
+        os.replace(tmp_path, path)
+
+    return {
+        "catalog_path": catalog_path,
+        "r_path": r_path,
+        "g_path": g_path,
+        "b_path": b_path,
+    }
+
+
+def _write_scope_runtime_mmap_bundle_from_structured_npy(
+    stars_dir: str,
+    runtime_catalog_path: str,
+    *,
+    chunk_rows: int = 1_000_000,
+    progress_callback=None,
+) -> Dict[str, object]:
+    if np is None:
+        raise RuntimeError("NumPy is required to build scope runtime mmap bundle")
+
+    path = str(runtime_catalog_path or "").strip()
+    if not path or (not os.path.isfile(path)):
+        raise FileNotFoundError(f"Runtime catalog not found: {runtime_catalog_path}")
+
+    arr = np.load(path, mmap_mode="r", allow_pickle=False)
+    if not isinstance(arr, np.ndarray) or arr.dtype.names is None:
+        raise ValueError("Expected structured NPY runtime catalog")
+
+    names = set(arr.dtype.names or ())
+    if not {"ra", "dec", "phot_g_mean_mag"}.issubset(names):
+        raise ValueError("Runtime catalog missing required fields: ra/dec/phot_g_mean_mag")
+
+    total_rows = int(len(arr))
+    if total_rows <= 0:
+        raise ValueError("Runtime catalog is empty")
+
+    out_dir = os.path.join(str(stars_dir), "cache", "scope")
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = int(time.time() * 1000.0)
+
+    catalog_path = os.path.join(out_dir, f"scope_runtime_sorted_catalog_{stamp}.npy")
+    r_path = os.path.join(out_dir, f"scope_runtime_sorted_r_{stamp}.npy")
+    g_path = os.path.join(out_dir, f"scope_runtime_sorted_g_{stamp}.npy")
+    b_path = os.path.join(out_dir, f"scope_runtime_sorted_b_{stamp}.npy")
+
+    dtype = np.dtype(
+        [
+            ("source_id", np.int64),
+            ("ra", np.float64),
+            ("dec", np.float64),
+            ("phot_g_mean_mag", np.float32),
+            ("bp_rp", np.float32),
+        ]
+    )
+
+    tmp_catalog = catalog_path + ".tmp"
+    tmp_r = r_path + ".tmp"
+    tmp_g = g_path + ".tmp"
+    tmp_b = b_path + ".tmp"
+
+    mm_cat = np.lib.format.open_memmap(tmp_catalog, mode="w+", dtype=dtype, shape=(total_rows,))
+    mm_r = np.lib.format.open_memmap(tmp_r, mode="w+", dtype=np.uint8, shape=(total_rows,))
+    mm_g = np.lib.format.open_memmap(tmp_g, mode="w+", dtype=np.uint8, shape=(total_rows,))
+    mm_b = np.lib.format.open_memmap(tmp_b, mode="w+", dtype=np.uint8, shape=(total_rows,))
+
+    sid_key = "source_id" if "source_id" in names else None
+    bp_key = "bp_rp" if "bp_rp" in names else None
+
+    max_loaded = float("nan")
+    chunk_rows_i = max(100_000, int(chunk_rows))
+    for start in range(0, total_rows, chunk_rows_i):
+        end = min(total_rows, start + chunk_rows_i)
+
+        ra_chunk = np.asarray(arr["ra"][start:end], dtype=np.float64)
+        dec_chunk = np.asarray(arr["dec"][start:end], dtype=np.float64)
+        mag_chunk = np.asarray(arr["phot_g_mean_mag"][start:end], dtype=np.float32)
+        if bp_key is not None:
+            bp_chunk = np.asarray(arr[bp_key][start:end], dtype=np.float32)
+            bp_chunk = np.nan_to_num(bp_chunk, nan=0.8, posinf=2.5, neginf=-0.5, copy=False)
+        else:
+            bp_chunk = np.full(end - start, 0.8, dtype=np.float32)
+        if sid_key is not None:
+            sid_chunk = np.asarray(arr[sid_key][start:end], dtype=np.int64)
+        else:
+            sid_chunk = np.full(end - start, -1, dtype=np.int64)
+
+        mm_cat["source_id"][start:end] = sid_chunk
+        mm_cat["ra"][start:end] = ra_chunk
+        mm_cat["dec"][start:end] = dec_chunk
+        mm_cat["phot_g_mean_mag"][start:end] = mag_chunk
+        mm_cat["bp_rp"][start:end] = bp_chunk
+
+        rr, gg, bb = _bp_rp_to_rgb_arrays(bp_chunk)
+        mm_r[start:end] = rr
+        mm_g[start:end] = gg
+        mm_b[start:end] = bb
+
+        finite_mag = np.isfinite(mag_chunk)
+        if np.any(finite_mag):
+            chunk_max = float(np.max(mag_chunk[finite_mag]))
+            if (not np.isfinite(max_loaded)) or chunk_max > max_loaded:
+                max_loaded = chunk_max
+
+        if progress_callback is not None:
+            try:
+                pct = 100.0 * (float(end) / float(max(1, total_rows)))
+                progress_callback(min(99.0, pct), f"Carregant cataleg scope ({int(round(pct))}%)")
+            except Exception:
+                pass
+
+    del mm_cat
+    del mm_r
+    del mm_g
+    del mm_b
+
+    os.replace(tmp_catalog, catalog_path)
+    os.replace(tmp_r, r_path)
+    os.replace(tmp_g, g_path)
+    os.replace(tmp_b, b_path)
+
+    return {
+        "catalog_path": catalog_path,
+        "r_path": r_path,
+        "g_path": g_path,
+        "b_path": b_path,
+        "rows": int(total_rows),
+        "loaded_max_mag": float(max_loaded if np.isfinite(max_loaded) else float("nan")),
+    }
 
 
 def _build_celestial_objects_from_arrays(ra, dec, mag, bp_rp, source_id=None):
@@ -1063,22 +1334,57 @@ class CatalogLoaderWorker(QObject):
         self.last_source_kind = "unknown"
         self.last_source_path = ""
         self.last_reason = ""
+        self.last_total_rows = 0
+        self.last_catalog_max_mag = float("nan")
 
         celestial_objects = []
         np_ra = np_dec = np_mag = np_r = np_g = np_b = np_bp_rp = None
         runtime_loaded = False
 
-        # Preferred runtime path: APPDATA NPZ ensured from packaged ZST.
+        # Preferred runtime path: APPDATA NPY.
         if np is not None:
             try:
-                runtime_npz = ensure_stars_dataset()
-                runtime_ds = load_stars_dataset(runtime_npz)
+                runtime_catalog_path = ensure_stars_dataset()
 
-                ra = np.asarray(runtime_ds["ra"], dtype=np.float32)
-                dec = np.asarray(runtime_ds["dec"], dtype=np.float32)
-                mag = np.asarray(runtime_ds["phot_g_mean_mag"], dtype=np.float32)
-                bp_rp = np.asarray(runtime_ds.get("bp_rp"), dtype=np.float32)
-                source_id = runtime_ds.get("source_id")
+                fast_startup = bool(get_config_value("performance.fast_startup_catalog", True))
+                fast_mag_limit = float(
+                    get_config_value("performance.fast_startup_mag_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)
+                )
+                fast_chunk_rows = int(get_config_value("performance.fast_startup_chunk_rows", 2_000_000))
+
+                mode = "runtime_full"
+                source_id = None
+                subset_payload = None
+
+                if fast_startup and str(runtime_catalog_path).lower().endswith(".npy"):
+                    subset_payload = _load_structured_npy_subset_by_mag(
+                        runtime_catalog_path,
+                        max_mag=fast_mag_limit,
+                        chunk_rows=fast_chunk_rows,
+                    )
+
+                if subset_payload is not None and len(subset_payload["ra"]) > 0:
+                    ra = np.asarray(subset_payload["ra"], dtype=np.float32)
+                    dec = np.asarray(subset_payload["dec"], dtype=np.float32)
+                    mag = np.asarray(subset_payload["mag"], dtype=np.float32)
+                    bp_rp = np.asarray(subset_payload["bp_rp"], dtype=np.float32)
+                    source_id = subset_payload.get("source_id")
+                    self.last_total_rows = int(subset_payload.get("total_rows", len(ra)))
+                    self.last_catalog_max_mag = float(subset_payload.get("full_mag_max", float("nan")))
+                    mode = "runtime_subset"
+                else:
+                    runtime_ds = load_stars_dataset(runtime_catalog_path)
+                    ra = np.asarray(runtime_ds["ra"], dtype=np.float32)
+                    dec = np.asarray(runtime_ds["dec"], dtype=np.float32)
+                    mag = np.asarray(runtime_ds["phot_g_mean_mag"], dtype=np.float32)
+                    bp_rp = np.asarray(runtime_ds.get("bp_rp"), dtype=np.float32)
+                    source_id = runtime_ds.get("source_id")
+                    self.last_total_rows = int(len(ra))
+                    try:
+                        self.last_catalog_max_mag = float(np.nanmax(mag)) if len(mag) > 0 else float("nan")
+                    except Exception:
+                        self.last_catalog_max_mag = float("nan")
+                    mode = "runtime_full"
 
                 if len(ra) > 0:
                     order = np.argsort(mag, kind="mergesort")
@@ -1110,11 +1416,17 @@ class CatalogLoaderWorker(QObject):
                     else:
                         celestial_objects = []
                     runtime_loaded = True
-                    self.last_load_mode = "runtime"
-                    print(
-                        f"[CatalogLoader] Runtime dataset loaded: {len(np_ra)} stars "
-                        f"from '{runtime_npz}' in {time.time()-t0:.3f}s"
-                    )
+                    self.last_load_mode = str(mode)
+                    if mode == "runtime_subset":
+                        print(
+                            f"[CatalogLoader] Runtime subset loaded: {len(np_ra)} / {self.last_total_rows} stars "
+                            f"(<= {fast_mag_limit:.2f} mag) from '{runtime_catalog_path}' in {time.time()-t0:.3f}s"
+                        )
+                    else:
+                        print(
+                            f"[CatalogLoader] Runtime dataset loaded: {len(np_ra)} stars "
+                            f"from '{runtime_catalog_path}' in {time.time()-t0:.3f}s"
+                        )
                     if added_no_gaia > 0:
                         print(
                             f"[CatalogLoader] Added no-Gaia supplement: +{added_no_gaia} bright stars "
@@ -1128,6 +1440,8 @@ class CatalogLoaderWorker(QObject):
                         self.last_source_path = src_path
                         mag_min = float(np.min(np_mag)) if len(np_mag) > 0 else float("nan")
                         mag_max = float(np.max(np_mag)) if len(np_mag) > 0 else float("nan")
+                        if np.isfinite(self.last_catalog_max_mag):
+                            mag_max = float(max(mag_max, self.last_catalog_max_mag))
                         print(
                             "[CatalogLoader] Startup source: "
                             f"source={src_kind} "
@@ -1137,7 +1451,7 @@ class CatalogLoaderWorker(QObject):
                             f"mag_max={mag_max:.6f}"
                         )
                         log_startup_catalog_loaded(
-                            runtime_npz=str(runtime_npz),
+                            runtime_catalog_path=str(runtime_catalog_path),
                             rows=int(len(np_ra)),
                             mag_min=mag_min,
                             mag_max=mag_max,
@@ -1221,7 +1535,7 @@ class CatalogLoaderWorker(QObject):
 
         self.catalog_ready.emit(celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp)
 
-    @pyqtSlot(str, float, object, object, object, object, object, object, object)
+    @pyqtSlot(str, float, object, object, object, object, object, object, object, bool)
     def load_scope_extensions(
         self,
         stars_dir,
@@ -1233,15 +1547,172 @@ class CatalogLoaderWorker(QObject):
         base_g=None,
         base_b=None,
         base_bp_rp=None,
+        force_runtime_full=False,
     ):
         import time
         t0 = time.time()
+        self.last_scope_load_mode = "unknown"
+        self.scope_extension_payload = None
 
         np_ra = np_dec = np_mag = np_r = np_g = np_b = np_bp_rp = None
         max_loaded = float(loaded_max_mag)
         if np is None:
+            self.last_scope_load_mode = "numpy_unavailable"
             self.scope_extension_ready.emit(None, None, None, None, None, None, None, max_loaded)
             return
+
+        if bool(force_runtime_full):
+            try:
+                self.scope_extension_progress.emit(1.0, "Carregant cataleg complet per mode scope...")
+                runtime_catalog_path = ensure_stars_dataset()
+                runtime_suffix = str(runtime_catalog_path).lower()
+                if runtime_suffix.endswith(".npy"):
+                    try:
+                        bundle = _write_scope_runtime_mmap_bundle_from_structured_npy(
+                            stars_dir=stars_dir,
+                            runtime_catalog_path=runtime_catalog_path,
+                            chunk_rows=1_000_000,
+                            progress_callback=self.scope_extension_progress.emit,
+                        )
+                        rows = int(bundle.get("rows", 0) or 0)
+                        max_hint = float(bundle.get("loaded_max_mag", float("nan")))
+                        if np.isfinite(max_hint):
+                            max_loaded = max(max_loaded, max_hint)
+                        self.scope_extension_progress.emit(100.0, "Cataleg scope complet carregat")
+                        self.scope_extension_payload = {
+                            "mode": "runtime_mmap_bundle",
+                            "catalog_sorted": False,
+                            "rows": rows,
+                            "loaded_max_mag": float(max_loaded),
+                            "source_path": str(runtime_catalog_path),
+                            **{k: bundle[k] for k in ("catalog_path", "r_path", "g_path", "b_path")},
+                        }
+                        self.last_scope_load_mode = "runtime_mmap_bundle"
+                        print(
+                            f"[CatalogLoader] Scope full runtime catalog mapped: {rows} stars "
+                            f"from '{runtime_catalog_path}' in {time.time()-t0:.3f}s"
+                        )
+                        self.scope_extension_ready.emit(
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            float(max_loaded),
+                        )
+                        return
+                    except Exception as mmap_exc:
+                        print(f"[CatalogLoader] Scope runtime mmap path failed: {mmap_exc}")
+                runtime_ds = load_stars_dataset(runtime_catalog_path)
+                ra = np.asarray(runtime_ds["ra"], dtype=np.float32)
+                dec = np.asarray(runtime_ds["dec"], dtype=np.float32)
+                mag = np.asarray(runtime_ds["phot_g_mean_mag"], dtype=np.float32)
+                bp_raw = runtime_ds.get("bp_rp")
+                if bp_raw is None:
+                    bp_rp = np.full(len(mag), 0.8, dtype=np.float32)
+                else:
+                    bp_rp = np.asarray(bp_raw, dtype=np.float32)
+                    if bp_rp.ndim == 0 or len(bp_rp) != len(mag):
+                        bp_rp = np.full(len(mag), 0.8, dtype=np.float32)
+                source_id = runtime_ds.get("source_id")
+                if source_id is not None:
+                    source_id = np.asarray(source_id)
+                    if source_id.ndim == 0 or len(source_id) != len(mag):
+                        source_id = None
+
+                valid = np.isfinite(ra) & np.isfinite(dec) & np.isfinite(mag)
+                if not np.all(valid):
+                    ra = np.asarray(ra[valid], dtype=np.float32)
+                    dec = np.asarray(dec[valid], dtype=np.float32)
+                    mag = np.asarray(mag[valid], dtype=np.float32)
+                    bp_rp = np.asarray(bp_rp[valid], dtype=np.float32)
+                    if source_id is not None:
+                        source_id = np.asarray(source_id[valid])
+
+                if len(ra) > 0:
+                    order = np.argsort(mag, kind="mergesort")
+                    np_ra = np.asarray(ra[order], dtype=np.float32)
+                    np_dec = np.asarray(dec[order], dtype=np.float32)
+                    np_mag = np.asarray(mag[order], dtype=np.float32)
+                    np_bp_rp = np.asarray(bp_rp[order], dtype=np.float32)
+                    if source_id is not None and len(source_id) == len(order):
+                        source_id = np.asarray(source_id)[order]
+                    else:
+                        source_id = None
+
+                    np_ra, np_dec, np_mag, np_bp_rp, source_id, added_no_gaia = _merge_sorted_catalog_with_no_gaia(
+                        stars_dir,
+                        np.asarray(np_ra, dtype=np.float32),
+                        np.asarray(np_dec, dtype=np.float32),
+                        np.asarray(np_mag, dtype=np.float32),
+                        np.asarray(np_bp_rp, dtype=np.float32),
+                        source_id=source_id,
+                    )
+                    np_r, np_g, np_b = _bp_rp_to_rgb_arrays(np_bp_rp)
+                    max_loaded = max(max_loaded, float(np.nanmax(np.asarray(np_mag, dtype=np.float32))))
+                    self.scope_extension_progress.emit(100.0, "Cataleg scope complet carregat")
+                    print(
+                        f"[CatalogLoader] Scope full runtime catalog loaded: {len(np_ra)} stars "
+                        f"from '{runtime_catalog_path}' in {time.time()-t0:.3f}s"
+                    )
+                    if added_no_gaia > 0:
+                        print(
+                            f"[CatalogLoader] Added no-Gaia supplement: +{added_no_gaia} bright stars "
+                            f"from '{NO_GAIA_STARS_JSON_NAME}'"
+                        )
+                    try:
+                        bundle = _write_scope_runtime_mmap_bundle(
+                            stars_dir=stars_dir,
+                            source_id=source_id,
+                            ra=np_ra,
+                            dec=np_dec,
+                            mag=np_mag,
+                            bp_rp=np_bp_rp,
+                            r_arr=np_r,
+                            g_arr=np_g,
+                            b_arr=np_b,
+                        )
+                        self.scope_extension_payload = {
+                            "mode": "runtime_mmap_bundle",
+                            "catalog_sorted": True,
+                            "rows": int(len(np_ra)),
+                            "loaded_max_mag": float(max_loaded),
+                            **bundle,
+                        }
+                        self.last_scope_load_mode = "runtime_mmap_bundle"
+                        print(
+                            f"[CatalogLoader] Scope runtime mmap bundle written: "
+                            f"rows={len(np_ra)} in {time.time()-t0:.3f}s"
+                        )
+                        self.scope_extension_ready.emit(
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            float(max_loaded),
+                        )
+                        return
+                    except Exception as bundle_exc:
+                        print(f"[CatalogLoader] Scope mmap bundle write error: {bundle_exc}")
+                    self.last_scope_load_mode = "sorted_output"
+                    self.scope_extension_ready.emit(
+                        np_ra,
+                        np_dec,
+                        np_mag,
+                        np_r,
+                        np_g,
+                        np_b,
+                        np_bp_rp,
+                        float(max_loaded),
+                    )
+                    return
+            except Exception as e:
+                print(f"[CatalogLoader] Scope full runtime load error: {e}")
 
         runtime_extension_npy = ""
         if stars_dir:
@@ -1309,6 +1780,7 @@ class CatalogLoaderWorker(QObject):
         eps = 1e-6
         targets = [e for e in entries if float(e["max_mag"]) > float(loaded_max_mag) + eps]
         if (np_ra is None or len(np_ra) == 0) and (not targets):
+            self.last_scope_load_mode = "up_to_date"
             self.scope_extension_ready.emit(None, None, None, None, None, None, None, max_loaded)
             return
 
@@ -1390,6 +1862,42 @@ class CatalogLoaderWorker(QObject):
                 f"[CatalogLoader] Scope extension ready: {len(np_ra)} stars "
                 f"in {time.time()-t0:.3f}s (max mag {max_loaded:.2f})"
             )
+            self.last_scope_load_mode = "sorted_output"
+            try:
+                bundle = _write_scope_runtime_mmap_bundle(
+                    stars_dir=stars_dir,
+                    source_id=None,
+                    ra=np_ra,
+                    dec=np_dec,
+                    mag=np_mag,
+                    bp_rp=np_bp_rp,
+                    r_arr=np_r,
+                    g_arr=np_g,
+                    b_arr=np_b,
+                )
+                self.scope_extension_payload = {
+                    "mode": "runtime_mmap_bundle",
+                    "catalog_sorted": True,
+                    "rows": int(len(np_ra)),
+                    "loaded_max_mag": float(max_loaded),
+                    **bundle,
+                }
+                self.last_scope_load_mode = "runtime_mmap_bundle"
+                self.scope_extension_ready.emit(
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    float(max_loaded),
+                )
+                return
+            except Exception as bundle_exc:
+                print(f"[CatalogLoader] Scope mmap bundle write error: {bundle_exc}")
+        else:
+            self.last_scope_load_mode = "no_rows"
 
         self.scope_extension_ready.emit(np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp, float(max_loaded))
 

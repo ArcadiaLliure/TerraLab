@@ -821,6 +821,15 @@ def main() -> int:
     parser.add_argument("--no-write-npz", dest="write_npz", action="store_false")
     parser.add_argument("--write-zst", dest="write_zst", action="store_true", default=False)
     parser.add_argument("--no-write-zst", dest="write_zst", action="store_false")
+    parser.add_argument("--build-healpy-index", dest="build_healpy_index", action="store_true", default=True)
+    parser.add_argument("--no-build-healpy-index", dest="build_healpy_index", action="store_false")
+    parser.add_argument("--healpy-nside", type=int, default=512, help="HEALPix NSIDE (power of 2)")
+    parser.add_argument(
+        "--healpy-chunk-rows",
+        type=int,
+        default=2_000_000,
+        help="Rows per HEALPix build chunk",
+    )
     parser.add_argument("--log-file", default="", help="Optional path to write a persistent execution log")
     args = parser.parse_args()
 
@@ -1022,6 +1031,9 @@ def main() -> int:
                 write_npz=bool(args.write_npz),
                 write_npy=bool(args.write_npy),
                 write_zst=bool(args.write_zst),
+                build_healpy_index=bool(args.build_healpy_index),
+                healpy_nside=int(args.healpy_nside),
+                healpy_chunk_rows=int(args.healpy_chunk_rows),
                 progress_callback=_progress_visible,
             )
             selected_path_visible = (
@@ -1121,6 +1133,9 @@ def main() -> int:
                     write_npz=bool(args.write_npz),
                     write_npy=bool(args.write_npy),
                     write_zst=bool(args.write_zst),
+                    build_healpy_index=bool(args.build_healpy_index),
+                    healpy_nside=int(args.healpy_nside),
+                    healpy_chunk_rows=int(args.healpy_chunk_rows),
                     progress_callback=_progress_merge,
                 )
 

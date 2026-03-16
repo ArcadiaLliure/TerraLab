@@ -159,7 +159,7 @@ class AssetManager:
             p_npz = Path(layout["data_gaia"]) / "stars_catalog.npz"
             p_zst = Path(layout["data_gaia"]) / "stars_catalog.zst"
             p_npy = Path(layout["data_gaia"]) / "stars_catalog.npy"
-            for candidate in (p_npz, p_zst, p_npy):
+            for candidate in (p_npy, p_npz, p_zst):
                 if candidate.exists():
                     return {"ready": True, "reason": "ok", "path": str(candidate)}
             packaged_dir = Path(__file__).resolve().parents[1] / "data" / "stars"
@@ -171,7 +171,7 @@ class AssetManager:
             for candidate in packaged_candidates:
                 if candidate.exists():
                     return {"ready": True, "reason": "packaged_catalog", "path": str(candidate)}
-            return {"ready": False, "reason": "missing_catalog", "path": str(p_npz)}
+            return {"ready": False, "reason": "missing_catalog", "path": str(p_npy)}
         if asset_id == "milkyway_texture":
             p = Path(layout["data_milkyway"]) / "milkyway_overlay.png"
             exists = p.exists()
@@ -269,13 +269,19 @@ class AssetManager:
 
         if asset_id == "gaia_catalog":
             out_dir = Path(self.layout["data_gaia"])
+            build_healpy_index = bool(opts.get("build_healpy_index", True))
+            healpy_nside = int(opts.get("healpy_nside", 512) or 512)
+            healpy_chunk_rows = int(opts.get("healpy_chunk_rows", 2_000_000) or 2_000_000)
             summary = build_gaia_catalog_from_tables(
                 [str(p) for p in paths],
                 str(out_dir),
                 output_basename="stars_catalog",
-                write_npz=True,
-                write_npy=False,
+                write_npz=False,
+                write_npy=True,
                 write_zst=False,
+                build_healpy_index=build_healpy_index,
+                healpy_nside=healpy_nside,
+                healpy_chunk_rows=healpy_chunk_rows,
                 progress_callback=progress_callback,
             )
             no_gaia_src = Path(__file__).resolve().parents[1] / "data" / "stars" / "no_gaia_stars.json"
@@ -288,7 +294,7 @@ class AssetManager:
             npz_path = out_dir / "stars_catalog.npz"
             npy_path = out_dir / "stars_catalog.npy"
             zst_path = out_dir / "stars_catalog.zst"
-            selected_path = npz_path if npz_path.exists() else (npy_path if npy_path.exists() else zst_path)
+            selected_path = npy_path if npy_path.exists() else (npz_path if npz_path.exists() else zst_path)
             set_config_value("gaia_catalog_path", str(selected_path))
             self._mark_asset_state("gaia_catalog", True, str(selected_path))
             return {"ok": True, "summary": summary, "stored_in": str(out_dir)}

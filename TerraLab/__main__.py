@@ -3,6 +3,7 @@ import traceback
 import os
 import faulthandler
 from PyQt5.QtWidgets import QApplication
+from TerraLab.common.timestamped_print import enable_timestamped_print
 from TerraLab.ui.sky_widget import AstronomicalWidget
 
 from PyQt5.QtCore import Qt
@@ -24,6 +25,8 @@ class StandaloneAstronomicalWidget(AstronomicalWidget):
             super().keyPressEvent(event)
 
 def main():
+    enable_timestamped_print()
+
     # Persist native crashes (segfault/abort) to file for post-mortem analysis.
     crash_log = os.path.join(os.getcwd(), "terralab_crash.log")
     try:
