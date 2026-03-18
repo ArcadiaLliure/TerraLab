@@ -49,6 +49,7 @@ from TerraLab.data.stars_dataset import (
 from TerraLab.common.utils import get_config_value
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 from TerraLab.util.color import bp_rp_to_rgb_arrays
+from TerraLab.widgets.scope_runtime_cache import ScopeRuntimeCacheManager
 
 try:
     from skyfield.api import load
@@ -533,6 +534,20 @@ def _bp_rp_to_rgb_arrays(bp_rp):
     return bp_rp_to_rgb_arrays(bp_rp)
 
 
+def _cleanup_scope_runtime_cache_files(
+    out_dir: str,
+    *,
+    keep_stamps: int = 1,
+    keep_stamp: int | None = None,
+    tmp_ttl_seconds: float = 60.0,
+) -> None:
+    ScopeRuntimeCacheManager.from_cache_dir(out_dir).cleanup(
+        keep_stamps=keep_stamps,
+        keep_stamp=keep_stamp,
+        tmp_ttl_seconds=tmp_ttl_seconds,
+    )
+
+
 def _write_scope_runtime_mmap_bundle(
     stars_dir: str,
     source_id,
@@ -543,52 +558,20 @@ def _write_scope_runtime_mmap_bundle(
     r_arr,
     g_arr,
     b_arr,
+    dataset_signature: str | None = None,
 ) -> Dict[str, str]:
-    n = int(len(ra))
-    if n <= 0:
-        raise ValueError("Cannot write empty scope runtime bundle")
-
-    out_dir = os.path.join(str(stars_dir), "cache", "scope")
-    os.makedirs(out_dir, exist_ok=True)
-    stamp = int(time.time() * 1000.0)
-
-    catalog_path = os.path.join(out_dir, f"scope_runtime_sorted_catalog_{stamp}.npy")
-    r_path = os.path.join(out_dir, f"scope_runtime_sorted_r_{stamp}.npy")
-    g_path = os.path.join(out_dir, f"scope_runtime_sorted_g_{stamp}.npy")
-    b_path = os.path.join(out_dir, f"scope_runtime_sorted_b_{stamp}.npy")
-
-    dtype = np.dtype(
-        [
-            ("source_id", np.int64),
-            ("ra", np.float64),
-            ("dec", np.float64),
-            ("phot_g_mean_mag", np.float32),
-            ("bp_rp", np.float32),
-        ]
+    manager = ScopeRuntimeCacheManager(stars_dir=stars_dir)
+    return manager.write_bundle_from_arrays(
+        source_id=source_id,
+        ra=ra,
+        dec=dec,
+        mag=mag,
+        bp_rp=bp_rp,
+        r_arr=r_arr,
+        g_arr=g_arr,
+        b_arr=b_arr,
+        dataset_signature=dataset_signature,
     )
-    tmp_catalog = catalog_path + ".tmp"
-    mm_cat = np.lib.format.open_memmap(tmp_catalog, mode="w+", dtype=dtype, shape=(n,))
-    mm_cat["source_id"] = np.asarray(source_id if source_id is not None else np.full(n, -1, dtype=np.int64), dtype=np.int64)
-    mm_cat["ra"] = np.asarray(ra, dtype=np.float64)
-    mm_cat["dec"] = np.asarray(dec, dtype=np.float64)
-    mm_cat["phot_g_mean_mag"] = np.asarray(mag, dtype=np.float32)
-    mm_cat["bp_rp"] = np.asarray(bp_rp, dtype=np.float32)
-    del mm_cat
-    os.replace(tmp_catalog, catalog_path)
-
-    for arr, path in ((r_arr, r_path), (g_arr, g_path), (b_arr, b_path)):
-        tmp_path = path + ".tmp"
-        mm_c = np.lib.format.open_memmap(tmp_path, mode="w+", dtype=np.uint8, shape=(n,))
-        mm_c[:] = np.asarray(arr, dtype=np.uint8)
-        del mm_c
-        os.replace(tmp_path, path)
-
-    return {
-        "catalog_path": catalog_path,
-        "r_path": r_path,
-        "g_path": g_path,
-        "b_path": b_path,
-    }
 
 
 def _write_scope_runtime_mmap_bundle_from_structured_npy(
@@ -597,118 +580,16 @@ def _write_scope_runtime_mmap_bundle_from_structured_npy(
     *,
     chunk_rows: int = 1_000_000,
     progress_callback=None,
+    dataset_signature: str | None = None,
 ) -> Dict[str, object]:
-    if np is None:
-        raise RuntimeError("NumPy is required to build scope runtime mmap bundle")
-
-    path = str(runtime_catalog_path or "").strip()
-    if not path or (not os.path.isfile(path)):
-        raise FileNotFoundError(f"Runtime catalog not found: {runtime_catalog_path}")
-
-    arr = np.load(path, mmap_mode="r", allow_pickle=False)
-    if not isinstance(arr, np.ndarray) or arr.dtype.names is None:
-        raise ValueError("Expected structured NPY runtime catalog")
-
-    names = set(arr.dtype.names or ())
-    if not {"ra", "dec", "phot_g_mean_mag"}.issubset(names):
-        raise ValueError("Runtime catalog missing required fields: ra/dec/phot_g_mean_mag")
-
-    total_rows = int(len(arr))
-    if total_rows <= 0:
-        raise ValueError("Runtime catalog is empty")
-
-    out_dir = os.path.join(str(stars_dir), "cache", "scope")
-    os.makedirs(out_dir, exist_ok=True)
-    stamp = int(time.time() * 1000.0)
-
-    catalog_path = os.path.join(out_dir, f"scope_runtime_sorted_catalog_{stamp}.npy")
-    r_path = os.path.join(out_dir, f"scope_runtime_sorted_r_{stamp}.npy")
-    g_path = os.path.join(out_dir, f"scope_runtime_sorted_g_{stamp}.npy")
-    b_path = os.path.join(out_dir, f"scope_runtime_sorted_b_{stamp}.npy")
-
-    dtype = np.dtype(
-        [
-            ("source_id", np.int64),
-            ("ra", np.float64),
-            ("dec", np.float64),
-            ("phot_g_mean_mag", np.float32),
-            ("bp_rp", np.float32),
-        ]
+    manager = ScopeRuntimeCacheManager(stars_dir=stars_dir)
+    return manager.write_bundle_from_structured_npy(
+        runtime_catalog_path=runtime_catalog_path,
+        chunk_rows=chunk_rows,
+        progress_callback=progress_callback,
+        bp_to_rgb_fn=_bp_rp_to_rgb_arrays,
+        dataset_signature=dataset_signature,
     )
-
-    tmp_catalog = catalog_path + ".tmp"
-    tmp_r = r_path + ".tmp"
-    tmp_g = g_path + ".tmp"
-    tmp_b = b_path + ".tmp"
-
-    mm_cat = np.lib.format.open_memmap(tmp_catalog, mode="w+", dtype=dtype, shape=(total_rows,))
-    mm_r = np.lib.format.open_memmap(tmp_r, mode="w+", dtype=np.uint8, shape=(total_rows,))
-    mm_g = np.lib.format.open_memmap(tmp_g, mode="w+", dtype=np.uint8, shape=(total_rows,))
-    mm_b = np.lib.format.open_memmap(tmp_b, mode="w+", dtype=np.uint8, shape=(total_rows,))
-
-    sid_key = "source_id" if "source_id" in names else None
-    bp_key = "bp_rp" if "bp_rp" in names else None
-
-    max_loaded = float("nan")
-    chunk_rows_i = max(100_000, int(chunk_rows))
-    for start in range(0, total_rows, chunk_rows_i):
-        end = min(total_rows, start + chunk_rows_i)
-
-        ra_chunk = np.asarray(arr["ra"][start:end], dtype=np.float64)
-        dec_chunk = np.asarray(arr["dec"][start:end], dtype=np.float64)
-        mag_chunk = np.asarray(arr["phot_g_mean_mag"][start:end], dtype=np.float32)
-        if bp_key is not None:
-            bp_chunk = np.asarray(arr[bp_key][start:end], dtype=np.float32)
-            bp_chunk = np.nan_to_num(bp_chunk, nan=0.8, posinf=2.5, neginf=-0.5, copy=False)
-        else:
-            bp_chunk = np.full(end - start, 0.8, dtype=np.float32)
-        if sid_key is not None:
-            sid_chunk = np.asarray(arr[sid_key][start:end], dtype=np.int64)
-        else:
-            sid_chunk = np.full(end - start, -1, dtype=np.int64)
-
-        mm_cat["source_id"][start:end] = sid_chunk
-        mm_cat["ra"][start:end] = ra_chunk
-        mm_cat["dec"][start:end] = dec_chunk
-        mm_cat["phot_g_mean_mag"][start:end] = mag_chunk
-        mm_cat["bp_rp"][start:end] = bp_chunk
-
-        rr, gg, bb = _bp_rp_to_rgb_arrays(bp_chunk)
-        mm_r[start:end] = rr
-        mm_g[start:end] = gg
-        mm_b[start:end] = bb
-
-        finite_mag = np.isfinite(mag_chunk)
-        if np.any(finite_mag):
-            chunk_max = float(np.max(mag_chunk[finite_mag]))
-            if (not np.isfinite(max_loaded)) or chunk_max > max_loaded:
-                max_loaded = chunk_max
-
-        if progress_callback is not None:
-            try:
-                pct = 100.0 * (float(end) / float(max(1, total_rows)))
-                progress_callback(min(99.0, pct), f"Carregant cataleg scope ({int(round(pct))}%)")
-            except Exception:
-                pass
-
-    del mm_cat
-    del mm_r
-    del mm_g
-    del mm_b
-
-    os.replace(tmp_catalog, catalog_path)
-    os.replace(tmp_r, r_path)
-    os.replace(tmp_g, g_path)
-    os.replace(tmp_b, b_path)
-
-    return {
-        "catalog_path": catalog_path,
-        "r_path": r_path,
-        "g_path": g_path,
-        "b_path": b_path,
-        "rows": int(total_rows),
-        "loaded_max_mag": float(max_loaded if np.isfinite(max_loaded) else float("nan")),
-    }
 
 
 def _build_celestial_objects_from_arrays(ra, dec, mag, bp_rp, source_id=None):
@@ -1561,6 +1442,39 @@ class CatalogLoaderWorker(QObject):
             self.scope_extension_ready.emit(None, None, None, None, None, None, None, max_loaded)
             return
 
+        def _scope_cache_signature(paths, *, include_no_gaia: bool = False) -> str:
+            source_paths = [str(p) for p in (paths or []) if str(p or "").strip()]
+            if include_no_gaia:
+                source_paths.extend(_no_gaia_signature_sources())
+            return ScopeRuntimeCacheManager.build_dataset_signature(
+                source_paths,
+                extra={
+                    "cache_kind": "scope_runtime_bundle",
+                    "policy_version": 1,
+                    "include_no_gaia": bool(include_no_gaia),
+                },
+            )
+
+        def _no_gaia_signature_sources() -> list[str]:
+            candidates: list[str] = []
+            if stars_dir:
+                candidates.append(os.path.join(stars_dir, NO_GAIA_STARS_JSON_NAME))
+                candidates.append(os.path.join(stars_dir, "stars_catalog_no_gaia_fused.flag"))
+            try:
+                candidates.append(os.path.join(str(runtime_data_dir_for("gaia")), NO_GAIA_STARS_JSON_NAME))
+            except Exception:
+                pass
+            candidates.append(
+                os.path.abspath(
+                    os.path.join(os.path.dirname(__file__), "..", "data", "stars", NO_GAIA_STARS_JSON_NAME)
+                )
+            )
+            out = []
+            for candidate in candidates:
+                if candidate and os.path.isfile(candidate):
+                    out.append(candidate)
+            return out
+
         if bool(force_runtime_full):
             try:
                 self.scope_extension_progress.emit(1.0, "Carregant cataleg complet per mode scope...")
@@ -1568,11 +1482,16 @@ class CatalogLoaderWorker(QObject):
                 runtime_suffix = str(runtime_catalog_path).lower()
                 if runtime_suffix.endswith(".npy"):
                     try:
+                        full_signature = _scope_cache_signature(
+                            [str(runtime_catalog_path)],
+                            include_no_gaia=False,
+                        )
                         bundle = _write_scope_runtime_mmap_bundle_from_structured_npy(
                             stars_dir=stars_dir,
                             runtime_catalog_path=runtime_catalog_path,
                             chunk_rows=1_000_000,
                             progress_callback=self.scope_extension_progress.emit,
+                            dataset_signature=full_signature,
                         )
                         rows = int(bundle.get("rows", 0) or 0)
                         max_hint = float(bundle.get("loaded_max_mag", float("nan")))
@@ -1663,6 +1582,10 @@ class CatalogLoaderWorker(QObject):
                             f"from '{NO_GAIA_STARS_JSON_NAME}'"
                         )
                     try:
+                        full_signature = _scope_cache_signature(
+                            [str(runtime_catalog_path)],
+                            include_no_gaia=True,
+                        )
                         bundle = _write_scope_runtime_mmap_bundle(
                             stars_dir=stars_dir,
                             source_id=source_id,
@@ -1673,6 +1596,7 @@ class CatalogLoaderWorker(QObject):
                             r_arr=np_r,
                             g_arr=np_g,
                             b_arr=np_b,
+                            dataset_signature=full_signature,
                         )
                         self.scope_extension_payload = {
                             "mode": "runtime_mmap_bundle",
@@ -1864,6 +1788,31 @@ class CatalogLoaderWorker(QObject):
             )
             self.last_scope_load_mode = "sorted_output"
             try:
+                extension_sources = []
+                if runtime_extension_npy and os.path.isfile(runtime_extension_npy):
+                    extension_sources.append(runtime_extension_npy)
+                try:
+                    base_entry = _select_base_star_catalog_entry(
+                        entries,
+                        max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                    )
+                except Exception:
+                    base_entry = None
+                if isinstance(base_entry, dict):
+                    base_path = str(base_entry.get("path", "") or "")
+                    if base_path and os.path.isfile(base_path):
+                        extension_sources.append(base_path)
+                for entry in targets:
+                    try:
+                        p = str(entry.get("path", "") or "")
+                    except Exception:
+                        p = ""
+                    if p and os.path.isfile(p):
+                        extension_sources.append(p)
+                extension_signature = _scope_cache_signature(
+                    extension_sources,
+                    include_no_gaia=True,
+                )
                 bundle = _write_scope_runtime_mmap_bundle(
                     stars_dir=stars_dir,
                     source_id=None,
@@ -1874,6 +1823,7 @@ class CatalogLoaderWorker(QObject):
                     r_arr=np_r,
                     g_arr=np_g,
                     b_arr=np_b,
+                    dataset_signature=extension_signature,
                 )
                 self.scope_extension_payload = {
                     "mode": "runtime_mmap_bundle",

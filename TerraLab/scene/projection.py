@@ -152,3 +152,41 @@ def project_universal_stereo_numpy(
     sy = cy_base - (y - y_center_val) * scale_h
 
     return np.asarray(sx, dtype=np.float32), np.asarray(sy, dtype=np.float32), valid
+
+
+def unproject_universal_stereo_point(
+    sx: float,
+    sy: float,
+    width: int,
+    height: int,
+    camera: Camera,
+) -> Optional[Tuple[float, float]]:
+    """Inverse of universal stereographic projection.
+
+    Returns `(alt_deg, az_deg)` or `None` when input is not projectable.
+    """
+    scale_h = height * 0.5 * float(camera.zoom_level)
+    if scale_h <= 1e-9:
+        return None
+
+    cx = width * 0.5
+    cy_base = (height * 0.5) + (height * float(camera.vertical_offset_ratio))
+    y_center_val = 2.0 * math.tan(math.radians(float(camera.elevation_angle)) * 0.5)
+
+    x = (float(sx) - cx) / scale_h
+    y = -((float(sy) - cy_base) / scale_h) + y_center_val
+
+    rho = math.sqrt(x * x + y * y)
+    if rho < 1e-9:
+        return 0.0, float(camera.azimuth_offset) % 360.0
+
+    c = 2.0 * math.atan(rho * 0.5)
+    sin_c = math.sin(c)
+    cos_c = math.cos(c)
+
+    alt_rad = math.asin(max(-1.0, min(1.0, (y * sin_c) / rho)))
+    lon_rad = math.atan2(x * sin_c, rho * cos_c)
+
+    alt_deg = math.degrees(alt_rad)
+    az_deg = (float(camera.azimuth_offset) + math.degrees(lon_rad)) % 360.0
+    return alt_deg, az_deg

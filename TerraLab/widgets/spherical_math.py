@@ -1,5 +1,8 @@
 import math
+from datetime import datetime, timezone
 from typing import Callable, List, Optional, Sequence, Tuple
+
+from TerraLab.scene.projection import local_sidereal_angle
 
 
 SkyCoord = Tuple[float, float]  # (alt_deg, az_deg)
@@ -126,3 +129,199 @@ def screen_to_sky(
 def angular_delta_signed(a_az_deg: float, b_az_deg: float) -> float:
     """Signed shortest delta b-a in degrees within [-180, 180)."""
     return _wrap_angle_180(float(b_az_deg) - float(a_az_deg))
+
+
+def julian_day(dt: datetime) -> float:
+    """Julian Day from a timezone-aware (or assumed UTC) datetime."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    j2000 = datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    return 2451545.0 + (dt - j2000).total_seconds() / 86400.0
+
+
+def gmst_deg(jd: float) -> float:
+    """Greenwich Mean Sidereal Time in degrees."""
+    T = (float(jd) - 2451545.0) / 36525.0
+    st = (
+        280.46061837
+        + 360.98564736629 * (float(jd) - 2451545.0)
+        + 0.000387933 * T * T
+        - (T * T * T) / 38710000.0
+    )
+    return st % 360.0
+
+
+def lst_deg(jd: float, lon_deg: float) -> float:
+    """Local Sidereal Time in degrees."""
+    return (gmst_deg(float(jd)) + float(lon_deg)) % 360.0
+
+
+def ra_dec_to_alt_az(
+    ra_deg: float,
+    dec_deg: float,
+    ut_hour: float,
+    day_of_year: int,
+    latitude_deg: float,
+    longitude_deg: float = 0.0,
+    *,
+    year: Optional[int] = None,
+    default_az_deg: float = 0.0,
+) -> SkyCoord:
+    """Convert equatorial coordinates (RA/Dec) to local Alt/Az."""
+    lat_rad = math.radians(float(latitude_deg))
+    lst = local_sidereal_angle(
+        int(day_of_year),
+        float(ut_hour),
+        float(longitude_deg),
+        year=year,
+    )
+    ha_rad = math.radians(lst - float(ra_deg))
+    dec_rad = math.radians(float(dec_deg))
+
+    sin_lat = math.sin(lat_rad)
+    cos_lat = math.cos(lat_rad)
+    sin_dec = math.sin(dec_rad)
+    cos_dec = math.cos(dec_rad)
+
+    sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * math.cos(ha_rad)
+    sin_alt = max(-1.0, min(1.0, sin_alt))
+    alt = math.degrees(math.asin(sin_alt))
+
+    cos_alt = math.cos(math.radians(alt))
+    if abs(cos_alt) < 1e-10:
+        az = float(default_az_deg) % 360.0
+    else:
+        cos_az = (sin_dec - sin_alt * sin_lat) / (cos_alt * cos_lat + 1e-10)
+        cos_az = max(-1.0, min(1.0, cos_az))
+        az = math.degrees(math.acos(cos_az))
+        if math.sin(ha_rad) > 0:
+            az = 360.0 - az
+    return float(alt), float(az) % 360.0
+
+
+def altaz_to_ra_dec(
+    alt_deg: float,
+    az_deg: float,
+    ut_hour: float,
+    day_of_year: int,
+    latitude_deg: float,
+    longitude_deg: float = 0.0,
+    *,
+    year: Optional[int] = None,
+) -> Tuple[float, float]:
+    """Convert local Alt/Az to equatorial coordinates (RA/Dec)."""
+    lat = math.radians(float(latitude_deg))
+    alt = math.radians(float(alt_deg))
+    az = math.radians(float(az_deg) % 360.0)
+
+    sin_lat = math.sin(lat)
+    cos_lat = math.cos(lat)
+    sin_alt = math.sin(alt)
+    cos_alt = math.cos(alt)
+
+    sin_dec = sin_alt * sin_lat + cos_alt * cos_lat * math.cos(az)
+    sin_dec = max(-1.0, min(1.0, sin_dec))
+    dec = math.degrees(math.asin(sin_dec))
+    cos_dec = max(1e-10, math.cos(math.radians(dec)))
+
+    cos_ha = (sin_alt - sin_lat * sin_dec) / (cos_lat * cos_dec + 1e-10)
+    cos_ha = max(-1.0, min(1.0, cos_ha))
+    sin_ha = -math.sin(az) * cos_alt / (cos_dec + 1e-10)
+    ha_deg = math.degrees(math.atan2(sin_ha, cos_ha))
+
+    lst = local_sidereal_angle(
+        int(day_of_year),
+        float(ut_hour),
+        float(longitude_deg),
+        year=year,
+    )
+    ra = (lst - ha_deg) % 360.0
+    return float(ra), float(dec)
+
+
+def get_sun_alt_az(hour: float, latitude_deg: float, day_of_year: int) -> SkyCoord:
+    """Approximate solar Alt/Az for UI shading and daylight decisions."""
+    dec_deg = -23.44 * math.cos(math.radians((360.0 / 365.0) * (float(day_of_year) + 10.0)))
+    dec_rad = math.radians(dec_deg)
+    lat_rad = math.radians(float(latitude_deg))
+
+    ha_deg = (float(hour) - 12.0) * 15.0
+    ha_rad = math.radians(ha_deg)
+
+    sin_alt = (
+        math.sin(dec_rad) * math.sin(lat_rad)
+        + math.cos(dec_rad) * math.cos(lat_rad) * math.cos(ha_rad)
+    )
+    sin_alt = max(-1.0, min(1.0, sin_alt))
+    alt_deg = math.degrees(math.asin(sin_alt))
+
+    cos_alt_val = math.cos(math.radians(alt_deg))
+    if abs(cos_alt_val) < 1e-4:
+        az_deg = 180.0
+    else:
+        cos_az = (math.sin(dec_rad) - sin_alt * math.sin(lat_rad)) / (cos_alt_val * math.cos(lat_rad))
+        cos_az = max(-1.0, min(1.0, cos_az))
+        az_deg = math.degrees(math.acos(cos_az))
+        if math.sin(ha_rad) > 0:
+            az_deg = 360.0 - az_deg
+    return float(alt_deg), float(az_deg)
+
+
+def calculate_sun_times(latitude_deg: float, day_of_year: int) -> Tuple[float, float]:
+    """Approximate sunrise/sunset local solar hours."""
+    dec = -23.44 * math.cos(math.radians((360.0 / 365.0) * (float(day_of_year) + 10.0)))
+    lat_rad = math.radians(float(latitude_deg))
+    dec_rad = math.radians(dec)
+
+    val = -math.tan(lat_rad) * math.tan(dec_rad)
+    val = max(-1.0, min(1.0, val))
+    ha_rad = math.acos(val)
+    half_day = math.degrees(ha_rad) / 15.0
+
+    sunrise = 12.0 - half_day
+    sunset = 12.0 + half_day
+    return float(sunrise), float(sunset)
+
+
+def apply_parallax_equatorial(
+    ra_deg: float,
+    dec_deg: float,
+    dist_km: float,
+    latitude_deg: float,
+    lst_deg_value: float,
+) -> Tuple[float, float]:
+    """Topocentric RA/Dec from geocentric RA/Dec using parallax correction."""
+    re = 6378.14
+    f = 1.0 / 298.257223563
+    phi_rad = math.radians(float(latitude_deg))
+    u = math.atan((1 - f) ** 2 * math.tan(phi_rad))
+    rho_sin_phi = math.sin(u) * 0.99664719
+    rho_cos_phi = math.cos(u)
+
+    ra_rad = math.radians(float(ra_deg))
+    dec_rad = math.radians(float(dec_deg))
+    lst_rad = math.radians(float(lst_deg_value))
+
+    cd = math.cos(dec_rad)
+    sd = math.sin(dec_rad)
+    cr = math.cos(ra_rad)
+    sr = math.sin(ra_rad)
+
+    x_geo = float(dist_km) * cd * cr
+    y_geo = float(dist_km) * cd * sr
+    z_geo = float(dist_km) * sd
+
+    cl = math.cos(lst_rad)
+    sl = math.sin(lst_rad)
+    x_obs = re * rho_cos_phi * cl
+    y_obs = re * rho_cos_phi * sl
+    z_obs = re * rho_sin_phi
+
+    xt = x_geo - x_obs
+    yt = y_geo - y_obs
+    zt = z_geo - z_obs
+    rt = math.sqrt(xt * xt + yt * yt + zt * zt)
+
+    ra_topo = math.degrees(math.atan2(yt, xt)) % 360.0
+    dec_topo = math.degrees(math.asin(zt / max(rt, 1e-9)))
+    return float(ra_topo), float(dec_topo)

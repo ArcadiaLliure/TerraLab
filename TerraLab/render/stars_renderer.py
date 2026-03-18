@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import random
 
 from PyQt5.QtCore import QPointF, Qt
-from PyQt5.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QRadialGradient
+from PyQt5.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPolygonF, QRadialGradient
 
 try:
     import numpy as np
@@ -16,6 +17,345 @@ except Exception:  # pragma: no cover
 from TerraLab.scene.projection import project_universal_stereo_numpy, radec_to_altaz_numpy
 from TerraLab.util.color import color_from_bp_rp
 from TerraLab.util.math2d import clamp
+from TerraLab.widgets.telescope_runtime import update_star_rendering_params
+
+
+def get_scope_solar_pattern(*, canvas=None, impl=None):
+    if callable(impl):
+        return impl()
+    return get_scope_solar_pattern_impl(canvas)
+
+
+def draw_scope_solar_disc(painter, radius, *, canvas=None, impl=None):
+    if callable(impl):
+        return impl(painter, radius)
+    return draw_scope_solar_disc_impl(canvas, painter, radius)
+
+
+def get_scope_solar_pattern_impl(canvas):
+    if canvas is None:
+        return {"grains": [], "spots": []}
+
+    key = (
+        int(getattr(canvas.parent_widget, "manual_year", 2026)),
+        int(getattr(canvas.parent_widget, "manual_day", 0)),
+    )
+    if canvas._scope_solar_pattern_key == key and canvas._scope_solar_pattern is not None:
+        return canvas._scope_solar_pattern
+
+    seed = key[0] * 1000 + key[1]
+    rng_grain = random.Random(seed + 101)
+    rng_spots = random.Random(seed + 907)
+    grains = []
+    for _ in range(180):
+        ang = rng_grain.random() * math.tau
+        rad_n = 0.05 + 0.92 * math.sqrt(rng_grain.random())
+        radius_n = 0.006 + 0.015 * rng_grain.random()
+        alpha = int(6 + 18 * rng_grain.random())
+        grains.append((ang, rad_n, radius_n, alpha))
+
+    spots = []
+    spot_groups = 3 + int(rng_spots.random() * 5)
+    for _ in range(spot_groups):
+        ang = rng_spots.random() * math.tau
+        rad_n = 0.10 + 0.70 * rng_spots.random()
+        pen_w_n = 0.07 + 0.06 * rng_spots.random()
+        pen_h_ratio = 0.55 + 0.35 * rng_spots.random()
+        umb_w_ratio = 0.35 + 0.25 * rng_spots.random()
+        umb_h_ratio = 0.35 + 0.25 * rng_spots.random()
+        rot_deg = rng_spots.uniform(0.0, 180.0)
+        micro = []
+        n_micro = 1 + int(rng_spots.random() * 3)
+        for _j in range(n_micro):
+            da = rng_spots.random() * math.tau
+            dr_mul = 0.7 + 1.3 * rng_spots.random()
+            mr_mul = 0.10 + 0.10 * rng_spots.random()
+            micro.append((da, dr_mul, mr_mul))
+        spots.append(
+            {
+                "ang": ang,
+                "rad_n": rad_n,
+                "pen_w_n": pen_w_n,
+                "pen_h_ratio": pen_h_ratio,
+                "umb_w_ratio": umb_w_ratio,
+                "umb_h_ratio": umb_h_ratio,
+                "rot_deg": rot_deg,
+                "micro": micro,
+            }
+        )
+
+    canvas._scope_solar_pattern_key = key
+    canvas._scope_solar_pattern = {"grains": grains, "spots": spots}
+    return canvas._scope_solar_pattern
+
+
+def draw_scope_solar_disc_impl(canvas, painter, radius):
+    if canvas is None:
+        return
+    rr = max(2.0, float(radius))
+    painter.save()
+    disk_path = QPainterPath()
+    disk_path.addEllipse(QPointF(0, 0), rr, rr)
+    painter.setClipPath(disk_path)
+    painter.setPen(Qt.NoPen)
+
+    base_grad = QRadialGradient(0, 0, rr)
+    base_grad.setColorAt(0.0, QColor(255, 247, 210, 255))
+    base_grad.setColorAt(0.7, QColor(247, 214, 150, 255))
+    base_grad.setColorAt(1.0, QColor(215, 160, 95, 255))
+    painter.setBrush(QBrush(base_grad))
+    painter.drawEllipse(QPointF(0, 0), rr, rr)
+
+    pattern = get_scope_solar_pattern_impl(canvas)
+    for ang, rad_n, radius_n, a in pattern["grains"]:
+        rad = rr * rad_n
+        gx = math.cos(ang) * rad
+        gy = math.sin(ang) * rad
+        gr = max(0.6, rr * radius_n)
+        painter.setBrush(QColor(255, 233, 170, a))
+        painter.drawEllipse(QPointF(gx, gy), gr, gr)
+
+    for group in pattern["spots"]:
+        ang = group["ang"]
+        rad = rr * group["rad_n"]
+        cx = math.cos(ang) * rad
+        cy = math.sin(ang) * rad
+        pen_w = rr * group["pen_w_n"]
+        pen_h = pen_w * group["pen_h_ratio"]
+        umb_w = pen_w * group["umb_w_ratio"]
+        umb_h = pen_h * group["umb_h_ratio"]
+        rot = group["rot_deg"]
+
+        painter.save()
+        painter.translate(cx, cy)
+        painter.rotate(rot)
+        painter.setBrush(QColor(95, 70, 45, 140))
+        painter.drawEllipse(QPointF(0, 0), pen_w, pen_h)
+        painter.setBrush(QColor(45, 32, 20, 190))
+        painter.drawEllipse(QPointF(0, 0), umb_w, umb_h)
+        painter.restore()
+
+        for da, dr_mul, mr_mul in group["micro"]:
+            dr = pen_w * dr_mul
+            mx = cx + math.cos(da) * dr
+            my = cy + math.sin(da) * dr
+            mr = max(0.8, pen_w * mr_mul)
+            painter.setBrush(QColor(60, 42, 26, 150))
+            painter.drawEllipse(QPointF(mx, my), mr, mr)
+
+    limb_grad = QRadialGradient(0, 0, rr)
+    limb_grad.setColorAt(0.6, QColor(0, 0, 0, 0))
+    limb_grad.setColorAt(0.92, QColor(70, 45, 25, 60))
+    limb_grad.setColorAt(1.0, QColor(60, 35, 20, 120))
+    painter.setBrush(QBrush(limb_grad))
+    painter.drawEllipse(QPointF(0, 0), rr, rr)
+
+    painter.setClipping(False)
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(QPen(QColor(255, 235, 180, 120), 0.8))
+    painter.drawEllipse(QPointF(0, 0), rr, rr)
+    painter.restore()
+
+
+def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
+    pw = canvas.parent_widget
+    is_moving = canvas._camera_interaction_active(include_time_drag=True, include_animation=True)
+
+    if canvas._cached_trail_image and not canvas._cached_trail_image.isNull():
+        painter.drawImage(0, 0, canvas._cached_trail_image)
+
+    if is_moving:
+        diff = end_hour - start_hour
+        if diff < -12.0:
+            diff += 24.0
+        elif diff > 12.0:
+            diff -= 24.0
+        if diff > 0.001:
+            draw_analytic_trails_numpy_impl(
+                canvas,
+                painter,
+                start_hour,
+                end_hour,
+                diff,
+                n_steps=5,
+                limit=3.0,
+                is_moving=True,
+            )
+
+    if np is not None and hasattr(pw, "np_ra") and not canvas.trail_rendering_busy:
+        canvas.trail_rendering_busy = True
+        vm_trail = pw.recompute_visual_magnitude_model(
+            target_alt_deg=canvas.elevation_angle,
+            sun_alt_deg=-18.0,
+        )
+        auto_bortle = bool(getattr(pw, "is_auto_bortle", True))
+        if auto_bortle:
+            bortle_class = max(1.0, min(9.0, float(getattr(pw, "auto_bortle_estimate", 1))))
+        else:
+            bortle_class = max(1.0, min(9.0, 1.0 + (7.6 - float(pw.magnitude_limit)) / 0.5))
+        trail_state = {
+            "scope_enabled": bool(canvas.scope_mode_enabled()),
+            "auto_bortle": auto_bortle,
+            "bortle": bortle_class,
+            "scope_mlim": float(vm_trail.scope_limit_mag),
+            "manual_mlim": float(pw.magnitude_limit),
+        }
+        update_star_rendering_params(trail_state)
+        trail_mag_limit = float(trail_state.get("render_mag_limit", vm_trail.scope_limit_mag))
+        params = {
+            "width": canvas.width(),
+            "height": canvas.height(),
+            "zoom_level": canvas.zoom_level,
+            "vertical_ratio": canvas.vertical_offset_ratio,
+            "elevation_angle": canvas.elevation_angle,
+            "azimuth_offset": canvas.azimuth_offset,
+            "start_hour": start_hour,
+            "end_hour": end_hour,
+            "ra": pw.np_ra,
+            "dec": pw.np_dec,
+            "mag": pw.np_mag,
+            "r": pw.np_r,
+            "g": pw.np_g,
+            "b": pw.np_b,
+            "lat_rad": math.radians(pw.latitude),
+            "day_of_year": pw.manual_day,
+            "longitude": pw.longitude,
+            "mag_limit": trail_mag_limit,
+            "is_moving": is_moving,
+            "min_diff": 0.0,
+        }
+        diff = end_hour - start_hour
+        if diff < -12.0:
+            diff += 24.0
+        elif diff > 12.0:
+            diff -= 24.0
+        if diff > 0.001:
+            canvas.request_trails_signal.emit(params)
+        else:
+            canvas.trail_rendering_busy = False
+            canvas._cached_trail_image = None
+
+
+def draw_analytic_trails_numpy_impl(canvas, painter, start_hour, end_hour, diff, n_steps, limit, is_moving):
+    pw = canvas.parent_widget
+    if not is_moving:
+        limit = min(limit, 5.0)
+        n_steps = min(n_steps, 40)
+    mask_mag = pw.np_mag < limit
+    if not np.any(mask_mag):
+        return
+
+    ra = pw.np_ra[mask_mag]
+    dec = pw.np_dec[mask_mag]
+    f_r = pw.np_r[mask_mag]
+    f_g = pw.np_g[mask_mag]
+    f_b = pw.np_b[mask_mag]
+
+    steps_t = np.linspace(0.0, 1.0, n_steps + 1)
+    steps_h = start_hour + diff * steps_t
+    day_of_year = pw.manual_day
+    base_lst_0 = (100.0 + day_of_year * 0.9856 + pw.longitude) % 360
+    step_lsts = (base_lst_0 + steps_h * 15.0) % 360
+    step_lsts = step_lsts[np.newaxis, :]
+
+    ra_col = ra[:, np.newaxis]
+    ha = step_lsts - ra_col
+    ha_rad = np.radians(ha)
+    dec_rad = np.radians(dec)[:, np.newaxis]
+
+    lat_rad = math.radians(pw.latitude)
+    sin_lat = math.sin(lat_rad)
+    cos_lat = math.cos(lat_rad)
+    sin_dec = np.sin(dec_rad)
+    cos_dec = np.cos(dec_rad)
+    sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * np.cos(ha_rad)
+    sin_alt = np.clip(sin_alt, -1.0, 1.0)
+    alt_rad = np.arcsin(sin_alt)
+    cos_alt = np.cos(alt_rad)
+    cos_az_num = sin_dec - sin_alt * sin_lat
+    cos_az_den = cos_alt * cos_lat + 1e-10
+    cos_az = np.clip(cos_az_num / cos_az_den, -1.0, 1.0)
+    az_rad = np.arccos(cos_az)
+    sin_ha = np.sin(ha_rad)
+    az_rad = np.where(sin_ha > 0, 2 * np.pi - az_rad, az_rad)
+
+    w, h = canvas.width(), canvas.height()
+    scale_h = h / 2.0 * canvas.zoom_level
+    cx = w / 2.0
+    cy_base = h / 2.0 + (h * canvas.vertical_offset_ratio)
+    elev_cam_rad = math.radians(canvas.elevation_angle)
+    y_center_val = 2.0 * math.tan(elev_cam_rad / 2.0)
+    cam_az_rad = math.radians(canvas.azimuth_offset)
+    az_rel_rad = az_rad - cam_az_rad
+    cos_alt = np.cos(alt_rad)
+    sin_alt = np.sin(alt_rad)
+    cos_az = np.cos(az_rel_rad)
+    sin_az = np.sin(az_rel_rad)
+    denom = 1.0 + cos_alt * cos_az
+    invalid = denom <= 1e-6
+    denom = np.where(invalid, 1.0, denom)
+    k = 2.0 / denom
+    x = k * cos_alt * sin_az
+    y = k * sin_alt
+    sx = cx + x * scale_h
+    sy = cy_base - (y - y_center_val) * scale_h
+    jump_threshold = min(w, h) * 0.5
+
+    batches = {}
+    for i in range(len(ra)):
+        row_x = sx[i]
+        row_y = sy[i]
+        row_inv = invalid[i]
+        if np.all(row_inv):
+            continue
+        key = (int(f_r[i]), int(f_g[i]), int(f_b[i]))
+        if key not in batches:
+            batches[key] = QPainterPath()
+        path = batches[key]
+        valid_idxs = np.where(~row_inv)[0]
+        if len(valid_idxs) < 2:
+            continue
+        diffs = np.diff(valid_idxs)
+        breaks = np.where(diffs > 1)[0]
+        starts = [valid_idxs[0]]
+        ends = []
+        for b in breaks:
+            ends.append(valid_idxs[b])
+            starts.append(valid_idxs[b + 1])
+        ends.append(valid_idxs[-1])
+        for s_idx, e_idx in zip(starts, ends):
+            chunk_x = row_x[s_idx : e_idx + 1]
+            chunk_y = row_y[s_idx : e_idx + 1]
+            if len(chunk_x) < 2:
+                continue
+            dx = np.abs(np.diff(chunk_x))
+            dy = np.abs(np.diff(chunk_y))
+            jumps = (dx + dy) > jump_threshold
+            if np.any(jumps):
+                j_locs = np.where(jumps)[0]
+                c_starts = [0]
+                c_ends = []
+                for jl in j_locs:
+                    c_ends.append(jl)
+                    c_starts.append(jl + 1)
+                c_ends.append(len(chunk_x) - 1)
+                for cs, ce in zip(c_starts, c_ends):
+                    if ce >= cs:
+                        p_pts = [QPointF(float(x_val), float(y_val)) for x_val, y_val in zip(chunk_x[cs : ce + 1], chunk_y[cs : ce + 1])]
+                        if len(p_pts) > 1:
+                            path.addPolygon(QPolygonF(p_pts))
+            else:
+                p_pts = [QPointF(float(x_val), float(y_val)) for x_val, y_val in zip(chunk_x, chunk_y)]
+                if len(p_pts) > 1:
+                    path.addPolygon(QPolygonF(p_pts))
+
+    alpha_val = 120 if not is_moving else 60
+    painter.setBrush(Qt.NoBrush)
+    painter.setRenderHint(QPainter.Antialiasing, False if is_moving else True)
+    for (r, g, b), path in batches.items():
+        color = QColor(r, g, b, alpha_val)
+        painter.setPen(QPen(color, 1.0))
+        painter.drawPath(path)
 
 
 @dataclass
@@ -198,9 +538,24 @@ class StarsRenderer:
         self._mag_order = valid_idx[order_local]
         return self._mag_sorted, self._mag_order
 
-    def _non_scope_prefilter(self, ra_all, dec_all, mag_all, pre_limit: float, assume_sorted: bool = False):
+    def _non_scope_prefilter(
+        self,
+        ra_all,
+        dec_all,
+        mag_all,
+        pre_limit: float,
+        assume_sorted: bool = False,
+        max_count: int | None = None,
+    ):
         if np is None or ra_all is None or dec_all is None or mag_all is None:
             return None
+
+        max_count_i = None
+        if max_count is not None:
+            try:
+                max_count_i = int(max(1, int(max_count)))
+            except Exception:
+                max_count_i = None
 
         try:
             ptr_ra = int(np.asarray(ra_all).__array_interface__["data"][0])
@@ -213,6 +568,7 @@ class StarsRenderer:
                 int(len(mag_all)),
                 int(round(float(pre_limit) * 20.0)),
                 1 if assume_sorted else 0,
+                int(max_count_i) if max_count_i is not None else -1,
             )
         except Exception:
             cache_key = (
@@ -222,6 +578,7 @@ class StarsRenderer:
                 int(len(mag_all)),
                 int(round(float(pre_limit) * 20.0)),
                 1 if assume_sorted else 0,
+                int(max_count_i) if max_count_i is not None else -1,
             )
 
         if self._nonscope_prefilter_key == cache_key and self._nonscope_prefilter_indices is not None:
@@ -238,6 +595,8 @@ class StarsRenderer:
                 self._nonscope_prefilter_key = cache_key
                 self._nonscope_prefilter_indices = np.array([], dtype=np.int32)
                 return self._nonscope_prefilter_indices
+            if max_count_i is not None:
+                hi = min(hi, int(max_count_i))
             idx = np.arange(hi, dtype=np.int32)
             self._nonscope_prefilter_key = cache_key
             self._nonscope_prefilter_indices = idx
@@ -252,11 +611,41 @@ class StarsRenderer:
             self._nonscope_prefilter_key = cache_key
             self._nonscope_prefilter_indices = np.array([], dtype=np.int32)
             return self._nonscope_prefilter_indices
+        if max_count_i is not None:
+            hi = min(hi, int(max_count_i))
 
         idx = np.asarray(mag_order[:hi], dtype=np.int32)
         self._nonscope_prefilter_key = cache_key
         self._nonscope_prefilter_indices = idx
         return idx
+
+    def _cap_candidates_by_brightness(
+        self,
+        catalog_idx,
+        mag_all,
+        max_candidates: int,
+        *,
+        assume_mag_sorted: bool = False,
+    ):
+        if catalog_idx is None:
+            return None
+        n = int(len(catalog_idx))
+        max_c = int(max(1, int(max_candidates)))
+        if n <= max_c:
+            return catalog_idx
+
+        if assume_mag_sorted:
+            return np.asarray(catalog_idx[:max_c], dtype=np.int32)
+
+        try:
+            mag_sub = np.asarray(mag_all[catalog_idx], dtype=np.float32)
+            if len(mag_sub) <= max_c:
+                return np.asarray(catalog_idx, dtype=np.int32)
+            keep_local = np.argpartition(mag_sub, max_c - 1)[:max_c]
+            keep_order = np.argsort(mag_sub[keep_local], kind="mergesort")
+            return np.asarray(catalog_idx[keep_local[keep_order]], dtype=np.int32)
+        except Exception:
+            return np.asarray(catalog_idx[:max_c], dtype=np.int32)
 
     def _reset_scope_spatial_index(self) -> None:
         self._scope_grid_key = None
@@ -286,7 +675,7 @@ class StarsRenderer:
         if key is None or self._scope_index_pending_key == key:
             self._scope_index_pending_key = None
 
-    def _ensure_scope_spatial_index(self, ra_all, dec_all):
+    def _ensure_scope_spatial_index(self, ra_all, dec_all, *, allow_sync_build: bool = True):
         if np is None or ra_all is None or dec_all is None:
             return None, None
 
@@ -300,6 +689,9 @@ class StarsRenderer:
 
         self._reset_scope_spatial_index()
         if self._scope_index_pending_key == key:
+            return None, None
+        if not bool(allow_sync_build):
+            self._scope_index_pending_key = key
             return None, None
 
         sorted_indices, offsets = build_scope_spatial_index_payload(
@@ -364,8 +756,13 @@ class StarsRenderer:
         dec_pad: float,
         pre_limit: float,
         interaction_active: bool = False,
+        allow_sync_index_build: bool = True,
     ):
-        grid_indices, grid_offsets = self._ensure_scope_spatial_index(ra_all, dec_all)
+        grid_indices, grid_offsets = self._ensure_scope_spatial_index(
+            ra_all,
+            dec_all,
+            allow_sync_build=allow_sync_index_build,
+        )
         if grid_indices is None or grid_offsets is None:
             return None, 0, 0
 
@@ -737,6 +1134,24 @@ class StarsRenderer:
         scope_spatial_prefilter_pending = False
         scope_tile_count = 0
         scope_tile_candidates = 0
+        try:
+            scope_sync_index_build_max_rows = int(max(50_000, int(extras.get("scope_sync_index_build_max_rows", 750_000))))
+        except Exception:
+            scope_sync_index_build_max_rows = 750_000
+        scope_allow_sync_index_build = bool(extras.get("scope_allow_sync_index_build", False))
+        allow_sync_scope_index_build = bool(
+            scope_allow_sync_index_build or int(len(ra_all)) <= int(scope_sync_index_build_max_rows)
+        )
+
+        try:
+            pending_cap_interaction = int(max(5_000, int(extras.get("scope_pending_prefilter_cap_interaction", 40_000))))
+        except Exception:
+            pending_cap_interaction = 40_000
+        try:
+            pending_cap_static = int(max(5_000, int(extras.get("scope_pending_prefilter_cap_static", 70_000))))
+        except Exception:
+            pending_cap_static = 70_000
+        pending_prefilter_cap = pending_cap_interaction if interaction_active else pending_cap_static
 
         if (
             scope_enabled
@@ -758,6 +1173,7 @@ class StarsRenderer:
                 dec_pad=float(dec_pad),
                 pre_limit=float(pre_limit),
                 interaction_active=interaction_active,
+                allow_sync_index_build=allow_sync_scope_index_build,
             )
             if diag is not None:
                 diag.stop_timer("stars_scope_prefilter")
@@ -769,6 +1185,7 @@ class StarsRenderer:
                     mag_all,
                     float(pre_limit),
                     assume_sorted=catalog_mag_sorted,
+                    max_count=int(pending_prefilter_cap),
                 )
             else:
                 used_scope_spatial_prefilter = True
@@ -784,6 +1201,44 @@ class StarsRenderer:
         if catalog_idx is None or len(catalog_idx) == 0:
             return self._empty_result()
 
+        # Bound pre-AltAz candidate count in scope mode to keep frame time stable.
+        scope_candidate_cap_applied = False
+        scope_candidate_cap_value = 0
+        if scope_enabled:
+            try:
+                scope_cap_interaction = int(
+                    max(10_000, int(extras.get("scope_pre_altaz_max_candidates_interaction", 120_000)))
+                )
+            except Exception:
+                scope_cap_interaction = 120_000
+            try:
+                scope_cap_static = int(
+                    max(10_000, int(extras.get("scope_pre_altaz_max_candidates_static", 220_000)))
+                )
+            except Exception:
+                scope_cap_static = 220_000
+            try:
+                scope_cap_pending = int(
+                    max(5_000, int(extras.get("scope_pre_altaz_max_candidates_pending", 60_000)))
+                )
+            except Exception:
+                scope_cap_pending = 60_000
+
+            if scope_spatial_prefilter_pending:
+                scope_candidate_cap_value = int(scope_cap_pending)
+            else:
+                scope_candidate_cap_value = int(scope_cap_interaction if interaction_active else scope_cap_static)
+
+            if int(len(catalog_idx)) > int(scope_candidate_cap_value):
+                scope_candidate_cap_applied = True
+                assume_sorted_for_cap = bool(scope_spatial_prefilter_pending and catalog_mag_sorted)
+                catalog_idx = self._cap_candidates_by_brightness(
+                    catalog_idx,
+                    mag_all,
+                    int(scope_candidate_cap_value),
+                    assume_mag_sorted=assume_sorted_for_cap,
+                )
+
         mag = np.asarray(mag_all[catalog_idx], dtype=np.float32)
         bp_rp = bp_rp_all[catalog_idx] if bp_rp_all is not None else None
 
@@ -794,6 +1249,10 @@ class StarsRenderer:
             diag.set_counter("scope_tile_candidates", int(scope_tile_candidates))
             diag.set_counter("scope_prefilter_count", int(len(catalog_idx)))
             diag.set_counter("catalog_mag_sorted", 1 if catalog_mag_sorted else 0)
+            diag.set_counter("scope_allow_sync_index_build", 1 if allow_sync_scope_index_build else 0)
+            diag.set_counter("scope_pending_prefilter_cap", int(pending_prefilter_cap))
+            diag.set_counter("scope_candidate_cap", int(scope_candidate_cap_value))
+            diag.set_counter("scope_candidate_cap_applied", 1 if scope_candidate_cap_applied else 0)
             diag.start_timer("stars_altaz")
         alt_deg, az_deg = self._cached_altaz(
             ra_all=ra_all,
