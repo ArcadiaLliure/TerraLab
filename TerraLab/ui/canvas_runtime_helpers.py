@@ -6,29 +6,55 @@ def canvas_update_skyfield_cache(canvas, ut_hour, day_of_year):
     from TerraLab.ui import sky_widget_impl as _impl
     globals().update(_impl.__dict__)
     self = canvas
-    # Throttle updates (cache for 1.5 seconds approx = 0.0004 hours)
-    # Also include day/lat/lon/zoom in validity check basically handled by loose time check?
-    # No, zoom affects visual radius, so we must separate Astrometric Data vs Screen Data.
-    # Here we cache ASTROMETRIC data (Alt, Az, Mag, Dist, Phase).
-    # Screen projection happens every frame.
+    # Throttle updates (cache for 1.5 seconds approx = 0.0004 hours).
+    # The key must include the full observer context to avoid cross-location reuse.
+    if not isinstance(getattr(self, "_sf_cache", None), dict):
+        self._sf_cache = {}
     cache_valid = False
-    last_t = self._sf_cache.get('time', -1.0)
-    # Validate cache key (Day + Hour)
-    # Assuming Lat/Lon doesn't change rapidly.
-    if abs(ut_hour - last_t) < 0.0004 and self._sf_cache['data'] is not None:
+    cache = self._sf_cache
+    now = datetime.now()
+    current_year = int(getattr(self.parent_widget, "manual_year", now.year))
+    current_day = int(day_of_year)
+    current_lat = float(self.parent_widget.latitude)
+    current_lon = float(self.parent_widget.longitude)
+    last_t = float(cache.get("time", -1.0))
+    last_day = cache.get("day", None)
+    last_year = cache.get("year", None)
+    last_lat = cache.get("lat", None)
+    last_lon = cache.get("lon", None)
+    try:
+        same_geo = (
+            abs(float(last_lat) - current_lat) < 1e-9
+            and abs(float(last_lon) - current_lon) < 1e-9
+        )
+    except Exception:
+        same_geo = False
+    if (
+        abs(float(ut_hour) - last_t) < 0.0004
+        and last_day == current_day
+        and last_year == current_year
+        and same_geo
+        and cache.get("data") is not None
+    ):
         cache_valid = True
     if cache_valid: return
     # Regenerate Cache
     if not SKYFIELD_AVAILABLE or not hasattr(self.parent_widget, 'eph'):
-        self._sf_cache['data'] = None
+        self._sf_cache = {
+            "time": float(ut_hour),
+            "ut_hour": float(ut_hour),
+            "day": current_day,
+            "year": current_year,
+            "lat": current_lat,
+            "lon": current_lon,
+            "data": None,
+        }
         return
     try:
         ts = self.parent_widget.ts
         eph = self.parent_widget.eph
-        observer = wgs84.latlon(self.parent_widget.latitude, self.parent_widget.longitude)
-        now = datetime.now()
-        y = getattr(self.parent_widget, 'manual_year', now.year)
-        base_date = datetime(y, 1, 1) + timedelta(days=day_of_year)
+        observer = wgs84.latlon(current_lat, current_lon)
+        base_date = datetime(current_year, 1, 1) + timedelta(days=current_day)
         target_dt = base_date + timedelta(hours=ut_hour)
         t = ts.from_datetime(target_dt.replace(tzinfo=timezone.utc))
         earth = eph['earth']
@@ -99,10 +125,26 @@ def canvas_update_skyfield_cache(canvas, ut_hour, day_of_year):
             'planets': planets_data,
             'eclipse_factor': eclipse_factor
         }
-        self._sf_cache = {'time': ut_hour, 'data': cache_data}
+        self._sf_cache = {
+            "time": float(ut_hour),
+            "ut_hour": float(ut_hour),
+            "day": current_day,
+            "year": current_year,
+            "lat": current_lat,
+            "lon": current_lon,
+            "data": cache_data,
+        }
     except Exception as e:
         # print(f"Cache Update Error: {e}")
-        self._sf_cache['data'] = None
+        self._sf_cache = {
+            "time": float(ut_hour),
+            "ut_hour": float(ut_hour),
+            "day": current_day,
+            "year": current_year,
+            "lat": current_lat,
+            "lon": current_lon,
+            "data": None,
+        }
 
 def canvas_scope_hud_star_count(canvas):
     from TerraLab.ui import sky_widget_impl as _impl
@@ -322,21 +364,9 @@ def canvas_log_positions(canvas):
         if not os.path.exists(log_dir):
             os.makedirs(log_dir)
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # Re-calc state
-        local_hour = self.parent_widget.get_current_hour()
-        # TZ Logic (Duplicated from paintEvent for robust standalonecalc)
-        try:
-            sim_y = self.parent_widget.manual_year
-            sim_d = self.parent_widget.manual_day
-            sim_dt_start = datetime(sim_y, 1, 1) + timedelta(days=sim_d)
-            h_int = int(local_hour)
-            m_int = int((local_hour - h_int)*60)
-            sim_dt_naive = sim_dt_start.replace(hour=h_int % 24, minute=m_int % 60)
-            sim_dt_local = sim_dt_naive.astimezone()
-            tz_offset = sim_dt_local.utcoffset().total_seconds() / 3600.0
-        except:
-            tz_offset = datetime.now().astimezone().utcoffset().total_seconds() / 3600.0
-        ut_hour = (local_hour - tz_offset) % 24.0
+        # Re-calc state from observer-local simulated time -> UTC.
+        local_hour = float(self.parent_widget.get_current_hour())
+        ut_hour, _, _, _ = self._get_current_utc_context()
         # Astro Calc
         dt_utc = self.get_datetime_utc(ut_hour)
         jd_utc = self.julian_day(dt_utc)
@@ -397,28 +427,10 @@ def canvas_paintEvent(canvas, event):
         )
         painter.setRenderHint(QPainter.Antialiasing, not fast_interaction)
         painter.setRenderHint(QPainter.TextAntialiasing, not fast_interaction)
-        # 1. Determine Correct Time (Local -> UT) using Full Datetime
-        local_hour = self.parent_widget.get_current_hour()
-        sim_y = self.parent_widget.manual_year
-        sim_d = self.parent_widget.manual_day
-        # Base start of the local day
-        try:
-            # Create a timezone-aware datetime representing the observer's local time
-            # We assume the observer's local time follows the system's timezone rules
-            dt_base = datetime(sim_y, 1, 1) + timedelta(days=sim_d)
-            dt_local_naive = dt_base + timedelta(hours=local_hour)
-            dt_local = dt_local_naive.astimezone() # System local aware
-            # Convert to UTC accurately
-            dt_utc = dt_local.astimezone(timezone.utc)
-            tz_offset = dt_local.utcoffset().total_seconds() / 3600.0
-        except Exception as e:
-            # Fallback to current system offset if fails
-            tz_offset = datetime.now().astimezone().utcoffset().total_seconds() / 3600.0
-            dt_utc = (datetime(sim_y, 1, 1) + timedelta(days=sim_d, hours=local_hour-tz_offset)).replace(tzinfo=timezone.utc)
-        ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
+        # 1. Determine time from observer-local simulated time -> UTC.
+        ut_hour, day_of_year_utc, _, dt_utc = self._get_current_utc_context()
         self.ut_hour = ut_hour # Store for external access
-        # Day of year relative to UTC (Critically avoids the 24h jump at midnight crossings)
-        day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+        # Day of year is relative to UTC to avoid midnight-crossing jumps.
         # Scope tracking for selected stars follows simulated sky time.
         self._apply_scope_selected_target_tracking(ut_hour, day_of_year_utc)
         # Solar Hour (Apparent, Simple) for Sun

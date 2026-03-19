@@ -12,6 +12,15 @@ try:
 except ImportError:
     np = None
 from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
+try:
+    from timezonefinder import TimezoneFinder
+except Exception:
+    TimezoneFinder = None
+_TIMEZONE_FINDER = TimezoneFinder() if TimezoneFinder is not None else None
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QSlider, QLineEdit, QPushButton, QFrame,
                              QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox, QMenu, QMessageBox, QInputDialog, QShortcut)
@@ -288,6 +297,7 @@ class AstroCanvas(QWidget):
                 # Prevent "empty sky" on activation: scope starts centered on current camera.
                 self.scope_controller.set_center((float(self.elevation_angle), float(self.azimuth_offset)))
             self.scope_controller.activate()
+            self._sync_scope_zoom_from_optics()
             if hasattr(self, "hint_overlay"):
                 self.hint_overlay.hide()
         else:
@@ -303,14 +313,30 @@ class AstroCanvas(QWidget):
     def set_scope_speed_mode(self, mode: str) -> None:
         self.scope_controller.set_speed_mode(mode)
         self.update()
+    def _sync_scope_zoom_from_optics(self) -> None:
+        if not self.scope_mode_enabled():
+            return
+        try:
+            fov_w, fov_h = self.scope_controller.current_fov()
+            target_fov = max(0.2, min(93.9, max(float(fov_w), float(fov_h))))
+            target_zoom = max(0.5, min(140.0, 93.9 / target_fov))
+        except Exception:
+            return
+        if abs(float(self.zoom_level) - float(target_zoom)) > 1e-4:
+            self.zoom_level = float(target_zoom)
+            self._cached_star_image = None
+            self._cached_trail_image = None
     def set_scope_focal_mm(self, focal_mm: float) -> None:
         self.scope_controller.set_focal_mm(focal_mm)
+        self._sync_scope_zoom_from_optics()
         self.update()
     def set_scope_sensor(self, sensor_key: str) -> None:
         self.scope_controller.set_sensor_key(sensor_key)
+        self._sync_scope_zoom_from_optics()
         self.update()
     def set_scope_aspect_ratio(self, ratio):
         self.scope_controller.set_aspect_ratio(ratio)
+        self._sync_scope_zoom_from_optics()
         self.update()
     def set_measurement_tool(self, tool: str) -> None:
         self.finish_inline_constellation_rename(apply=True)
@@ -711,20 +737,78 @@ class AstroCanvas(QWidget):
         cos_dist = np.sin(alt_r) * sin_c + np.cos(alt_r) * cos_c * np.cos(d_az_r)
         cos_dist = np.clip(cos_dist, -1.0, 1.0)
         return cos_dist >= math.cos(math.radians(radius_deg))
-    def _current_ut_context(self):
-        local_hour = float(self.parent_widget.get_current_hour())
-        sim_y = int(getattr(self.parent_widget, "manual_year", datetime.now().year))
-        sim_d = int(getattr(self.parent_widget, "manual_day", 0))
+    def _resolve_observer_tzinfo(self):
+        lat = float(getattr(self.parent_widget, "latitude", 0.0))
+        lon = float(getattr(self.parent_widget, "longitude", 0.0))
+        explicit_tz = str(
+            getattr(self.parent_widget, "observer_timezone", "")
+            or get_config_value("observer_timezone", "")
+            or ""
+        ).strip()
+
+        cache_key = (round(lat, 4), round(lon, 4), explicit_tz)
+        if getattr(self, "_observer_tz_cache_key", None) == cache_key:
+            cached = getattr(self, "_observer_tzinfo", None)
+            if cached is not None:
+                return cached
+
+        tzinfo = None
+        tz_name = explicit_tz
+        if not tz_name and _TIMEZONE_FINDER is not None:
+            try:
+                tz_name = _TIMEZONE_FINDER.timezone_at(lat=lat, lng=lon) or ""
+            except Exception:
+                tz_name = ""
+
+        if tz_name and ZoneInfo is not None:
+            try:
+                tzinfo = ZoneInfo(tz_name)
+            except Exception:
+                tzinfo = None
+
+        # Prefer machine local timezone when political timezone resolution is unavailable.
+        if tzinfo is None:
+            try:
+                tzinfo = datetime.now().astimezone().tzinfo
+                if tzinfo is not None and not tz_name:
+                    tz_name = str(getattr(tzinfo, "key", "system"))
+            except Exception:
+                tzinfo = None
+
+        # Last-resort fallback map by longitude band.
+        if tzinfo is None:
+            try:
+                lon_norm = ((float(lon) + 180.0) % 360.0) - 180.0
+                offset_h = int(round(lon_norm / 15.0))
+                offset_h = max(-12, min(14, offset_h))
+                tzinfo = timezone(timedelta(hours=offset_h))
+                if not tz_name:
+                    tz_name = f"UTC{offset_h:+d}"
+            except Exception:
+                tzinfo = None
+
+        if tzinfo is None:
+            tzinfo = timezone.utc
+
+        self._observer_tz_cache_key = cache_key
+        self._observer_tzinfo = tzinfo
+        self._observer_tz_name = str(tz_name or getattr(tzinfo, "key", "system"))
+        return tzinfo
+
+    def _simulated_local_datetime(self, local_hour: float, sim_year: int = None, sim_day: int = None):
+        if sim_year is None:
+            sim_year = int(getattr(self.parent_widget, "manual_year", datetime.now().year))
+        if sim_day is None:
+            sim_day = int(getattr(self.parent_widget, "manual_day", 0))
+        dt_local_naive = datetime(int(sim_year), 1, 1) + timedelta(days=int(sim_day), hours=float(local_hour))
+        tzinfo = self._resolve_observer_tzinfo()
         try:
-            dt_base = datetime(sim_y, 1, 1) + timedelta(days=sim_d)
-            dt_local_naive = dt_base + timedelta(hours=local_hour)
-            dt_local = dt_local_naive.astimezone()
-            dt_utc = dt_local.astimezone(timezone.utc)
+            return dt_local_naive.replace(tzinfo=tzinfo)
         except Exception:
-            tz_offset = datetime.now().astimezone().utcoffset().total_seconds() / 3600.0
-            dt_utc = (datetime(sim_y, 1, 1) + timedelta(days=sim_d, hours=local_hour - tz_offset)).replace(tzinfo=timezone.utc)
-        ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
-        day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+            return dt_local_naive.astimezone()
+
+    def _current_ut_context(self):
+        ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
         return ut_hour, day_of_year_utc
     def _ensure_scope_mode_for_shortcut(self):
         if self.scope_mode_enabled():
@@ -859,15 +943,16 @@ class AstroCanvas(QWidget):
             default_az_deg=float(self.azimuth_offset),
         )
     def _get_current_utc_context(self):
-        local_hour = self.parent_widget.get_current_hour()
+        local_hour = float(self.parent_widget.get_current_hour())
         sim_y = int(self.parent_widget.manual_year)
         sim_d = int(self.parent_widget.manual_day)
         try:
-            dt_base = datetime(sim_y, 1, 1) + timedelta(days=sim_d)
-            dt_local = (dt_base + timedelta(hours=float(local_hour))).astimezone()
+            dt_local = self._simulated_local_datetime(local_hour, sim_year=sim_y, sim_day=sim_d)
+            if getattr(dt_local, "tzinfo", None) is None:
+                dt_local = dt_local.replace(tzinfo=self._resolve_observer_tzinfo())
             dt_utc = dt_local.astimezone(timezone.utc)
         except Exception:
-            tz_offset = datetime.now().astimezone().utcoffset().total_seconds() / 3600.0
+            tz_offset = self.get_simulated_tz_offset(sim_d)
             dt_utc = (datetime(sim_y, 1, 1) + timedelta(days=sim_d, hours=float(local_hour) - tz_offset)).replace(tzinfo=timezone.utc)
         ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
         day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
@@ -1025,14 +1110,26 @@ class AstroCanvas(QWidget):
     def paintEvent(self, event):
         return canvas_paintEvent(self, event)
     def get_sun_alt_az(self, hour, lat, day_of_year):
-        # Try Cache First - MUST validate time match
-        # Note: 'hour' arg is Solar Hour (Approx Local). Cache stores UT Hour.
-        # Difference is approx longitude / 15.0. We use a 0.2h (12m) tolerance.
-        if hasattr(self, '_sf_cache') and self._sf_cache.get('data') and SKYFIELD_AVAILABLE:
-            cache_t = self._sf_cache.get('time', -1.0)
-            if abs(hour - cache_t) < 0.2:
-                s = self._sf_cache['data']['sun']
-                return s['alt'], s['az']
+        # Try cache first, but only if it matches full observer context.
+        if hasattr(self, '_sf_cache') and isinstance(self._sf_cache, dict) and self._sf_cache.get('data') and SKYFIELD_AVAILABLE:
+            cache_t = float(self._sf_cache.get('time', -1.0))
+            cache_day = self._sf_cache.get('day', None)
+            cache_year = self._sf_cache.get('year', None)
+            cache_lat = self._sf_cache.get('lat', None)
+            cache_lon = self._sf_cache.get('lon', None)
+            try:
+                same_geo = (
+                    abs(float(cache_lat) - float(self.parent_widget.latitude)) < 1e-9
+                    and abs(float(cache_lon) - float(self.parent_widget.longitude)) < 1e-9
+                )
+            except Exception:
+                same_geo = False
+            same_day = cache_day == int(day_of_year)
+            same_year = cache_year == int(getattr(self.parent_widget, 'manual_year', datetime.now().year))
+            if abs(float(hour) - cache_t) < 0.2 and same_day and same_year and same_geo:
+                s = self._sf_cache['data'].get('sun', {})
+                if isinstance(s, dict) and ('alt' in s) and ('az' in s):
+                    return float(s['alt']), float(s['az'])
         return spherical_get_sun_alt_az(float(hour), float(lat), int(day_of_year))
     def draw_analytic_trails(self, painter, start_hour, end_hour):
         return render_draw_analytic_trails_impl(self, painter, start_hour, end_hour)
@@ -1412,10 +1509,21 @@ class AstroCanvas(QWidget):
     def mouseDoubleClickEvent(self, event):
         return self._input_handler.handle_mouse_double_click(event)
     # --- SKYFIELD INTEGRATION ---
-    def get_simulated_tz_offset(self, day_of_year):
-        # DST logic: ~Mar 29 (day 88) to ~Oct 25 (day 298) is Summer (+2) in Spain
-        if 88 <= day_of_year <= 298: return 2.0
-        return 1.0
+    def get_simulated_tz_offset(self, day_of_year=None):
+        try:
+            sim_day = int(self.parent_widget.manual_day if day_of_year is None else day_of_year)
+            sim_year = int(getattr(self.parent_widget, "manual_year", datetime.now().year))
+            local_hour = float(self.parent_widget.get_current_hour())
+            dt_local = self._simulated_local_datetime(local_hour, sim_year=sim_year, sim_day=sim_day)
+            off = dt_local.utcoffset()
+            if off is not None:
+                return float(off.total_seconds() / 3600.0)
+        except Exception:
+            pass
+        fallback = datetime.now().astimezone().utcoffset()
+        if fallback is None:
+            return 0.0
+        return float(fallback.total_seconds() / 3600.0)
     def perceived_disc_scale(self, alt_deg, sun_alt_deg=None, is_trained=None, horizon_refs=None, flattening=None, atmos=None, falloff_deg=35.0):
         # Defaults
         if is_trained is None: is_trained = self.trained_observer
@@ -2750,14 +2858,14 @@ class AstronomicalWidget(CustomWidgetBase):
         self._last_seek_hour = val
         self.canvas.update()
         self.canvas.update()
-        # â”€ Toast HUD: mostra hora local i UT durant el drag â”€
+        # Time bar stays LOCAL; hint shows local and UTC from observer tz conversion.
         if hasattr(self.canvas, 'hint_overlay'):
-            from datetime import datetime, timezone
-            # val is LOCAL time (as it represents the time bar)
-            tz_off = round(datetime.now().astimezone().utcoffset().total_seconds() / 3600.0, 1)
-            ut_h = (val - tz_off) % 24
+            try:
+                ut_h, _, _, _ = self.canvas._get_current_utc_context()
+            except Exception:
+                ut_h = float(val)
             lh = f"{int(val % 24):02d}:{int((val % 1)*60):02d}"
-            uth = f"{int(ut_h):02d}:{int((ut_h % 1)*60):02d}"
+            uth = f"{int(ut_h % 24):02d}:{int(((ut_h % 24) % 1)*60):02d}"
             txt = getTraduction("HUD.TimeHint", "?? {local_h} local  ·  UT {ut_h}").format(
                 local_h=lh, ut_h=uth
             )
@@ -3239,13 +3347,7 @@ class AstronomicalWidget(CustomWidgetBase):
         if not SKYFIELD_AVAILABLE or not hasattr(self, 'canvas') or not hasattr(self, 'eph'):
             return None
         try:
-            local_hour = float(self.get_current_hour())
-            sim_day = int(self.manual_day)
-            sim_year = int(getattr(self, 'manual_year', datetime.now().year))
-            tz_offset = self.canvas.get_simulated_tz_offset(sim_day)
-            dt_utc = (datetime(sim_year, 1, 1) + timedelta(days=sim_day, hours=local_hour - tz_offset)).replace(tzinfo=timezone.utc)
-            ut_hour = dt_utc.hour + dt_utc.minute / 60.0 + dt_utc.second / 3600.0
-            day_of_year_utc = (dt_utc.date() - datetime(dt_utc.year, 1, 1).date()).days
+            ut_hour, day_of_year_utc, _, _ = self.canvas._get_current_utc_context()
             self.canvas.update_skyfield_cache(ut_hour, day_of_year_utc)
         except Exception as ex:
             print(f"[AstroWidget] Search cache update failed: {ex}")
@@ -3321,3 +3423,12 @@ class AstronomicalWidget(CustomWidgetBase):
             return n.hour + n.minute/60.0
         return self.manual_hour
 """  """
+
+
+
+
+
+
+
+
+

@@ -231,9 +231,9 @@ def draw_moon_skyfield_impl(
         painter.drawEllipse(QPointF(0, 0), r, r)
         painter.restore()
 
-    effective_alpha = alpha
+    effective_alpha = float(alpha)
     if is_day:
-        effective_alpha = min(alpha, 0.85)
+        effective_alpha = min(float(alpha), 0.85)
     painter.setOpacity(effective_alpha)
 
     if is_eclipsing and sun_params:
@@ -253,9 +253,13 @@ def draw_moon_skyfield_impl(
             t_m.translate(x, y)
             final_m_path = t_m.map(raw_m_path)
             bite_path = final_s_path.intersected(final_m_path)
-            painter.setBrush(QColor(15, 15, 20))
+            # Only the overlap against the Sun is fully opaque.
+            painter.save()
+            painter.setOpacity(1.0)
+            painter.setBrush(QColor(15, 15, 20, 255))
             painter.setPen(Qt.NoPen)
             painter.drawPath(bite_path)
+            painter.restore()
 
     if illum > 0.01:
         painter.save()
@@ -820,18 +824,8 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
             # Minimal anti-bloating guardrail:
             # in wide scope fields (zoomed out), cap disc sizes so they do not
             # explode into oversized balls.
-            if scope_enabled and hasattr(canvas, "scope_controller"):
-                try:
-                    fov_w, fov_h = canvas.scope_controller.current_fov()
-                    fov_diag = math.hypot(float(fov_w), float(fov_h))
-                    # 0 @ narrow fields (<=6°), 1 @ very wide fields (>=32°)
-                    wide_t = max(0.0, min(1.0, (fov_diag - 6.0) / 26.0))
-                    # Keep current look at narrow FOV, progressively soften at wide FOV.
-                    celestial_scale = 10.0 - 5.8 * wide_t
-                    scope_disc_cap_px = max(3.5, 14.0 - 8.5 * wide_t)
-                    scope_planet_cap_px = max(2.0, 9.0 - 5.5 * wide_t)
-                except Exception:
-                    pass
+            if scope_enabled:
+                celestial_scale = 1.0
             
             # Sun Data
             s = data['sun']
@@ -847,36 +841,46 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
             d_moon_km = m['dist_km']
             moon_ang_radius_deg = m['rad_deg']
             sep_real = m['sep_real']
+            physical_overlap_deg = float(sun_ang_radius_deg) + float(moon_ang_radius_deg)
+            physical_total_margin_deg = abs(float(sun_ang_radius_deg) - float(moon_ang_radius_deg))
+            is_eclipsing_physical = float(sep_real) < physical_overlap_deg
+            is_total_physical = (
+                is_eclipsing_physical
+                and float(sep_real) <= physical_total_margin_deg
+                and float(moon_ang_radius_deg) >= float(sun_ang_radius_deg)
+            )
             
-            # ... Previous Logic for Shift ...
-            alt_m_vis = alt_m_real_deg
-            az_m_vis = az_m_real_deg
-            
-            if sep_real < 10.0:
-                blend = max(0.0, (10.0 - sep_real) / 10.0)
-                blend = blend * blend
-                mult = 1.0 + (celestial_scale - 1.0) * blend
-                d_alt = (alt_m_real_deg - alt_s_deg)
-                d_az = (az_m_real_deg - az_s_deg)
-                alt_m_vis = alt_s_deg + d_alt * mult
-                az_m_vis = az_s_deg + d_az * mult
-            
-            # ... Moon Illusion ...
+            # Start from physical topocentric positions.
+            alt_m_vis = float(alt_m_real_deg)
+            az_m_vis = float(az_m_real_deg)
+
+            # Keep perceptual scaling for regular views, but disable it near
+            # conjunction so eclipse timing/magnitude stay physically coherent.
             scale_s = canvas.perceived_disc_scale(alt_s_deg)
             scale_m = canvas.perceived_disc_scale(alt_m_vis)
-            if canvas.eclipse_lock_mode and sep_real < 2.0:
-                 scale_s = 1.0
-                 scale_m = 1.0
-                 
-            # ... Eclipse Snap ...
-            snap_threshold = 0.1
-            if sep_real < snap_threshold:
-                snap_strength = ((snap_threshold - sep_real) / snap_threshold) ** 2
-                alt_m_vis = alt_m_vis * (1.0 - snap_strength) + alt_s_deg * snap_strength
-                az_m_vis = az_m_vis * (1.0 - snap_strength) + az_s_deg * snap_strength
+            if float(sep_real) < 12.0:
+                scale_s = 1.0
+                scale_m = 1.0
 
-            sun_radius_px = max(3.0, sun_ang_radius_deg * pixels_per_deg * celestial_scale * scale_s)
-            moon_radius_px = max(3.0, moon_ang_radius_deg * pixels_per_deg * celestial_scale * scale_m)
+            # In eclipse-lock mode we prioritize physical geometry strictly.
+            eclipse_lock = bool(getattr(canvas, "eclipse_lock_mode", False))
+            disc_scale = float(celestial_scale)
+            if eclipse_lock and float(sep_real) < 2.0:
+                disc_scale = 1.0
+
+            # Optional visual compensation (only when eclipse lock is OFF):
+            # if discs are inflated, inflate center separation by the same
+            # factor so partial/total classification remains coherent.
+            if (not eclipse_lock) and float(sep_real) < 2.0 and disc_scale > 1.0001:
+                d_alt = float(alt_m_vis) - float(alt_s_deg)
+                d_az = float(az_m_vis) - float(az_s_deg)
+                d_az = ((d_az + 180.0) % 360.0) - 180.0
+                geom_mult = float(disc_scale)
+                alt_m_vis = float(alt_s_deg) + d_alt * geom_mult
+                az_m_vis = (float(az_s_deg) + d_az * geom_mult) % 360.0
+
+            sun_radius_px = max(3.0, sun_ang_radius_deg * pixels_per_deg * disc_scale * scale_s)
+            moon_radius_px = max(3.0, moon_ang_radius_deg * pixels_per_deg * disc_scale * scale_m)
             if scope_disc_cap_px is not None:
                 sun_radius_px = min(sun_radius_px, float(scope_disc_cap_px))
                 moon_radius_px = min(moon_radius_px, float(scope_disc_cap_px))
@@ -904,11 +908,8 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                  sun_color = interpolate_col_loc(c_golden, c_horizon, t_col)
             else: sun_color = c_deep
             
-            # Corona
-            corona_opacity = 0.0
-            dist_vis = math.hypot(alt_m_vis - alt_s_deg, az_m_vis - az_s_deg)
-            if sun_radius_px < moon_radius_px and dist_vis < (moon_radius_px - sun_radius_px):
-                corona_opacity = 1.0
+            # Corona visibility must follow physical totality, not enlarged visual discs.
+            corona_opacity = 1.0 if is_total_physical else 0.0
             
             # Weather Dimming
             eff_sun_color = QColor(sun_color)
@@ -919,7 +920,7 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                 eff_sun_color.setAlpha(int(original_alpha * (1.0 - dim_factor * 0.995)))
                 eff_corona_opacity *= (1.0 - dim_factor)
             
-            visual_ppd = pixels_per_deg * celestial_scale
+            visual_ppd = pixels_per_deg * disc_scale
             
             if show_sun_moon:
                 canvas.draw_sun_skyfield(painter, alt_s_deg, az_s_deg, sun_radius_px, eff_sun_color, eff_corona_opacity, visual_ppd)
@@ -930,10 +931,8 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
             angle_to_sun = math.atan2(alt_s_deg - alt_m_vis, az_s_deg - az_m_vis)
             rotation_deg = math.degrees(angle_to_sun)
             
-            # Eclipse check
-            d_az_check = (az_m_vis - az_s_deg + 180) % 360 - 180
-            dist_vis_px = (math.hypot(alt_m_vis - alt_s_deg, d_az_check)) * pixels_per_deg
-            is_eclipsing = (dist_vis_px < (sun_radius_px + moon_radius_px))
+            # Eclipse check for daytime moon visibility should follow physical overlap.
+            is_eclipsing = is_eclipsing_physical
             
             # Draw Moon
             moon_tint = QColor(240, 240, 235)
@@ -1038,6 +1037,9 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         # We now use a constant scale so it grows naturally with the camera zoom (pixels_per_deg).
         # We use 10.0 as a base "Cinematic Scale" so it looks impressive but not overwhelming.
         celestial_scale = 10.0
+        scope_enabled = bool(canvas.scope_mode_enabled())
+        if scope_enabled:
+            celestial_scale = 1.0
         
         # --- Position Retargeting (The "Shift" Fix) ---
         # To fix contact time without shrinking:
@@ -1067,63 +1069,47 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         
         # 3. Calculate Separation
         sep_real = ast_sun.separation_from(ast_moon).degrees
+        physical_overlap_deg = float(sun_ang_radius_deg) + float(moon_ang_radius_deg)
+        physical_total_margin_deg = abs(float(sun_ang_radius_deg) - float(moon_ang_radius_deg))
+        is_eclipsing_physical = float(sep_real) < physical_overlap_deg
+        is_total_physical = (
+            is_eclipsing_physical
+            and float(sep_real) <= physical_total_margin_deg
+            and float(moon_ang_radius_deg) >= float(sun_ang_radius_deg)
+        )
         
-        # 4. Apply Shift if near Eclipse (Blend Radius 10 deg)
-        # This prevents the Moon from being 120 deg away when it's just 10 deg away.
-        alt_m_vis = alt_m_real.degrees
-        az_m_vis = az_m_real.degrees
-        
-        if sep_real < 10.0:
-            # Calculate Expansion Factor
-            # At sep=0 (Total), Factor should be scale (to preserve centricity? actually scale doesn't matter at 0)
-            # At sep=Contact (0.5), VisualSep should be 0.5 * Scale. So Factor = Scale.
-            # So we want to separate by Scale.
-            
-            # Blend Factor: 1.0 (Full Shift) at 0 deg, 0.0 (No Shift) at 10 deg.
-            # Linear blend?
-            blend = max(0.0, (10.0 - sep_real) / 10.0)
-            blend = blend * blend # Smooth quadratic
-            
-            # Effective Multiplier
-            mult = 1.0 + (celestial_scale - 1.0) * blend
-            
-            # Apply vector expansion
-            # Approx linear logic for small angles
-            d_alt = (alt_m_real.degrees - alt_s.degrees)
-            d_az = (az_m_real.degrees - az_s.degrees)
-            # Correct Azimuth for cos(lat) not needed for small local shift approx?
-            # Better: Scale d_alt and d_az around Sun
-            
-            alt_m_vis = alt_s.degrees + d_alt * mult
-            az_m_vis = az_s.degrees + d_az * mult
-        
-        
-        # --- Moon Illusion (Perceptive Model) ---
+        # Start from physical topocentric positions.
+        alt_m_vis = float(alt_m_real.degrees)
+        az_m_vis = float(az_m_real.degrees)
+
+        # Keep perceptual scaling for regular views, but disable it near
+        # conjunction so eclipse timing/magnitude stay physically coherent.
         scale_s = canvas.perceived_disc_scale(alt_s.degrees)
         scale_m = canvas.perceived_disc_scale(alt_m_vis)
-        
-        # Eclipse Lock: Force 1.0 if near eclipse to ensure contact accuracy
-        if canvas.eclipse_lock_mode and sep_real < 2.0:
-             scale_s = 1.0
-             scale_m = 1.0
-             
-        # --- ECLIPSE SNAP (Magnetic Alignment) ---
-        # Compensates for micro-misalignments (GPS precision, Delta T) to ensure 
-        # the user experiences a perfect Totality/Annularity if they are very close.
-        # Threshold: 0.1 degrees (very close conjunction)
-        snap_threshold = 0.1
-        if sep_real < snap_threshold:
-            # Strong snap when very close
-            # 0.0 at threshold -> 1.0 at 0.0 separation
-            snap_strength = ((snap_threshold - sep_real) / snap_threshold) ** 2
-            
-            # Gently pull Moon towards Sun
-            alt_m_vis = alt_m_vis * (1.0 - snap_strength) + alt_s.degrees * snap_strength
-            az_m_vis = az_m_vis * (1.0 - snap_strength) + az_s.degrees * snap_strength
+        if float(sep_real) < 12.0:
+            scale_s = 1.0
+            scale_m = 1.0
+
+        # In eclipse-lock mode we prioritize physical geometry strictly.
+        eclipse_lock = bool(getattr(canvas, "eclipse_lock_mode", False))
+        disc_scale = float(celestial_scale)
+        if eclipse_lock and float(sep_real) < 2.0:
+            disc_scale = 1.0
+
+        # Optional visual compensation (only when eclipse lock is OFF):
+        # if discs are inflated, inflate center separation by the same
+        # factor so partial/total classification remains coherent.
+        if (not eclipse_lock) and float(sep_real) < 2.0 and disc_scale > 1.0001:
+            d_alt = float(alt_m_vis) - float(alt_s.degrees)
+            d_az = float(az_m_vis) - float(az_s.degrees)
+            d_az = ((d_az + 180.0) % 360.0) - 180.0
+            geom_mult = float(disc_scale)
+            alt_m_vis = float(alt_s.degrees) + d_alt * geom_mult
+            az_m_vis = (float(az_s.degrees) + d_az * geom_mult) % 360.0
 
         # Clamp min radius
-        sun_radius_px = max(3.0, sun_ang_radius_deg * pixels_per_deg * celestial_scale * scale_s)
-        moon_radius_px = max(3.0, moon_ang_radius_deg * pixels_per_deg * celestial_scale * scale_m)
+        sun_radius_px = max(3.0, sun_ang_radius_deg * pixels_per_deg * disc_scale * scale_s)
+        moon_radius_px = max(3.0, moon_ang_radius_deg * pixels_per_deg * disc_scale * scale_m)
         
         # --- SUN COLOR (Atmospheric Extinction) ---
         # Zenith: White/Yellow
@@ -1154,22 +1140,11 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
              sun_color = c_deep
 
         # --- CORONA LOGIC ---
-        # Visible if Total Eclipse (Sep ~ 0) and Moon covers Sun
-        is_total = False
-        corona_opacity = 0.0
-        
-        # Use visual separation calculated previously
-        dist_vis = math.hypot(alt_m_vis - alt_s.degrees, az_m_vis - az_s.degrees)
-        # If visual separation is small enough that Moon covers Sun
-        if sun_radius_px < moon_radius_px and dist_vis < (moon_radius_px - sun_radius_px):
-            is_total = True
-            corona_opacity = 1.0
-        elif dist_vis < (sun_radius_px + moon_radius_px):
-            # Partial/Near
-            pass
+        # Totality must be decided from physical overlap, not inflated disc rendering.
+        corona_opacity = 1.0 if is_total_physical else 0.0
         
         # Draw Sun (Background)
-        visual_ppd = pixels_per_deg * celestial_scale
+        visual_ppd = pixels_per_deg * disc_scale
         
         # Weather Dimming (Clouds/Rain obscuring Sun)
         eff_sun_color = QColor(sun_color)
@@ -1197,14 +1172,8 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         angle_to_sun = math.atan2(alt_s.degrees - alt_m_vis, az_s.degrees - az_m_vis)
         rotation_deg = math.degrees(angle_to_sun)
         
-        # Prepare Eclipse Flag for Transparency Logic
-        # Correct Azimuth Difference for Wrap-Around (0 vs 360)
-        d_az_check = (az_m_vis - az_s.degrees + 180) % 360 - 180
-        dist_vis_deg = math.hypot(alt_m_vis - alt_s.degrees, d_az_check)
-        dist_vis_px = dist_vis_deg * pixels_per_deg
-        
-        overlap_dist = sun_radius_px + moon_radius_px
-        is_eclipsing = (dist_vis_px < overlap_dist)
+        # Eclipse flag for daytime moon visibility follows physical overlap.
+        is_eclipsing = is_eclipsing_physical
 
         # Daytime Visibility Check
         moon_alpha = 1.0
@@ -1326,3 +1295,5 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
     except Exception as e:
         # print(f"Skyfield Error: {e}")
         pass
+
+

@@ -116,7 +116,15 @@ def astro_canvas_init(obj, parent):
     self.lbl_info.move(10, 50)
     self.lbl_info.hide()
     # Skyfield Cache
-    self._sf_cache = {'time': -1, 'data': None}
+    self._sf_cache = {
+        "time": -1.0,
+        "ut_hour": -999.0,
+        "day": None,
+        "year": None,
+        "lat": None,
+        "lon": None,
+        "data": None,
+    }
     self._eclipse_cache = {'time': -1, 'value': 1.0}
     self._moon_pos_cache = {}  # Cache for moon calculations
     self._last_skyfield_update = 0  # timestamp in ms
@@ -156,6 +164,7 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.runtime_layout = dict(getattr(self.asset_manager, "layout", {}))
     self.latitude = float(get_config_value("observer_lat", 41.189795))
     self.longitude = float(get_config_value("observer_lon", 1.210058))
+    self.observer_timezone = str(get_config_value("observer_timezone", "") or "").strip()
     # Manual naked-eye limit used in manual LP mode.
     self.magnitude_limit = float(get_config_value("manual_eye_limit_mag", 8.0))
     self.spike_magnitude_threshold = 3.2
@@ -276,11 +285,12 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self._active_horizon_job_id = None
     self._deferred_controls_ready = False
     self._deferred_controls_build_scheduled = False
+    # Scope/search managers must exist before any deferred UI callback can run.
+    # Some platforms may process queued singleShot events during/just-after base init.
+    self._scope_ui_manager = ScopeUIManager(self)
+    self._search_engine = AstroSearchEngine()
     # 2. Init Base Widget (Calls setup_ui -> setup_content)
     CustomWidgetBase.__init__(self, title="Astronomy", parent=parent, **kwargs)
-    # Scope UI delegator extracted from AstronomicalWidget methods.
-    # Must exist before deferred controls callbacks can run.
-    self._scope_ui_manager = ScopeUIManager(self)
     self._startup_placeholder_visible = True
     self._create_startup_placeholder()
     self._position_startup_placeholder()
@@ -363,3 +373,6 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     QTimer.singleShot(200, self._start_async_bootstrap)
     QTimer.singleShot(0, self._maybe_run_first_time_onboarding)
     QTimer.singleShot(1500, self._maybe_resume_pending_gaia_download)
+
+
+

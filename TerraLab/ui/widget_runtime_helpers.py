@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from PyQt5.QtCore import QDate, QPointF, Qt
 from PyQt5.QtWidgets import QApplication, QCalendarWidget, QDialog, QVBoxLayout
 
-from TerraLab.common.utils import getTraduction, get_config_value
+from TerraLab.common.utils import getTraduction, get_config_value, set_config_value
 from TerraLab.widgets.telescope_runtime import update_telescope_hud
 from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeInputs
 from TerraLab.widgets.sky_legacy_components import (
@@ -118,6 +118,31 @@ def request_relocation(widget):
 
         widget.latitude = new_lat
         widget.longitude = new_lon
+
+        # Observer changed: invalidate skyfield/eclipses immediately so next frame
+        # cannot reuse ephemerides from previous coordinates.
+        if hasattr(widget, "canvas"):
+            widget.canvas._sf_cache = {
+                "time": -1.0,
+                "ut_hour": -999.0,
+                "day": None,
+                "year": None,
+                "lat": None,
+                "lon": None,
+                "data": None,
+            }
+            widget.canvas._eclipse_cache = {"time": -1, "value": 1.0}
+            widget.canvas._last_skyfield_update = 0
+
+        # Keep observer-local civil time aligned with the selected coordinates.
+        try:
+            from timezonefinder import TimezoneFinder
+            tz_name = TimezoneFinder().timezone_at(lat=widget.latitude, lng=widget.longitude)
+            if tz_name:
+                widget.observer_timezone = str(tz_name)
+                set_config_value("observer_timezone", widget.observer_timezone)
+        except Exception:
+            pass
 
         if hasattr(widget, "weather"):
             widget.weather.set_location(widget.latitude, widget.longitude)
