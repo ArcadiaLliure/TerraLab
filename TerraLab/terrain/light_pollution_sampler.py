@@ -1,300 +1,694 @@
 """
 light_pollution_sampler.py
 
-Connects the DVNL GeoTIFF data to TerraLab's engine. Automatically extracts 
-radiance data around a coordinate, convolves it with a radial kernel, and 
-evaluates the SQM and Bortle class.
+Sampler for nighttime-lights rasters (DVNL-like products).
+
+Coordinate contract:
+    - User input coordinates are always geographic lat/lon in EPSG:4326.
+    - Terrain/horizon internal coordinates are EPSG:25831 meters.
+    - Raster sampling is always executed in the raster native CRS.
 """
 
 import os
+import threading
+from typing import Optional, Tuple
+
 import numpy as np
 import rasterio
-from rasterio.windows import from_bounds
+from pyproj import Transformer
 from rasterio.crs import CRS
-import threading
-import math
+from rasterio.windows import from_bounds
 
-from TerraLab.light_pollution.dvnl_io import read_raster_window_filtered
-from TerraLab.light_pollution.kernels import create_gaussian_kernel
-from TerraLab.light_pollution.bortle import sqm_to_bortle_class
 from TerraLab.common.locks import RASTERIO_LOCK
+from TerraLab.light_pollution.bortle import sqm_to_bortle_class
+from TerraLab.terrain.providers import CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL
+
 
 class LightPollutionSampler:
     """
-    Rapid sampler for the UI background worker to get local Bortle/SQM estimates 
-    from the given DVNL raster.
+    Samples radiance/SQM/Bortle from a nighttime-lights raster.
+
+    CRS policy:
+        - Inputs in lat/lon are interpreted as EPSG:4326.
+        - Inputs in terrain coordinates are interpreted as EPSG:25831 unless
+          `input_crs` is explicitly provided.
+        - Raster points are always projected to the raster native CRS.
+        - If raster CRS is missing, a single explicit fallback policy is used.
     """
-    def __init__(self, raster_path: str = None, radius_km: float = 5.0, res_km: float = 0.5):
+
+    DEFAULT_SQM = 21.0
+    DEFAULT_BORTLE = 4
+    MAX_SQM_WINDOW_PIXELS = 1024
+
+    def __init__(
+        self,
+        raster_path: str = None,
+        radius_km: float = 5.0,
+        res_km: float = 0.5,
+        terrain_crs: str = CRS_TERRAIN_INTERNAL,
+    ):
+        """
+        Initialize the light-pollution sampler.
+
+        Args:
+            raster_path: Path to the nighttime-lights GeoTIFF.
+            radius_km: Sampling radius for SQM estimation around a point.
+            res_km: Kernel resolution (km) used by SQM aggregation.
+            terrain_crs: Terrain internal CRS used by horizon engine (default EPSG:25831).
+        """
         self.raster_path = raster_path
-        self.radius_km = radius_km
-        self.res_km = res_km
-        
-        # Cache for the current region being baked
+        self.radius_km = float(radius_km)
+        self.res_km = float(res_km)
+        self.terrain_crs = str(terrain_crs or CRS_TERRAIN_INTERNAL)
+
+        # Cache for the current region loaded in raster native CRS.
         self._cached_data = None
         self._cached_transform = None
-        self._cached_bounds = None # (minx, miny, maxx, maxy) in native CRS
-        
-        # Thread safety lock for cached data and transformers
+        self._cached_bounds = None  # (minx, miny, maxx, maxy) in raster CRS
+
+        # Thread-safety for cached data and transformers.
         self._lock = threading.Lock()
-        
-        # Zenith kernel: much smaller than the propagation kernel.
-        self.kernel = create_gaussian_kernel(sigma_km=1.5, max_radius_km=radius_km, res_km=res_km)
-        
-        self._transformer = None
+
+        # SQM aggregation profile (Gaussian) in kilometers.
+        self._sqm_sigma_km = 1.5
+
+        # CRS/runtime context
         self._src_crs = None
-        self._utm_transformer = None
         self._is_geographic = False
-        
-    def estimate_zenith_sqm(self, lat: float, lon: float) -> tuple[float, int]:
-        """
-        Estimates the zenith SQM and Bortle class for the given coordinates.
-        Uses a quick window extraction from the DVNL file.
-        """
-        if not self.raster_path or not os.path.exists(self.raster_path):
-            return 21.0, 4
+        self._tr_geo_to_src = None
+        self._tr_terrain_to_src = None
+        self._terrain_crs_for_transform = self.terrain_crs
 
-        try:
-            # 1. Try Cache First
-            with self._lock:
-                if (self._cached_data is not None and 
-                    self._transformer is not None and 
-                    self._cached_bounds is not None):
-                    
-                    x, y = self._transformer.transform(lon, lat)
-                    b = self._cached_bounds
-                    # Check if point is within cached ROI (with a small safety margin)
-                    if b[0] <= x <= b[2] and b[1] <= y <= b[3]:
-                        inv = ~self._cached_transform
-                        c_off, r_off = inv * (x, y)
-                        
-                        # Search radius in pixels
-                        px_size = abs(self._cached_transform.a)
-                        if self._is_geographic:
-                            r_units = self.radius_km / 111.32 # precise deg
-                        else:
-                            r_units = self.radius_km * 1000.0
-                            
-                        r_px = int(r_units / px_size)
-                        
-                        r0 = int(r_off - r_px); r1 = int(r_off + r_px + 1)
-                        c0 = int(c_off - r_px); c1 = int(c_off + r_px + 1)
-                        
-                        # Clip to array
-                        h, w = self._cached_data.shape
-                        r_start = max(0, r0); r_end = min(h, r1)
-                        c_start = max(0, c0); c_end = min(w, c1)
-                        
-                        if r_end > r_start and c_end > c_start:
-                            arr = self._cached_data[r_start:r_end, c_start:c_end].copy()
-                            sqm, bortle = self._process_array_to_sqm(arr)
-                            # print(f"[LPSampler] Hit: {lat:.3f},{lon:.3f} -> SQM {sqm:.1f} (B{bortle})")
-                            return sqm, bortle
+        dbg_raw = str(os.getenv("TERRALAB_CRS_DEBUG", "")).strip().lower()
+        self._debug_enabled = dbg_raw in {"1", "true", "yes", "on"}
 
-            # 2. Fallback: Open file directly (serialized to avoid GDAL races)
-            with RASTERIO_LOCK:
-                with rasterio.open(self.raster_path) as src:
-                    from pyproj import Transformer
-                    src_crs = self._resolve_src_crs(src)
-                    is_geographic = bool(getattr(src_crs, "is_geographic", False))
-                    trans = Transformer.from_crs("EPSG:4326", src_crs, always_xy=True)
-                    x_cen, y_cen = trans.transform(lon, lat)
-                    
-                    if is_geographic:
-                        r_proj = self.radius_km / 111.32
-                    else:
-                        r_proj = self.radius_km * 1000.0
-                        
-                    window = from_bounds(x_cen - r_proj, y_cen - r_proj, x_cen + r_proj, y_cen + r_proj, transform=src.transform)
-                    arr = src.read(1, window=window).astype(np.float32)
-                    sqm, bortle = self._process_array_to_sqm(arr)
-                    # print(f"[LPSampler] Direct Read: SQM {sqm:.1f} (B{bortle})")
-                    return sqm, bortle
-                
-        except Exception as e:
-            print(f"[LPSampler] estimate_zenith_sqm error: {e}")
-            return 21.0, 4
+    def _debug(self, message: str) -> None:
+        if self._debug_enabled:
+            print(f"[LPSampler:CRS] {message}")
+
+    @staticmethod
+    def _default_sqm_bortle() -> Tuple[float, int]:
+        return LightPollutionSampler.DEFAULT_SQM, LightPollutionSampler.DEFAULT_BORTLE
 
     @staticmethod
     def _guess_missing_crs(src) -> CRS:
+        """
+        Guess raster CRS when metadata is missing.
+
+        Policy (single explicit fallback):
+            1) Geographic-looking world extents -> EPSG:4326.
+            2) Projected world extents:
+               - DVNL-like Equal Earth extent/name/grid -> EPSG:8857.
+               - Otherwise full-world metric extent -> EPSG:3857.
+            3) Conservative fallback -> EPSG:4326.
+        """
         try:
             b = src.bounds
             x_span = abs(float(b.right) - float(b.left))
             y_span = abs(float(b.top) - float(b.bottom))
-            max_abs = max(abs(float(b.left)), abs(float(b.right)), abs(float(b.top)), abs(float(b.bottom)))
-            # Likely geographic degrees.
+            max_abs = max(
+                abs(float(b.left)),
+                abs(float(b.right)),
+                abs(float(b.top)),
+                abs(float(b.bottom)),
+            )
+            src_name = str(getattr(src, "name", "") or "").lower()
+            src_w = int(getattr(src, "width", 0) or 0)
+            src_h = int(getattr(src, "height", 0) or 0)
+
             if max_abs <= 360.0 and x_span <= 360.0 and y_span <= 180.0:
                 return CRS.from_epsg(4326)
-            # Likely projected metric world map (common in DVNL products).
-            if max_abs <= 21000000.0 and x_span > 1000000.0 and y_span > 1000000.0:
+
+            if (
+                max_abs <= 21000000.0
+                and x_span > 1000000.0
+                and y_span > 1000000.0
+            ):
+                likely_equal_earth_extent = (
+                    33000000.0 <= x_span <= 36000000.0
+                    and 12000000.0 <= y_span <= 18000000.0
+                )
+                likely_dvnl_name = any(
+                    token in src_name
+                    for token in ("dvnl", "light_pollution", "night")
+                )
+                likely_dvnl_grid = (
+                    34000 <= src_w <= 35000 and 14500 <= src_h <= 16000
+                )
+                if (
+                    likely_equal_earth_extent
+                    or likely_dvnl_name
+                    or likely_dvnl_grid
+                ):
+                    return CRS.from_epsg(8857)
+
+                if 38000000.0 <= x_span <= 41000000.0:
+                    return CRS.from_epsg(3857)
                 return CRS.from_epsg(3857)
         except Exception:
             pass
-        # Conservative default.
         return CRS.from_epsg(4326)
 
     def _resolve_src_crs(self, src) -> CRS:
+        """
+        Resolve raster native CRS from metadata or fallback policy.
+
+        Input:
+            - Open rasterio dataset.
+        Output:
+            - CRS used as source-of-truth for raster sampling.
+        """
         if src.crs is not None:
             return src.crs
         guessed = self._guess_missing_crs(src)
-        print(f"[LPSampler] Warning: raster without CRS. Using guessed CRS={guessed}.")
+        src_name = str(getattr(src, "name", "") or "<unknown>")
+        print(
+            f"[LPSampler] Warning: raster without CRS ({src_name}). Using guessed CRS={guessed}."
+        )
         return guessed
 
-    def _process_array_to_sqm(self, arr: np.ndarray) -> tuple[float, int]:
+    def _build_runtime_context(
+        self, src, terrain_crs: Optional[str] = None
+    ) -> dict:
+        """
+        Build runtime CRS context for transformations.
+
+        Inputs:
+            - Geographic input CRS: EPSG:4326.
+            - Terrain input CRS: EPSG:25831 unless overridden.
+        Output:
+            - Context with raster CRS and explicit transformers using always_xy.
+        """
+        resolved_src_crs = self._resolve_src_crs(src)
+        terrain_crs_final = str(
+            terrain_crs or self._terrain_crs_for_transform or self.terrain_crs
+        )
+        return {
+            "src_crs": resolved_src_crs,
+            "is_geographic": bool(
+                getattr(resolved_src_crs, "is_geographic", False)
+            ),
+            "terrain_crs": terrain_crs_final,
+            "tr_geo_to_src": Transformer.from_crs(
+                CRS_GEOGRAPHIC, resolved_src_crs, always_xy=True
+            ),
+            "tr_terrain_to_src": Transformer.from_crs(
+                terrain_crs_final, resolved_src_crs, always_xy=True
+            ),
+        }
+
+    def _update_context_locked(self, context: dict) -> None:
+        self._src_crs = context["src_crs"]
+        self._is_geographic = bool(context["is_geographic"])
+        self._tr_geo_to_src = context["tr_geo_to_src"]
+        self._tr_terrain_to_src = context["tr_terrain_to_src"]
+        self._terrain_crs_for_transform = str(context["terrain_crs"])
+
+    def _radius_to_raster_units(self, radius_m: float, is_geographic: bool) -> float:
+        if is_geographic:
+            return float(radius_m) / 111320.0
+        return float(radius_m)
+
+    @staticmethod
+    def _window_bounds_from_transform(
+        trans_win, width: int, height: int
+    ) -> Tuple[float, float, float, float]:
+        """
+        Compute native CRS bounds for a cached read window.
+
+        Input CRS:
+            - Window transform coordinates in raster native CRS.
+        Output CRS:
+            - Returns `(minx, miny, maxx, maxy)` in raster native CRS.
+        """
+        left = float(trans_win.c)
+        top = float(trans_win.f)
+        right = left + float(trans_win.a) * float(width)
+        bottom = top + float(trans_win.e) * float(height)
+        minx = min(left, right)
+        maxx = max(left, right)
+        miny = min(bottom, top)
+        maxy = max(bottom, top)
+        return (minx, miny, maxx, maxy)
+
+    def _read_window_around_point(
+        self, src, x_cen: float, y_cen: float, radius_m: float, is_geographic: bool
+    ) -> Tuple[np.ndarray, object, Tuple[float, float, float, float]]:
+        """
+        Read an integer-aligned native raster window around a source-space point.
+
+        Input CRS:
+            - `x_cen`, `y_cen` in raster native CRS.
+            - `radius_m` in meters.
+        Internal sampling CRS:
+            - Raster native CRS.
+        Output:
+            - `(data, transform, bounds)` where bounds are native CRS extents.
+        """
+        from rasterio.windows import Window
+
+        radius_native = self._radius_to_raster_units(radius_m, is_geographic)
+        bounds = (
+            x_cen - radius_native,
+            y_cen - radius_native,
+            x_cen + radius_native,
+            y_cen + radius_native,
+        )
+        window = from_bounds(*bounds, transform=src.transform)
+        dataset_window = Window(
+            col_off=0, row_off=0, width=src.width, height=src.height
+        )
+        window = window.intersection(dataset_window)
+        window = window.round_offsets().round_lengths()
+        if window.width <= 0 or window.height <= 0:
+            return (
+                np.empty((0, 0), dtype=np.float32),
+                src.transform,
+                (0.0, 0.0, 0.0, 0.0),
+            )
+
+        # Safety: guard against pathological windows (CRS mismatch/very fine rasters)
+        # to avoid OOM crashes in UI-triggered SQM evaluation.
+        max_side = int(max(64, self.MAX_SQM_WINDOW_PIXELS))
+        if int(window.width) > max_side or int(window.height) > max_side:
+            try:
+                row_q, col_q = src.index(x_cen, y_cen)
+            except Exception:
+                row_q = int(float(window.row_off) + float(window.height) * 0.5)
+                col_q = int(float(window.col_off) + float(window.width) * 0.5)
+
+            row_q = max(0, min(int(src.height) - 1, int(row_q)))
+            col_q = max(0, min(int(src.width) - 1, int(col_q)))
+            half = max_side // 2
+            row0 = max(0, row_q - half)
+            row1 = min(int(src.height), row_q + half + 1)
+            col0 = max(0, col_q - half)
+            col1 = min(int(src.width), col_q + half + 1)
+            window = Window(
+                col_off=int(col0),
+                row_off=int(row0),
+                width=int(max(1, col1 - col0)),
+                height=int(max(1, row1 - row0)),
+            )
+            self._debug(
+                f"SQM window clipped to {int(window.width)}x{int(window.height)} "
+                f"around row/col=({row_q},{col_q})"
+            )
+
+        data = src.read(1, window=window).astype(np.float32)
+        trans_win = src.window_transform(window)
+        bounds_native = self._window_bounds_from_transform(
+            trans_win, int(data.shape[1]), int(data.shape[0])
+        )
+        data[data < 0] = 0.0
+        data[data > 1e10] = 0.0
+        return data, trans_win, bounds_native
+
+    def _extract_cached_pixel_locked(
+        self, x_src: float, y_src: float
+    ) -> Optional[float]:
+        if (
+            self._cached_data is None
+            or self._cached_transform is None
+            or self._cached_bounds is None
+        ):
+            return None
+
+        b = self._cached_bounds
+        if not (b[0] <= x_src <= b[2] and b[1] <= y_src <= b[3]):
+            self._debug(
+                f"OOB cache pixel x={x_src:.3f}, y={y_src:.3f}, bounds={b}"
+            )
+            return None
+
+        inv = ~self._cached_transform
+        c_float, r_float = inv * (x_src, y_src)
+        r = int(r_float)
+        c = int(c_float)
+        if (
+            0 <= r < self._cached_data.shape[0]
+            and 0 <= c < self._cached_data.shape[1]
+        ):
+            val = float(self._cached_data[r, c])
+            if np.isnan(val) or val < 0 or val > 1e10:
+                return 0.0
+            return val
+        return None
+
+    def _read_single_pixel_from_source(self, src, x_src: float, y_src: float) -> float:
+        row, col = src.index(x_src, y_src)
+        if not (0 <= row < src.height and 0 <= col < src.width):
+            self._debug(
+                f"OOB source pixel x={x_src:.3f}, y={y_src:.3f}, row={row}, col={col}"
+            )
+            return 0.0
+        arr = src.read(1, window=((row, row + 1), (col, col + 1))).astype(
+            np.float32
+        )
+        val = float(arr[0, 0])
+        nodata = src.nodata
+        if nodata is not None and np.isfinite(nodata) and val == float(nodata):
+            return 0.0
+        if np.isnan(val) or val < 0 or val > 1e10:
+            return 0.0
+        return val
+
+    def _cache_window(self, data, trans_win, bounds, context: dict) -> None:
+        with self._lock:
+            self._update_context_locked(context)
+            self._cached_data = data
+            self._cached_transform = trans_win
+            self._cached_bounds = bounds
+
+    def estimate_zenith_sqm(self, lat: float, lon: float) -> Tuple[float, int]:
+        """
+        Estimate zenith SQM/Bortle for a user geographic coordinate.
+
+        Input CRS:
+            - `lat`, `lon` in EPSG:4326.
+        Internal sampling CRS:
+            - Raster native CRS (resolved from raster metadata/fallback policy).
+        Output:
+            - `(sqm, bortle)` where bortle is mapped from SQM thresholds.
+            - Returns default `(21.0, 4)` on controlled errors.
+        """
+        if not self.raster_path or not os.path.exists(self.raster_path):
+            return self._default_sqm_bortle()
+
+        try:
+            with self._lock:
+                if (
+                    self._cached_data is not None
+                    and self._cached_transform is not None
+                    and self._src_crs is not None
+                    and self._tr_geo_to_src is not None
+                    and self._cached_bounds is not None
+                ):
+                    x_src, y_src = self._tr_geo_to_src.transform(lon, lat)
+                    self._debug(
+                        f"estimate cache hit try lat/lon=({lat:.6f},{lon:.6f}) "
+                        f"-> src=({x_src:.3f},{y_src:.3f})"
+                    )
+                    b = self._cached_bounds
+                    if b[0] <= x_src <= b[2] and b[1] <= y_src <= b[3]:
+                        return self._process_array_to_sqm(
+                            arr=self._cached_data,
+                            trans_win=self._cached_transform,
+                            x_src=x_src,
+                            y_src=y_src,
+                            is_geographic=bool(self._is_geographic),
+                        )
+
+            with RASTERIO_LOCK:
+                with rasterio.open(self.raster_path) as src:
+                    context = self._build_runtime_context(src)
+                    x_src, y_src = context["tr_geo_to_src"].transform(lon, lat)
+                    self._debug(
+                        f"estimate direct lat/lon=({lat:.6f},{lon:.6f}) -> "
+                        f"src=({x_src:.3f},{y_src:.3f}) src_crs={context['src_crs']}"
+                    )
+                    arr, trans_win, _ = self._read_window_around_point(
+                        src=src,
+                        x_cen=x_src,
+                        y_cen=y_src,
+                        radius_m=self.radius_km * 1000.0,
+                        is_geographic=context["is_geographic"],
+                    )
+                    with self._lock:
+                        self._update_context_locked(context)
+                    return self._process_array_to_sqm(
+                        arr=arr,
+                        trans_win=trans_win,
+                        x_src=x_src,
+                        y_src=y_src,
+                        is_geographic=bool(context["is_geographic"]),
+                    )
+        except Exception as e:
+            print(f"[LPSampler] estimate_zenith_sqm error: {e}")
+            return self._default_sqm_bortle()
+
+    def _process_array_to_sqm(
+        self,
+        arr: np.ndarray,
+        trans_win,
+        x_src: float,
+        y_src: float,
+        is_geographic: bool,
+    ) -> Tuple[float, int]:
+        """
+        Convert a native raster window into SQM/Bortle for one source-space point.
+
+        Input CRS:
+            - `arr` and `trans_win` in raster native CRS.
+            - `x_src`, `y_src` in raster native CRS.
+        Output:
+            - `(sqm, bortle_class)` or default on controlled errors.
+        """
         try:
             if arr.size == 0:
-                return 21.0, 4
-                
-            # Filter invalid values
-            arr_clean = arr.copy()
-            arr_clean[arr_clean < 0] = np.nan
-            arr_clean[arr_clean > 1e6] = np.nan
-            
-            # Center of the array (geographic center of the request)
-            ah, aw = arr_clean.shape
-            cy, cx = ah // 2, aw // 2
-            
-            kh, kw = self.kernel.shape
-            rk = kh // 2
-            ck = kw // 2
-            
-            # Slice bounds in array
-            y0 = cy - rk; y1 = cy + rk + 1
-            x0 = cx - ck; x1 = cx + ck + 1
-            
-            # Intersection with array bounds
-            ay0 = max(0, y0); ay1 = min(ah, y1)
-            ax0 = max(0, x0); ax1 = min(aw, x1)
-            
-            # Matching slice in kernel
-            ky0 = ay0 - y0; ky1 = ky0 + (ay1 - ay0)
-            kx0 = ax0 - x0; kx1 = kx0 + (ax1 - ax0)
-            
-            arr_crop = arr_clean[ay0:ay1, ax0:ax1]
-            kernel_crop = self.kernel[ky0:ky1, kx0:kx1]
-            
-            valid_mask = ~np.isnan(arr_crop)
-            if not np.any(valid_mask):
-                return 21.0, 4
-                
-            # Normalize crop
-            k_sum = np.nansum(kernel_crop[valid_mask])
-            if k_sum < 1e-6:
-                 agg_val = np.nanmean(arr_crop)
+                return self._default_sqm_bortle()
+
+            arr_clean = arr.astype(np.float32, copy=True)
+            arr_clean[(arr_clean < 0.0) | (arr_clean > 1e6)] = np.nan
+            if not np.any(np.isfinite(arr_clean)):
+                return self._default_sqm_bortle()
+
+            rows, cols = arr_clean.shape
+            col_idx = np.arange(cols, dtype=np.float64) + 0.5
+            row_idx = np.arange(rows, dtype=np.float64) + 0.5
+            cc, rr = np.meshgrid(col_idx, row_idx)
+            xs, ys = trans_win * (cc, rr)
+
+            if is_geographic:
+                mean_lat = float(y_src)
+                m_per_deg_x = 111320.0 * np.cos(np.deg2rad(mean_lat))
+                m_per_deg_x = max(abs(m_per_deg_x), 1.0)
+                m_per_deg_y = 111320.0
+                dx_m = (xs - float(x_src)) * m_per_deg_x
+                dy_m = (ys - float(y_src)) * m_per_deg_y
             else:
-                 weighted_sum = np.nansum(arr_crop[valid_mask] * kernel_crop[valid_mask])
-                 agg_val = weighted_sum / k_sum
-                 
-            val = max(float(agg_val), 1e-5) 
-            # SQM formula: Standard is 22 - 2.5 * log10(radiance)
-            # We use 2.5 to better match terrestrial measurements in the area.
+                dx_m = xs - float(x_src)
+                dy_m = ys - float(y_src)
+
+            dist_km = np.sqrt(dx_m * dx_m + dy_m * dy_m) / 1000.0
+            radius_km = max(float(self.radius_km), 1e-6)
+            sigma_km = max(float(self._sqm_sigma_km), 1e-6)
+            weights = np.exp(-(dist_km * dist_km) / (2.0 * sigma_km * sigma_km))
+            weights[dist_km > radius_km] = 0.0
+
+            valid_mask = np.isfinite(arr_clean) & np.isfinite(weights) & (weights > 0.0)
+            if not np.any(valid_mask):
+                return self._default_sqm_bortle()
+
+            weighted_sum = np.nansum(arr_clean[valid_mask] * weights[valid_mask])
+            weight_sum = np.nansum(weights[valid_mask])
+            if not np.isfinite(weight_sum) or float(weight_sum) <= 0.0:
+                return self._default_sqm_bortle()
+            agg_val = weighted_sum / weight_sum
+
+            val = max(float(agg_val), 1e-5)
             sqm = 22.0 - 2.5 * np.log10(val + 0.001)
             sqm = np.clip(sqm, 16.0, 22.0)
-            
-            # print(f"[LPSampler] _process_array_to_sqm: val={val:.4f} -> SQM {sqm:.2f}")
-            return float(sqm), sqm_to_bortle_class(sqm)
+
+            return float(sqm), sqm_to_bortle_class(float(sqm))
         except Exception as e:
             print(f"[LPSampler] Internal Error: {e}")
-            return 21.0, 4
+            return self._default_sqm_bortle()
 
-    def prepare_region(self, lat: float, lon: float, radius_km: float, input_crs: str = "EPSG:25831"):
-        """Pre-loads ROI from the DVNL raster into memory."""
+    def prepare_region(
+        self,
+        lat: float,
+        lon: float,
+        radius_km: float,
+        input_crs: str = CRS_TERRAIN_INTERNAL,
+    ) -> None:
+        """
+        Preload raster ROI around a geographic query point.
+
+        Input CRS:
+            - `lat`, `lon` in EPSG:4326.
+            - `input_crs` defines terrain CRS for projected queries (default EPSG:25831).
+        Internal sampling CRS:
+            - Raster native CRS.
+        """
         if not self.raster_path or not os.path.exists(self.raster_path):
             return
 
         try:
-            print(f"[LPSampler] Preparing region for {lat:.4f}, {lon:.4f} (r={radius_km}km)...")
+            radius_m = max(1.0, float(radius_km) * 1000.0)
+            self._debug(
+                f"prepare_region lat/lon=({lat:.6f},{lon:.6f}) "
+                f"radius_km={float(radius_km):.3f}"
+            )
             with RASTERIO_LOCK:
                 with rasterio.open(self.raster_path) as src:
-                    from pyproj import Transformer
-                    resolved_crs = self._resolve_src_crs(src)
-                    self._src_crs = resolved_crs
-                    self._is_geographic = bool(getattr(resolved_crs, "is_geographic", False))
-                    
-                    # Atomically update transformers
-                    new_trans = Transformer.from_crs("EPSG:4326", resolved_crs, always_xy=True)
-                    new_utm_trans = Transformer.from_crs(input_crs, resolved_crs, always_xy=True)
-                    
-                    x_cen, y_cen = new_trans.transform(lon, lat)
-                    
-                    # Correct unit handling: if geographic, convert meters to degrees
-                    r_m = radius_km * 1000.0 * 2.0
-                    if self._is_geographic:
-                        r_proj = r_m / 111320.0 # Approx meters per degree at equator
-                    else:
-                        r_proj = r_m
-                        
-                    bounds = (x_cen - r_proj, y_cen - r_proj, x_cen + r_proj, y_cen + r_proj)
-                    window = from_bounds(*bounds, transform=src.transform)
-                    
-                    print(f"[LPSampler] Reading window {window} (Geo={self._is_geographic})...")
-                    data = src.read(1, window=window).astype(np.float32)
-                    trans_win = src.window_transform(window)
-                    data[data < 0] = 0.0
-                    data[data > 1e10] = 0.0
-                    
-                    with self._lock:
-                        self._transformer = new_trans
-                        self._utm_transformer = new_utm_trans
-                        self._cached_data = data
-                        self._cached_transform = trans_win
-                        self._cached_bounds = bounds
-                    
-            print(f"[LPSampler] ROI Cached: {self._cached_data.shape} px.")
+                    context = self._build_runtime_context(src, terrain_crs=input_crs)
+                    x_src, y_src = context["tr_geo_to_src"].transform(lon, lat)
+                    data, trans_win, bounds = self._read_window_around_point(
+                        src=src,
+                        x_cen=x_src,
+                        y_cen=y_src,
+                        radius_m=radius_m,
+                        is_geographic=context["is_geographic"],
+                    )
+                    self._cache_window(data, trans_win, bounds, context)
+            self._debug(
+                f"prepare_region cached shape={self._cached_data.shape} "
+                f"src_bounds={self._cached_bounds}"
+            )
         except Exception as e:
             print(f"[LPSampler] Cache Error: {e}")
-            import traceback
-            traceback.print_exc()
+            with self._lock:
+                self._cached_data = None
+
+    def prepare_region_from_terrain_xy(
+        self,
+        x_terrain: float,
+        y_terrain: float,
+        radius_m: float,
+        input_crs: str = CRS_TERRAIN_INTERNAL,
+    ) -> None:
+        """
+        Preload raster ROI around a terrain/horizon internal point.
+
+        Input CRS:
+            - `x_terrain`, `y_terrain` in `input_crs` (default EPSG:25831).
+        Internal sampling CRS:
+            - Raster native CRS.
+        """
+        if not self.raster_path or not os.path.exists(self.raster_path):
+            return
+
+        try:
+            radius_m = max(1.0, float(radius_m))
+            self._debug(
+                f"prepare_region_from_terrain_xy x/y=({x_terrain:.3f},{y_terrain:.3f}) "
+                f"input_crs={input_crs} radius_m={radius_m:.1f}"
+            )
+            with RASTERIO_LOCK:
+                with rasterio.open(self.raster_path) as src:
+                    context = self._build_runtime_context(src, terrain_crs=input_crs)
+                    x_src, y_src = context["tr_terrain_to_src"].transform(
+                        x_terrain, y_terrain
+                    )
+                    data, trans_win, bounds = self._read_window_around_point(
+                        src=src,
+                        x_cen=x_src,
+                        y_cen=y_src,
+                        radius_m=radius_m,
+                        is_geographic=context["is_geographic"],
+                    )
+                    self._cache_window(data, trans_win, bounds, context)
+            self._debug(
+                f"terrain->raster ({x_terrain:.3f},{y_terrain:.3f}) -> "
+                f"({x_src:.3f},{y_src:.3f}) src_crs={context['src_crs']}"
+            )
+        except Exception as e:
+            print(f"[LPSampler] Cache Error: {e}")
             with self._lock:
                 self._cached_data = None
 
     def get_radiance(self, lat: float, lon: float) -> float:
-        """Fast lookup from the pre-loaded ROI."""
+        """
+        Sample radiance for geographic coordinates.
+
+        Input CRS:
+            - `lat`, `lon` in EPSG:4326.
+        Sampling CRS:
+            - Raster native CRS.
+        Returns:
+            - Radiance value or `0.0` when out-of-bounds/error.
+        """
+        if not self.raster_path or not os.path.exists(self.raster_path):
+            return 0.0
+
         try:
             with self._lock:
-                if self._cached_data is None or self._transformer is None or self._cached_bounds is None:
-                    return 0.0
-                
-                x, y = self._transformer.transform(lon, lat)
-                b = self._cached_bounds
-                if not (b[0] <= x <= b[2] and b[1] <= y <= b[3]):
-                    # print(f"[LPSampler] Out of bounds: {x},{y} vs {b}")
-                    return 0.0
+                if (
+                    self._cached_data is not None
+                    and self._tr_geo_to_src is not None
+                    and self._cached_bounds is not None
+                ):
+                    x_src, y_src = self._tr_geo_to_src.transform(lon, lat)
+                    val = self._extract_cached_pixel_locked(x_src, y_src)
+                    if val is not None:
+                        return float(val)
 
-                inv = ~self._cached_transform
-                col, row = inv * (x, y)
-                r, c = int(row), int(col)
-                if 0 <= r < self._cached_data.shape[0] and 0 <= c < self._cached_data.shape[1]:
-                    return float(self._cached_data[r, c])
-        except Exception as e:
-            pass
-        return 0.0
+            with RASTERIO_LOCK:
+                with rasterio.open(self.raster_path) as src:
+                    context = self._build_runtime_context(src)
+                    x_src, y_src = context["tr_geo_to_src"].transform(lon, lat)
+                    with self._lock:
+                        self._update_context_locked(context)
+                    return float(
+                        self._read_single_pixel_from_source(src, x_src, y_src)
+                    )
+        except Exception:
+            return 0.0
 
-    def get_radiance_utm(self, x_utm: float, y_utm: float) -> float:
-        """Fast lookup from UTM coordinates."""
+    def get_radiance_terrain_xy(
+        self,
+        x_terrain: float,
+        y_terrain: float,
+        input_crs: str = CRS_TERRAIN_INTERNAL,
+    ) -> float:
+        """
+        Sample radiance for terrain/horizon projected coordinates.
+
+        Input CRS:
+            - `x_terrain`, `y_terrain` in `input_crs` (default EPSG:25831).
+        Sampling CRS:
+            - Raster native CRS.
+        Returns:
+            - Radiance value or `0.0` when out-of-bounds/error.
+        """
+        if not self.raster_path or not os.path.exists(self.raster_path):
+            return 0.0
+
         try:
             with self._lock:
-                if self._cached_data is None or self._utm_transformer is None or self._cached_bounds is None:
-                    return 0.0
-                
-                x, y = self._utm_transformer.transform(x_utm, y_utm)
-                b = self._cached_bounds
-                if not (b[0] <= x <= b[2] and b[1] <= y <= b[3]):
-                    return 0.0
+                same_input_crs = (
+                    str(input_crs or CRS_TERRAIN_INTERNAL)
+                    == str(self._terrain_crs_for_transform or "")
+                )
+                if (
+                    same_input_crs
+                    and self._cached_data is not None
+                    and self._tr_terrain_to_src is not None
+                    and self._cached_bounds is not None
+                ):
+                    x_src, y_src = self._tr_terrain_to_src.transform(
+                        x_terrain, y_terrain
+                    )
+                    val = self._extract_cached_pixel_locked(x_src, y_src)
+                    if val is not None:
+                        return float(val)
 
-                inv = ~self._cached_transform
-                col, row = inv * (x, y)
-                r, c = int(row), int(col)
-                if 0 <= r < self._cached_data.shape[0] and 0 <= c < self._cached_data.shape[1]:
-                    return float(self._cached_data[r, c])
-        except Exception as e:
-            pass
-        return 0.0
+            with RASTERIO_LOCK:
+                with rasterio.open(self.raster_path) as src:
+                    context = self._build_runtime_context(src, terrain_crs=input_crs)
+                    x_src, y_src = context["tr_terrain_to_src"].transform(
+                        x_terrain, y_terrain
+                    )
+                    with self._lock:
+                        self._update_context_locked(context)
+                    return float(
+                        self._read_single_pixel_from_source(src, x_src, y_src)
+                    )
+        except Exception:
+            return 0.0
 
-    def close(self):
-        """Release in-memory cache so worker reload can safely reset state."""
+    def close(self) -> None:
+        """
+        Release in-memory cached raster state and transformers.
+
+        All cached coordinates are in raster native CRS.
+        """
         with self._lock:
             self._cached_data = None
             self._cached_transform = None
             self._cached_bounds = None
-            self._transformer = None
-            self._utm_transformer = None
+            self._src_crs = None
+            self._is_geographic = False
+            self._tr_geo_to_src = None
+            self._tr_terrain_to_src = None

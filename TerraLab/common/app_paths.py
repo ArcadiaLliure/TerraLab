@@ -7,7 +7,6 @@ import shutil
 import sys
 from pathlib import Path
 
-
 APP_NAME = "TerraLab"
 
 
@@ -119,4 +118,3 @@ def ensure_runtime_layout() -> dict[str, Path]:
     layout = runtime_layout()
     migrate_legacy_config()
     return layout
-

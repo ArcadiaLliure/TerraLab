@@ -1,10 +1,10 @@
 import rasterio.warp
 from rasterio.crs import CRS
 
-src_crs = CRS.from_string("EPSG:32631") 
-dst_crs = CRS.from_string("EPSG:4326")  
+src_crs = CRS.from_string("EPSG:32631")
+dst_crs = CRS.from_string("EPSG:4326")
 
-utm_x, utm_y = 479417, 4647571 
+utm_x, utm_y = 479417, 4647571
 utms_x = [utm_x, utm_x + 1000]
 utms_y = [utm_y, utm_y]
 

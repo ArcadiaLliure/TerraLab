@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+
 def widget_apply_scope_preloaded_spatial_index(widget):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     if not bool(getattr(self, "_scope_preload_ready", False)):
@@ -15,9 +17,16 @@ def widget_apply_scope_preloaded_spatial_index(widget):
     if sorted_indices is None or offsets is None:
         idx_path = str(getattr(self, "_scope_preload_indices_path", "") or "")
         off_path = str(getattr(self, "_scope_preload_offsets_path", "") or "")
-        if idx_path and off_path and os.path.isfile(idx_path) and os.path.isfile(off_path):
+        if (
+            idx_path
+            and off_path
+            and os.path.isfile(idx_path)
+            and os.path.isfile(off_path)
+        ):
             try:
-                sorted_indices = np.load(idx_path, mmap_mode="r", allow_pickle=False)
+                sorted_indices = np.load(
+                    idx_path, mmap_mode="r", allow_pickle=False
+                )
                 offsets = np.load(off_path, mmap_mode="r", allow_pickle=False)
                 self._scope_preload_sorted_indices = sorted_indices
                 self._scope_preload_offsets = offsets
@@ -26,7 +35,9 @@ def widget_apply_scope_preloaded_spatial_index(widget):
                 return False
     if sorted_indices is None or offsets is None:
         return False
-    stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
+    stars_renderer = getattr(
+        getattr(self.canvas, "sky_renderer", None), "stars_renderer", None
+    )
     if stars_renderer is None:
         return False
     ra_all = getattr(self, "np_ra", None)
@@ -38,7 +49,9 @@ def widget_apply_scope_preloaded_spatial_index(widget):
         return False
     try:
         key = stars_renderer._catalog_array_key(ra_all, dec_all)
-        stars_renderer.apply_scope_spatial_index_payload(key, sorted_indices, offsets)
+        stars_renderer.apply_scope_spatial_index_payload(
+            key, sorted_indices, offsets
+        )
         self._scope_index_loaded_mag_cap = float(
             max(
                 float(getattr(self, "_scope_index_loaded_mag_cap", 0.0)),
@@ -50,8 +63,10 @@ def widget_apply_scope_preloaded_spatial_index(widget):
         print(f"[AstroWidget] Scope preload apply failed: {exc}")
         return False
 
+
 def widget_on_scope_preload_ready(widget, payload):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     self._scope_preload_in_progress = False
@@ -59,12 +74,20 @@ def widget_on_scope_preload_ready(widget, payload):
     self._scope_preload_failed = False
     self._scope_preload_wait_logged = False
     self._scope_preload_cache_path = str(payload.get("cache_path", "") or "")
-    self._scope_preload_dataset_signature = str(payload.get("dataset_signature", "") or "")
-    self._scope_preload_loaded_max_mag = float(payload.get("loaded_max_mag", 0.0) or 0.0)
+    self._scope_preload_dataset_signature = str(
+        payload.get("dataset_signature", "") or ""
+    )
+    self._scope_preload_loaded_max_mag = float(
+        payload.get("loaded_max_mag", 0.0) or 0.0
+    )
     self._scope_preload_sorted_indices = payload.get("sorted_indices")
     self._scope_preload_offsets = payload.get("offsets")
-    self._scope_preload_indices_path = str(payload.get("indices_path", "") or "")
-    self._scope_preload_offsets_path = str(payload.get("offsets_path", "") or "")
+    self._scope_preload_indices_path = str(
+        payload.get("indices_path", "") or ""
+    )
+    self._scope_preload_offsets_path = str(
+        payload.get("offsets_path", "") or ""
+    )
     self._scope_preload_rows = int(payload.get("rows", 0) or 0)
     rows = int(payload.get("rows", 0) or 0)
     cached = bool(payload.get("cached", False))
@@ -86,19 +109,31 @@ def widget_on_scope_preload_ready(widget, payload):
     self._apply_scope_preloaded_spatial_index()
     self._refresh_scope_data_state(reason="preload_ready")
     if bool(getattr(self, "_scope_preload_pending_activation", False)) or bool(
-        getattr(getattr(self, "canvas", None), "scope_mode_enabled", lambda: False)()
+        getattr(
+            getattr(self, "canvas", None), "scope_mode_enabled", lambda: False
+        )()
     ):
-        append_perf_event("scope_activation_ready", delta_ms_boot=self._boot_delta_ms())
+        append_perf_event(
+            "scope_activation_ready", delta_ms_boot=self._boot_delta_ms()
+        )
     self._cleanup_scope_preload_worker()
     if bool(getattr(self, "_scope_preload_pending_activation", False)):
-        if not bool(getattr(getattr(self, "canvas", None), "scope_mode_enabled", lambda: False)()):
+        if not bool(
+            getattr(
+                getattr(self, "canvas", None),
+                "scope_mode_enabled",
+                lambda: False,
+            )()
+        ):
             self._scope_preload_pending_activation = False
             QTimer.singleShot(0, self.activate_scope_mode)
         else:
             self._scope_preload_pending_activation = False
 
+
 def widget_maybe_resume_pending_gaia_download(widget):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     if bool(getattr(self, "_gaia_resume_prompt_shown", False)):
@@ -146,8 +181,10 @@ def widget_maybe_resume_pending_gaia_download(widget):
             ).format(err=str(exc)),
         )
 
+
 def widget_reload_star_catalog_async(widget):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     """Reload Gaia catalog after onboarding import without requiring app restart."""
@@ -158,7 +195,9 @@ def widget_reload_star_catalog_async(widget):
             old_thread.finished.connect(old_thread.deleteLater)
     except Exception:
         pass
-    self._stars_catalog_dir = str(Path(self.runtime_layout.get("data_gaia", get_base_dir())))
+    self._stars_catalog_dir = str(
+        Path(self.runtime_layout.get("data_gaia", get_base_dir()))
+    )
     self._scope_preload_started = False
     self._scope_preload_in_progress = False
     self._scope_preload_ready = False
@@ -185,7 +224,9 @@ def widget_reload_star_catalog_async(widget):
     self._catalog_worker = CatalogLoaderWorker()
     self._catalog_worker.moveToThread(self._catalog_thread)
     self._catalog_worker.catalog_ready.connect(self._on_catalog_ready)
-    self._catalog_thread.started.connect(lambda: self._catalog_worker.load(self._stars_catalog_dir))
+    self._catalog_thread.started.connect(
+        lambda: self._catalog_worker.load(self._stars_catalog_dir)
+    )
     self._catalog_thread.start()
     try:
         self._catalog_thread.setPriority(QThread.LowPriority)
@@ -193,15 +234,21 @@ def widget_reload_star_catalog_async(widget):
         pass
     print("[AstroWidget] Star catalog reloading in background...")
 
-def widget_on_scope_spatial_index_ready(widget, catalog_key, sorted_indices, offsets, ready_mag_cap):
+
+def widget_on_scope_spatial_index_ready(
+    widget, catalog_key, sorted_indices, offsets, ready_mag_cap
+):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     self._scope_index_loading = False
     restart_warmup = False
     retry_deeper = False
     try:
-        stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
+        stars_renderer = getattr(
+            getattr(self.canvas, "sky_renderer", None), "stars_renderer", None
+        )
         if stars_renderer is None:
             return
         current_key = stars_renderer._catalog_array_key(
@@ -217,8 +264,12 @@ def widget_on_scope_spatial_index_ready(widget, catalog_key, sorted_indices, off
             stars_renderer.clear_scope_index_warmup(catalog_key)
             restart_warmup = True
         else:
-            stars_renderer.apply_scope_spatial_index_payload(catalog_key, sorted_indices, offsets)
-            self._scope_index_loaded_mag_cap = float(max(0.0, float(ready_mag_cap)))
+            stars_renderer.apply_scope_spatial_index_payload(
+                catalog_key, sorted_indices, offsets
+            )
+            self._scope_index_loaded_mag_cap = float(
+                max(0.0, float(ready_mag_cap))
+            )
             self._refresh_scope_data_state(reason="scope_index_ready")
             print(
                 "[AstroWidget] Scope spatial index ready "
@@ -226,10 +277,9 @@ def widget_on_scope_spatial_index_ready(widget, catalog_key, sorted_indices, off
             )
             self.canvas.update()
             needed_mag_cap = float(self._scope_target_index_mag_cap())
-            retry_deeper = (
-                bool(getattr(self, "_scope_index_rewarm_requested", False))
-                or (needed_mag_cap > self._scope_index_loaded_mag_cap + 0.05)
-            )
+            retry_deeper = bool(
+                getattr(self, "_scope_index_rewarm_requested", False)
+            ) or (needed_mag_cap > self._scope_index_loaded_mag_cap + 0.05)
     finally:
         self._cleanup_scope_index_warmup()
         self._scope_index_rewarm_requested = False
@@ -238,15 +288,19 @@ def widget_on_scope_spatial_index_ready(widget, catalog_key, sorted_indices, off
     elif retry_deeper:
         QTimer.singleShot(0, self._ensure_scope_spatial_index_warmup)
 
+
 def widget_update_custom_theme(widget):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     t = self.current_theme
     # Extract colors or defaults
-    bg = t.get('content_bg', t.get('widget_background', 'rgba(20, 20, 30, 220)'))
-    txt = t.get('title_text_color', t.get('text_primary', 'white'))
-    border = t.get('widget_border_color', '#555')
+    bg = t.get(
+        "content_bg", t.get("widget_background", "rgba(20, 20, 30, 220)")
+    )
+    txt = t.get("title_text_color", t.get("text_primary", "white"))
+    border = t.get("widget_border_color", "#555")
     # Ensure bg has alpha if needed, or just use as is
     self.panel_style = f"""
         #controlFrame {{
@@ -265,11 +319,12 @@ def widget_update_custom_theme(widget):
         #controlFrame QSlider::handle:horizontal {{ background: {border}; border: 1px solid {txt}; width: 10px; margin: -2px 0; border-radius: 5px; }}
         #controlFrame QSlider::groove:horizontal {{ border: 1px solid #999; height: 4px; background: rgba(255,255,255,50); margin: 2px 0; }}
     """
-    if hasattr(self, 'frame_controls'):
+    if hasattr(self, "frame_controls"):
         self.frame_controls.setStyleSheet(self.panel_style)
-    if hasattr(self, 'btn_collapse'):
+    if hasattr(self, "btn_collapse"):
         # Tab Style
-        self.btn_collapse.setStyleSheet(f"""
+        self.btn_collapse.setStyleSheet(
+            f"""
             QPushButton {{
                 background-color: {bg};
                 color: {txt};
@@ -285,10 +340,13 @@ def widget_update_custom_theme(widget):
                 padding-bottom: 2px;
             }}
             QPushButton:hover {{ background-color: {bg}; border: 1px solid rgba(255,255,255,200); }}
-        """)
+        """
+        )
+
 
 def widget_set_scope_coord_inputs(widget, ra_deg: float, dec_deg: float):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     if not hasattr(self, "scope_ra_h_spin"):
@@ -330,7 +388,9 @@ def widget_set_scope_coord_inputs(widget, ra_deg: float, dec_deg: float):
         self.scope_ra_h_spin.setValue(h)
         self.scope_ra_m_spin.setValue(m)
         self.scope_ra_s_spin.setValue(round(float(s), 1))
-        self.scope_dec_sign_combo.setCurrentIndex(0 if float(dec_deg) >= 0.0 else 1)
+        self.scope_dec_sign_combo.setCurrentIndex(
+            0 if float(dec_deg) >= 0.0 else 1
+        )
         self.scope_dec_d_spin.setValue(d)
         self.scope_dec_m_spin.setValue(dm)
         self.scope_dec_s_spin.setValue(round(float(ds), 1))
@@ -338,8 +398,10 @@ def widget_set_scope_coord_inputs(widget, ra_deg: float, dec_deg: float):
         for w in widgets:
             w.blockSignals(False)
 
+
 def widget_sync_constellation_controls(widget):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     if not hasattr(self, "canvas"):
@@ -347,8 +409,12 @@ def widget_sync_constellation_controls(widget):
     ctrl = self.canvas.constellation_controller
     draw_enabled = bool(getattr(ctrl, "enabled", False))
     visible_enabled = bool(getattr(ctrl, "visible", True))
-    drawing_active = bool(getattr(ctrl, "group_drawing_active", False)) and draw_enabled
-    selected_groups = len(getattr(ctrl, "selected_group_indices", set()) or set())
+    drawing_active = (
+        bool(getattr(ctrl, "group_drawing_active", False)) and draw_enabled
+    )
+    selected_groups = len(
+        getattr(ctrl, "selected_group_indices", set()) or set()
+    )
     if hasattr(self, "btn_const_visibility"):
         self.btn_const_visibility.blockSignals(True)
         self.btn_const_visibility.setChecked(visible_enabled)
@@ -361,13 +427,18 @@ def widget_sync_constellation_controls(widget):
     if hasattr(self, "btn_const_eraser"):
         if selected_groups > 1:
             self.btn_const_eraser.setText(
-                getTraduction("Astro.ConstellationDeleteSelected", "Delete selected ({n})").format(
-                    n=selected_groups
-                )
+                getTraduction(
+                    "Astro.ConstellationDeleteSelected",
+                    "Delete selected ({n})",
+                ).format(n=selected_groups)
             )
         else:
-            self.btn_const_eraser.setText(getTraduction("Astro.ConstellationDeleteAll", "Delete all"))
-        self.btn_const_eraser.setEnabled(visible_enabled and (len(getattr(ctrl, "groups", [])) > 0))
+            self.btn_const_eraser.setText(
+                getTraduction("Astro.ConstellationDeleteAll", "Delete all")
+            )
+        self.btn_const_eraser.setEnabled(
+            visible_enabled and (len(getattr(ctrl, "groups", [])) > 0)
+        )
     if hasattr(self, "btn_const_new"):
         self.btn_const_new.setText(
             getTraduction("Astro.ConstellationFinish", "Finish constellation")
@@ -384,14 +455,18 @@ def widget_sync_constellation_controls(widget):
         if active is not None and 0 <= active < total:
             active_txt = str(ctrl.groups[active].name)
         self.lbl_constellation_state.setText(
-            getTraduction("Astro.ConstellationStatus", "Groups: {n} | Active: {name}").format(
+            getTraduction(
+                "Astro.ConstellationStatus", "Groups: {n} | Active: {name}"
+            ).format(
                 n=total,
                 name=active_txt,
             )
         )
 
+
 def widget_refresh_milkyway_status_indicator(widget):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     if not hasattr(self, "lbl_milkyway_status"):
@@ -399,7 +474,9 @@ def widget_refresh_milkyway_status_indicator(widget):
     if not hasattr(self, "canvas"):
         return
     status = None
-    renderer = getattr(getattr(self.canvas, "sky_renderer", None), "milkyway_overlay", None)
+    renderer = getattr(
+        getattr(self.canvas, "sky_renderer", None), "milkyway_overlay", None
+    )
     if renderer is not None and hasattr(renderer, "runtime_status"):
         try:
             status = renderer.runtime_status()
@@ -423,7 +500,9 @@ def widget_refresh_milkyway_status_indicator(widget):
     ra_off = float(status.get("ra_offset_deg", 0.0))
     lat_flip = bool(status.get("texture_lat_flip", False))
     lon_flip = bool(status.get("texture_lon_flip", False))
-    flip_txt = ("vf=1" if lat_flip else "vf=0") + (" hf=1" if lon_flip else " hf=0")
+    flip_txt = ("vf=1" if lat_flip else "vf=0") + (
+        " hf=1" if lon_flip else " hf=0"
+    )
     dust_den = float(status.get("dust_density_strength", 0.0))
     dust_ext = float(status.get("dust_extinction_strength", 0.0))
     dust_gain_txt = f"d={dust_den:.2f} e={dust_ext:.2f}"
@@ -443,11 +522,15 @@ def widget_refresh_milkyway_status_indicator(widget):
         f"MW: ON op={opacity:.2f} g={rgb_gain:.2f} fr={frame_short} off={ra_off:.0f} {flip_txt} {dust_gain_txt} {dust_txt}"
     )
 
+
 def widget_refresh_climate_status_indicator(widget):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
-    if not hasattr(self, "lbl_climate_fallback") or not hasattr(self, "chk_clima"):
+    if not hasattr(self, "lbl_climate_fallback") or not hasattr(
+        self, "chk_clima"
+    ):
         return
     if not bool(self.chk_clima.isChecked()):
         self.lbl_climate_fallback.hide()
@@ -476,7 +559,9 @@ def widget_refresh_climate_status_indicator(widget):
         if self._climate_remote_since is None:
             self._climate_remote_since = now_m
         remote_stable_s = now_m - self._climate_remote_since
-        if remote_stable_s >= float(getattr(self, "_climate_remote_hide_delay_s", 1.2)):
+        if remote_stable_s >= float(
+            getattr(self, "_climate_remote_hide_delay_s", 1.2)
+        ):
             self.lbl_climate_fallback.hide()
         return
     # Fallback branch.
@@ -484,26 +569,44 @@ def widget_refresh_climate_status_indicator(widget):
     if self._climate_fallback_since is None:
         self._climate_fallback_since = now_m
     fallback_stable_s = now_m - self._climate_fallback_since
-    if fallback_stable_s >= float(getattr(self, "_climate_fallback_show_delay_s", 2.5)):
-        self.lbl_climate_fallback.setText(getTraduction("Astro.ClimateFallbackActive", "Real weather unavailable (fallback)"))
+    if fallback_stable_s >= float(
+        getattr(self, "_climate_fallback_show_delay_s", 2.5)
+    ):
+        self.lbl_climate_fallback.setText(
+            getTraduction(
+                "Astro.ClimateFallbackActive",
+                "Real weather unavailable (fallback)",
+            )
+        )
         self.lbl_climate_fallback.setToolTip(reason)
         self.lbl_climate_fallback.show()
 
+
 def widget_ensure_copernicus_credentials_prompt(widget):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     if bool(get_config_value("copernicus_informed", False)):
         return
-    title = getTraduction("Astro.CopernicusDialogTitle", "Copernicus Climate setup")
+    title = getTraduction(
+        "Astro.CopernicusDialogTitle", "Copernicus Climate setup"
+    )
     intro = getTraduction(
         "Astro.CopernicusDialogIntro",
         "To enable online climate and aerosol data, create a free CDS account and generate your API key.",
     )
     url_text = getTraduction("Astro.CopernicusDialogUrl", "Open guide")
-    key_prompt = getTraduction("Astro.CopernicusDialogKeyPrompt", "Paste your CDS API key")
-    key_ok = getTraduction("Astro.CopernicusDialogSaved", "API key saved in local config.")
-    key_empty = getTraduction("Astro.CopernicusDialogEmpty", "No key entered. Offline fallback will be used.")
+    key_prompt = getTraduction(
+        "Astro.CopernicusDialogKeyPrompt", "Paste your CDS API key"
+    )
+    key_ok = getTraduction(
+        "Astro.CopernicusDialogSaved", "API key saved in local config."
+    )
+    key_empty = getTraduction(
+        "Astro.CopernicusDialogEmpty",
+        "No key entered. Offline fallback will be used.",
+    )
     copernicus_url = "https://cds.climate.copernicus.eu/how-to-api"
     msg = QMessageBox(self)
     msg.setIcon(QMessageBox.Information)
@@ -511,8 +614,14 @@ def widget_ensure_copernicus_credentials_prompt(widget):
     msg.setText(intro)
     msg.setInformativeText(copernicus_url)
     open_btn = msg.addButton(url_text, QMessageBox.ActionRole)
-    enter_btn = msg.addButton(getTraduction("Astro.CopernicusDialogEnterKey", "Enter API key"), QMessageBox.AcceptRole)
-    skip_btn = msg.addButton(getTraduction("Astro.CopernicusDialogSkip", "Skip"), QMessageBox.RejectRole)
+    enter_btn = msg.addButton(
+        getTraduction("Astro.CopernicusDialogEnterKey", "Enter API key"),
+        QMessageBox.AcceptRole,
+    )
+    skip_btn = msg.addButton(
+        getTraduction("Astro.CopernicusDialogSkip", "Skip"),
+        QMessageBox.RejectRole,
+    )
     msg.exec_()
     clicked = msg.clickedButton()
     if clicked is open_btn:
@@ -520,11 +629,15 @@ def widget_ensure_copernicus_credentials_prompt(widget):
         clicked = enter_btn
     if clicked is enter_btn:
         current_key = str(get_config_value("copernicus_api_key", "") or "")
-        key, ok = QInputDialog.getText(self, title, key_prompt, text=current_key)
+        key, ok = QInputDialog.getText(
+            self, title, key_prompt, text=current_key
+        )
         key = str(key or "").strip()
         if ok and key:
             set_config_value("copernicus_api_key", key)
-            set_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api")
+            set_config_value(
+                "copernicus_api_url", "https://cds.climate.copernicus.eu/api"
+            )
             QMessageBox.information(self, title, key_ok)
         else:
             QMessageBox.information(self, title, key_empty)

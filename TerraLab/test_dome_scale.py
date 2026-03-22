@@ -1,6 +1,5 @@
 import math
 
-
 SCREEN_WIDTH = 1920
 ZOOM = 1.0
 

@@ -2,19 +2,31 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import random
+from dataclasses import dataclass
 
 from PyQt5.QtCore import QPointF, Qt
-from PyQt5.QtGui import QBrush, QColor, QImage, QPainter, QPainterPath, QPen, QPolygonF, QRadialGradient
+from PyQt5.QtGui import (
+    QBrush,
+    QColor,
+    QImage,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPolygonF,
+    QRadialGradient,
+)
 
 try:
     import numpy as np
 except Exception:  # pragma: no cover
     np = None
 
-from TerraLab.scene.projection import project_universal_stereo_numpy, radec_to_altaz_numpy
+from TerraLab.scene.projection import (
+    project_universal_stereo_numpy,
+    radec_to_altaz_numpy,
+)
 from TerraLab.util.color import color_from_bp_rp
 from TerraLab.util.math2d import clamp
 from TerraLab.widgets.telescope_runtime import update_star_rendering_params
@@ -40,7 +52,10 @@ def get_scope_solar_pattern_impl(canvas):
         int(getattr(canvas.parent_widget, "manual_year", 2026)),
         int(getattr(canvas.parent_widget, "manual_day", 0)),
     )
-    if canvas._scope_solar_pattern_key == key and canvas._scope_solar_pattern is not None:
+    if (
+        canvas._scope_solar_pattern_key == key
+        and canvas._scope_solar_pattern is not None
+    ):
         return canvas._scope_solar_pattern
 
     seed = key[0] * 1000 + key[1]
@@ -159,7 +174,9 @@ def draw_scope_solar_disc_impl(canvas, painter, radius):
 
 def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
     pw = canvas.parent_widget
-    is_moving = canvas._camera_interaction_active(include_time_drag=True, include_animation=True)
+    is_moving = canvas._camera_interaction_active(
+        include_time_drag=True, include_animation=True
+    )
 
     if canvas._cached_trail_image and not canvas._cached_trail_image.isNull():
         painter.drawImage(0, 0, canvas._cached_trail_image)
@@ -182,7 +199,11 @@ def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
                 is_moving=True,
             )
 
-    if np is not None and hasattr(pw, "np_ra") and not canvas.trail_rendering_busy:
+    if (
+        np is not None
+        and hasattr(pw, "np_ra")
+        and not canvas.trail_rendering_busy
+    ):
         canvas.trail_rendering_busy = True
         vm_trail = pw.recompute_visual_magnitude_model(
             target_alt_deg=canvas.elevation_angle,
@@ -190,9 +211,13 @@ def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
         )
         auto_bortle = bool(getattr(pw, "is_auto_bortle", True))
         if auto_bortle:
-            bortle_class = max(1.0, min(9.0, float(getattr(pw, "auto_bortle_estimate", 1))))
+            bortle_class = max(
+                1.0, min(9.0, float(getattr(pw, "auto_bortle_estimate", 1)))
+            )
         else:
-            bortle_class = max(1.0, min(9.0, 1.0 + (7.6 - float(pw.magnitude_limit)) / 0.5))
+            bortle_class = max(
+                1.0, min(9.0, 1.0 + (7.6 - float(pw.magnitude_limit)) / 0.5)
+            )
         trail_state = {
             "scope_enabled": bool(canvas.scope_mode_enabled()),
             "auto_bortle": auto_bortle,
@@ -201,7 +226,9 @@ def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
             "manual_mlim": float(pw.magnitude_limit),
         }
         update_star_rendering_params(trail_state)
-        trail_mag_limit = float(trail_state.get("render_mag_limit", vm_trail.scope_limit_mag))
+        trail_mag_limit = float(
+            trail_state.get("render_mag_limit", vm_trail.scope_limit_mag)
+        )
         params = {
             "width": canvas.width(),
             "height": canvas.height(),
@@ -236,7 +263,9 @@ def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
             canvas._cached_trail_image = None
 
 
-def draw_analytic_trails_numpy_impl(canvas, painter, start_hour, end_hour, diff, n_steps, limit, is_moving):
+def draw_analytic_trails_numpy_impl(
+    canvas, painter, start_hour, end_hour, diff, n_steps, limit, is_moving
+):
     pw = canvas.parent_widget
     if not is_moving:
         limit = min(limit, 5.0)
@@ -341,11 +370,19 @@ def draw_analytic_trails_numpy_impl(canvas, painter, start_hour, end_hour, diff,
                 c_ends.append(len(chunk_x) - 1)
                 for cs, ce in zip(c_starts, c_ends):
                     if ce >= cs:
-                        p_pts = [QPointF(float(x_val), float(y_val)) for x_val, y_val in zip(chunk_x[cs : ce + 1], chunk_y[cs : ce + 1])]
+                        p_pts = [
+                            QPointF(float(x_val), float(y_val))
+                            for x_val, y_val in zip(
+                                chunk_x[cs : ce + 1], chunk_y[cs : ce + 1]
+                            )
+                        ]
                         if len(p_pts) > 1:
                             path.addPolygon(QPolygonF(p_pts))
             else:
-                p_pts = [QPointF(float(x_val), float(y_val)) for x_val, y_val in zip(chunk_x, chunk_y)]
+                p_pts = [
+                    QPointF(float(x_val), float(y_val))
+                    for x_val, y_val in zip(chunk_x, chunk_y)
+                ]
                 if len(p_pts) > 1:
                     path.addPolygon(QPolygonF(p_pts))
 
@@ -384,7 +421,9 @@ def build_scope_spatial_index_payload(
     n_total = int(len(ra_all))
     num_tiles = int(ra_bins * dec_bins)
     if n_total <= 0:
-        return np.array([], dtype=np.int32), np.zeros(num_tiles + 1, dtype=np.int64)
+        return np.array([], dtype=np.int32), np.zeros(
+            num_tiles + 1, dtype=np.int64
+        )
 
     use_mag_cap = (
         (max_mag is not None)
@@ -445,7 +484,9 @@ def build_scope_spatial_index_payload(
         unique_tiles, first_pos = np.unique(tile_sorted, return_index=True)
         next_pos = np.append(first_pos[1:], len(tile_sorted))
 
-        for tile_id, seg_start, seg_end in zip(unique_tiles, first_pos, next_pos):
+        for tile_id, seg_start, seg_end in zip(
+            unique_tiles, first_pos, next_pos
+        ):
             dst = int(cursor[int(tile_id)])
             seg_len = int(seg_end - seg_start)
             sorted_indices[dst : dst + seg_len] = idx_sorted[seg_start:seg_end]
@@ -459,7 +500,7 @@ class StarsRenderer:
     Renderer orientado a look "sky map / night-sky":
     - Mucho punto (1px/2px)
     - Halos suaves solo en brillantes
-    - Sprites gaussianos cacheados (rÃ¡pido y consistente)
+    - Sprites gaussians en memòria cau (ràpid i consistent)
     """
 
     def __init__(self) -> None:
@@ -493,7 +534,6 @@ class StarsRenderer:
         self._scope_query_cache_candidate_count = 0
         self._scope_index_pending_key = None
 
-
     # -----------------------------
     # Indexing / window selection
     # -----------------------------
@@ -519,10 +559,16 @@ class StarsRenderer:
             return None, None
         key = self._catalog_array_key(ra_all, dec_all, mag_all)
 
-        if self._mag_index_key == key and self._mag_sorted is not None and self._mag_order is not None:
+        if (
+            self._mag_index_key == key
+            and self._mag_sorted is not None
+            and self._mag_order is not None
+        ):
             return self._mag_sorted, self._mag_order
 
-        finite_mask = np.isfinite(ra_all) & np.isfinite(dec_all) & np.isfinite(mag_all)
+        finite_mask = (
+            np.isfinite(ra_all) & np.isfinite(dec_all) & np.isfinite(mag_all)
+        )
         if not np.any(finite_mask):
             self._mag_index_key = key
             self._mag_sorted = np.array([], dtype=np.float32)
@@ -581,7 +627,10 @@ class StarsRenderer:
                 int(max_count_i) if max_count_i is not None else -1,
             )
 
-        if self._nonscope_prefilter_key == cache_key and self._nonscope_prefilter_indices is not None:
+        if (
+            self._nonscope_prefilter_key == cache_key
+            and self._nonscope_prefilter_indices is not None
+        ):
             return self._nonscope_prefilter_indices
 
         if assume_sorted:
@@ -602,7 +651,9 @@ class StarsRenderer:
             self._nonscope_prefilter_indices = idx
             return idx
 
-        mag_sorted, mag_order = self._ensure_mag_index(ra_all, dec_all, mag_all)
+        mag_sorted, mag_order = self._ensure_mag_index(
+            ra_all, dec_all, mag_all
+        )
         if mag_sorted is None or mag_order is None or len(mag_sorted) == 0:
             return None
 
@@ -643,7 +694,9 @@ class StarsRenderer:
                 return np.asarray(catalog_idx, dtype=np.int32)
             keep_local = np.argpartition(mag_sub, max_c - 1)[:max_c]
             keep_order = np.argsort(mag_sub[keep_local], kind="mergesort")
-            return np.asarray(catalog_idx[keep_local[keep_order]], dtype=np.int32)
+            return np.asarray(
+                catalog_idx[keep_local[keep_order]], dtype=np.int32
+            )
         except Exception:
             return np.asarray(catalog_idx[:max_c], dtype=np.int32)
 
@@ -675,7 +728,9 @@ class StarsRenderer:
         if key is None or self._scope_index_pending_key == key:
             self._scope_index_pending_key = None
 
-    def _ensure_scope_spatial_index(self, ra_all, dec_all, *, allow_sync_build: bool = True):
+    def _ensure_scope_spatial_index(
+        self, ra_all, dec_all, *, allow_sync_build: bool = True
+    ):
         if np is None or ra_all is None or dec_all is None:
             return None, None
 
@@ -715,7 +770,13 @@ class StarsRenderer:
         dec_min = max(-90.0, float(center_dec) - float(dec_pad))
         dec_max = min(90.0, float(center_dec) + float(dec_pad))
         dec_lo_bin = max(0, min(dec_bins - 1, int(math.floor(dec_min + 90.0))))
-        dec_hi_bin = max(0, min(dec_bins - 1, int(math.floor(max(dec_min, dec_max - 1e-6) + 90.0))))
+        dec_hi_bin = max(
+            0,
+            min(
+                dec_bins - 1,
+                int(math.floor(max(dec_min, dec_max - 1e-6) + 90.0)),
+            ),
+        )
 
         ra_ranges = []
         if float(ra_pad) >= 179.999:
@@ -727,12 +788,34 @@ class StarsRenderer:
                 ra_ranges.append(
                     (
                         max(0, min(ra_bins - 1, int(math.floor(ra_min)))),
-                        max(0, min(ra_bins - 1, int(math.floor(max(ra_min, ra_max - 1e-6))))),
+                        max(
+                            0,
+                            min(
+                                ra_bins - 1,
+                                int(math.floor(max(ra_min, ra_max - 1e-6))),
+                            ),
+                        ),
                     )
                 )
             else:
-                ra_ranges.append((0, max(0, min(ra_bins - 1, int(math.floor(max(0.0, ra_max - 1e-6)))))))
-                ra_ranges.append((max(0, min(ra_bins - 1, int(math.floor(ra_min)))), ra_bins - 1))
+                ra_ranges.append(
+                    (
+                        0,
+                        max(
+                            0,
+                            min(
+                                ra_bins - 1,
+                                int(math.floor(max(0.0, ra_max - 1e-6))),
+                            ),
+                        ),
+                    )
+                )
+                ra_ranges.append(
+                    (
+                        max(0, min(ra_bins - 1, int(math.floor(ra_min)))),
+                        ra_bins - 1,
+                    )
+                )
 
         tile_ids = []
         for dec_bin in range(dec_lo_bin, dec_hi_bin + 1):
@@ -740,7 +823,9 @@ class StarsRenderer:
             for ra_lo_bin, ra_hi_bin in ra_ranges:
                 if ra_lo_bin > ra_hi_bin:
                     continue
-                tile_ids.extend(range(row_base + ra_lo_bin, row_base + ra_hi_bin + 1))
+                tile_ids.extend(
+                    range(row_base + ra_lo_bin, row_base + ra_hi_bin + 1)
+                )
         if not tile_ids:
             return np.array([], dtype=np.int32)
         return np.asarray(tile_ids, dtype=np.int32)
@@ -786,14 +871,19 @@ class StarsRenderer:
 
         grid_key = self._scope_grid_key
         query_key = (grid_key, tuple(int(t) for t in tile_ids))
-        if self._scope_query_cache_key == query_key and self._scope_query_cache_indices is not None:
+        if (
+            self._scope_query_cache_key == query_key
+            and self._scope_query_cache_indices is not None
+        ):
             candidate_idx = self._scope_query_cache_indices
             tile_count = int(self._scope_query_cache_tile_count)
             candidate_count = int(self._scope_query_cache_candidate_count)
         else:
             candidate_count = 0
             for tile_id in tile_ids:
-                candidate_count += int(grid_offsets[int(tile_id) + 1] - grid_offsets[int(tile_id)])
+                candidate_count += int(
+                    grid_offsets[int(tile_id) + 1] - grid_offsets[int(tile_id)]
+                )
 
             if candidate_count <= 0:
                 self._scope_query_cache_key = query_key
@@ -842,9 +932,19 @@ class StarsRenderer:
 
         if not np.any(mask):
             return np.array([], dtype=np.int32), tile_count, candidate_count
-        return np.asarray(candidate_idx[mask], dtype=np.int32), tile_count, candidate_count
+        return (
+            np.asarray(candidate_idx[mask], dtype=np.int32),
+            tile_count,
+            candidate_count,
+        )
 
-    def prime_catalog_indices(self, ra_all, dec_all=None, mag_all=None, catalog_mag_sorted: bool = False):
+    def prime_catalog_indices(
+        self,
+        ra_all,
+        dec_all=None,
+        mag_all=None,
+        catalog_mag_sorted: bool = False,
+    ):
         # Warm caches ahead of the first scope frame so the expensive setup does not happen
         # inside paintEvent.
         if np is None or ra_all is None:
@@ -854,13 +954,19 @@ class StarsRenderer:
                 self._ensure_scope_spatial_index(ra_all, dec_all)
             except Exception:
                 pass
-        if dec_all is not None and mag_all is not None and (not bool(catalog_mag_sorted)):
+        if (
+            dec_all is not None
+            and mag_all is not None
+            and (not bool(catalog_mag_sorted))
+        ):
             try:
                 self._ensure_mag_index(ra_all, dec_all, mag_all)
             except Exception:
                 pass
 
-    def _cached_altaz(self, ra_all, dec_all, catalog_idx, state, interaction_active: bool):
+    def _cached_altaz(
+        self, ra_all, dec_all, catalog_idx, state, interaction_active: bool
+    ):
         if np is None:
             return None, None
         if catalog_idx is None or len(catalog_idx) == 0:
@@ -877,7 +983,9 @@ class StarsRenderer:
         try:
             ptr_ra = int(np.asarray(ra_all).__array_interface__["data"][0])
             ptr_dec = int(np.asarray(dec_all).__array_interface__["data"][0])
-            ptr_idx = int(np.asarray(catalog_idx).__array_interface__["data"][0])
+            ptr_idx = int(
+                np.asarray(catalog_idx).__array_interface__["data"][0]
+            )
         except Exception:
             ptr_ra = id(ra_all)
             ptr_dec = id(dec_all)
@@ -894,7 +1002,11 @@ class StarsRenderer:
             ut_key,
         )
 
-        if self._altaz_cache_key == cache_key and self._altaz_cache_alt is not None and self._altaz_cache_az is not None:
+        if (
+            self._altaz_cache_key == cache_key
+            and self._altaz_cache_alt is not None
+            and self._altaz_cache_az is not None
+        ):
             return self._altaz_cache_alt, self._altaz_cache_az
 
         ra = ra_all[catalog_idx]
@@ -935,15 +1047,29 @@ class StarsRenderer:
     def _limiting_magnitude(self, state) -> float:
         cam = state.camera
         scope_enabled = bool(getattr(state, "scope_enabled", False))
-        extras = getattr(state, "extras", {}) if isinstance(getattr(state, "extras", {}), dict) else {}
+        extras = (
+            getattr(state, "extras", {})
+            if isinstance(getattr(state, "extras", {}), dict)
+            else {}
+        )
 
         base = float(getattr(state, "magnitude_limit", 6.0))
         spike_knob = float(getattr(state, "spike_magnitude_threshold", 2.0))
         spike_bias = (spike_knob - 2.0) * 0.08
         if scope_enabled:
             # In scope mode, use the calibrated optical model directly.
-            wide_field_penalty = float(clamp(float(extras.get("scope_fov_penalty_mag", 0.0)) * 0.35, 0.0, 2.8))
-            limiting_mag = float(extras.get("scope_limit_mag", base)) + spike_bias - wide_field_penalty
+            wide_field_penalty = float(
+                clamp(
+                    float(extras.get("scope_fov_penalty_mag", 0.0)) * 0.35,
+                    0.0,
+                    2.8,
+                )
+            )
+            limiting_mag = (
+                float(extras.get("scope_limit_mag", base))
+                + spike_bias
+                - wide_field_penalty
+            )
         else:
             # `state.magnitude_limit` already arrives precomputed from the scene layer:
             # it includes the active sky brightness model (sun/twilight/eclipse) and the
@@ -955,7 +1081,12 @@ class StarsRenderer:
             limiting_mag = min(limiting_mag, -4.0)
 
         if bool(extras.get("scope_force_naked_eye_until_fix", False)):
-            naked_eye_cap = float(extras.get("scope_first_fix_mag_cap", getattr(state, "naked_eye_cap", 8.0)))
+            naked_eye_cap = float(
+                extras.get(
+                    "scope_first_fix_mag_cap",
+                    getattr(state, "naked_eye_cap", 8.0),
+                )
+            )
             limiting_mag = min(limiting_mag, naked_eye_cap)
 
         if scope_enabled:
@@ -971,7 +1102,9 @@ class StarsRenderer:
             cap = 13.5
         return float(clamp(limiting_mag, -12.0, cap))
 
-    def _cached_color(self, bp_rp_value: float, alpha_u8: int, pure_colors: bool) -> QColor:
+    def _cached_color(
+        self, bp_rp_value: float, alpha_u8: int, pure_colors: bool
+    ) -> QColor:
         bp = 0.8 if bp_rp_value is None else float(bp_rp_value)
         if not math.isfinite(bp):
             bp = 0.8
@@ -987,22 +1120,38 @@ class StarsRenderer:
 
         bp_center = (bp_bin / 10.0) - 0.5
         desat_mix = 0.0 if pure_colors else 0.34
-        rgb = color_from_bp_rp(bp_center, pure_colors=pure_colors, desaturate_mix=desat_mix)
+        rgb = color_from_bp_rp(
+            bp_center, pure_colors=pure_colors, desaturate_mix=desat_mix
+        )
 
-        # En el look tipo app: colores presentes, pero no "neÃ³n".
+        # En l'estètica tipus app: colors presents, però no "neó".
         lum = (float(rgb[0]) + float(rgb[1]) + float(rgb[2])) / 3.0
         sat_boost = 1.22 if pure_colors else 1.10
         rgb = (
-            int(clamp(round(lum + (float(rgb[0]) - lum) * sat_boost), 0.0, 255.0)),
-            int(clamp(round(lum + (float(rgb[1]) - lum) * sat_boost), 0.0, 255.0)),
-            int(clamp(round(lum + (float(rgb[2]) - lum) * sat_boost), 0.0, 255.0)),
+            int(
+                clamp(
+                    round(lum + (float(rgb[0]) - lum) * sat_boost), 0.0, 255.0
+                )
+            ),
+            int(
+                clamp(
+                    round(lum + (float(rgb[1]) - lum) * sat_boost), 0.0, 255.0
+                )
+            ),
+            int(
+                clamp(
+                    round(lum + (float(rgb[2]) - lum) * sat_boost), 0.0, 255.0
+                )
+            ),
         )
 
         color = QColor(int(rgb[0]), int(rgb[1]), int(rgb[2]), int(alpha_bin))
         self._qcolor_cache[key] = color
         return color
 
-    def _cached_disc_sprite(self, color: QColor, radius_px: float) -> tuple[QImage, float]:
+    def _cached_disc_sprite(
+        self, color: QColor, radius_px: float
+    ) -> tuple[QImage, float]:
         r = float(clamp(radius_px, 0.35, 6.0))
         r_bin = round(r * 10.0) / 10.0
         key = (int(color.rgba()), int(round(r_bin * 10.0)))
@@ -1038,7 +1187,13 @@ class StarsRenderer:
         r_core = float(clamp(core_radius_px, 1.0, 6.2))
         h = int(max(0, halo_bin))
         mode = 1 if pure_colors else 0
-        key = (int(color.rgba()), int(alpha_u8), int(round(r_core * 10.0)), h, mode)
+        key = (
+            int(color.rgba()),
+            int(alpha_u8),
+            int(round(r_core * 10.0)),
+            h,
+            mode,
+        )
         cached = self._bright_sprite_cache.get(key)
         if cached is not None:
             return cached
@@ -1068,27 +1223,42 @@ class StarsRenderer:
                     int(clamp(alpha_u8 * (0.32 + 0.08 * h), 0.0, 220.0)),
                 ),
             )
-            halo.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+            halo.setColorAt(
+                1.0, QColor(color.red(), color.green(), color.blue(), 0)
+            )
             p.setBrush(QBrush(halo))
             p.drawEllipse(QPointF(center, center), halo_r, halo_r)
 
         p.setBrush(QBrush(color))
         p.drawEllipse(QPointF(center, center), r_core, r_core)
         if not pure_colors:
-            p.setBrush(QBrush(QColor(255, 255, 255, int(clamp(alpha_u8 * 0.75, 0.0, 255.0)))))
-            p.drawEllipse(QPointF(center, center), r_core * 0.42, r_core * 0.42)
+            p.setBrush(
+                QBrush(
+                    QColor(
+                        255, 255, 255, int(clamp(alpha_u8 * 0.75, 0.0, 255.0))
+                    )
+                )
+            )
+            p.drawEllipse(
+                QPointF(center, center), r_core * 0.42, r_core * 0.42
+            )
         p.end()
 
         out = (img, center)
         self._bright_sprite_cache[key] = out
         return out
+
     # -----------------------------
     # Main render
     # -----------------------------
     def render(self, ctx, state):
         if np is None:
             return self._empty_result()
-        extras = getattr(state, "extras", {}) if isinstance(getattr(state, "extras", {}), dict) else {}
+        extras = (
+            getattr(state, "extras", {})
+            if isinstance(getattr(state, "extras", {}), dict)
+            else {}
+        )
         if not bool(extras.get("stars_enabled", True)):
             return self._empty_result()
         if state.ra is None or state.dec is None or state.mag is None:
@@ -1124,34 +1294,84 @@ class StarsRenderer:
                 except Exception:
                     pass
         if bool(extras.get("scope_force_naked_eye_until_fix", False)):
-            pre_limit = min(pre_limit, float(extras.get("scope_first_fix_mag_cap", getattr(state, "naked_eye_cap", 8.0))))
+            pre_limit = min(
+                pre_limit,
+                float(
+                    extras.get(
+                        "scope_first_fix_mag_cap",
+                        getattr(state, "naked_eye_cap", 8.0),
+                    )
+                ),
+            )
 
-        center_ra = extras.get("scope_center_ra_deg") if scope_enabled else None
-        center_dec = extras.get("scope_center_dec_deg") if scope_enabled else None
-        ra_pad = extras.get("scope_preselect_ra_pad_deg") if scope_enabled else None
-        dec_pad = extras.get("scope_preselect_dec_pad_deg") if scope_enabled else None
+        center_ra = (
+            extras.get("scope_center_ra_deg") if scope_enabled else None
+        )
+        center_dec = (
+            extras.get("scope_center_dec_deg") if scope_enabled else None
+        )
+        ra_pad = (
+            extras.get("scope_preselect_ra_pad_deg") if scope_enabled else None
+        )
+        dec_pad = (
+            extras.get("scope_preselect_dec_pad_deg")
+            if scope_enabled
+            else None
+        )
         used_scope_spatial_prefilter = False
         scope_spatial_prefilter_pending = False
         scope_tile_count = 0
         scope_tile_candidates = 0
         try:
-            scope_sync_index_build_max_rows = int(max(50_000, int(extras.get("scope_sync_index_build_max_rows", 750_000))))
+            scope_sync_index_build_max_rows = int(
+                max(
+                    50_000,
+                    int(
+                        extras.get("scope_sync_index_build_max_rows", 750_000)
+                    ),
+                )
+            )
         except Exception:
             scope_sync_index_build_max_rows = 750_000
-        scope_allow_sync_index_build = bool(extras.get("scope_allow_sync_index_build", False))
+        scope_allow_sync_index_build = bool(
+            extras.get("scope_allow_sync_index_build", False)
+        )
         allow_sync_scope_index_build = bool(
-            scope_allow_sync_index_build or int(len(ra_all)) <= int(scope_sync_index_build_max_rows)
+            scope_allow_sync_index_build
+            or int(len(ra_all)) <= int(scope_sync_index_build_max_rows)
         )
 
         try:
-            pending_cap_interaction = int(max(5_000, int(extras.get("scope_pending_prefilter_cap_interaction", 40_000))))
+            pending_cap_interaction = int(
+                max(
+                    5_000,
+                    int(
+                        extras.get(
+                            "scope_pending_prefilter_cap_interaction", 40_000
+                        )
+                    ),
+                )
+            )
         except Exception:
             pending_cap_interaction = 40_000
         try:
-            pending_cap_static = int(max(5_000, int(extras.get("scope_pending_prefilter_cap_static", 70_000))))
+            pending_cap_static = int(
+                max(
+                    5_000,
+                    int(
+                        extras.get(
+                            "scope_pending_prefilter_cap_static", 70_000
+                        )
+                    ),
+                )
+            )
         except Exception:
             pending_cap_static = 70_000
-        pending_prefilter_cap = pending_cap_interaction if interaction_active else pending_cap_static
+        pending_prefilter_cap = (
+            pending_cap_interaction
+            if interaction_active
+            else pending_cap_static
+        )
 
         if (
             scope_enabled
@@ -1163,17 +1383,19 @@ class StarsRenderer:
         ):
             if diag is not None:
                 diag.start_timer("stars_scope_prefilter")
-            catalog_idx, scope_tile_count, scope_tile_candidates = self._scope_spatial_prefilter(
-                ra_all=ra_all,
-                dec_all=dec_all,
-                mag_all=mag_all,
-                center_ra=float(center_ra),
-                center_dec=float(center_dec),
-                ra_pad=float(ra_pad),
-                dec_pad=float(dec_pad),
-                pre_limit=float(pre_limit),
-                interaction_active=interaction_active,
-                allow_sync_index_build=allow_sync_scope_index_build,
+            catalog_idx, scope_tile_count, scope_tile_candidates = (
+                self._scope_spatial_prefilter(
+                    ra_all=ra_all,
+                    dec_all=dec_all,
+                    mag_all=mag_all,
+                    center_ra=float(center_ra),
+                    center_dec=float(center_dec),
+                    ra_pad=float(ra_pad),
+                    dec_pad=float(dec_pad),
+                    pre_limit=float(pre_limit),
+                    interaction_active=interaction_active,
+                    allow_sync_index_build=allow_sync_scope_index_build,
+                )
             )
             if diag is not None:
                 diag.stop_timer("stars_scope_prefilter")
@@ -1207,19 +1429,43 @@ class StarsRenderer:
         if scope_enabled:
             try:
                 scope_cap_interaction = int(
-                    max(10_000, int(extras.get("scope_pre_altaz_max_candidates_interaction", 120_000)))
+                    max(
+                        10_000,
+                        int(
+                            extras.get(
+                                "scope_pre_altaz_max_candidates_interaction",
+                                120_000,
+                            )
+                        ),
+                    )
                 )
             except Exception:
                 scope_cap_interaction = 120_000
             try:
                 scope_cap_static = int(
-                    max(10_000, int(extras.get("scope_pre_altaz_max_candidates_static", 220_000)))
+                    max(
+                        10_000,
+                        int(
+                            extras.get(
+                                "scope_pre_altaz_max_candidates_static",
+                                220_000,
+                            )
+                        ),
+                    )
                 )
             except Exception:
                 scope_cap_static = 220_000
             try:
                 scope_cap_pending = int(
-                    max(5_000, int(extras.get("scope_pre_altaz_max_candidates_pending", 60_000)))
+                    max(
+                        5_000,
+                        int(
+                            extras.get(
+                                "scope_pre_altaz_max_candidates_pending",
+                                60_000,
+                            )
+                        ),
+                    )
                 )
             except Exception:
                 scope_cap_pending = 60_000
@@ -1227,11 +1473,17 @@ class StarsRenderer:
             if scope_spatial_prefilter_pending:
                 scope_candidate_cap_value = int(scope_cap_pending)
             else:
-                scope_candidate_cap_value = int(scope_cap_interaction if interaction_active else scope_cap_static)
+                scope_candidate_cap_value = int(
+                    scope_cap_interaction
+                    if interaction_active
+                    else scope_cap_static
+                )
 
             if int(len(catalog_idx)) > int(scope_candidate_cap_value):
                 scope_candidate_cap_applied = True
-                assume_sorted_for_cap = bool(scope_spatial_prefilter_pending and catalog_mag_sorted)
+                assume_sorted_for_cap = bool(
+                    scope_spatial_prefilter_pending and catalog_mag_sorted
+                )
                 catalog_idx = self._cap_candidates_by_brightness(
                     catalog_idx,
                     mag_all,
@@ -1243,16 +1495,36 @@ class StarsRenderer:
         bp_rp = bp_rp_all[catalog_idx] if bp_rp_all is not None else None
 
         if diag is not None:
-            diag.set_counter("scope_spatial_prefilter", 1 if used_scope_spatial_prefilter else 0)
-            diag.set_counter("scope_spatial_prefilter_pending", 1 if scope_spatial_prefilter_pending else 0)
+            diag.set_counter(
+                "scope_spatial_prefilter",
+                1 if used_scope_spatial_prefilter else 0,
+            )
+            diag.set_counter(
+                "scope_spatial_prefilter_pending",
+                1 if scope_spatial_prefilter_pending else 0,
+            )
             diag.set_counter("scope_tile_count", int(scope_tile_count))
-            diag.set_counter("scope_tile_candidates", int(scope_tile_candidates))
+            diag.set_counter(
+                "scope_tile_candidates", int(scope_tile_candidates)
+            )
             diag.set_counter("scope_prefilter_count", int(len(catalog_idx)))
-            diag.set_counter("catalog_mag_sorted", 1 if catalog_mag_sorted else 0)
-            diag.set_counter("scope_allow_sync_index_build", 1 if allow_sync_scope_index_build else 0)
-            diag.set_counter("scope_pending_prefilter_cap", int(pending_prefilter_cap))
-            diag.set_counter("scope_candidate_cap", int(scope_candidate_cap_value))
-            diag.set_counter("scope_candidate_cap_applied", 1 if scope_candidate_cap_applied else 0)
+            diag.set_counter(
+                "catalog_mag_sorted", 1 if catalog_mag_sorted else 0
+            )
+            diag.set_counter(
+                "scope_allow_sync_index_build",
+                1 if allow_sync_scope_index_build else 0,
+            )
+            diag.set_counter(
+                "scope_pending_prefilter_cap", int(pending_prefilter_cap)
+            )
+            diag.set_counter(
+                "scope_candidate_cap", int(scope_candidate_cap_value)
+            )
+            diag.set_counter(
+                "scope_candidate_cap_applied",
+                1 if scope_candidate_cap_applied else 0,
+            )
             diag.start_timer("stars_altaz")
         alt_deg, az_deg = self._cached_altaz(
             ra_all=ra_all,
@@ -1276,7 +1548,9 @@ class StarsRenderer:
             and ra_pad is not None
             and dec_pad is not None
         ):
-            threshold = int(extras.get("scope_window_prefilter_threshold", 120000))
+            threshold = int(
+                extras.get("scope_window_prefilter_threshold", 120000)
+            )
             if int(len(catalog_idx)) > max(20000, threshold):
                 try:
                     c_ra = float(center_ra) % 360.0
@@ -1288,7 +1562,9 @@ class StarsRenderer:
                         d_pad += 0.6
 
                     ra_sub = np.asarray(ra_all[catalog_idx], dtype=np.float32)
-                    dec_sub = np.asarray(dec_all[catalog_idx], dtype=np.float32)
+                    dec_sub = np.asarray(
+                        dec_all[catalog_idx], dtype=np.float32
+                    )
                     dra = np.abs(((ra_sub - c_ra + 180.0) % 360.0) - 180.0)
                     window_mask = (
                         np.isfinite(ra_sub)
@@ -1299,9 +1575,13 @@ class StarsRenderer:
                     if not np.any(window_mask):
                         return self._empty_result()
 
-                    catalog_idx = np.asarray(catalog_idx[window_mask], dtype=np.int32)
+                    catalog_idx = np.asarray(
+                        catalog_idx[window_mask], dtype=np.int32
+                    )
                     mag = np.asarray(mag[window_mask], dtype=np.float32)
-                    alt_deg = np.asarray(alt_deg[window_mask], dtype=np.float32)
+                    alt_deg = np.asarray(
+                        alt_deg[window_mask], dtype=np.float32
+                    )
                     az_deg = np.asarray(az_deg[window_mask], dtype=np.float32)
                     bp_rp = bp_rp[window_mask] if bp_rp is not None else None
                 except Exception:
@@ -1386,22 +1666,44 @@ class StarsRenderer:
             res.total_in_view = total_in_view
             return res
 
-        # Bucket por pixel: evita overdraw en densidad alta
-        px = np.asarray(sx, dtype=np.int32)
-        py = np.asarray(sy, dtype=np.int32)
-        pixel_key = py * max(1, int(ctx.width)) + px
+        # Bucket por pixel: evita overdraw en densidad alta.
+        # In scope mode (moderate counts) we keep full set to avoid star-identity swaps
+        # while panning, which can look like color changes on bright stars.
+        disable_scope_bucket = False
+        if scope_enabled:
+            try:
+                scope_disable_max = int(
+                    max(
+                        5_000,
+                        int(
+                            extras.get(
+                                "scope_disable_bucket_max_points", 30_000
+                            )
+                        ),
+                    )
+                )
+            except Exception:
+                scope_disable_max = 30_000
+            disable_scope_bucket = int(len(mag)) <= int(scope_disable_max)
 
-        by_brightness = np.argsort(mag, kind="mergesort")  # mag menor = mÃ¡s brillante
-        sorted_keys = pixel_key[by_brightness]
-        _, first_occurrence = np.unique(sorted_keys, return_index=True)
-        keep = by_brightness[first_occurrence]
-        keep = keep[np.argsort(mag[keep], kind="mergesort")]
+        if not disable_scope_bucket:
+            px = np.asarray(sx, dtype=np.int32)
+            py = np.asarray(sy, dtype=np.int32)
+            pixel_key = py * max(1, int(ctx.width)) + px
 
-        catalog_idx = catalog_idx[keep]
-        sx = sx[keep]
-        sy = sy[keep]
-        mag = mag[keep]
-        bp_rp = bp_rp[keep] if bp_rp is not None else None
+            by_brightness = np.argsort(
+                mag, kind="mergesort"
+            )  # magnitud menor = més brillant
+            sorted_keys = pixel_key[by_brightness]
+            _, first_occurrence = np.unique(sorted_keys, return_index=True)
+            keep = by_brightness[first_occurrence]
+            keep = keep[np.argsort(mag[keep], kind="mergesort")]
+
+            catalog_idx = catalog_idx[keep]
+            sx = sx[keep]
+            sy = sy[keep]
+            mag = mag[keep]
+            bp_rp = bp_rp[keep] if bp_rp is not None else None
         after_bucket = int(len(mag))
 
         # No star-count clipping: preserve full visible set.
@@ -1411,19 +1713,45 @@ class StarsRenderer:
         # LOOK: mapping mag -> alpha/size/halo
         # -----------------------------
         pure_colors = bool(getattr(state, "pure_colors", False))
-        scope_profile = str(extras.get("scope_instrument_profile", "telescope"))
+        scope_profile = str(
+            extras.get("scope_instrument_profile", "telescope")
+        )
         scope_is_camera = scope_enabled and scope_profile.startswith("camera")
-        scope_iso_factor = float(clamp(extras.get("scope_iso_factor", 1.0), 0.0, 1.0))
-        scope_exposure_factor = float(clamp(extras.get("scope_exposure_factor", 1.0), 0.0, 1.0))
-        scope_alpha_gain = float(max(0.2, extras.get("scope_alpha_gain", 1.0))) if scope_enabled else 1.0
-        scope_size_gain = float(max(0.4, extras.get("scope_size_gain", 1.0))) if scope_enabled else 1.0
-        scope_signal_gain = float(max(0.4, extras.get("scope_signal_gain", 1.0))) if scope_enabled else 1.0
+        scope_iso_factor = float(
+            clamp(extras.get("scope_iso_factor", 1.0), 0.0, 1.0)
+        )
+        scope_exposure_factor = float(
+            clamp(extras.get("scope_exposure_factor", 1.0), 0.0, 1.0)
+        )
+        scope_alpha_gain = (
+            float(max(0.2, extras.get("scope_alpha_gain", 1.0)))
+            if scope_enabled
+            else 1.0
+        )
+        scope_size_gain = (
+            float(max(0.4, extras.get("scope_size_gain", 1.0)))
+            if scope_enabled
+            else 1.0
+        )
+        scope_signal_gain = (
+            float(max(0.4, extras.get("scope_signal_gain", 1.0)))
+            if scope_enabled
+            else 1.0
+        )
         # Low-light camera settings (ISO/exposure bajos) must visibly reduce star presence.
         low_light_drive = 1.0
         if scope_is_camera:
-            low_light_drive = float(clamp(0.15 + 0.55 * scope_iso_factor + 0.30 * scope_exposure_factor, 0.15, 1.0))
+            low_light_drive = float(
+                clamp(
+                    0.15
+                    + 0.55 * scope_iso_factor
+                    + 0.30 * scope_exposure_factor,
+                    0.15,
+                    1.0,
+                )
+            )
 
-        # Referencia fotométrica: evitar compresión plana en campos profundos.
+        # Referència fotomètrica: evita una compressió plana en camps profunds.
         m_ref_default = float(limiting_mag) - (2.4 if scope_enabled else 1.8)
         m_ref = float(extras.get("star_m_ref", m_ref_default))
         m_ref = float(clamp(m_ref, -2.0, 17.0))
@@ -1442,7 +1770,11 @@ class StarsRenderer:
         alpha_curve = 0.86 if scope_enabled else 0.92
         intensity_norm = intensity / (1.0 + intensity)
         alpha = np.clip(
-            (alpha_floor + 0.995 * np.power(np.clip(intensity_norm, 0.0, 1.0), alpha_curve))
+            (
+                alpha_floor
+                + 0.995
+                * np.power(np.clip(intensity_norm, 0.0, 1.0), alpha_curve)
+            )
             * brightness_boost
             * scope_alpha_gain
             * scope_signal_gain
@@ -1456,20 +1788,34 @@ class StarsRenderer:
 
         # Size bin: dominante 1px; sube solo en muy brillantes
         # 1..5
-        # Umbrales pensados para el look del mÃ³vil:
+        # Llindars pensats per a l'aspecte del mòbil:
         size_bin = np.ones(after_bucket, dtype=np.int8)
         size_bin = np.where(mag <= 3.0, 2, size_bin)
         size_bin = np.where(mag <= 1.5, 3, size_bin)
         size_bin = np.where(mag <= 0.0, 4, size_bin)
         size_bin = np.where(mag <= -1.0, 5, size_bin)
         if not pure_colors:
-            size_bin = np.where(delta_best <= (1.15 if scope_enabled else 0.95), size_bin + 1, size_bin)
-            size_bin = np.where(delta_best <= (0.45 if scope_enabled else 0.30), size_bin + 1, size_bin)
+            size_bin = np.where(
+                delta_best <= (1.15 if scope_enabled else 0.95),
+                size_bin + 1,
+                size_bin,
+            )
+            size_bin = np.where(
+                delta_best <= (0.45 if scope_enabled else 0.30),
+                size_bin + 1,
+                size_bin,
+            )
         if scope_enabled:
-            size_float = np.asarray(size_bin, dtype=np.float32) * scope_size_gain
+            size_float = (
+                np.asarray(size_bin, dtype=np.float32) * scope_size_gain
+            )
             if scope_is_camera:
-                size_float *= float(clamp(0.40 + 0.60 * low_light_drive, 0.40, 1.0))
-            size_bin = np.asarray(np.clip(np.rint(size_float), 1.0, 7.0), dtype=np.int8)
+                size_float *= float(
+                    clamp(0.40 + 0.60 * low_light_drive, 0.40, 1.0)
+                )
+            size_bin = np.asarray(
+                np.clip(np.rint(size_float), 1.0, 7.0), dtype=np.int8
+            )
         else:
             size_bin = np.asarray(np.clip(size_bin, 1.0, 6.0), dtype=np.int8)
 
@@ -1477,7 +1823,11 @@ class StarsRenderer:
         # 0..3
         halo_bin = np.zeros(after_bucket, dtype=np.int8)
         if not pure_colors:
-            halo_gain = float(max(1.0, extras.get("scope_halo_gain", 1.0))) if scope_enabled else 1.0
+            halo_gain = (
+                float(max(1.0, extras.get("scope_halo_gain", 1.0)))
+                if scope_enabled
+                else 1.0
+            )
             halo_shift = 0.0
             if scope_enabled:
                 halo_shift = max(0.0, math.log2(halo_gain))
@@ -1486,16 +1836,34 @@ class StarsRenderer:
             halo_bin = np.where(mag <= (1.8 + halo_shift), 1, halo_bin)
             halo_bin = np.where(mag <= (0.5 + halo_shift), 2, halo_bin)
             halo_bin = np.where(mag <= (-0.8 + halo_shift), 3, halo_bin)
-            halo_bin = np.where(delta_best <= (1.00 + 0.35 * halo_shift), np.maximum(halo_bin, 1), halo_bin)
-            halo_bin = np.where(delta_best <= (0.38 + 0.22 * halo_shift), np.maximum(halo_bin, 2), halo_bin)
-            halo_bin = np.where(delta_best <= (0.14 + 0.10 * halo_shift), np.maximum(halo_bin, 3), halo_bin)
+            halo_bin = np.where(
+                delta_best <= (1.00 + 0.35 * halo_shift),
+                np.maximum(halo_bin, 1),
+                halo_bin,
+            )
+            halo_bin = np.where(
+                delta_best <= (0.38 + 0.22 * halo_shift),
+                np.maximum(halo_bin, 2),
+                halo_bin,
+            )
+            halo_bin = np.where(
+                delta_best <= (0.14 + 0.10 * halo_shift),
+                np.maximum(halo_bin, 3),
+                halo_bin,
+            )
 
             # En scope wide-field, recorta halos (evita â€œbokehâ€ masivo)
             if scope_enabled:
-                scope_fov_diag_deg = float(extras.get("scope_fov_diag_deg", 8.0))
-                scope_wide_field_factor = float(clamp((scope_fov_diag_deg - 10.0) / 42.0, 0.0, 1.0))
+                scope_fov_diag_deg = float(
+                    extras.get("scope_fov_diag_deg", 8.0)
+                )
+                scope_wide_field_factor = float(
+                    clamp((scope_fov_diag_deg - 10.0) / 42.0, 0.0, 1.0)
+                )
                 if scope_wide_field_factor > 0.25:
-                    halo_bin = np.where(halo_bin > 0, halo_bin - 1, halo_bin).astype(np.int8)
+                    halo_bin = np.where(
+                        halo_bin > 0, halo_bin - 1, halo_bin
+                    ).astype(np.int8)
             if after_bucket > 0:
                 max_halo_frac = 0.10 if scope_enabled else 0.04
                 max_halo = max(10, int(after_bucket * max_halo_frac))
@@ -1505,7 +1873,9 @@ class StarsRenderer:
                 halo_bin = np.where(allowed, halo_bin, 0).astype(np.int8)
 
         # Alpha final u8 (binning interno)
-        alpha_u8 = np.asarray(np.clip(np.rint(alpha * 255.0), 8.0, 255.0), dtype=np.int16)
+        alpha_u8 = np.asarray(
+            np.clip(np.rint(alpha * 255.0), 8.0, 255.0), dtype=np.int16
+        )
         avg_alpha_u8 = float(np.mean(alpha_u8)) if len(alpha_u8) else 0.0
         halo_count = int(np.count_nonzero(halo_bin)) if len(halo_bin) else 0
 
@@ -1547,14 +1917,23 @@ class StarsRenderer:
             bp_vals = np.where(np.isfinite(bp_vals), bp_vals, 0.8)
         else:
             bp_vals = np.full(after_bucket, 0.8, dtype=np.float32)
-        bp_bin = np.asarray(np.clip(np.rint((bp_vals + 0.5) * 10.0), 0.0, 70.0), dtype=np.int16)
+        bp_bin = np.asarray(
+            np.clip(np.rint((bp_vals + 0.5) * 10.0), 0.0, 70.0), dtype=np.int16
+        )
         # Coarser alpha bins reduce style-run fragmentation without visible photometric jumps.
         alpha_bin = np.asarray((alpha_u8 // 16) * 16, dtype=np.int16)
         style_key = np.asarray(bp_bin * 256 + alpha_bin, dtype=np.int32)
         # Weak stars tolerate coarser style quantization, reducing draw calls significantly.
-        weak_bp_bin = np.asarray((bp_bin // 4) * 4, dtype=np.int16)
+        # In scope mode keep full BP-RP bin precision to avoid perceptual color jumps
+        # while panning across changing star-density fields.
+        if scope_enabled:
+            weak_bp_bin = np.asarray(bp_bin, dtype=np.int16)
+        else:
+            weak_bp_bin = np.asarray((bp_bin // 4) * 4, dtype=np.int16)
         weak_alpha_bin = np.asarray((alpha_u8 // 32) * 32, dtype=np.int16)
-        style_key_weak = np.asarray(weak_bp_bin * 256 + weak_alpha_bin, dtype=np.int32)
+        style_key_weak = np.asarray(
+            weak_bp_bin * 256 + weak_alpha_bin, dtype=np.int32
+        )
 
         def iter_style_runs(indices, key_source):
             if len(indices) == 0:
@@ -1583,7 +1962,9 @@ class StarsRenderer:
         for key, run_idx in iter_style_runs(weak_idx, style_key_weak):
             bpb = int(key // 256)
             ab = int(key % 256)
-            col = self._cached_color((bpb / 10.0) - 0.5, ab, pure_colors=pure_colors)
+            col = self._cached_color(
+                (bpb / 10.0) - 0.5, ab, pure_colors=pure_colors
+            )
             r = 0.42 + 0.38 * (float(ab) / 255.0)
             sprite, center = self._cached_disc_sprite(col, r)
             c = int(round(center))
@@ -1592,22 +1973,32 @@ class StarsRenderer:
 
         # Mid stars: compact colored core, visible but clean.
         mid_span = max(0.2, medium_cut - bright_cut)
-        medium_rel = np.asarray(np.clip((medium_cut - mag) / mid_span, 0.0, 1.0), dtype=np.float32)
+        medium_rel = np.asarray(
+            np.clip((medium_cut - mag) / mid_span, 0.0, 1.0), dtype=np.float32
+        )
         medium_r = np.asarray(0.85 + 0.95 * medium_rel, dtype=np.float32)
         for key, run_idx in iter_style_runs(medium_idx, style_key):
             bpb = int(key // 256)
             ab = int(key % 256)
-            col = self._cached_color((bpb / 10.0) - 0.5, ab, pure_colors=pure_colors)
+            col = self._cached_color(
+                (bpb / 10.0) - 0.5, ab, pure_colors=pure_colors
+            )
             for i in run_idx:
-                sprite, center = self._cached_disc_sprite(col, float(medium_r[i]))
+                sprite, center = self._cached_disc_sprite(
+                    col, float(medium_r[i])
+                )
                 c = int(round(center))
                 painter.drawImage(int(sx_i[i] - c), int(sy_i[i] - c), sprite)
 
         # Bright stars: radius + halo (if not pure_colors / not interaction).
         bright_idx = np.where((halo_bin > 0) | bright_mask)[0]
         if len(bright_idx):
-            bright_idx = bright_idx[np.argsort(mag[bright_idx], kind="mergesort")]
-            max_bright = max(16, int(after_bucket * (0.14 if scope_enabled else 0.08)))
+            bright_idx = bright_idx[
+                np.argsort(mag[bright_idx], kind="mergesort")
+            ]
+            max_bright = max(
+                16, int(after_bucket * (0.14 if scope_enabled else 0.08))
+            )
             bright_idx = bright_idx[:max_bright]
 
             for i in bright_idx:
@@ -1615,7 +2006,9 @@ class StarsRenderer:
                 a = int(alpha_u8[i])
                 hbin = int(halo_bin[i])
 
-                r_core = float(clamp(1.10 + 0.55 * float(size_bin[i]), 1.0, 5.8))
+                r_core = float(
+                    clamp(1.10 + 0.55 * float(size_bin[i]), 1.0, 5.8)
+                )
                 col = self._cached_color(bp, a, pure_colors=pure_colors)
                 sprite, center = self._cached_bright_sprite(
                     color=col,
@@ -1647,7 +2040,10 @@ class StarsRenderer:
             diag.set_counter("after_mag_cut", after_mag_cut)
             diag.set_counter("after_bucket", after_bucket)
             diag.set_counter("density_cap", density_cap)
-            diag.set_counter("state_mag_limit", round(float(getattr(state, "magnitude_limit", 0.0)), 3))
+            diag.set_counter(
+                "state_mag_limit",
+                round(float(getattr(state, "magnitude_limit", 0.0)), 3),
+            )
             diag.set_counter("limiting_mag", round(float(limiting_mag), 3))
             diag.set_counter("pre_limit", round(float(pre_limit), 3))
             diag.set_counter("avg_alpha_u8", round(float(avg_alpha_u8), 3))
@@ -1659,15 +2055,31 @@ class StarsRenderer:
             diag.set_counter("medium_count", int(len(medium_idx)))
             diag.set_counter("scope_after_mag_mask", int(after_mag_cut))
             diag.set_counter("pure_colors", 1 if pure_colors else 0)
-            diag.set_counter("interaction_active", 1 if interaction_active else 0)
+            diag.set_counter(
+                "interaction_active", 1 if interaction_active else 0
+            )
             if scope_enabled:
-                diag.set_counter("scope_alpha_gain", round(float(scope_alpha_gain), 3))
-                diag.set_counter("scope_size_gain", round(float(scope_size_gain), 3))
-                diag.set_counter("scope_signal_gain", round(float(scope_signal_gain), 3))
+                diag.set_counter(
+                    "scope_alpha_gain", round(float(scope_alpha_gain), 3)
+                )
+                diag.set_counter(
+                    "scope_size_gain", round(float(scope_size_gain), 3)
+                )
+                diag.set_counter(
+                    "scope_signal_gain", round(float(scope_signal_gain), 3)
+                )
                 if scope_is_camera:
-                    diag.set_counter("scope_iso_factor", round(float(scope_iso_factor), 3))
-                    diag.set_counter("scope_exposure_factor", round(float(scope_exposure_factor), 3))
-                    diag.set_counter("scope_low_light_drive", round(float(low_light_drive), 3))
+                    diag.set_counter(
+                        "scope_iso_factor", round(float(scope_iso_factor), 3)
+                    )
+                    diag.set_counter(
+                        "scope_exposure_factor",
+                        round(float(scope_exposure_factor), 3),
+                    )
+                    diag.set_counter(
+                        "scope_low_light_drive",
+                        round(float(low_light_drive), 3),
+                    )
             diag.set_counter("avg_size_bin", round(float(avg_radius), 3))
 
         return result

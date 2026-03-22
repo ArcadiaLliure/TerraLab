@@ -6,17 +6,17 @@ import os
 import shutil
 import urllib.request
 import zipfile
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from TerraLab.common.app_paths import ensure_runtime_layout
 from TerraLab.common.utils import get_config_value, set_config_value
 from TerraLab.tools.convert_planck_dust import convert_planck_fits_to_cache
 from TerraLab.util.gaia_importer import build_gaia_catalog_from_tables
 from TerraLab.util.milkyway_importer import convert_milkyway_fits_to_png
-
 
 ProgressFn = Callable[[float, str], None]
 
@@ -32,7 +32,9 @@ class AssetSpec:
     auto_download_url: Optional[str] = None
 
 
-def _progress(callback: Optional[ProgressFn], percent: float, message: str) -> None:
+def _progress(
+    callback: Optional[ProgressFn], percent: float, message: str
+) -> None:
     if callback is None:
         return
     try:
@@ -110,7 +112,9 @@ class AssetManager:
             ),
         }
 
-    def _mark_asset_state(self, asset_id: str, ready: bool, path: str = "") -> None:
+    def _mark_asset_state(
+        self, asset_id: str, ready: bool, path: str = ""
+    ) -> None:
         now_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         set_config_value(f"assets.{asset_id}.ready", bool(ready))
         set_config_value(f"assets.{asset_id}.path", str(path or ""))
@@ -136,7 +140,9 @@ class AssetManager:
         ]
 
     def get_user_agent(self) -> str:
-        return str(get_config_value("weather.metno_user_agent", "") or "").strip()
+        return str(
+            get_config_value("weather.metno_user_agent", "") or ""
+        ).strip()
 
     def set_user_agent(self, value: str) -> None:
         ua = str(value or "").strip()
@@ -161,8 +167,14 @@ class AssetManager:
             p_npy = Path(layout["data_gaia"]) / "stars_catalog.npy"
             for candidate in (p_npy, p_npz, p_zst):
                 if candidate.exists():
-                    return {"ready": True, "reason": "ok", "path": str(candidate)}
-            packaged_dir = Path(__file__).resolve().parents[1] / "data" / "stars"
+                    return {
+                        "ready": True,
+                        "reason": "ok",
+                        "path": str(candidate),
+                    }
+            packaged_dir = (
+                Path(__file__).resolve().parents[1] / "data" / "stars"
+            )
             packaged_candidates = (
                 packaged_dir / "stars_catalog.zst",
                 packaged_dir / "stars_catalog.npz",
@@ -170,29 +182,62 @@ class AssetManager:
             )
             for candidate in packaged_candidates:
                 if candidate.exists():
-                    return {"ready": True, "reason": "packaged_catalog", "path": str(candidate)}
-            return {"ready": False, "reason": "missing_catalog", "path": str(p_npy)}
+                    return {
+                        "ready": True,
+                        "reason": "packaged_catalog",
+                        "path": str(candidate),
+                    }
+            return {
+                "ready": False,
+                "reason": "missing_catalog",
+                "path": str(p_npy),
+            }
         if asset_id == "milkyway_texture":
             p = Path(layout["data_milkyway"]) / "milkyway_overlay.png"
             exists = p.exists()
-            return {"ready": exists, "reason": "ok" if exists else "missing_texture", "path": str(p)}
+            return {
+                "ready": exists,
+                "reason": "ok" if exists else "missing_texture",
+                "path": str(p),
+            }
         if asset_id == "planck_dust":
             p = Path(layout["data_planck"]) / "planck_dust_opacity_eq_u16.npz"
             exists = p.exists()
-            return {"ready": exists, "reason": "ok" if exists else "missing_dust_map", "path": str(p)}
+            return {
+                "ready": exists,
+                "reason": "ok" if exists else "missing_dust_map",
+                "path": str(p),
+            }
         if asset_id == "elevation_dem":
             folder = Path(layout["data_elevation"])
-            files = [*folder.glob("*.tif"), *folder.glob("*.tiff"), *folder.glob("*.txt"), *folder.glob("*.asc")]
+            files = [
+                *folder.glob("*.tif"),
+                *folder.glob("*.tiff"),
+                *folder.glob("*.txt"),
+                *folder.glob("*.asc"),
+            ]
             has_files = bool(files)
-            return {"ready": has_files, "reason": "ok" if has_files else "missing_dem", "path": str(folder)}
+            return {
+                "ready": has_files,
+                "reason": "ok" if has_files else "missing_dem",
+                "path": str(folder),
+            }
         if asset_id == "light_pollution":
             p = Path(layout["data_light_pollution"]) / "light_pollution.tif"
             exists = p.exists()
-            return {"ready": exists, "reason": "ok" if exists else "missing_raster", "path": str(p)}
+            return {
+                "ready": exists,
+                "reason": "ok" if exists else "missing_raster",
+                "path": str(p),
+            }
         if asset_id == "ngc_catalog":
             p = Path(layout["data_ngc"]) / "openngc_catalog.csv"
             exists = p.exists()
-            return {"ready": exists, "reason": "ok" if exists else "missing_catalog", "path": str(p)}
+            return {
+                "ready": exists,
+                "reason": "ok" if exists else "missing_catalog",
+                "path": str(p),
+            }
         return {"ready": False, "reason": "unknown_asset", "path": ""}
 
     @staticmethod
@@ -200,7 +245,252 @@ class AssetManager:
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dst)
 
-    def _download_file(self, url: str, target_path: Path, progress_callback: Optional[ProgressFn] = None) -> Path:
+    @staticmethod
+    def _copy_raster_with_sidecars(src: Path, dst: Path) -> None:
+        """
+        Copy a GeoTIFF plus common sidecar files (aux/xml/ovr/tfw/wld/prj).
+        Some rasters store CRS metadata in sidecars instead of the TIFF tags.
+        """
+        AssetManager._copy_file(src, dst)
+
+        src = Path(src)
+        dst = Path(dst)
+
+        # Sidecars named as "<filename>.tif.*" (e.g. .aux.xml/.xml/.ovr).
+        prefix = src.name + "."
+        for sidecar in src.parent.glob(f"{src.name}.*"):
+            if not sidecar.is_file():
+                continue
+            name = sidecar.name
+            if not name.startswith(prefix):
+                continue
+            suffix = name[len(src.name) :]
+            target = dst.parent / f"{dst.name}{suffix}"
+            try:
+                shutil.copyfile(sidecar, target)
+            except Exception:
+                pass
+
+        # World/projection files tied to basename (e.g. .tfw/.wld/.prj).
+        for ext in (".tfw", ".wld", ".prj"):
+            sidecar = src.with_suffix(ext)
+            if not sidecar.exists() or not sidecar.is_file():
+                continue
+            target = dst.with_suffix(ext)
+            try:
+                shutil.copyfile(sidecar, target)
+            except Exception:
+                pass
+
+    @staticmethod
+    def _valid_lat_lon(lat: float, lon: float) -> bool:
+        """
+        Validate a geographic coordinate in EPSG:4326.
+
+        Input CRS:
+            - `lat`, `lon` in `EPSG:4326`.
+        Internal CRS:
+            - Not applicable.
+        Output CRS:
+            - Not applicable (boolean validation result).
+        """
+        if not (math.isfinite(float(lat)) and math.isfinite(float(lon))):
+            return False
+        return -90.0 <= float(lat) <= 90.0 and -180.0 <= float(lon) <= 180.0
+
+    @staticmethod
+    def _resolve_timezone_name(lat: float, lon: float) -> str:
+        """
+        Resolve observer timezone name from geographic coordinates.
+
+        Input CRS:
+            - `lat`, `lon` in `EPSG:4326`.
+        Internal CRS:
+            - Not applicable.
+        Output CRS:
+            - Not applicable; returns IANA timezone string or empty string.
+        """
+        try:
+            from timezonefinder import TimezoneFinder
+
+            tz = TimezoneFinder().timezone_at(lat=float(lat), lng=float(lon))
+            return str(tz or "").strip()
+        except Exception:
+            return ""
+
+    def _estimate_observer_from_tiff_dem(
+        self, dem_source: Path
+    ) -> Optional[Tuple[float, float]]:
+        """
+        Estimate observer `(lat, lon)` from the center of the selected DEM GeoTIFF.
+
+        Input CRS:
+            - Raster center point in raster native CRS.
+        Internal CRS:
+            - None for this computation.
+        Output CRS:
+            - Returns `(lat, lon)` in `EPSG:4326`.
+
+        Missing CRS policy:
+            - If the GeoTIFF has no CRS, fallback is explicitly `EPSG:4326`
+              to stay aligned with `TiffRasterWindowProvider`.
+        """
+        try:
+            import rasterio
+            from pyproj import Transformer
+
+            from TerraLab.terrain.providers import CRS_GEOGRAPHIC
+        except Exception:
+            return None
+
+        try:
+            with rasterio.open(str(dem_source)) as src:
+                bounds = src.bounds
+                center_x = 0.5 * (float(bounds.left) + float(bounds.right))
+                center_y = 0.5 * (float(bounds.bottom) + float(bounds.top))
+                src_crs = (
+                    src.crs.to_string()
+                    if getattr(src, "crs", None)
+                    else CRS_GEOGRAPHIC
+                )
+        except Exception:
+            return None
+
+        try:
+            tr = Transformer.from_crs(src_crs, CRS_GEOGRAPHIC, always_xy=True)
+            lon, lat = tr.transform(center_x, center_y)
+        except Exception:
+            return None
+        if not self._valid_lat_lon(lat, lon):
+            return None
+        return float(lat), float(lon)
+
+    def _estimate_observer_from_asc_dem(
+        self, dem_dir: Path
+    ) -> Optional[Tuple[float, float]]:
+        """
+        Estimate observer `(lat, lon)` from ASC/TXT DEM coverage.
+
+        Input CRS:
+            - ASCII DEM tile headers are interpreted in terrain internal CRS.
+        Internal CRS:
+            - `EPSG:25831` (`CRS_TERRAIN_INTERNAL`).
+        Output CRS:
+            - Returns `(lat, lon)` in `EPSG:4326`.
+        """
+        try:
+            from pyproj import Transformer
+
+            from TerraLab.terrain.engine import TileIndex
+            from TerraLab.terrain.providers import (
+                CRS_GEOGRAPHIC,
+                CRS_TERRAIN_INTERNAL,
+            )
+        except Exception:
+            return None
+
+        asc_files = sorted(
+            list(dem_dir.glob("*.asc")) + list(dem_dir.glob("*.txt")),
+            key=lambda p: p.name.lower(),
+        )
+        if not asc_files:
+            return None
+
+        min_x, min_y = float("inf"), float("inf")
+        max_x, max_y = float("-inf"), float("-inf")
+        for tile_path in asc_files:
+            try:
+                header = TileIndex._read_header(str(tile_path))
+                bbox = TileIndex._compute_bbox(header)
+            except Exception:
+                continue
+            min_x = min(min_x, float(bbox[0]))
+            min_y = min(min_y, float(bbox[1]))
+            max_x = max(max_x, float(bbox[2]))
+            max_y = max(max_y, float(bbox[3]))
+
+        if not (
+            math.isfinite(min_x)
+            and math.isfinite(min_y)
+            and math.isfinite(max_x)
+            and math.isfinite(max_y)
+            and max_x > min_x
+            and max_y > min_y
+        ):
+            return None
+
+        center_x = 0.5 * (min_x + max_x)
+        center_y = 0.5 * (min_y + max_y)
+        try:
+            tr = Transformer.from_crs(
+                CRS_TERRAIN_INTERNAL, CRS_GEOGRAPHIC, always_xy=True
+            )
+            lon, lat = tr.transform(center_x, center_y)
+        except Exception:
+            return None
+
+        if not self._valid_lat_lon(lat, lon):
+            return None
+        return float(lat), float(lon)
+
+    def _auto_configure_observer_from_dem(
+        self, dem_dir: Path
+    ) -> Dict[str, object]:
+        """
+        Auto-configure observer position from imported DEM assets.
+
+        Input CRS:
+            - For GeoTIFF DEM: raster native CRS center.
+            - For ASC/TXT DEM: `EPSG:25831` tile header coordinates.
+        Internal CRS:
+            - Uses `EPSG:25831` only for ASC/TXT conversion.
+        Output CRS:
+            - Stores observer location in `EPSG:4326` (`observer_lat/lon`).
+
+        Returns:
+            - Dict with `applied` plus optional `lat`, `lon`, `timezone`.
+              `applied=False` means no valid auto-location could be derived.
+        """
+        try:
+            from TerraLab.terrain.providers import resolve_primary_dem_tiff_path
+        except Exception:
+            resolve_primary_dem_tiff_path = None
+
+        lat_lon = None
+        if resolve_primary_dem_tiff_path is not None:
+            tiff_path = resolve_primary_dem_tiff_path(str(dem_dir))
+            if tiff_path:
+                lat_lon = self._estimate_observer_from_tiff_dem(Path(tiff_path))
+
+        if lat_lon is None:
+            lat_lon = self._estimate_observer_from_asc_dem(dem_dir)
+
+        if lat_lon is None:
+            return {"applied": False}
+
+        lat, lon = float(lat_lon[0]), float(lat_lon[1])
+        if not self._valid_lat_lon(lat, lon):
+            return {"applied": False}
+
+        set_config_value("observer_lat", lat)
+        set_config_value("observer_lon", lon)
+        tz_name = self._resolve_timezone_name(lat, lon)
+        if tz_name:
+            set_config_value("observer_timezone", tz_name)
+        print(
+            f"[AssetManager] Auto observer from DEM: lat={lat:.6f}, lon={lon:.6f}, tz={tz_name or '-'}"
+        )
+        result = {"applied": True, "lat": lat, "lon": lon}
+        if tz_name:
+            result["timezone"] = tz_name
+        return result
+
+    def _download_file(
+        self,
+        url: str,
+        target_path: Path,
+        progress_callback: Optional[ProgressFn] = None,
+    ) -> Path:
         target_path.parent.mkdir(parents=True, exist_ok=True)
         _progress(progress_callback, 2.0, f"Descarregant {url}")
         req = urllib.request.Request(
@@ -210,7 +500,10 @@ class AssetManager:
                 "Accept": "*/*",
             },
         )
-        with urllib.request.urlopen(req, timeout=60) as response, target_path.open("wb") as out:
+        with (
+            urllib.request.urlopen(req, timeout=60) as response,
+            target_path.open("wb") as out,
+        ):
             total = int(response.headers.get("Content-Length", "0") or "0")
             downloaded = 0
             while True:
@@ -221,10 +514,20 @@ class AssetManager:
                 downloaded += len(chunk)
                 if total > 0:
                     pct = 2.0 + 78.0 * (float(downloaded) / float(total))
-                    _progress(progress_callback, pct, f"Descarregat {downloaded}/{total} bytes")
+                    _progress(
+                        progress_callback,
+                        pct,
+                        f"Descarregat {downloaded}/{total} bytes",
+                    )
                 else:
-                    pct = min(80.0, 2.0 + (downloaded / (1024.0 * 1024.0)) * 2.5)
-                    _progress(progress_callback, pct, f"Descarregat {downloaded} bytes")
+                    pct = min(
+                        80.0, 2.0 + (downloaded / (1024.0 * 1024.0)) * 2.5
+                    )
+                    _progress(
+                        progress_callback,
+                        pct,
+                        f"Descarregat {downloaded} bytes",
+                    )
         _progress(progress_callback, 82.0, "Descarrega completada.")
         return target_path
 
@@ -236,11 +539,17 @@ class AssetManager:
     ) -> Dict[str, object]:
         spec = self.get_spec(asset_id)
         if not spec.auto_download_url:
-            raise ValueError(f"Asset {asset_id} does not support automatic download.")
+            raise ValueError(
+                f"Asset {asset_id} does not support automatic download."
+            )
         tmp_dir = Path(self.layout["tmp"])
         ext = Path(spec.auto_download_url).suffix or ".bin"
         tmp_path = tmp_dir / f"{asset_id}_download{ext}"
-        downloaded = self._download_file(spec.auto_download_url, tmp_path, progress_callback=progress_callback)
+        downloaded = self._download_file(
+            spec.auto_download_url,
+            tmp_path,
+            progress_callback=progress_callback,
+        )
         return self.import_files(
             asset_id,
             [str(downloaded)],
@@ -261,7 +570,9 @@ class AssetManager:
             ua = self.get_user_agent()
             self._mark_asset_state("climate_metno", bool(ua), "")
             if not ua:
-                raise ValueError("Cal definir un User-Agent per MET Norway abans d'activar el clima.")
+                raise ValueError(
+                    "Cal definir un User-Agent per MET Norway abans d'activar el clima."
+                )
             return {"ok": True, "message": "User-Agent configurat."}
 
         if not paths:
@@ -271,7 +582,9 @@ class AssetManager:
             out_dir = Path(self.layout["data_gaia"])
             build_healpy_index = bool(opts.get("build_healpy_index", True))
             healpy_nside = int(opts.get("healpy_nside", 512) or 512)
-            healpy_chunk_rows = int(opts.get("healpy_chunk_rows", 2_000_000) or 2_000_000)
+            healpy_chunk_rows = int(
+                opts.get("healpy_chunk_rows", 2_000_000) or 2_000_000
+            )
             summary = build_gaia_catalog_from_tables(
                 [str(p) for p in paths],
                 str(out_dir),
@@ -284,7 +597,12 @@ class AssetManager:
                 healpy_chunk_rows=healpy_chunk_rows,
                 progress_callback=progress_callback,
             )
-            no_gaia_src = Path(__file__).resolve().parents[1] / "data" / "stars" / "no_gaia_stars.json"
+            no_gaia_src = (
+                Path(__file__).resolve().parents[1]
+                / "data"
+                / "stars"
+                / "no_gaia_stars.json"
+            )
             no_gaia_dst = out_dir / "no_gaia_stars.json"
             try:
                 if (not no_gaia_dst.exists()) and no_gaia_src.exists():
@@ -294,7 +612,11 @@ class AssetManager:
             npz_path = out_dir / "stars_catalog.npz"
             npy_path = out_dir / "stars_catalog.npy"
             zst_path = out_dir / "stars_catalog.zst"
-            selected_path = npy_path if npy_path.exists() else (npz_path if npz_path.exists() else zst_path)
+            selected_path = (
+                npy_path
+                if npy_path.exists()
+                else (npz_path if npz_path.exists() else zst_path)
+            )
             set_config_value("gaia_catalog_path", str(selected_path))
             self._mark_asset_state("gaia_catalog", True, str(selected_path))
             return {"ok": True, "summary": summary, "stored_in": str(out_dir)}
@@ -304,8 +626,15 @@ class AssetManager:
             dst_png = out_dir / "milkyway_overlay.png"
             src = paths[0]
             _progress(progress_callback, 5.0, "Processant Via Lactia...")
-            remove_stars = bool(opts.get("remove_stars", get_config_value("milkyway_starless_enabled", True)))
-            png_compress_level = int(get_config_value("milkyway_png_compress_level", 0))
+            remove_stars = bool(
+                opts.get(
+                    "remove_stars",
+                    get_config_value("milkyway_starless_enabled", True),
+                )
+            )
+            png_compress_level = int(
+                get_config_value("milkyway_png_compress_level", 0)
+            )
             if src.suffix.lower() == ".fits":
                 summary = convert_milkyway_fits_to_png(
                     str(src),
@@ -320,7 +649,10 @@ class AssetManager:
                 _progress(progress_callback, 100.0, "Via Lactia importada.")
             set_config_value("milkyway_overlay_texture_path", str(dst_png))
             set_config_value("milkyway_starless_enabled", bool(remove_stars))
-            set_config_value("milkyway_png_compress_level", int(max(0, min(9, png_compress_level))))
+            set_config_value(
+                "milkyway_png_compress_level",
+                int(max(0, min(9, png_compress_level))),
+            )
             self._mark_asset_state("milkyway_texture", True, str(dst_png))
             return {"ok": True, "summary": summary, "stored_in": str(out_dir)}
 
@@ -328,9 +660,16 @@ class AssetManager:
             out_dir = Path(self.layout["data_planck"])
             out_dir.mkdir(parents=True, exist_ok=True)
             src = paths[0]
-            fits_path = out_dir / "COM_CompMap_Dust-GNILC-Model-Opacity_2048_R2.01.fits"
+            fits_path = (
+                out_dir
+                / "COM_CompMap_Dust-GNILC-Model-Opacity_2048_R2.01.fits"
+            )
             self._copy_file(src, fits_path)
-            _progress(progress_callback, 10.0, "Convertint FITS Planck a cache runtime...")
+            _progress(
+                progress_callback,
+                10.0,
+                "Convertint FITS Planck a cache runtime...",
+            )
             summary = convert_planck_fits_to_cache(
                 fits_path=str(fits_path),
                 output_npz=str(out_dir / "planck_dust_opacity_eq_u16.npz"),
@@ -352,22 +691,45 @@ class AssetManager:
             for idx, src in enumerate(paths):
                 ext = src.suffix.lower()
                 if ext == ".zip":
-                    _progress(progress_callback, 5.0 + (80.0 * idx / total), f"Descomprimint {src.name}...")
+                    _progress(
+                        progress_callback,
+                        5.0 + (80.0 * idx / total),
+                        f"Descomprimint {src.name}...",
+                    )
                     with zipfile.ZipFile(src, "r") as zf:
                         zf.extractall(out_dir)
                 else:
                     self._copy_file(src, out_dir / src.name)
                 copied += 1
-                _progress(progress_callback, 5.0 + (90.0 * (idx + 1) / total), f"Importat {src.name}")
+                _progress(
+                    progress_callback,
+                    5.0 + (90.0 * (idx + 1) / total),
+                    f"Importat {src.name}",
+                )
+            _progress(
+                progress_callback,
+                96.0,
+                "Detectant ubicacio de l'observador des del DEM...",
+            )
+            observer_auto = self._auto_configure_observer_from_dem(out_dir)
             set_config_value("raster_path", str(out_dir))
             self._mark_asset_state("elevation_dem", True, str(out_dir))
-            return {"ok": True, "stored_in": str(out_dir), "files_processed": int(copied)}
+            return {
+                "ok": True,
+                "stored_in": str(out_dir),
+                "files_processed": int(copied),
+                "observer_auto": observer_auto,
+            }
 
         if asset_id == "light_pollution":
             out_dir = Path(self.layout["data_light_pollution"])
             dst = out_dir / "light_pollution.tif"
-            self._copy_file(paths[0], dst)
-            _progress(progress_callback, 100.0, "Raster de contaminacio luminica importat.")
+            self._copy_raster_with_sidecars(paths[0], dst)
+            _progress(
+                progress_callback,
+                100.0,
+                "Raster de contaminacio luminica importat.",
+            )
             set_config_value("dvnl_path", str(dst))
             self._mark_asset_state("light_pollution", True, str(dst))
             return {"ok": True, "stored_in": str(dst)}

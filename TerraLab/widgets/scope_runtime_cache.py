@@ -37,18 +37,30 @@ class ScopeRuntimeCacheManager:
     )
     _SCHEMA_VERSION = 1
 
-    def __init__(self, *, stars_dir: str | None = None, cache_dir: str | None = None):
+    def __init__(
+        self, *, stars_dir: str | None = None, cache_dir: str | None = None
+    ):
         resolved_cache = ""
         if cache_dir:
             resolved_cache = os.path.abspath(str(cache_dir))
         elif stars_dir:
-            resolved_cache = os.path.join(os.path.abspath(str(stars_dir)), "cache", "scope")
+            resolved_cache = os.path.join(
+                os.path.abspath(str(stars_dir)), "cache", "scope"
+            )
         self.cache_dir = resolved_cache
         if self.cache_dir:
             os.makedirs(self.cache_dir, exist_ok=True)
 
     @classmethod
     def from_cache_dir(cls, cache_dir: str) -> "ScopeRuntimeCacheManager":
+        """Executa el metode from_cache_dir de la classe ScopeRuntimeCacheManager.
+
+        Par?metres:
+        - cache_dir (str): Valor del parametre 'cache_dir'.
+
+        Retorna:
+        - "ScopeRuntimeCacheManager": Valor retornat pel metode.
+        """
         return cls(cache_dir=cache_dir)
 
     @classmethod
@@ -58,6 +70,15 @@ class ScopeRuntimeCacheManager:
         *,
         extra: dict[str, Any] | None = None,
     ) -> str:
+        """Executa el metode build_dataset_signature de la classe ScopeRuntimeCacheManager.
+
+        Par?metres:
+        - source_paths (Sequence[str] | None): Valor del parametre 'source_paths'.
+        - extra (dict[str, Any] | None): Valor del parametre 'extra'.
+
+        Retorna:
+        - str: Valor retornat pel metode.
+        """
         path_signatures: list[dict[str, Any]] = []
         for path in source_paths or ():
             sig = cls._path_signature(path)
@@ -69,7 +90,9 @@ class ScopeRuntimeCacheManager:
             "sources": path_signatures,
             "extra": dict(extra or {}),
         }
-        raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+        raw = json.dumps(
+            payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+        )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -84,7 +107,9 @@ class ScopeRuntimeCacheManager:
         return {
             "path": os.path.abspath(path),
             "size": int(st.st_size),
-            "mtime_ns": int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))),
+            "mtime_ns": int(
+                getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000))
+            ),
         }
 
     @staticmethod
@@ -118,6 +143,14 @@ class ScopeRuntimeCacheManager:
 
     @classmethod
     def extract_stamp(cls, catalog_path: str) -> int | None:
+        """Executa el metode extract_stamp de la classe ScopeRuntimeCacheManager.
+
+        Par?metres:
+        - catalog_path (str): Valor del parametre 'catalog_path'.
+
+        Retorna:
+        - int | None: Valor retornat pel metode.
+        """
         base_name = os.path.basename(str(catalog_path or ""))
         match = cls._CATALOG_RE.match(base_name)
         if not match:
@@ -128,16 +161,43 @@ class ScopeRuntimeCacheManager:
             return None
 
     def bundle_paths(self, stamp: int) -> dict[str, str]:
+        """Executa el metode bundle_paths de la classe ScopeRuntimeCacheManager.
+
+        Par?metres:
+        - stamp (int): Valor del parametre 'stamp'.
+
+        Retorna:
+        - dict[str, str]: Valor retornat pel metode.
+        """
         base = str(self.cache_dir or "")
         return {
-            "catalog_path": os.path.join(base, f"scope_runtime_sorted_catalog_{int(stamp)}.npy"),
-            "r_path": os.path.join(base, f"scope_runtime_sorted_r_{int(stamp)}.npy"),
-            "g_path": os.path.join(base, f"scope_runtime_sorted_g_{int(stamp)}.npy"),
-            "b_path": os.path.join(base, f"scope_runtime_sorted_b_{int(stamp)}.npy"),
+            "catalog_path": os.path.join(
+                base, f"scope_runtime_sorted_catalog_{int(stamp)}.npy"
+            ),
+            "r_path": os.path.join(
+                base, f"scope_runtime_sorted_r_{int(stamp)}.npy"
+            ),
+            "g_path": os.path.join(
+                base, f"scope_runtime_sorted_g_{int(stamp)}.npy"
+            ),
+            "b_path": os.path.join(
+                base, f"scope_runtime_sorted_b_{int(stamp)}.npy"
+            ),
         }
 
     def meta_path(self, stamp: int) -> str:
-        return os.path.join(str(self.cache_dir or ""), f"scope_runtime_bundle_meta_{int(stamp)}.json")
+        """Executa el metode meta_path de la classe ScopeRuntimeCacheManager.
+
+        Par?metres:
+        - stamp (int): Valor del parametre 'stamp'.
+
+        Retorna:
+        - str: Valor retornat pel metode.
+        """
+        return os.path.join(
+            str(self.cache_dir or ""),
+            f"scope_runtime_bundle_meta_{int(stamp)}.json",
+        )
 
     def _read_meta(self, stamp: int) -> dict[str, Any]:
         path = self.meta_path(stamp)
@@ -161,9 +221,7 @@ class ScopeRuntimeCacheManager:
         loaded_max_mag: float,
     ) -> None:
         path = self.meta_path(stamp)
-        tmp_name = (
-            f"{path}.{int(os.getpid())}.{int(time.time() * 1000.0)}.tmp"
-        )
+        tmp_name = f"{path}.{int(os.getpid())}.{int(time.time() * 1000.0)}.tmp"
         payload = {
             "stamp": int(stamp),
             "dataset_signature": str(dataset_signature or ""),
@@ -222,6 +280,16 @@ class ScopeRuntimeCacheManager:
         keep_stamp: int | None = None,
         tmp_ttl_seconds: float = 60.0,
     ) -> None:
+        """Executa el metode cleanup de la classe ScopeRuntimeCacheManager.
+
+        Par?metres:
+        - keep_stamps (int): Valor del parametre 'keep_stamps'.
+        - keep_stamp (int | None): Valor del parametre 'keep_stamp'.
+        - tmp_ttl_seconds (float): Valor del parametre 'tmp_ttl_seconds'.
+
+        Retorna:
+        - None.
+        """
         if not self.cache_dir:
             return
         try:
@@ -267,9 +335,13 @@ class ScopeRuntimeCacheManager:
                 stamped_tmp.setdefault(stamp_i, []).append(path)
                 continue
             lower_name = str(name).lower()
-            if "scope_runtime_sorted_" in lower_name and lower_name.endswith(".tmp"):
+            if "scope_runtime_sorted_" in lower_name and lower_name.endswith(
+                ".tmp"
+            ):
                 generic_tmp.append(path)
-            elif lower_name.startswith("scope_runtime_bundle_meta_") and lower_name.endswith(".tmp"):
+            elif lower_name.startswith(
+                "scope_runtime_bundle_meta_"
+            ) and lower_name.endswith(".tmp"):
                 generic_tmp.append(path)
 
         keep: set[int] = set()
@@ -277,7 +349,9 @@ class ScopeRuntimeCacheManager:
         if grouped:
             ordered_stamps = sorted(grouped.keys(), reverse=True)
             keep.update(ordered_stamps[:keep_stamps_i])
-            newest_complete_stamp = int(ordered_stamps[0]) if ordered_stamps else None
+            newest_complete_stamp = (
+                int(ordered_stamps[0]) if ordered_stamps else None
+            )
         if keep_stamp is not None:
             try:
                 keep.add(int(keep_stamp))
@@ -305,7 +379,9 @@ class ScopeRuntimeCacheManager:
 
         for stamp_i, paths in stamped_tmp.items():
             force_prune = False
-            if (newest_complete_stamp is not None) and (int(stamp_i) < int(newest_complete_stamp)):
+            if (newest_complete_stamp is not None) and (
+                int(stamp_i) < int(newest_complete_stamp)
+            ):
                 force_prune = True
             if keep_stamp_i is not None and int(stamp_i) == int(keep_stamp_i):
                 force_prune = False
@@ -335,8 +411,23 @@ class ScopeRuntimeCacheManager:
         g_path: str = "",
         b_path: str = "",
     ) -> dict[str, Any]:
+        """Executa el metode resolve_bundle_payload_paths de la classe ScopeRuntimeCacheManager.
+
+        Par?metres:
+        - catalog_path (str): Valor del parametre 'catalog_path'.
+        - r_path (str): Valor del parametre 'r_path'.
+        - g_path (str): Valor del parametre 'g_path'.
+        - b_path (str): Valor del parametre 'b_path'.
+
+        Retorna:
+        - dict[str, Any]: Valor retornat pel metode.
+        """
         catalog = str(catalog_path or "").strip()
-        if (not catalog) or catalog.lower().endswith(".tmp") or (not os.path.isfile(catalog)):
+        if (
+            (not catalog)
+            or catalog.lower().endswith(".tmp")
+            or (not os.path.isfile(catalog))
+        ):
             raise RuntimeError("Missing runtime mmap catalog path")
 
         catalog_stamp = self.extract_stamp(catalog)
@@ -349,8 +440,15 @@ class ScopeRuntimeCacheManager:
                 os.path.dirname(catalog),
                 f"scope_runtime_sorted_{channel_name}_{catalog_stamp}.npy",
             )
-            if candidate and (not candidate.lower().endswith(".tmp")) and os.path.isfile(candidate):
-                if os.path.basename(candidate).strip().lower() == os.path.basename(expected).lower():
+            if (
+                candidate
+                and (not candidate.lower().endswith(".tmp"))
+                and os.path.isfile(candidate)
+            ):
+                if (
+                    os.path.basename(candidate).strip().lower()
+                    == os.path.basename(expected).lower()
+                ):
                     return candidate
             if os.path.isfile(expected):
                 return expected
@@ -378,13 +476,33 @@ class ScopeRuntimeCacheManager:
         b_arr,
         dataset_signature: str | None = None,
     ) -> dict[str, str]:
+        """Executa el metode write_bundle_from_arrays de la classe ScopeRuntimeCacheManager.
+
+        Par?metres:
+        - source_id (Any): Valor del parametre 'source_id'.
+        - ra (Any): Valor del parametre 'ra'.
+        - dec (Any): Valor del parametre 'dec'.
+        - mag (Any): Valor del parametre 'mag'.
+        - bp_rp (Any): Valor del parametre 'bp_rp'.
+        - r_arr (Any): Valor del parametre 'r_arr'.
+        - g_arr (Any): Valor del parametre 'g_arr'.
+        - b_arr (Any): Valor del parametre 'b_arr'.
+        - dataset_signature (str | None): Valor del parametre 'dataset_signature'.
+
+        Retorna:
+        - dict[str, str]: Valor retornat pel metode.
+        """
         if np is None:
-            raise RuntimeError("NumPy is required to write scope runtime bundle")
+            raise RuntimeError(
+                "NumPy is required to write scope runtime bundle"
+            )
         n = int(len(ra))
         if n <= 0:
             raise ValueError("Cannot write empty scope runtime bundle")
         if not self.cache_dir:
-            raise RuntimeError("Scope runtime cache directory is not configured")
+            raise RuntimeError(
+                "Scope runtime cache directory is not configured"
+            )
 
         stamp = self._signature_to_stamp(dataset_signature)
         paths = self.bundle_paths(stamp)
@@ -405,9 +523,15 @@ class ScopeRuntimeCacheManager:
         )
 
         tmp_catalog = self._tmp_path_for(paths["catalog_path"])
-        mm_cat = np.lib.format.open_memmap(tmp_catalog, mode="w+", dtype=dtype, shape=(n,))
+        mm_cat = np.lib.format.open_memmap(
+            tmp_catalog, mode="w+", dtype=dtype, shape=(n,)
+        )
         mm_cat["source_id"] = np.asarray(
-            source_id if source_id is not None else np.full(n, -1, dtype=np.int64),
+            (
+                source_id
+                if source_id is not None
+                else np.full(n, -1, dtype=np.int64)
+            ),
             dtype=np.int64,
         )
         mm_cat["ra"] = np.asarray(ra, dtype=np.float64)
@@ -417,17 +541,25 @@ class ScopeRuntimeCacheManager:
         del mm_cat
         os.replace(tmp_catalog, paths["catalog_path"])
 
-        for arr, key in ((r_arr, "r_path"), (g_arr, "g_path"), (b_arr, "b_path")):
+        for arr, key in (
+            (r_arr, "r_path"),
+            (g_arr, "g_path"),
+            (b_arr, "b_path"),
+        ):
             target = paths[key]
             tmp_path = self._tmp_path_for(target)
-            mm_c = np.lib.format.open_memmap(tmp_path, mode="w+", dtype=np.uint8, shape=(n,))
+            mm_c = np.lib.format.open_memmap(
+                tmp_path, mode="w+", dtype=np.uint8, shape=(n,)
+            )
             mm_c[:] = np.asarray(arr, dtype=np.uint8)
             del mm_c
             os.replace(tmp_path, target)
 
         mag_arr = np.asarray(mag, dtype=np.float32)
         finite = np.isfinite(mag_arr)
-        max_mag = float(np.max(mag_arr[finite])) if np.any(finite) else float("nan")
+        max_mag = (
+            float(np.max(mag_arr[finite])) if np.any(finite) else float("nan")
+        )
         self._write_meta(
             stamp,
             dataset_signature=str(dataset_signature or ""),
@@ -446,16 +578,36 @@ class ScopeRuntimeCacheManager:
         bp_to_rgb_fn: Callable[[Any], tuple[Any, Any, Any]] | None = None,
         dataset_signature: str | None = None,
     ) -> dict[str, Any]:
+        """Executa el metode write_bundle_from_structured_npy de la classe ScopeRuntimeCacheManager.
+
+        Par?metres:
+        - runtime_catalog_path (str): Valor del parametre 'runtime_catalog_path'.
+        - chunk_rows (int): Valor del parametre 'chunk_rows'.
+        - progress_callback (Callable[[float, str], None] | None): Valor del parametre 'progress_callback'.
+        - bp_to_rgb_fn (Callable[[Any], tuple[Any, Any, Any]] | None): Valor del parametre 'bp_to_rgb_fn'.
+        - dataset_signature (str | None): Valor del parametre 'dataset_signature'.
+
+        Retorna:
+        - dict[str, Any]: Valor retornat pel metode.
+        """
         if np is None:
-            raise RuntimeError("NumPy is required to build scope runtime mmap bundle")
+            raise RuntimeError(
+                "NumPy is required to build scope runtime mmap bundle"
+            )
         if not self.cache_dir:
-            raise RuntimeError("Scope runtime cache directory is not configured")
+            raise RuntimeError(
+                "Scope runtime cache directory is not configured"
+            )
 
         path = str(runtime_catalog_path or "").strip()
         if not path or (not os.path.isfile(path)):
-            raise FileNotFoundError(f"Runtime catalog not found: {runtime_catalog_path}")
+            raise FileNotFoundError(
+                f"Runtime catalog not found: {runtime_catalog_path}"
+            )
         if bp_to_rgb_fn is None:
-            raise RuntimeError("bp_to_rgb_fn is required to build scope runtime RGB channels")
+            raise RuntimeError(
+                "bp_to_rgb_fn is required to build scope runtime RGB channels"
+            )
 
         signature = str(dataset_signature or "").strip()
         if not signature:
@@ -468,10 +620,16 @@ class ScopeRuntimeCacheManager:
         if self._is_complete_bundle(paths):
             meta = self._read_meta(stamp)
             rows = int(meta.get("rows", 0) or 0)
-            loaded_max_mag = float(meta.get("loaded_max_mag", float("nan")) or float("nan"))
+            loaded_max_mag = float(
+                meta.get("loaded_max_mag", float("nan")) or float("nan")
+            )
             if rows <= 0:
                 try:
-                    arr_cached = np.load(paths["catalog_path"], mmap_mode="r", allow_pickle=False)
+                    arr_cached = np.load(
+                        paths["catalog_path"],
+                        mmap_mode="r",
+                        allow_pickle=False,
+                    )
                     rows = int(len(arr_cached))
                     del arr_cached
                 except Exception:
@@ -491,7 +649,9 @@ class ScopeRuntimeCacheManager:
 
         names = set(arr.dtype.names or ())
         if not {"ra", "dec", "phot_g_mean_mag"}.issubset(names):
-            raise ValueError("Runtime catalog missing required fields: ra/dec/phot_g_mean_mag")
+            raise ValueError(
+                "Runtime catalog missing required fields: ra/dec/phot_g_mean_mag"
+            )
 
         total_rows = int(len(arr))
         if total_rows <= 0:
@@ -512,10 +672,18 @@ class ScopeRuntimeCacheManager:
         tmp_g = self._tmp_path_for(paths["g_path"])
         tmp_b = self._tmp_path_for(paths["b_path"])
 
-        mm_cat = np.lib.format.open_memmap(tmp_catalog, mode="w+", dtype=dtype, shape=(total_rows,))
-        mm_r = np.lib.format.open_memmap(tmp_r, mode="w+", dtype=np.uint8, shape=(total_rows,))
-        mm_g = np.lib.format.open_memmap(tmp_g, mode="w+", dtype=np.uint8, shape=(total_rows,))
-        mm_b = np.lib.format.open_memmap(tmp_b, mode="w+", dtype=np.uint8, shape=(total_rows,))
+        mm_cat = np.lib.format.open_memmap(
+            tmp_catalog, mode="w+", dtype=dtype, shape=(total_rows,)
+        )
+        mm_r = np.lib.format.open_memmap(
+            tmp_r, mode="w+", dtype=np.uint8, shape=(total_rows,)
+        )
+        mm_g = np.lib.format.open_memmap(
+            tmp_g, mode="w+", dtype=np.uint8, shape=(total_rows,)
+        )
+        mm_b = np.lib.format.open_memmap(
+            tmp_b, mode="w+", dtype=np.uint8, shape=(total_rows,)
+        )
 
         sid_key = "source_id" if "source_id" in names else None
         bp_key = "bp_rp" if "bp_rp" in names else None
@@ -527,10 +695,19 @@ class ScopeRuntimeCacheManager:
 
             ra_chunk = np.asarray(arr["ra"][start:end], dtype=np.float64)
             dec_chunk = np.asarray(arr["dec"][start:end], dtype=np.float64)
-            mag_chunk = np.asarray(arr["phot_g_mean_mag"][start:end], dtype=np.float32)
+            mag_chunk = np.asarray(
+                arr["phot_g_mean_mag"][start:end], dtype=np.float32
+            )
             if bp_key is not None:
-                bp_chunk = np.asarray(arr[bp_key][start:end], dtype=np.float32)
-                bp_chunk = np.nan_to_num(bp_chunk, nan=0.8, posinf=2.5, neginf=-0.5, copy=False)
+                # Structured runtime catalog is opened as read-only mmap.
+                # Keep a writable copy before normalization to avoid
+                # "assignment destination is read-only" on some NumPy builds.
+                bp_chunk = np.array(
+                    arr[bp_key][start:end], dtype=np.float32, copy=True
+                )
+                bp_chunk = np.nan_to_num(
+                    bp_chunk, nan=0.8, posinf=2.5, neginf=-0.5, copy=False
+                )
             else:
                 bp_chunk = np.full(end - start, 0.8, dtype=np.float32)
             if sid_key is not None:
@@ -558,7 +735,10 @@ class ScopeRuntimeCacheManager:
             if progress_callback is not None:
                 try:
                     pct = 100.0 * (float(end) / float(max(1, total_rows)))
-                    progress_callback(min(99.0, pct), f"Carregant cataleg scope ({int(round(pct))}%)")
+                    progress_callback(
+                        min(99.0, pct),
+                        f"Carregant cataleg scope ({int(round(pct))}%)",
+                    )
                 except Exception:
                     pass
 
@@ -577,11 +757,15 @@ class ScopeRuntimeCacheManager:
             stamp,
             dataset_signature=signature,
             rows=int(total_rows),
-            loaded_max_mag=float(max_loaded if np.isfinite(max_loaded) else float("nan")),
+            loaded_max_mag=float(
+                max_loaded if np.isfinite(max_loaded) else float("nan")
+            ),
         )
         self.cleanup(keep_stamps=1, keep_stamp=stamp, tmp_ttl_seconds=1.0)
         return {
             **paths,
             "rows": int(total_rows),
-            "loaded_max_mag": float(max_loaded if np.isfinite(max_loaded) else float("nan")),
+            "loaded_max_mag": float(
+                max_loaded if np.isfinite(max_loaded) else float("nan")
+            ),
         }

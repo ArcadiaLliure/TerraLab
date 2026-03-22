@@ -1,13 +1,14 @@
 """
 dvnl_io.py
 
-Provides I/O utilities for DVNL (Defense Meteorological Satellite Program / 
+Provides I/O utilities for DVNL (Defense Meteorological Satellite Program /
 VIIRS Nighttime Lights) GeoTIFF files.
 """
 
-import rasterio
 import numpy as np
+import rasterio
 from rasterio.windows import Window
+
 
 def read_raster_metadata(path: str) -> dict:
     """
@@ -16,15 +17,16 @@ def read_raster_metadata(path: str) -> dict:
     with rasterio.open(path) as src:
         return src.meta.copy()
 
+
 def read_raster_window_filtered(path: str, window: Window) -> np.ndarray:
     """
     Reads a specific window from the given raster path and handles NoData
     by replacing it with np.nan.
-    
+
     Args:
         path (str): The file path to the GeoTIFF.
         window (rasterio.windows.Window): The window to extract.
-        
+
     Returns:
         np.ndarray: The array containing the data as float32, with np.nan for NoData.
     """

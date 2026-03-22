@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import os
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, Optional
-import numpy as np
 
+import numpy as np
 from PyQt5.QtCore import (
     QObject,
     QProcess,
@@ -29,12 +29,12 @@ from PyQt5.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
-    QInputDialog,
-    QPushButton,
     QProgressBar,
+    QPushButton,
     QSizePolicy,
     QStackedWidget,
     QTextEdit,
@@ -44,7 +44,6 @@ from PyQt5.QtWidgets import (
 
 from TerraLab.common.utils import getTraduction, set_config_value
 from TerraLab.data.assets_manager import AssetManager
-
 
 _ASTRO_DIALOG_STYLE = """
 QDialog {
@@ -175,6 +174,15 @@ class _AssetJobWorker(QObject):
 
     @pyqtSlot()
     def run(self):
+        """Executa el metode run de la classe _AssetJobWorker.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
+
         def _cb(percent: float, message: str):
             self.progress.emit(float(percent), str(message))
 
@@ -284,7 +292,9 @@ class AssetOnboardingDialog(QDialog):
         climate_layout.setContentsMargins(0, 0, 0, 0)
         climate_layout.addWidget(QLabel("METNO User-Agent"), 0, 0)
         self.txt_user_agent = QLineEdit()
-        self.txt_user_agent.setPlaceholderText("TerraLab/1.0 (contact@example.com)")
+        self.txt_user_agent.setPlaceholderText(
+            "TerraLab/1.0 (contact@example.com)"
+        )
         self.txt_user_agent.setText(self.manager.get_user_agent())
         climate_layout.addWidget(self.txt_user_agent, 0, 1)
         self.btn_save_user_agent = QPushButton("Desar")
@@ -306,16 +316,24 @@ class AssetOnboardingDialog(QDialog):
         root.addWidget(self.milkyway_block)
 
         actions = QHBoxLayout()
-        self.btn_open_source = QPushButton(getTraduction("Onboarding.OpenSource", "Obrir font oficial"))
+        self.btn_open_source = QPushButton(
+            getTraduction("Onboarding.OpenSource", "Obrir font oficial")
+        )
         self.btn_open_source.clicked.connect(self._open_source)
         actions.addWidget(self.btn_open_source)
 
-        self.btn_auto_download = QPushButton(getTraduction("Onboarding.AutoDownload", "Descarregar automaticament"))
+        self.btn_auto_download = QPushButton(
+            getTraduction(
+                "Onboarding.AutoDownload", "Descarregar automaticament"
+            )
+        )
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         self.btn_auto_download.clicked.connect(self._auto_download)
         actions.addWidget(self.btn_auto_download)
 
-        self.btn_attach = QPushButton(getTraduction("Onboarding.AttachFiles", "Adjuntar fitxer(s)"))
+        self.btn_attach = QPushButton(
+            getTraduction("Onboarding.AttachFiles", "Adjuntar fitxer(s)")
+        )
         self.btn_attach.clicked.connect(self._attach_files)
         actions.addWidget(self.btn_attach)
         root.addLayout(actions)
@@ -336,7 +354,9 @@ class AssetOnboardingDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.addStretch(1)
-        self.btn_close = QPushButton(getTraduction("Onboarding.Close", "Tancar"))
+        self.btn_close = QPushButton(
+            getTraduction("Onboarding.Close", "Tancar")
+        )
         self.btn_close.clicked.connect(self.reject)
         footer.addWidget(self.btn_close)
         root.addLayout(footer)
@@ -353,6 +373,14 @@ class AssetOnboardingDialog(QDialog):
 
     @property
     def completed(self) -> bool:
+        """Executa el metode completed de la classe AssetOnboardingDialog.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         return bool(self._completed)
 
     def _open_source(self):
@@ -370,7 +398,9 @@ class AssetOnboardingDialog(QDialog):
             )
             self.accept()
             return
-        QMessageBox.warning(self, "TerraLab", "Cal definir un User-Agent valid.")
+        QMessageBox.warning(
+            self, "TerraLab", "Cal definir un User-Agent valid."
+        )
 
     def _attach_files(self):
         if self.asset_id == "climate_metno":
@@ -381,19 +411,27 @@ class AssetOnboardingDialog(QDialog):
             "All files (*.*)"
         )
         if allow_multiple:
-            files, _ = QFileDialog.getOpenFileNames(self, "Selecciona fitxers", "", filters)
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "Selecciona fitxers", "", filters
+            )
         else:
-            single, _ = QFileDialog.getOpenFileName(self, "Selecciona fitxer", "", filters)
+            single, _ = QFileDialog.getOpenFileName(
+                self, "Selecciona fitxer", "", filters
+            )
             files = [single] if single else []
         files = [f for f in files if f and os.path.exists(f)]
         if not files:
             return
-        self._start_job(mode="import", files=files, options=self._collect_options())
+        self._start_job(
+            mode="import", files=files, options=self._collect_options()
+        )
 
     def _auto_download(self):
         if self.asset_id == "gaia_catalog":
             state = self._load_gaia_tap_state()
-            pending = isinstance(state, dict) and str(state.get("status", "")).lower() not in {"done", "completed", "success"}
+            pending = isinstance(state, dict) and str(
+                state.get("status", "")
+            ).lower() not in {"done", "completed", "success"}
             if pending:
                 try:
                     pct = float(state.get("progress_percent", 0.0) or 0.0)
@@ -404,7 +442,13 @@ class AssetOnboardingDialog(QDialog):
                     f"Progres guardat: {pct:.1f}%.\n\n"
                     "Vols reprendre-la ara?"
                 )
-                ans = QMessageBox.question(self, "TerraLab", msg, QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                ans = QMessageBox.question(
+                    self,
+                    "TerraLab",
+                    msg,
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
                 if ans == QMessageBox.Yes:
                     self._start_gaia_tap_process(resume=True)
                     return
@@ -412,18 +456,32 @@ class AssetOnboardingDialog(QDialog):
             return
         if not self.spec.auto_download_url:
             return
-        self._start_job(mode="download", files=[], options=self._collect_options())
+        self._start_job(
+            mode="download", files=[], options=self._collect_options()
+        )
 
     def start_gaia_tap_resume(self) -> None:
+        """Executa el metode start_gaia_tap_resume de la classe AssetOnboardingDialog.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         self._start_gaia_tap_process(resume=True)
 
-    def _start_gaia_tap_process(self, *, resume: bool = False, mag_limit: Optional[float] = None) -> None:
+    def _start_gaia_tap_process(
+        self, *, resume: bool = False, mag_limit: Optional[float] = None
+    ) -> None:
         resolved_mag_limit = mag_limit
         if not resume:
             if resolved_mag_limit is None:
                 mag_default = 15.0
                 try:
-                    mag_default = float(self.manager.layout.get("gaia_mag_limit_default", 15.0))
+                    mag_default = float(
+                        self.manager.layout.get("gaia_mag_limit_default", 15.0)
+                    )
                 except Exception:
                     pass
                 mag_dialog = QInputDialog(self)
@@ -443,11 +501,15 @@ class AssetOnboardingDialog(QDialog):
         project_root = Path(__file__).resolve().parents[1]
         script_path = project_root / "tools" / "download_gaia_tap.py"
         if not script_path.exists():
-            QMessageBox.critical(self, "TerraLab", f"No s'ha trobat l'script: {script_path}")
+            QMessageBox.critical(
+                self, "TerraLab", f"No s'ha trobat l'script: {script_path}"
+            )
             return
 
         if self._gaia_tap_process is not None:
-            QMessageBox.information(self, "TerraLab", "Ja hi ha un proces Gaia TAP en execucio.")
+            QMessageBox.information(
+                self, "TerraLab", "Ja hi ha un proces Gaia TAP en execucio."
+            )
             return
 
         log_path = self._resolve_gaia_tap_log_path()
@@ -490,9 +552,13 @@ class AssetOnboardingDialog(QDialog):
         self.btn_attach.setEnabled(False)
         self.btn_auto_download.setEnabled(False)
         self.btn_close.setEnabled(False)
-        self.progress.setRange(0, 0)  # indeterminate while waiting first progress markers
+        self.progress.setRange(
+            0, 0
+        )  # indeterminate while waiting first progress markers
         self.lbl_status.setText(
-            getTraduction("Onboarding.DownloadingStars", "Descarregant estrelles...")
+            getTraduction(
+                "Onboarding.DownloadingStars", "Descarregant estrelles..."
+            )
         )
         self.txt_process_log.clear()
         self.txt_process_log.setVisible(True)
@@ -502,7 +568,10 @@ class AssetOnboardingDialog(QDialog):
         self._gaia_tap_process = process
         process.start()
         if not process.waitForStarted(5000):
-            err_txt = str(process.errorString() or "No es pot iniciar el proces Gaia TAP.")
+            err_txt = str(
+                process.errorString()
+                or "No es pot iniciar el proces Gaia TAP."
+            )
             self._cleanup_gaia_tap_process()
             self.progress.setRange(0, 100)
             self.lbl_status.setText("Error en iniciar Gaia TAP.")
@@ -510,7 +579,9 @@ class AssetOnboardingDialog(QDialog):
             self.btn_attach.setEnabled(True)
             self.btn_auto_download.setEnabled(self._supports_auto_download())
             self.btn_close.setEnabled(True)
-            QMessageBox.critical(self, "TerraLab", f"{err_txt}\n\n{self._gaia_tap_log_hint()}")
+            QMessageBox.critical(
+                self, "TerraLab", f"{err_txt}\n\n{self._gaia_tap_log_hint()}"
+            )
             return
 
     def _resolve_gaia_tap_log_path(self) -> Path:
@@ -607,13 +678,20 @@ class AssetOnboardingDialog(QDialog):
         if not bool(state.get("visible_ready", False)):
             return
         output_dir = Path(str(state.get("output_dir", "") or "")).expanduser()
-        basename = str(state.get("basename", "stars_catalog") or "stars_catalog").strip() or "stars_catalog"
+        basename = (
+            str(
+                state.get("basename", "stars_catalog") or "stars_catalog"
+            ).strip()
+            or "stars_catalog"
+        )
         candidates = (
             output_dir / f"{basename}.npy",
             output_dir / f"{basename}.npz",
             output_dir / f"{basename}.zst",
         )
-        visible_catalog_path = next((p for p in candidates if p.exists() and p.is_file()), None)
+        visible_catalog_path = next(
+            (p for p in candidates if p.exists() and p.is_file()), None
+        )
         if visible_catalog_path is None:
             return
         if visible_catalog_path.stat().st_size <= 0:
@@ -621,10 +699,14 @@ class AssetOnboardingDialog(QDialog):
         if str(visible_catalog_path.suffix).lower() in {".npy", ".npz"}:
             try:
                 if visible_catalog_path.suffix.lower() == ".npy":
-                    arr = np.load(visible_catalog_path, mmap_mode="r", allow_pickle=False)
+                    arr = np.load(
+                        visible_catalog_path, mmap_mode="r", allow_pickle=False
+                    )
                     rows = int(len(arr))
                 else:
-                    with np.load(visible_catalog_path, allow_pickle=False) as data:
+                    with np.load(
+                        visible_catalog_path, allow_pickle=False
+                    ) as data:
                         if "ra" in data:
                             rows = int(len(data["ra"]))
                         elif "RA" in data:
@@ -644,7 +726,9 @@ class AssetOnboardingDialog(QDialog):
         except Exception:
             pct_val = 0.0
         self.progress.setValue(max(0, min(100, int(round(pct_val)))))
-        self.lbl_status.setText("Cataleg visible preparat. Es continua descarregant en segon pla...")
+        self.lbl_status.setText(
+            "Cataleg visible preparat. Es continua descarregant en segon pla..."
+        )
         self.accept()
 
     def _append_gaia_tap_log_line(self, line: str) -> None:
@@ -664,7 +748,9 @@ class AssetOnboardingDialog(QDialog):
             except Exception:
                 pass
 
-        m2 = re.search(r"\[gaia-tap\]\s+download\s+([0-9]+(?:\.[0-9]+)?)%", text)
+        m2 = re.search(
+            r"\[gaia-tap\]\s+download\s+([0-9]+(?:\.[0-9]+)?)%", text
+        )
         if m2 and self.progress.maximum() == 0:
             try:
                 pct2 = max(0, min(100, int(round(float(m2.group(1)) * 0.75))))
@@ -680,7 +766,9 @@ class AssetOnboardingDialog(QDialog):
                 if self.progress.maximum() == 0:
                     self.progress.setRange(0, 100)
                 self.progress.setValue(pct3)
-                status = getTraduction("Onboarding.DownloadingStars", "Descarregant estrelles...")
+                status = getTraduction(
+                    "Onboarding.DownloadingStars", "Descarregant estrelles..."
+                )
                 self.lbl_status.setText(f"{status} ({pct3}%)")
             except Exception:
                 pass
@@ -692,7 +780,9 @@ class AssetOnboardingDialog(QDialog):
         proc = self._gaia_tap_process
         if proc is None:
             return
-        chunk = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="replace")
+        chunk = bytes(proc.readAllStandardOutput()).decode(
+            "utf-8", errors="replace"
+        )
         if not chunk:
             return
         merged = self._gaia_tap_out_buffer + chunk
@@ -703,7 +793,9 @@ class AssetOnboardingDialog(QDialog):
             self._append_gaia_tap_log_line(line)
         self._maybe_close_after_visible_ready()
 
-    def _on_gaia_tap_finished(self, exit_code: int, exit_status: QProcess.ExitStatus):
+    def _on_gaia_tap_finished(
+        self, exit_code: int, exit_status: QProcess.ExitStatus
+    ):
         if self._gaia_tap_out_buffer:
             self._append_gaia_tap_log_line(self._gaia_tap_out_buffer)
             self._gaia_tap_out_buffer = ""
@@ -740,11 +832,17 @@ class AssetOnboardingDialog(QDialog):
         if isinstance(state, dict):
             try:
                 pct_val = float(state.get("progress_percent", 0.0) or 0.0)
-                pct_hint = f"\nProgres guardat: {pct_val:.1f}% (es pot reprendre)."
+                pct_hint = (
+                    f"\nProgres guardat: {pct_val:.1f}% (es pot reprendre)."
+                )
             except Exception:
                 pct_hint = ""
-        self.lbl_status.setText("Gaia TAP ha finalitzat, pero no s'ha detectat un cataleg valid.")
-        status_name = "normal" if exit_status == QProcess.NormalExit else "crash"
+        self.lbl_status.setText(
+            "Gaia TAP ha finalitzat, pero no s'ha detectat un cataleg valid."
+        )
+        status_name = (
+            "normal" if exit_status == QProcess.NormalExit else "crash"
+        )
         QMessageBox.warning(
             self,
             "TerraLab",
@@ -778,7 +876,9 @@ class AssetOnboardingDialog(QDialog):
             }
         return {}
 
-    def _start_job(self, mode: str, files: Iterable[str], options: Optional[dict] = None):
+    def _start_job(
+        self, mode: str, files: Iterable[str], options: Optional[dict] = None
+    ):
         self.btn_open_source.setEnabled(False)
         self.btn_attach.setEnabled(False)
         self.btn_auto_download.setEnabled(False)
@@ -825,10 +925,28 @@ class AssetOnboardingDialog(QDialog):
         self._completed = True
         self.lbl_status.setText("Dades preparades correctament.")
         self.btn_close.setEnabled(True)
+        extra = ""
+        if isinstance(result, dict) and self.asset_id == "elevation_dem":
+            observer_auto = result.get("observer_auto", {})
+            if isinstance(observer_auto, dict) and bool(
+                observer_auto.get("applied", False)
+            ):
+                try:
+                    lat = float(observer_auto.get("lat"))
+                    lon = float(observer_auto.get("lon"))
+                    tz = str(observer_auto.get("timezone", "") or "").strip()
+                    tz_suffix = f" ({tz})" if tz else ""
+                    extra = (
+                        "\n\nUbicacio detectada automaticament del DEM:\n"
+                        f"lat={lat:.6f}, lon={lon:.6f}{tz_suffix}"
+                    )
+                except Exception:
+                    extra = ""
         msg = (
             "Importacio completada.\n\n"
             "Les dades ja son dins la carpeta de TerraLab.\n"
             "Si vols, ja pots esborrar el fitxer original que has adjuntat."
+            + extra
         )
         QMessageBox.information(self, "TerraLab", msg)
         self.accept()
@@ -843,6 +961,14 @@ class AssetOnboardingDialog(QDialog):
         QMessageBox.critical(self, "TerraLab", str(error_message))
 
     def reject(self):
+        """Executa el metode reject de la classe AssetOnboardingDialog.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         proc = self._gaia_tap_process
         if proc is not None:
             try:
@@ -860,7 +986,9 @@ class AssetOnboardingDialog(QDialog):
 class WelcomeOnboardingDialog(QDialog):
     """First-run product onboarding with optional per-asset setup."""
 
-    def __init__(self, manager: AssetManager, parent=None, *, mandatory: bool = False):
+    def __init__(
+        self, manager: AssetManager, parent=None, *, mandatory: bool = False
+    ):
         super().__init__(parent)
         self.manager = manager
         self._mandatory = bool(mandatory)
@@ -979,7 +1107,9 @@ class WelcomeOnboardingDialog(QDialog):
             f = lbl_title.font()
             f.setBold(True)
             lbl_title.setFont(f)
-            lbl_meta = QLabel(f"{spec.accepted_formats} | Credits: {spec.credits}")
+            lbl_meta = QLabel(
+                f"{spec.accepted_formats} | Credits: {spec.credits}"
+            )
             lbl_meta.setObjectName("subtitleLabel")
             lbl_meta.setWordWrap(True)
             text_box.addWidget(lbl_title)
@@ -993,11 +1123,17 @@ class WelcomeOnboardingDialog(QDialog):
             row_layout.addWidget(status_lbl)
 
             btn_source = QPushButton("Font")
-            btn_source.clicked.connect(lambda _=False, url=spec.source_url: QDesktopServices.openUrl(QUrl(url)))
+            btn_source.clicked.connect(
+                lambda _=False, url=spec.source_url: QDesktopServices.openUrl(
+                    QUrl(url)
+                )
+            )
             row_layout.addWidget(btn_source)
 
             btn_run = QPushButton("Configurar")
-            btn_run.clicked.connect(lambda _=False, aid=asset_id: self._run_asset_wizard(aid))
+            btn_run.clicked.connect(
+                lambda _=False, aid=asset_id: self._run_asset_wizard(aid)
+            )
             self._asset_run_buttons[asset_id] = btn_run
             row_layout.addWidget(btn_run)
 
@@ -1011,13 +1147,17 @@ class WelcomeOnboardingDialog(QDialog):
         for asset_id, label in self._asset_status_labels.items():
             ready = bool(self.manager.asset_ready(asset_id))
             label.setText("Preparat" if ready else "Pendent")
-            label.setObjectName("assetStatusOk" if ready else "assetStatusMissing")
+            label.setObjectName(
+                "assetStatusOk" if ready else "assetStatusMissing"
+            )
             label.style().unpolish(label)
             label.style().polish(label)
 
     def _run_asset_wizard(self, asset_id: str) -> None:
         dlg = AssetOnboardingDialog(self.manager, asset_id, self)
-        ok = dlg.exec_() == QDialog.Accepted and bool(getattr(dlg, "completed", False))
+        ok = dlg.exec_() == QDialog.Accepted and bool(
+            getattr(dlg, "completed", False)
+        )
         if ok:
             self._refresh_asset_statuses()
 
@@ -1040,7 +1180,9 @@ class WelcomeOnboardingDialog(QDialog):
     def _skip_data_step(self):
         if self.pages.currentIndex() != self._data_page_index:
             return
-        self.pages.setCurrentIndex(min(self.pages.count() - 1, self._data_page_index + 1))
+        self.pages.setCurrentIndex(
+            min(self.pages.count() - 1, self._data_page_index + 1)
+        )
         self._refresh_nav()
 
     def _next(self):
@@ -1054,6 +1196,14 @@ class WelcomeOnboardingDialog(QDialog):
         self.accept()
 
     def reject(self):
+        """Executa el metode reject de la classe WelcomeOnboardingDialog.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         if self._mandatory:
             return
         super().reject()

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List
 
 import numpy as np
+
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 
 try:
@@ -116,7 +117,9 @@ def _write_runtime_meta(meta_path: Path, meta: Dict[str, object]) -> None:
     tmp_out.replace(meta_path)
 
 
-def _build_meta_payload(source: str, source_path: str | None = None, **extra) -> Dict[str, object]:
+def _build_meta_payload(
+    source: str, source_path: str | None = None, **extra
+) -> Dict[str, object]:
     payload: Dict[str, object] = {
         "source": str(source or "unknown"),
         "updated_at": datetime.now().isoformat(timespec="seconds"),
@@ -156,7 +159,9 @@ def get_runtime_catalog_source_info() -> Dict[str, object]:
     return info
 
 
-def log_startup_catalog_loaded(runtime_catalog_path: str, rows: int, mag_min: float, mag_max: float) -> None:
+def log_startup_catalog_loaded(
+    runtime_catalog_path: str, rows: int, mag_min: float, mag_max: float
+) -> None:
     """Emit a startup log line that clearly states which catalog source was loaded."""
     info = get_runtime_catalog_source_info()
     source = str(info.get("source", "unknown"))
@@ -194,7 +199,9 @@ def _runtime_npz_to_arrays(npz_path: Path) -> Dict[str, np.ndarray]:
         dec_raw = _npz_get_first(data, ("dec", "DEC"))
         mag_raw = _npz_get_first(data, ("phot_g_mean_mag", "mag", "g_mag"))
         if ra_raw is None or dec_raw is None or mag_raw is None:
-            raise ValueError(f"Dataset NPZ missing required arrays (ra/dec/mag): {npz_path}")
+            raise ValueError(
+                f"Dataset NPZ missing required arrays (ra/dec/mag): {npz_path}"
+            )
 
         raw: Dict[str, np.ndarray] = {
             "ra": np.asarray(ra_raw),
@@ -239,7 +246,9 @@ def _remove_file_if_exists(path: Path) -> None:
         pass
 
 
-def _to_float_array(values: np.ndarray | Iterable, dtype: np.dtype, default: float = np.nan) -> np.ndarray:
+def _to_float_array(
+    values: np.ndarray | Iterable, dtype: np.dtype, default: float = np.nan
+) -> np.ndarray:
     arr = np.asarray(values)
     if arr.ndim == 0:
         arr = arr.reshape(1)
@@ -259,7 +268,9 @@ def _to_float_array(values: np.ndarray | Iterable, dtype: np.dtype, default: flo
     return out
 
 
-def _to_int64_array(values: np.ndarray | Iterable, default: int = -1) -> np.ndarray:
+def _to_int64_array(
+    values: np.ndarray | Iterable, default: int = -1
+) -> np.ndarray:
     arr = np.asarray(values)
     if arr.ndim == 0:
         arr = arr.reshape(1)
@@ -313,7 +324,9 @@ def _normalize_arrays(raw: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
             bp_rp = np.full(n, 0.8, dtype=np.float32)
         else:
             bp_rp = bp_rp[:n]
-    bp_rp = np.nan_to_num(bp_rp, nan=0.8, posinf=2.5, neginf=-0.5).astype(np.float32, copy=False)
+    bp_rp = np.nan_to_num(bp_rp, nan=0.8, posinf=2.5, neginf=-0.5).astype(
+        np.float32, copy=False
+    )
 
     valid = np.isfinite(ra) & np.isfinite(dec) & np.isfinite(mag)
     out: Dict[str, np.ndarray] = {
@@ -341,7 +354,9 @@ def _normalize_arrays(raw: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     return out
 
 
-def _concat_chunks(chunks: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
+def _concat_chunks(
+    chunks: List[Dict[str, np.ndarray]],
+) -> Dict[str, np.ndarray]:
     if not chunks:
         return {}
     all_keys = set()
@@ -363,7 +378,9 @@ def _write_npz(npz_path: Path, arrays: Dict[str, np.ndarray]) -> None:
     tmp_out.replace(npz_path)
 
 
-def _write_structured_npy(npy_path: Path, arrays: Dict[str, np.ndarray]) -> None:
+def _write_structured_npy(
+    npy_path: Path, arrays: Dict[str, np.ndarray]
+) -> None:
     n = len(arrays.get("ra", []))
     if n <= 0:
         raise ValueError("Cannot write empty structured NPY")
@@ -381,14 +398,30 @@ def _write_structured_npy(npy_path: Path, arrays: Dict[str, np.ndarray]) -> None
         ]
     )
     structured = np.empty(n, dtype=dtype)
-    structured["source_id"] = np.asarray(arrays.get("source_id", np.full(n, -1, dtype=np.int64)), dtype=np.int64)
+    structured["source_id"] = np.asarray(
+        arrays.get("source_id", np.full(n, -1, dtype=np.int64)), dtype=np.int64
+    )
     structured["ra"] = np.asarray(arrays["ra"], dtype=np.float64)
     structured["dec"] = np.asarray(arrays["dec"], dtype=np.float64)
-    structured["phot_g_mean_mag"] = np.asarray(arrays["phot_g_mean_mag"], dtype=np.float32)
-    structured["bp_rp"] = np.asarray(arrays.get("bp_rp", np.full(n, 0.8, dtype=np.float32)), dtype=np.float32)
-    structured["pmra"] = np.asarray(arrays.get("pmra", np.full(n, np.nan, dtype=np.float32)), dtype=np.float32)
-    structured["pmdec"] = np.asarray(arrays.get("pmdec", np.full(n, np.nan, dtype=np.float32)), dtype=np.float32)
-    structured["parallax"] = np.asarray(arrays.get("parallax", np.full(n, np.nan, dtype=np.float32)), dtype=np.float32)
+    structured["phot_g_mean_mag"] = np.asarray(
+        arrays["phot_g_mean_mag"], dtype=np.float32
+    )
+    structured["bp_rp"] = np.asarray(
+        arrays.get("bp_rp", np.full(n, 0.8, dtype=np.float32)),
+        dtype=np.float32,
+    )
+    structured["pmra"] = np.asarray(
+        arrays.get("pmra", np.full(n, np.nan, dtype=np.float32)),
+        dtype=np.float32,
+    )
+    structured["pmdec"] = np.asarray(
+        arrays.get("pmdec", np.full(n, np.nan, dtype=np.float32)),
+        dtype=np.float32,
+    )
+    structured["parallax"] = np.asarray(
+        arrays.get("parallax", np.full(n, np.nan, dtype=np.float32)),
+        dtype=np.float32,
+    )
 
     npy_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_out = npy_path.with_suffix(npy_path.suffix + ".tmp")
@@ -397,7 +430,9 @@ def _write_structured_npy(npy_path: Path, arrays: Dict[str, np.ndarray]) -> None
     tmp_out.replace(npy_path)
 
 
-def _ensure_runtime_npy_from_arrays(npy_path: Path, arrays: Dict[str, np.ndarray]) -> None:
+def _ensure_runtime_npy_from_arrays(
+    npy_path: Path, arrays: Dict[str, np.ndarray]
+) -> None:
     if len(arrays.get("ra", [])) <= 0:
         raise ValueError("Empty arrays cannot be written to runtime NPY.")
     _write_structured_npy(npy_path, arrays)
@@ -414,7 +449,15 @@ def _read_structured_npy(path: Path) -> Dict[str, np.ndarray] | None:
     names = set(arr.dtype.names)
     ra_key = "ra" if "ra" in names else ("RA" if "RA" in names else None)
     dec_key = "dec" if "dec" in names else ("DEC" if "DEC" in names else None)
-    mag_key = "phot_g_mean_mag" if "phot_g_mean_mag" in names else ("mag" if "mag" in names else ("g_mag" if "g_mag" in names else None))
+    mag_key = (
+        "phot_g_mean_mag"
+        if "phot_g_mean_mag" in names
+        else (
+            "mag"
+            if "mag" in names
+            else ("g_mag" if "g_mag" in names else None)
+        )
+    )
     if ra_key is None or dec_key is None or mag_key is None:
         return None
 
@@ -577,7 +620,11 @@ def _read_gaia_json(stars_dir: Path) -> Dict[str, np.ndarray] | None:
             continue
         out[key] = np.asarray(
             [
-                row[pos] if isinstance(row, (list, tuple)) and pos < len(row) else np.nan
+                (
+                    row[pos]
+                    if isinstance(row, (list, tuple)) and pos < len(row)
+                    else np.nan
+                )
                 for row in rows
             ],
             dtype=object,
@@ -612,7 +659,9 @@ def _build_from_npy_sources(stars_dir: Path, runtime_npy_path: Path) -> bool:
             continue
         raw = _read_structured_npy(path)
         if raw is None:
-            _source_log(f"source=npy miss unsupported/invalid structured npy '{path}'")
+            _source_log(
+                f"source=npy miss unsupported/invalid structured npy '{path}'"
+            )
             continue
         arrays = _normalize_arrays(raw)
         if len(arrays.get("ra", [])) <= 0:
@@ -630,7 +679,9 @@ def _build_from_npy_sources(stars_dir: Path, runtime_npy_path: Path) -> bool:
         _source_log(f"source=split_npy failed error='{exc}'")
         split_raw = None
     if split_raw is None:
-        _source_log(f"source=npy miss no structured/split npy source in '{stars_dir}'")
+        _source_log(
+            f"source=npy miss no structured/split npy source in '{stars_dir}'"
+        )
         return False
 
     arrays = _normalize_arrays(split_raw)
@@ -651,7 +702,9 @@ def ensure_stars_dataset() -> str:
     meta_path = _runtime_meta_path()
     stars_dir = _packaged_stars_dir()
 
-    def _persist_npy(arrays: Dict[str, np.ndarray], source: str, source_path: str) -> str:
+    def _persist_npy(
+        arrays: Dict[str, np.ndarray], source: str, source_path: str
+    ) -> str:
         _ensure_runtime_npy_from_arrays(runtime_npy_path, arrays)
         _write_runtime_meta(
             meta_path,
@@ -660,7 +713,9 @@ def ensure_stars_dataset() -> str:
                 source_path=source_path,
             ),
         )
-        _source_log(f"source={source} path='{source_path}' -> runtime_npy='{runtime_npy_path}'")
+        _source_log(
+            f"source={source} path='{source_path}' -> runtime_npy='{runtime_npy_path}'"
+        )
         return str(runtime_npy_path)
 
     if runtime_npy_path.exists() and runtime_npy_path.is_file():
@@ -677,11 +732,15 @@ def ensure_stars_dataset() -> str:
     if runtime_npz_path.exists() and runtime_npz_path.is_file():
         try:
             arrays = _runtime_npz_to_arrays(runtime_npz_path)
-            out = _persist_npy(arrays, "runtime_npz_migrated", str(runtime_npz_path))
+            out = _persist_npy(
+                arrays, "runtime_npz_migrated", str(runtime_npz_path)
+            )
             _remove_file_if_exists(runtime_npz_path)
             return out
         except Exception as exc:
-            _source_log(f"source=runtime_npz_migrated failed path='{runtime_npz_path}' error='{exc}'")
+            _source_log(
+                f"source=runtime_npz_migrated failed path='{runtime_npz_path}' error='{exc}'"
+            )
 
     if runtime_zst_path.exists() and runtime_zst_path.is_file():
         tmp_unpack = runtime_npy_path.with_suffix(".zst.unpack.tmp")
@@ -697,7 +756,9 @@ def ensure_stars_dataset() -> str:
             return out
         except Exception as exc:
             _remove_file_if_exists(tmp_unpack)
-            _source_log(f"source=runtime_zst failed path='{runtime_zst_path}' error='{exc}'")
+            _source_log(
+                f"source=runtime_zst failed path='{runtime_zst_path}' error='{exc}'"
+            )
 
     packaged_npy = stars_dir / NPY_NAME
     if packaged_npy.exists() and packaged_npy.is_file():
@@ -707,15 +768,21 @@ def ensure_stars_dataset() -> str:
                 arrays = _normalize_arrays(raw)
                 return _persist_npy(arrays, "packaged_npy", str(packaged_npy))
         except Exception as exc:
-            _source_log(f"source=packaged_npy failed path='{packaged_npy}' error='{exc}'")
+            _source_log(
+                f"source=packaged_npy failed path='{packaged_npy}' error='{exc}'"
+            )
 
     packaged_npz = _packaged_npz_path()
     if packaged_npz.exists() and packaged_npz.is_file():
         try:
             arrays = _runtime_npz_to_arrays(packaged_npz)
-            return _persist_npy(arrays, "packaged_npz_migrated", str(packaged_npz))
+            return _persist_npy(
+                arrays, "packaged_npz_migrated", str(packaged_npz)
+            )
         except Exception as exc:
-            _source_log(f"source=packaged_npz_migrated failed path='{packaged_npz}' error='{exc}'")
+            _source_log(
+                f"source=packaged_npz_migrated failed path='{packaged_npz}' error='{exc}'"
+            )
 
     zst_path = _packaged_zst_path()
     if zst_path.exists() and zst_path.is_file():
@@ -732,7 +799,9 @@ def ensure_stars_dataset() -> str:
             return out
         except Exception as exc:
             _remove_file_if_exists(tmp_unpack)
-            _source_log(f"source=packaged_zst failed path='{zst_path}' error='{exc}'")
+            _source_log(
+                f"source=packaged_zst failed path='{zst_path}' error='{exc}'"
+            )
     else:
         _source_log(f"source=packaged_zst miss file not found '{zst_path}'")
 
@@ -767,12 +836,15 @@ def ensure_stars_dataset() -> str:
         )
         return str(runtime_npy_path)
 
-    _source_log(f"source=none no dataset source found in stars_dir='{stars_dir}'")
+    _source_log(
+        f"source=none no dataset source found in stars_dir='{stars_dir}'"
+    )
     raise FileNotFoundError(
         "No stars dataset source found. Expected one of: "
         f"{NPY_NAME}, {ZST_NAME}, gaia_cache_*.npy, *.ecsv, {JSON_FALLBACK_NAME} "
         f"in '{stars_dir}'."
     )
+
 
 def load_stars_dataset(npz_path: str | None = None) -> Dict[str, np.ndarray]:
     """Load stars dataset arrays from ensured runtime NPY/NPZ."""
@@ -781,7 +853,9 @@ def load_stars_dataset(npz_path: str | None = None) -> Dict[str, np.ndarray]:
     if suffix == ".npy":
         raw = _read_structured_npy(path)
         if raw is None:
-            raise ValueError(f"Dataset NPY missing required arrays (ra/dec/mag): {path}")
+            raise ValueError(
+                f"Dataset NPY missing required arrays (ra/dec/mag): {path}"
+            )
         out = _normalize_arrays(raw)
         if len(out.get("ra", [])) <= 0:
             raise ValueError(f"Dataset NPY normalized to empty arrays: {path}")

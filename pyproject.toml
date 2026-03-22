@@ -54,8 +54,12 @@ terralab-predict-sqm = "scripts.predict_sqm_raster:main"
 terralab-calibrate-sqm = "scripts.calibrate_sqm:main"
 
 [tool.ruff]
-line-length = 100
+line-length = 79
 target-version = "py310"
+
+[tool.black]
+line-length = 79
+target-version = ["py310"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -64,3 +68,4 @@ testpaths = ["tests"]
 where = ["."]
 include = ["TerraLab*", "scripts*"]
 exclude = ["tests*", "proves*", "gaia_stars*", "dist*", "build*"]
+

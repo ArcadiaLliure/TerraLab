@@ -22,6 +22,15 @@ class SkyRenderer:
         self.overlays_renderer = OverlaysRenderer()
 
     def render(self, ctx, state):
+        """Renderitza el contingut visual segons l'estat actual.
+
+        Par?metres:
+        - ctx (Any): Valor del parametre 'ctx'.
+        - state (Any): Valor del parametre 'state'.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         diag = getattr(ctx, "diagnostics", None)
 
         if diag is not None:
@@ -69,7 +78,14 @@ def sky_color_phys(
 ):
     """Sky color helper with optional legacy delegation."""
     if callable(impl):
-        return impl(view_alt, view_az, sun_alt, sun_az, bortle=bortle, twilight_factor=twilight_factor)
+        return impl(
+            view_alt,
+            view_az,
+            sun_alt,
+            sun_az,
+            bortle=bortle,
+            twilight_factor=twilight_factor,
+        )
     return sky_color_phys_impl(
         view_alt,
         view_az,
@@ -80,10 +96,22 @@ def sky_color_phys(
     )
 
 
-def sky_color_phys_impl(view_alt, view_az, sun_alt, sun_az, *, bortle=1, twilight_factor=1.0):
+def sky_color_phys_impl(
+    view_alt, view_az, sun_alt, sun_az, *, bortle=1, twilight_factor=1.0
+):
     keyframes = [
-        {"alt": 20.0, "t": (0, 100, 200), "b": (100, 180, 255), "g": (255, 255, 220)},
-        {"alt": 6.0, "t": (20, 50, 90), "b": (255, 190, 60), "g": (255, 140, 20)},
+        {
+            "alt": 20.0,
+            "t": (0, 100, 200),
+            "b": (100, 180, 255),
+            "g": (255, 255, 220),
+        },
+        {
+            "alt": 6.0,
+            "t": (20, 50, 90),
+            "b": (255, 190, 60),
+            "g": (255, 140, 20),
+        },
         {"alt": 0.0, "t": (25, 30, 70), "b": (255, 70, 10), "g": (255, 60, 0)},
         {"alt": -4.0, "t": (10, 15, 50), "b": (120, 60, 20), "g": (60, 20, 5)},
         {"alt": -6.0, "t": (5, 5, 25), "b": (40, 15, 20), "g": (10, 2, 0)},
@@ -124,10 +152,9 @@ def sky_color_phys_impl(view_alt, view_az, sun_alt, sun_az, *, bortle=1, twiligh
 
     v_alt_rad = math.radians(view_alt)
     s_alt_rad = math.radians(sun_alt)
-    cos_gamma = (
-        math.sin(v_alt_rad) * math.sin(s_alt_rad)
-        + math.cos(v_alt_rad) * math.cos(s_alt_rad) * math.cos(delta_az_rad)
-    )
+    cos_gamma = math.sin(v_alt_rad) * math.sin(s_alt_rad) + math.cos(
+        v_alt_rad
+    ) * math.cos(s_alt_rad) * math.cos(delta_az_rad)
     cos_gamma = max(-1.0, min(1.0, cos_gamma))
     gamma_rad = math.acos(cos_gamma)
 
@@ -144,9 +171,15 @@ def sky_color_phys_impl(view_alt, view_az, sun_alt, sun_az, *, bortle=1, twiligh
         r_target = int(c_hor[0] * az_factor + anti_hor[0] * (1 - az_factor))
         g_target = int(c_hor[1] * az_factor + anti_hor[1] * (1 - az_factor))
         b_target = int(c_hor[2] * az_factor + anti_hor[2] * (1 - az_factor))
-        r_hor = int(c_hor[0] * (1 - sun_extinction) + r_target * sun_extinction)
-        g_hor = int(c_hor[1] * (1 - sun_extinction) + g_target * sun_extinction)
-        b_hor = int(c_hor[2] * (1 - sun_extinction) + b_target * sun_extinction)
+        r_hor = int(
+            c_hor[0] * (1 - sun_extinction) + r_target * sun_extinction
+        )
+        g_hor = int(
+            c_hor[1] * (1 - sun_extinction) + g_target * sun_extinction
+        )
+        b_hor = int(
+            c_hor[2] * (1 - sun_extinction) + b_target * sun_extinction
+        )
         c_hor = (r_hor, g_hor, b_hor)
 
     if sun_alt <= -12.0:
@@ -182,7 +215,11 @@ def sky_color_phys_impl(view_alt, view_az, sun_alt, sun_az, *, bortle=1, twiligh
         if angle_from_anti_sun < 0.5:
             belt_center = 10.0
             belt_dist = abs(view_alt - belt_center)
-            belt_str = math.exp(-(belt_dist * belt_dist) / 100.0) * 0.2 * (1.0 - angle_from_anti_sun * 2.0)
+            belt_str = (
+                math.exp(-(belt_dist * belt_dist) / 100.0)
+                * 0.2
+                * (1.0 - angle_from_anti_sun * 2.0)
+            )
             belt_str *= az_away_factor
             r += 60 * belt_str
             g += 30 * belt_str
@@ -243,27 +280,49 @@ def draw_background(
     return result
 
 
-def draw_background_impl(canvas, painter, sun_alt, sun_az, view_az, *, dimming=1.0):
+def draw_background_impl(
+    canvas, painter, sun_alt, sun_az, view_az, *, dimming=1.0
+):
     if canvas is None:
         return None
 
     rect = canvas.rect()
     is_interacting = bool(
-        canvas._camera_interaction_active(include_time_drag=True, include_animation=False)
+        canvas._camera_interaction_active(
+            include_time_drag=True, include_animation=False
+        )
         or canvas._scope_motion_active()
     )
     w_res = 32 if is_interacting else 64
     h_res = 32 if is_interacting else 64
-    q_sun_alt = (round(sun_alt * 2) / 2.0) if not is_interacting else round(sun_alt)
-    q_sun_az = (round(sun_az / 2) * 2) if not is_interacting else (round(sun_az / 4) * 4)
-    q_view_az = (round(view_az / 2) * 2) if not is_interacting else (round(view_az / 4) * 4)
+    q_sun_alt = (
+        (round(sun_alt * 2) / 2.0) if not is_interacting else round(sun_alt)
+    )
+    q_sun_az = (
+        (round(sun_az / 2) * 2)
+        if not is_interacting
+        else (round(sun_az / 4) * 4)
+    )
+    q_view_az = (
+        (round(view_az / 2) * 2)
+        if not is_interacting
+        else (round(view_az / 4) * 4)
+    )
 
     w, h = canvas.width(), canvas.height()
     zoom = round(canvas.zoom_level, 2)
     elev_q = round(canvas.elevation_angle, 1)
-    is_auto_bortle = getattr(canvas.parent_widget, "is_auto_bortle", getattr(canvas, "is_auto_bortle", True))
+    is_auto_bortle = getattr(
+        canvas.parent_widget,
+        "is_auto_bortle",
+        getattr(canvas, "is_auto_bortle", True),
+    )
     bortle = (
-        getattr(canvas.parent_widget, "auto_bortle_estimate", getattr(canvas, "auto_bortle_estimate", 1))
+        getattr(
+            canvas.parent_widget,
+            "auto_bortle_estimate",
+            getattr(canvas, "auto_bortle_estimate", 1),
+        )
         if is_auto_bortle
         else 1
     )
@@ -274,7 +333,19 @@ def draw_background_impl(canvas, painter, sun_alt, sun_az, view_az, *, dimming=1
         twilight_factor = (0 - sun_alt) / 18.0
     twilight_factor *= dimming
     t_q = round(twilight_factor * 10) / 10.0
-    cache_key = (q_sun_alt, q_sun_az, q_view_az, w_res, h_res, w, h, zoom, elev_q, bortle, t_q)
+    cache_key = (
+        q_sun_alt,
+        q_sun_az,
+        q_view_az,
+        w_res,
+        h_res,
+        w,
+        h,
+        zoom,
+        elev_q,
+        bortle,
+        t_q,
+    )
 
     if canvas._bg_cache_key != cache_key or canvas._bg_cache_pixmap is None:
         img = QImage(w_res, h_res, QImage.Format_RGB32)

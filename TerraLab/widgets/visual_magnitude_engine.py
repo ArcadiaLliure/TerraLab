@@ -1,14 +1,14 @@
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 
-from TerraLab.widgets.physical_math import (
-    InstrumentOpticsMath,
-    VisualPhotometryMath,
-)
 from TerraLab.widgets.optica_telescopica import (
     EXPOSURE_EYE_REFERENCE_S,
     ISO_EYE_REFERENCE,
     calculate_mag_limit,
+)
+from TerraLab.widgets.physical_math import (
+    InstrumentOpticsMath,
+    VisualPhotometryMath,
 )
 
 
@@ -47,11 +47,21 @@ class VisualMagnitudeResult:
 
 class VisualMagnitudeEngine:
     def compute(self, inputs: VisualMagnitudeInputs) -> VisualMagnitudeResult:
+        """Executa el metode compute de la classe VisualMagnitudeEngine.
+
+        Par?metres:
+        - inputs (VisualMagnitudeInputs): Valor del parametre 'inputs'.
+
+        Retorna:
+        - VisualMagnitudeResult: Valor retornat pel metode.
+        """
         aperture_mm = max(1.0, float(inputs.aperture_mm))
         telescope_focal_mm = max(1.0, float(inputs.telescope_focal_mm))
         eyepiece_focal_mm = max(0.5, float(inputs.eyepiece_focal_mm))
         eye_pupil_mm = max(0.5, float(inputs.eye_pupil_mm))
-        instrument_profile = str(getattr(inputs, "instrument_profile", "telescope"))
+        instrument_profile = str(
+            getattr(inputs, "instrument_profile", "telescope")
+        )
         sensor_profile = str(getattr(inputs, "sensor_profile", "tiny"))
 
         is_camera = InstrumentOpticsMath.is_camera_profile(instrument_profile)
@@ -82,7 +92,9 @@ class VisualMagnitudeEngine:
             manual_eye_limit_mag=float(inputs.manual_eye_limit_mag),
         )
         ntl_penalty_mag = max(0.0, 7.6 - eye_limit_mag)
-        atmospheric_loss_mag = VisualPhotometryMath.atmospheric_loss_mag(inputs.atmospheric_loss_mag)
+        atmospheric_loss_mag = VisualPhotometryMath.atmospheric_loss_mag(
+            inputs.atmospheric_loss_mag
+        )
         sensor_bonus_mag = VisualPhotometryMath.sensor_bonus_mag(
             instrument_profile=instrument_profile,
             sensor_profile=sensor_profile,
@@ -102,7 +114,9 @@ class VisualMagnitudeEngine:
             - atmospheric_loss_mag
             - ntl_penalty_mag
         )
-        scope_limit_mag = VisualPhotometryMath.clamp(scope_limit_mag, -12.0, 22.0)
+        scope_limit_mag = VisualPhotometryMath.clamp(
+            scope_limit_mag, -12.0, 22.0
+        )
 
         # Exposure/ISO contribution expressed as differential gain vs eye reference.
         exposure_ratio = max(

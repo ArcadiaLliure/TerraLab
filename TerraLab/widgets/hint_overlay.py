@@ -3,22 +3,22 @@
 # (zoom, canvi de temps, reubicació) i s'esvaeix suaument.
 
 import math
-from PyQt5.QtWidgets import QWidget
-from PyQt5.QtCore    import Qt, QTimer, QPropertyAnimation, QEasingCurve
-from PyQt5.QtGui     import QPainter, QColor, QFont, QPainterPath, QFontMetrics
 
+from PyQt5.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer
+from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath
+from PyQt5.QtWidgets import QWidget
 
 # ── Constants visuals ─────────────────────────────────────────────────────────
-_PAD_H      = 18    # padding horitzontal (px)
-_PAD_V      = 10    # padding vertical (px)
-_RADIUS     = 14    # radi dels cantons arrodonits (px)
-_MARGIN     = 18    # distància al marge inferior del canvas (px)
-_FONT_SIZE  = 11    # mida de la font (pt)
-_SHOW_MS    = 2000  # temps de vida del toast (ms)
-_FADE_MS    = 350   # durada del fade in/out (ms)
+_PAD_H = 18  # padding horitzontal (px)
+_PAD_V = 10  # padding vertical (px)
+_RADIUS = 14  # radi dels cantons arrodonits (px)
+_MARGIN = 18  # distància al marge inferior del canvas (px)
+_FONT_SIZE = 11  # mida de la font (pt)
+_SHOW_MS = 2000  # temps de vida del toast (ms)
+_FADE_MS = 350  # durada del fade in/out (ms)
 
 # Colors (fons semitransparent fosc + text blanc)
-_BG_COLOR   = QColor(15, 15, 30, 210)
+_BG_COLOR = QColor(15, 15, 30, 210)
 _TEXT_COLOR = QColor(255, 255, 255, 255)
 
 
@@ -39,8 +39,8 @@ class HintOverlay(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Tool)
 
-        self._text  = ""
-        self._alpha = 0    # opacitat actual 0-255
+        self._text = ""
+        self._alpha = 0  # opacitat actual 0-255
 
         # Timer per amagar el toast
         self._hide_timer = QTimer(self)
@@ -100,16 +100,24 @@ class HintOverlay(QWidget):
         parent = self.parentWidget()
         if not parent:
             return
-        fm    = QFontMetrics(self._font)
-        tw    = fm.horizontalAdvance(self._text)
-        th    = fm.height()
-        w     = tw + _PAD_H * 2
-        h     = th + _PAD_V * 2
-        px    = (parent.width() - w) // 2
-        py    = parent.height() - h - _MARGIN
+        fm = QFontMetrics(self._font)
+        tw = fm.horizontalAdvance(self._text)
+        th = fm.height()
+        w = tw + _PAD_H * 2
+        h = th + _PAD_V * 2
+        px = (parent.width() - w) // 2
+        py = parent.height() - h - _MARGIN
         self.setGeometry(px, py, w, h)
 
     def paintEvent(self, event):
+        """Executa el metode paintEvent de la classe HintOverlay.
+
+        Par?metres:
+        - event (Any): Valor del parametre 'event'.
+
+        Retorna:
+        - None.
+        """
         if not self._text:
             return
         painter = QPainter(self)
@@ -117,7 +125,9 @@ class HintOverlay(QWidget):
 
         # Fons — píndola arrodonida
         path = QPainterPath()
-        path.addRoundedRect(0, 0, self.width(), self.height(), _RADIUS, _RADIUS)
+        path.addRoundedRect(
+            0, 0, self.width(), self.height(), _RADIUS, _RADIUS
+        )
         painter.fillPath(path, _BG_COLOR)
 
         # Text centrat
@@ -127,4 +137,12 @@ class HintOverlay(QWidget):
 
     def resizeEvent(self, event):
         # Si el pare canvia de mida també cal reposicionar
+        """Executa el metode resizeEvent de la classe HintOverlay.
+
+        Par?metres:
+        - event (Any): Valor del parametre 'event'.
+
+        Retorna:
+        - None.
+        """
         self._reposition()

@@ -12,7 +12,10 @@ from typing import Any
 import numpy as np
 
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
-from TerraLab.data.stars_dataset import ensure_stars_dataset, load_stars_dataset
+from TerraLab.data.stars_dataset import (
+    ensure_stars_dataset,
+    load_stars_dataset,
+)
 from TerraLab.render.stars_renderer import build_scope_spatial_index_payload
 from TerraLab.widgets.sky_legacy_components import (
     STAR_CATALOG_NAKED_EYE_MAX_MAG,
@@ -56,7 +59,9 @@ def _resolve_no_gaia_path(stars_dir: str | None) -> str:
     if stars_dir:
         candidates.append(str(Path(stars_dir) / "no_gaia_stars.json"))
     try:
-        candidates.append(str(runtime_data_dir_for("gaia") / "no_gaia_stars.json"))
+        candidates.append(
+            str(runtime_data_dir_for("gaia") / "no_gaia_stars.json")
+        )
     except Exception:
         pass
     candidates.append(
@@ -85,7 +90,9 @@ def _dataset_signature(
         "schema_version": int(schema_version),
         "max_mag": None if max_mag is None else float(max_mag),
     }
-    raw = json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    raw = json.dumps(
+        payload, ensure_ascii=True, sort_keys=True, separators=(",", ":")
+    )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -110,7 +117,9 @@ def _save_cached_meta(path: Path, meta: dict[str, Any]) -> None:
     tmp.replace(path)
 
 
-def _build_scope_catalog(runtime_npz: str, stars_dir: str) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+def _build_scope_catalog(
+    runtime_npz: str, stars_dir: str
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
     dataset = load_stars_dataset(runtime_npz)
     ra = np.asarray(dataset["ra"], dtype=np.float32)
     dec = np.asarray(dataset["dec"], dtype=np.float32)
@@ -134,19 +143,26 @@ def _build_scope_catalog(runtime_npz: str, stars_dir: str) -> tuple[np.ndarray, 
     else:
         source_id = None
 
-    ra, dec, mag, _bp_rp, _sid, _added_no_gaia = _merge_sorted_catalog_with_no_gaia(
-        stars_dir,
-        ra,
-        dec,
-        mag,
-        bp_rp,
-        source_id=source_id,
+    ra, dec, mag, _bp_rp, _sid, _added_no_gaia = (
+        _merge_sorted_catalog_with_no_gaia(
+            stars_dir,
+            ra,
+            dec,
+            mag,
+            bp_rp,
+            source_id=source_id,
+        )
     )
 
     if len(mag) <= 0:
         raise ValueError("Catalog became empty after normalization")
     max_loaded_mag = float(np.nanmax(np.asarray(mag, dtype=np.float32)))
-    return np.asarray(ra, dtype=np.float32), np.asarray(dec, dtype=np.float32), np.asarray(mag, dtype=np.float32), max_loaded_mag
+    return (
+        np.asarray(ra, dtype=np.float32),
+        np.asarray(dec, dtype=np.float32),
+        np.asarray(mag, dtype=np.float32),
+        max_loaded_mag,
+    )
 
 
 def _resolve_runtime_npz(path_hint: str | None) -> str:
@@ -158,26 +174,48 @@ def _resolve_runtime_npz(path_hint: str | None) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Build persistent full scope spatial index cache.")
-    parser.add_argument("--runtime-npz", default="", help="Path to runtime stars_catalog.npz")
-    parser.add_argument("--stars-dir", default="", help="Stars directory for no-Gaia supplement resolution")
-    parser.add_argument("--cache-dir", required=True, help="Persistent scope cache directory")
+    parser = argparse.ArgumentParser(
+        description="Build persistent full scope spatial index cache."
+    )
+    parser.add_argument(
+        "--runtime-npz", default="", help="Path to runtime stars_catalog.npz"
+    )
+    parser.add_argument(
+        "--stars-dir",
+        default="",
+        help="Stars directory for no-Gaia supplement resolution",
+    )
+    parser.add_argument(
+        "--cache-dir", required=True, help="Persistent scope cache directory"
+    )
     parser.add_argument("--schema-version", type=int, default=1)
     parser.add_argument("--max-mag", type=float, default=float("nan"))
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
     runtime_npz = _resolve_runtime_npz(args.runtime_npz)
-    stars_dir = str(Path(args.stars_dir)) if args.stars_dir else str(runtime_data_dir_for("gaia"))
+    stars_dir = (
+        str(Path(args.stars_dir))
+        if args.stars_dir
+        else str(runtime_data_dir_for("gaia"))
+    )
     cache_dir = Path(args.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    max_mag = None if (not np.isfinite(float(args.max_mag))) else float(args.max_mag)
+    max_mag = (
+        None if (not np.isfinite(float(args.max_mag))) else float(args.max_mag)
+    )
     schema_version = int(max(1, args.schema_version))
-    dataset_sig = _dataset_signature(runtime_npz, stars_dir, schema_version, max_mag)
+    dataset_sig = _dataset_signature(
+        runtime_npz, stars_dir, schema_version, max_mag
+    )
 
-    cache_idx_npy = cache_dir / f"scope_index_full_v{schema_version}.indices.npy"
-    cache_off_npy = cache_dir / f"scope_index_full_v{schema_version}.offsets.npy"
+    cache_idx_npy = (
+        cache_dir / f"scope_index_full_v{schema_version}.indices.npy"
+    )
+    cache_off_npy = (
+        cache_dir / f"scope_index_full_v{schema_version}.offsets.npy"
+    )
     cache_meta = cache_dir / f"scope_index_full_v{schema_version}.meta.json"
     meta = _load_cached_meta(cache_meta)
 
@@ -205,7 +243,9 @@ def main() -> int:
             offsets_path=str(cache_off_npy),
             dataset_signature=dataset_sig,
             rows=int(meta.get("rows", 0)),
-            loaded_max_mag=float(meta.get("loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+            loaded_max_mag=float(
+                meta.get("loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)
+            ),
             cached=True,
         )
         return 0
@@ -214,10 +254,17 @@ def main() -> int:
 
     try:
         _emit_progress(10.0, "loading runtime catalog", stage="load_catalog")
-        ra_all, dec_all, mag_all, max_loaded_mag = _build_scope_catalog(runtime_npz, stars_dir)
+        ra_all, dec_all, mag_all, max_loaded_mag = _build_scope_catalog(
+            runtime_npz, stars_dir
+        )
         rows = int(len(ra_all))
 
-        _emit_progress(58.0, "building scope spatial index", stage="build_index", rows=rows)
+        _emit_progress(
+            58.0,
+            "building scope spatial index",
+            stage="build_index",
+            rows=rows,
+        )
         sorted_indices, offsets = build_scope_spatial_index_payload(
             ra_all,
             dec_all,
@@ -225,20 +272,33 @@ def main() -> int:
             max_mag=max_mag,
         )
         if sorted_indices is None or offsets is None:
-            raise RuntimeError("Scope index payload build returned empty result")
+            raise RuntimeError(
+                "Scope index payload build returned empty result"
+            )
 
         if max_mag is not None:
             loaded_max_mag = float(min(max_loaded_mag, max_mag))
         else:
             loaded_max_mag = float(max_loaded_mag)
 
-        _emit_progress(92.0, "writing persistent scope cache", stage="save_cache", rows=rows)
+        _emit_progress(
+            92.0,
+            "writing persistent scope cache",
+            stage="save_cache",
+            rows=rows,
+        )
         tmp_idx = cache_idx_npy.with_suffix(".npy.tmp")
         tmp_off = cache_off_npy.with_suffix(".npy.tmp")
         with tmp_idx.open("wb") as fh_idx:
-            np.save(fh_idx, np.asarray(sorted_indices, dtype=np.int32), allow_pickle=False)
+            np.save(
+                fh_idx,
+                np.asarray(sorted_indices, dtype=np.int32),
+                allow_pickle=False,
+            )
         with tmp_off.open("wb") as fh_off:
-            np.save(fh_off, np.asarray(offsets, dtype=np.int64), allow_pickle=False)
+            np.save(
+                fh_off, np.asarray(offsets, dtype=np.int64), allow_pickle=False
+            )
         tmp_idx.replace(cache_idx_npy)
         tmp_off.replace(cache_off_npy)
 
@@ -252,7 +312,9 @@ def main() -> int:
             "rows": rows,
             "loaded_max_mag": loaded_max_mag,
             "max_mag": max_mag,
-            "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "updated_at": datetime.now(timezone.utc)
+            .isoformat(timespec="seconds")
+            .replace("+00:00", "Z"),
         }
         _save_cached_meta(cache_meta, meta_payload)
 

@@ -9,7 +9,6 @@ from TerraLab.common.utils import get_config_value
 from TerraLab.widgets.measurement_tools import TOOL_NONE
 from TerraLab.widgets.telescope_runtime import on_telescope_view_enabled
 
-
 _MISSING = object()
 
 
@@ -24,6 +23,14 @@ class ScopeUIManager:
         return _MISSING
 
     def sync_instrument_controls(self):
+        """Executa el metode sync_instrument_controls de la classe ScopeUIManager.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         legacy = self._legacy("_sync_scope_instrument_controls_impl")
         if legacy is not _MISSING:
             return legacy
@@ -70,6 +77,14 @@ class ScopeUIManager:
         return None
 
     def goto_radec(self) -> None:
+        """Executa el metode goto_radec de la classe ScopeUIManager.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         legacy = self._legacy("_scope_ui_goto_radec_impl")
         if legacy is not _MISSING:
             return legacy
@@ -90,7 +105,9 @@ class ScopeUIManager:
 
         try:
             ut_hour, day_of_year_utc = w.canvas._current_ut_context()
-            sky = w.canvas._ra_dec_to_alt_az(ra_deg, dec_deg, ut_hour, day_of_year_utc)
+            sky = w.canvas._ra_dec_to_alt_az(
+                ra_deg, dec_deg, ut_hour, day_of_year_utc
+            )
             if sky is None:
                 return
             if not w.canvas.scope_mode_enabled():
@@ -101,12 +118,22 @@ class ScopeUIManager:
             return
 
     def activate(self):
+        """Executa el metode activate de la classe ScopeUIManager.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         legacy = self._legacy("_scope_ui_activate_impl")
         if legacy is not _MISSING:
             return legacy
 
         w = self._widget
-        append_perf_event("scope_activation_request", delta_ms_boot=w._boot_delta_ms())
+        append_perf_event(
+            "scope_activation_request", delta_ms_boot=w._boot_delta_ms()
+        )
         w._start_scope_full_preload_async(reason="scope_activate")
         subset_only = bool(getattr(w, "_catalog_loaded_subset_only", False))
         waiting_preload = bool(
@@ -114,23 +141,40 @@ class ScopeUIManager:
             and (not bool(getattr(w, "_scope_preload_ready", False)))
         )
         if subset_only or waiting_preload:
-            if not bool(getattr(w, "_scope_preload_pending_activation", False)):
-                append_perf_event("scope_activation_wait_start", delta_ms_boot=w._boot_delta_ms())
+            if not bool(
+                getattr(w, "_scope_preload_pending_activation", False)
+            ):
+                append_perf_event(
+                    "scope_activation_wait_start",
+                    delta_ms_boot=w._boot_delta_ms(),
+                )
             w._scope_preload_pending_activation = True
             if not bool(getattr(w, "_scope_preload_wait_logged", False)):
                 if subset_only and waiting_preload:
-                    print("[AstroWidget] Scope activation waiting for full scope catalog and preload.")
+                    print(
+                        "[AstroWidget] Scope activation waiting for full scope catalog and preload."
+                    )
                 elif subset_only:
-                    print("[AstroWidget] Scope activation waiting for full scope catalog.")
+                    print(
+                        "[AstroWidget] Scope activation waiting for full scope catalog."
+                    )
                 else:
-                    print("[AstroWidget] Scope activation waiting for full catalog preload.")
+                    print(
+                        "[AstroWidget] Scope activation waiting for full catalog preload."
+                    )
                 w._scope_preload_wait_logged = True
             if subset_only and waiting_preload:
-                w._scope_preload_status("waiting full scope catalog + preload...")
-                w._scope_set_data_state("loading_deep", reason="subset+preload_wait")
+                w._scope_preload_status(
+                    "waiting full scope catalog + preload..."
+                )
+                w._scope_set_data_state(
+                    "loading_deep", reason="subset+preload_wait"
+                )
             elif subset_only:
                 w._scope_preload_status("waiting full scope catalog...")
-                w._scope_set_data_state("loading_deep", reason="subset_catalog")
+                w._scope_set_data_state(
+                    "loading_deep", reason="subset_catalog"
+                )
             else:
                 w._scope_preload_status("waiting full catalog preload...")
                 w._scope_set_data_state("loading_deep", reason="preload_wait")
@@ -139,23 +183,49 @@ class ScopeUIManager:
             w._scope_preload_wait_logged = False
             if bool(getattr(w, "_scope_preload_ready", False)):
                 w._apply_scope_preloaded_spatial_index()
-            append_perf_event("scope_activation_ready", delta_ms_boot=w._boot_delta_ms())
+            append_perf_event(
+                "scope_activation_ready", delta_ms_boot=w._boot_delta_ms()
+            )
             w._refresh_scope_data_state(reason="scope_activate_ready")
 
         w.canvas.setUpdatesEnabled(False)
         try:
             w.canvas.set_scope_focal_mm(w.scope_focal_spin.value())
-            w.canvas.set_scope_shape(w.scope_shape_combo.itemData(w.scope_shape_combo.currentIndex()))
-            w.canvas.set_scope_sensor(w.scope_sensor_combo.itemData(w.scope_sensor_combo.currentIndex()))
+            w.canvas.set_scope_shape(
+                w.scope_shape_combo.itemData(
+                    w.scope_shape_combo.currentIndex()
+                )
+            )
+            w.canvas.set_scope_sensor(
+                w.scope_sensor_combo.itemData(
+                    w.scope_sensor_combo.currentIndex()
+                )
+            )
             w._apply_scope_aspect_from_ui()
-            w.canvas.set_scope_speed_mode(w.scope_speed_combo.itemData(w.scope_speed_combo.currentIndex()))
+            w.canvas.set_scope_speed_mode(
+                w.scope_speed_combo.itemData(
+                    w.scope_speed_combo.currentIndex()
+                )
+            )
             w.canvas.set_scope_enabled(True)
             QTimer.singleShot(0, w._ensure_scope_spatial_index_warmup)
-            QTimer.singleShot(120, lambda: w._ensure_scope_catalog_loaded(force_now=False))
-            append_perf_event("scope_mode_enabled", delta_ms_boot=w._boot_delta_ms())
-            instrument_profile = str(getattr(w, "scope_instrument_profile", "telescope"))
-            eyepiece_mm = float(w.scope_eyepiece_mm if instrument_profile == "telescope" else w.scope_focal_spin.value())
-            aperture_mm_effective = w._effective_scope_aperture_mm(w.scope_focal_spin.value())
+            QTimer.singleShot(
+                120, lambda: w._ensure_scope_catalog_loaded(force_now=False)
+            )
+            append_perf_event(
+                "scope_mode_enabled", delta_ms_boot=w._boot_delta_ms()
+            )
+            instrument_profile = str(
+                getattr(w, "scope_instrument_profile", "telescope")
+            )
+            eyepiece_mm = float(
+                w.scope_eyepiece_mm
+                if instrument_profile == "telescope"
+                else w.scope_focal_spin.value()
+            )
+            aperture_mm_effective = w._effective_scope_aperture_mm(
+                w.scope_focal_spin.value()
+            )
             on_telescope_view_enabled(
                 {
                     "scope_enabled": True,
@@ -167,9 +237,19 @@ class ScopeUIManager:
                     "ocular_mm": eyepiece_mm,
                     "instrument_profile": instrument_profile,
                     "k_fallback": float(w.scope_k_fallback),
-                    "weather_enabled": bool(getattr(w.canvas.weather, "enabled", False)),
-                    "copernicus_api_key": str(get_config_value("copernicus_api_key", "") or ""),
-                    "copernicus_api_url": str(get_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api") or ""),
+                    "weather_enabled": bool(
+                        getattr(w.canvas.weather, "enabled", False)
+                    ),
+                    "copernicus_api_key": str(
+                        get_config_value("copernicus_api_key", "") or ""
+                    ),
+                    "copernicus_api_url": str(
+                        get_config_value(
+                            "copernicus_api_url",
+                            "https://cds.climate.copernicus.eu/api",
+                        )
+                        or ""
+                    ),
                 },
                 allow_remote_fetch=False,
             )
@@ -187,6 +267,14 @@ class ScopeUIManager:
         QTimer.singleShot(0, w._update_button_pos)
 
     def exit(self):
+        """Executa el metode exit de la classe ScopeUIManager.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         legacy = self._legacy("_scope_ui_exit_impl")
         if legacy is not _MISSING:
             return legacy
@@ -197,9 +285,15 @@ class ScopeUIManager:
             base_ra = getattr(w, "_scope_base_ra", None)
             base_dec = getattr(w, "_scope_base_dec", None)
             base_mag = getattr(w, "_scope_base_mag", None)
-            if base_ra is not None and base_dec is not None and base_mag is not None:
+            if (
+                base_ra is not None
+                and base_dec is not None
+                and base_mag is not None
+            ):
                 try:
-                    if int(len(base_ra)) > 0 and int(len(base_ra)) == int(len(base_dec)) == int(len(base_mag)):
+                    if int(len(base_ra)) > 0 and int(len(base_ra)) == int(
+                        len(base_dec)
+                    ) == int(len(base_mag)):
                         w.np_ra = base_ra
                         w.np_dec = base_dec
                         w.np_mag = base_mag
@@ -212,13 +306,23 @@ class ScopeUIManager:
                         w._scope_full_catalog_attached = False
                         w.canvas._cached_star_image = None
                         w.canvas._cached_trail_image = None
-                        w._refresh_scope_data_state(reason="scope_exit_restore_subset")
+                        w._refresh_scope_data_state(
+                            reason="scope_exit_restore_subset"
+                        )
                 except Exception:
                     pass
         self.sync_ui_state(False)
         QTimer.singleShot(0, w._update_button_pos)
 
     def sync_ui_state(self, enabled: bool):
+        """Executa el metode sync_ui_state de la classe ScopeUIManager.
+
+        Par?metres:
+        - enabled (bool): Valor del parametre 'enabled'.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         legacy = self._legacy("_scope_ui_sync_state_impl", bool(enabled))
         if legacy is not _MISSING:
             return legacy

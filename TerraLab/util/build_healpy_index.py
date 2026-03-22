@@ -55,7 +55,9 @@ def _human_bytes(size_bytes: int) -> str:
     return f"{value:.2f} {units[idx]}"
 
 
-def _emit_progress(percent: float, message: str, callback: Optional[ProgressFn] = None) -> None:
+def _emit_progress(
+    percent: float, message: str, callback: Optional[ProgressFn] = None
+) -> None:
     pct = max(0.0, min(100.0, float(percent)))
     print(f"[healpy-index] {pct:5.1f}% {message}")
     if callback is None:
@@ -75,8 +77,16 @@ def _resolve_output_paths(
     output_npy: Path | None,
     output_index: Path | None,
 ) -> tuple[Path, Path]:
-    out_npy = output_npy if output_npy is not None else input_npy.with_name(f"{input_npy.stem}_healpy.npy")
-    out_idx = output_index if output_index is not None else out_npy.with_suffix(".idx.npz")
+    out_npy = (
+        output_npy
+        if output_npy is not None
+        else input_npy.with_name(f"{input_npy.stem}_healpy.npy")
+    )
+    out_idx = (
+        output_index
+        if output_index is not None
+        else out_npy.with_suffix(".idx.npz")
+    )
     return out_npy, out_idx
 
 
@@ -100,7 +110,9 @@ def _is_nside_ok(nside: int) -> bool:
     return False
 
 
-def _ang_to_pix(nside: int, ra_deg: np.ndarray, dec_deg: np.ndarray) -> np.ndarray:
+def _ang_to_pix(
+    nside: int, ra_deg: np.ndarray, dec_deg: np.ndarray
+) -> np.ndarray:
     if hpg is not None:
         return np.asarray(
             hpg.angle_to_pixel(
@@ -116,15 +128,23 @@ def _ang_to_pix(nside: int, ra_deg: np.ndarray, dec_deg: np.ndarray) -> np.ndarr
     if hp is not None:
         theta = np.radians(90.0 - np.asarray(dec_deg, dtype=np.float64))
         phi = np.radians(np.asarray(ra_deg, dtype=np.float64))
-        return np.asarray(hp.ang2pix(int(nside), theta, phi, nest=True), dtype=np.uint32)
-    raise RuntimeError("No HEALPix backend available. Install hpgeom or healpy.")
+        return np.asarray(
+            hp.ang2pix(int(nside), theta, phi, nest=True), dtype=np.uint32
+        )
+    raise RuntimeError(
+        "No HEALPix backend available. Install hpgeom or healpy."
+    )
 
 
 def _validate_inputs(catalog: np.ndarray, nside: int, chunk_rows: int) -> None:
     if _backend_name() == "none":
-        raise RuntimeError("A HEALPix backend is required. Install with: pip install hpgeom")
+        raise RuntimeError(
+            "A HEALPix backend is required. Install with: pip install hpgeom"
+        )
     if not _is_nside_ok(int(nside)):
-        raise ValueError(f"Invalid NSIDE={nside}. NSIDE must be a power of two.")
+        raise ValueError(
+            f"Invalid NSIDE={nside}. NSIDE must be a power of two."
+        )
     if int(chunk_rows) <= 0:
         raise ValueError("chunk_rows must be > 0")
     if not isinstance(catalog, np.ndarray) or catalog.dtype.names is None:
@@ -132,7 +152,9 @@ def _validate_inputs(catalog: np.ndarray, nside: int, chunk_rows: int) -> None:
     names = set(catalog.dtype.names)
     for required in ("ra", "dec"):
         if required not in names:
-            raise ValueError(f"Input catalog is missing required column '{required}'.")
+            raise ValueError(
+                f"Input catalog is missing required column '{required}'."
+            )
     if len(catalog) <= 0:
         raise ValueError("Input catalog is empty.")
 
@@ -149,7 +171,9 @@ def _compute_healpix_pixels(
     total_chunks = (total_rows + chunk_rows - 1) // chunk_rows
     t0 = time.perf_counter()
 
-    for chunk_idx, start in enumerate(range(0, total_rows, chunk_rows), start=1):
+    for chunk_idx, start in enumerate(
+        range(0, total_rows, chunk_rows), start=1
+    ):
         stop = min(start + chunk_rows, total_rows)
         ra_chunk = np.asarray(catalog["ra"][start:stop], dtype=np.float64)
         dec_chunk = np.asarray(catalog["dec"][start:stop], dtype=np.float64)
@@ -192,7 +216,9 @@ def _write_reordered_catalog(
     )
     t0 = time.perf_counter()
     try:
-        for chunk_idx, start in enumerate(range(0, total_rows, chunk_rows), start=1):
+        for chunk_idx, start in enumerate(
+            range(0, total_rows, chunk_rows), start=1
+        ):
             stop = min(start + chunk_rows, total_rows)
             idx_chunk = order[start:stop]
             out_mm[start:stop] = catalog[idx_chunk]
@@ -200,7 +226,11 @@ def _write_reordered_catalog(
             # Scale this phase to 66%..95%.
             frac = float(stop) / float(total_rows)
             pct = 66.0 + 29.0 * frac
-            if chunk_idx == 1 or chunk_idx == total_chunks or (chunk_idx % 3) == 0:
+            if (
+                chunk_idx == 1
+                or chunk_idx == total_chunks
+                or (chunk_idx % 3) == 0
+            ):
                 elapsed = time.perf_counter() - t0
                 _emit_progress(
                     pct,
@@ -248,7 +278,9 @@ def build_healpy_catalog_index(
         Path(output_index).expanduser().resolve() if output_index else None,
     )
 
-    _emit_progress(0.5, f"Opening catalog: {input_path}", callback=progress_callback)
+    _emit_progress(
+        0.5, f"Opening catalog: {input_path}", callback=progress_callback
+    )
     catalog = np.load(input_path, mmap_mode="r", allow_pickle=False)
     _validate_inputs(catalog, int(nside), int(chunk_rows))
     total_rows = int(len(catalog))
@@ -266,7 +298,9 @@ def build_healpy_catalog_index(
     )
 
     t_sort = time.perf_counter()
-    _emit_progress(38.0, "Stable sorting by HEALPix pixel...", callback=progress_callback)
+    _emit_progress(
+        38.0, "Stable sorting by HEALPix pixel...", callback=progress_callback
+    )
     order = np.argsort(pixels, kind="stable")
     _emit_progress(
         55.0,
@@ -274,7 +308,9 @@ def build_healpy_catalog_index(
         callback=progress_callback,
     )
 
-    _emit_progress(57.0, "Building sparse pixel index...", callback=progress_callback)
+    _emit_progress(
+        57.0, "Building sparse pixel index...", callback=progress_callback
+    )
     pixels_sorted = pixels[order]
     pixels_unics, inicis, comptes = np.unique(
         pixels_sorted,
@@ -301,7 +337,9 @@ def build_healpy_catalog_index(
     )
     del order
 
-    _emit_progress(96.0, f"Writing index: {out_idx}", callback=progress_callback)
+    _emit_progress(
+        96.0, f"Writing index: {out_idx}", callback=progress_callback
+    )
     out_idx.parent.mkdir(parents=True, exist_ok=True)
     tmp_idx = out_idx.with_suffix(out_idx.suffix + ".tmp")
     if tmp_idx.exists():
@@ -360,8 +398,18 @@ def main() -> int:
         default="",
         help="Path to output index NPZ (default: <output_stem>.idx.npz)",
     )
-    parser.add_argument("--nside", type=int, default=DEFAULT_NSIDE, help="HEALPix NSIDE (power of 2)")
-    parser.add_argument("--chunk-rows", type=int, default=DEFAULT_CHUNK_ROWS, help="Rows per chunk")
+    parser.add_argument(
+        "--nside",
+        type=int,
+        default=DEFAULT_NSIDE,
+        help="HEALPix NSIDE (power of 2)",
+    )
+    parser.add_argument(
+        "--chunk-rows",
+        type=int,
+        default=DEFAULT_CHUNK_ROWS,
+        help="Rows per chunk",
+    )
     args = parser.parse_args()
 
     summary = build_healpy_catalog_index(

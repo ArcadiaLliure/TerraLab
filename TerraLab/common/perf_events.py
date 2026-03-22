@@ -17,7 +17,9 @@ def perf_log_path() -> Path:
 
 def append_perf_event(event: str, **payload: Any) -> None:
     record = {
-        "ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+        "ts": datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z"),
         "mono_ms": int(time.perf_counter() * 1000.0),
         "event": str(event),
     }
@@ -33,4 +35,3 @@ def append_perf_event(event: str, **payload: Any) -> None:
     except Exception:
         # Telemetry must never break runtime execution.
         pass
-

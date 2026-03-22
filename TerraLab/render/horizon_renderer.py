@@ -12,6 +12,15 @@ from PyQt5.QtGui import QColor, QPainterPath
 
 class HorizonRenderer:
     def render(self, ctx, state):
+        """Renderitza el contingut visual segons l'estat actual.
+
+        Par?metres:
+        - ctx (Any): Valor del parametre 'ctx'.
+        - state (Any): Valor del parametre 'state'.
+
+        Retorna:
+        - None.
+        """
         callback = None
         extras = getattr(state, "extras", {}) or {}
         if isinstance(extras, dict):

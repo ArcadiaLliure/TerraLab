@@ -29,7 +29,6 @@ from typing import Dict, Iterable, List, Tuple
 
 import numpy as np
 
-
 FIELD_ALIASES = {
     "id": "source_id",
     "sourceid": "source_id",
@@ -54,7 +53,10 @@ SQL_RE = re.compile(
     r"(?:\s+limit\s+(?P<limit>\d+))?\s*$",
     flags=re.IGNORECASE,
 )
-SQL_COND_RE = re.compile(r"^\s*([A-Za-z_][\w]*)\s*(<=|>=|<>|!=|=|<|>)\s*(.+?)\s*$", flags=re.IGNORECASE)
+SQL_COND_RE = re.compile(
+    r"^\s*([A-Za-z_][\w]*)\s*(<=|>=|<>|!=|=|<|>)\s*(.+?)\s*$",
+    flags=re.IGNORECASE,
+)
 SQL_AGG_RE = re.compile(
     r"^\s*(max|min|avg|sum|count)\s*\(\s*(\*|[A-Za-z_][\w]*)\s*\)\s*(?:as\s+([A-Za-z_][\w]*))?\s*$",
     flags=re.IGNORECASE,
@@ -72,7 +74,9 @@ class SQLQuery:
 
 def _strip_sql_value(raw: str) -> str:
     v = raw.strip()
-    if len(v) >= 2 and ((v[0] == "'" and v[-1] == "'") or (v[0] == '"' and v[-1] == '"')):
+    if len(v) >= 2 and (
+        (v[0] == "'" and v[-1] == "'") or (v[0] == '"' and v[-1] == '"')
+    ):
         return v[1:-1]
     return v
 
@@ -91,7 +95,9 @@ def parse_sql_query(sql: str, columns: Dict[str, np.ndarray]) -> SQLQuery:
         raise ValueError(f"Unsupported table '{table}'. Use FROM stars")
 
     select_expr = str(m.group("select") or "").strip()
-    select_parts = [part.strip() for part in select_expr.split(",") if part.strip()]
+    select_parts = [
+        part.strip() for part in select_expr.split(",") if part.strip()
+    ]
     if not select_parts:
         raise ValueError("SELECT list is empty")
 
@@ -115,21 +121,31 @@ def parse_sql_query(sql: str, columns: Dict[str, np.ndarray]) -> SQLQuery:
 
         if part == "*":
             if len(select_parts) > 1:
-                raise ValueError("SELECT * cannot be combined with other columns/aggregates")
+                raise ValueError(
+                    "SELECT * cannot be combined with other columns/aggregates"
+                )
             fields = list(columns.keys())
             continue
 
         fields.append(resolve_field(part, columns))
 
     if aggregations and fields:
-        raise ValueError("Mixed SELECT with aggregates and plain columns is not supported. Use one mode.")
+        raise ValueError(
+            "Mixed SELECT with aggregates and plain columns is not supported. Use one mode."
+        )
     if not aggregations and not fields:
         raise ValueError("SELECT list is empty")
 
     conditions: List[Tuple[str, str, str]] = []
     where_expr = m.group("where")
     if where_expr:
-        chunks = [chunk.strip() for chunk in re.split(r"\s+and\s+", where_expr, flags=re.IGNORECASE) if chunk.strip()]
+        chunks = [
+            chunk.strip()
+            for chunk in re.split(
+                r"\s+and\s+", where_expr, flags=re.IGNORECASE
+            )
+            if chunk.strip()
+        ]
         for chunk in chunks:
             cm = SQL_COND_RE.match(chunk)
             if not cm:
@@ -139,7 +155,9 @@ def parse_sql_query(sql: str, columns: Dict[str, np.ndarray]) -> SQLQuery:
                 )
             field_raw, op, value_raw = cm.group(1), cm.group(2), cm.group(3)
             field = resolve_field(field_raw, columns)
-            op_norm = "==" if op == "=" else ("!=" if op in ("!=", "<>") else op)
+            op_norm = (
+                "==" if op == "=" else ("!=" if op in ("!=", "<>") else op)
+            )
             value = _strip_sql_value(value_raw)
             conditions.append((field, op_norm, value))
 
@@ -159,10 +177,18 @@ def parse_sql_query(sql: str, columns: Dict[str, np.ndarray]) -> SQLQuery:
         if limit < 0:
             raise ValueError("LIMIT must be >= 0")
 
-    return SQLQuery(fields=fields, conditions=conditions, sort=sort, limit=limit, aggregations=aggregations)
+    return SQLQuery(
+        fields=fields,
+        conditions=conditions,
+        sort=sort,
+        limit=limit,
+        aggregations=aggregations,
+    )
 
 
-def _find_col(raw: Dict[str, np.ndarray], candidates: Iterable[str]) -> str | None:
+def _find_col(
+    raw: Dict[str, np.ndarray], candidates: Iterable[str]
+) -> str | None:
     keys = list(raw.keys())
     lower_map = {k.lower(): k for k in keys}
     for name in candidates:
@@ -207,7 +233,9 @@ def _canonicalize(raw: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     # Normalize dtypes.
     out["ra"] = np.asarray(out["ra"], dtype=np.float64)
     out["dec"] = np.asarray(out["dec"], dtype=np.float64)
-    out["phot_g_mean_mag"] = np.asarray(out["phot_g_mean_mag"], dtype=np.float32)
+    out["phot_g_mean_mag"] = np.asarray(
+        out["phot_g_mean_mag"], dtype=np.float32
+    )
     if "bp_rp" in out:
         out["bp_rp"] = np.asarray(out["bp_rp"], dtype=np.float32)
     if "source_id" in out:
@@ -222,7 +250,9 @@ def _validate_lengths(data: Dict[str, np.ndarray]) -> int:
     n = min(lengths.values())
     if any(v != n for v in lengths.values()):
         mismatched = {k: v for k, v in lengths.items() if v != n}
-        raise ValueError(f"Column length mismatch. min={n} mismatched={mismatched}")
+        raise ValueError(
+            f"Column length mismatch. min={n} mismatched={mismatched}"
+        )
     return n
 
 
@@ -247,7 +277,9 @@ def load_split_npy_dir(path: Path) -> Dict[str, np.ndarray]:
     raw: Dict[str, np.ndarray] = {
         "ra": np.load(required["ra"], allow_pickle=False),
         "dec": np.load(required["dec"], allow_pickle=False),
-        "phot_g_mean_mag": np.load(required["phot_g_mean_mag"], allow_pickle=False),
+        "phot_g_mean_mag": np.load(
+            required["phot_g_mean_mag"], allow_pickle=False
+        ),
     }
     optional = {
         "bp_rp": path / "gaia_cache_bprp.npy",
@@ -279,7 +311,9 @@ def load_dataset(input_path: Path) -> Dict[str, np.ndarray]:
     elif input_path.suffix.lower() == ".npz":
         data = load_npz(input_path)
     else:
-        raise ValueError(f"Unsupported input: {input_path} (use dir/.npy/.npz)")
+        raise ValueError(
+            f"Unsupported input: {input_path} (use dir/.npy/.npz)"
+        )
     _validate_lengths(data)
     return data
 
@@ -308,10 +342,14 @@ def resolve_field(field: str, columns: Dict[str, np.ndarray]) -> str:
     for k in columns.keys():
         if k.lower() == alias.lower():
             return k
-    raise KeyError(f"Unknown field '{field}'. Available: {', '.join(columns.keys())}")
+    raise KeyError(
+        f"Unknown field '{field}'. Available: {', '.join(columns.keys())}"
+    )
 
 
-def parse_where(where: str, columns: Dict[str, np.ndarray]) -> Tuple[str, str, str]:
+def parse_where(
+    where: str, columns: Dict[str, np.ndarray]
+) -> Tuple[str, str, str]:
     m = COND_RE.match(where)
     if not m:
         raise ValueError(f"Invalid --where expression: '{where}'")
@@ -348,27 +386,49 @@ def apply_condition(col: np.ndarray, op: str, value: str) -> np.ndarray:
         return s == value
     if op == "!=":
         return s != value
-    raise ValueError(f"Operator '{op}' only supports numeric fields, except ==/!= for text")
+    raise ValueError(
+        f"Operator '{op}' only supports numeric fields, except ==/!= for text"
+    )
 
 
-def write_output(path: Path, fields: List[str], data: Dict[str, np.ndarray], idx: np.ndarray) -> None:
+def write_output(
+    path: Path, fields: List[str], data: Dict[str, np.ndarray], idx: np.ndarray
+) -> None:
     if path.suffix.lower() == ".csv":
         with path.open("w", encoding="utf-8", newline="") as fh:
             writer = csv.writer(fh)
             writer.writerow(fields)
             for i in idx:
-                writer.writerow([data[f][i].item() if hasattr(data[f][i], "item") else data[f][i] for f in fields])
+                writer.writerow(
+                    [
+                        (
+                            data[f][i].item()
+                            if hasattr(data[f][i], "item")
+                            else data[f][i]
+                        )
+                        for f in fields
+                    ]
+                )
         return
     if path.suffix.lower() in (".jsonl", ".ndjson"):
         with path.open("w", encoding="utf-8") as fh:
             for i in idx:
-                row = {f: (data[f][i].item() if hasattr(data[f][i], "item") else data[f][i]) for f in fields}
+                row = {
+                    f: (
+                        data[f][i].item()
+                        if hasattr(data[f][i], "item")
+                        else data[f][i]
+                    )
+                    for f in fields
+                }
                 fh.write(json.dumps(row, ensure_ascii=False) + "\n")
         return
     raise ValueError("Unsupported --out format. Use .csv or .jsonl")
 
 
-def write_aggregate_output(path: Path, labels: List[str], values: List[object]) -> None:
+def write_aggregate_output(
+    path: Path, labels: List[str], values: List[object]
+) -> None:
     if path.suffix.lower() == ".csv":
         with path.open("w", encoding="utf-8", newline="") as fh:
             writer = csv.writer(fh)
@@ -410,11 +470,15 @@ def compute_aggregations(
             continue
 
         if field == "*":
-            raise ValueError(f"{fn.upper()}(*) is not supported. Use COUNT(*) or {fn.upper()}(field)")
+            raise ValueError(
+                f"{fn.upper()}(*) is not supported. Use COUNT(*) or {fn.upper()}(field)"
+            )
 
         col = np.asarray(data[field][idx])
         if col.dtype.kind not in "iuf":
-            raise ValueError(f"{fn.upper()} requires numeric field, got '{field}' dtype={col.dtype}")
+            raise ValueError(
+                f"{fn.upper()} requires numeric field, got '{field}' dtype={col.dtype}"
+            )
         c = np.asarray(col, dtype=np.float64)
         if len(c) == 0:
             values.append(float("nan"))
@@ -435,25 +499,50 @@ def compute_aggregations(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Query stars NPY/NPZ datasets")
-    parser.add_argument("--input", required=True, help="Path to dataset (.npy/.npz or split-npy directory)")
+    parser = argparse.ArgumentParser(
+        description="Query stars NPY/NPZ datasets"
+    )
+    parser.add_argument(
+        "--input",
+        required=True,
+        help="Path to dataset (.npy/.npz or split-npy directory)",
+    )
     parser.add_argument(
         "--sql",
         default="",
         help=(
             "SQL-like query, e.g. "
-            "\"SELECT source_id,ra,dec,phot_g_mean_mag FROM stars "
-            "WHERE phot_g_mean_mag <= 13.5 AND dec >= -10 ORDER BY phot_g_mean_mag ASC LIMIT 100\". "
+            '"SELECT source_id,ra,dec,phot_g_mean_mag FROM stars '
+            'WHERE phot_g_mean_mag <= 13.5 AND dec >= -10 ORDER BY phot_g_mean_mag ASC LIMIT 100". '
             "Supports MAX/MIN/AVG/SUM/COUNT and virtual field app_id."
         ),
     )
-    parser.add_argument("--where", action="append", default=[], help="Filter expression, e.g. phot_g_mean_mag<=13.5 or ra~80:90")
-    parser.add_argument("--fields", default="source_id,ra,dec,phot_g_mean_mag,bp_rp", help="Comma-separated fields for output")
+    parser.add_argument(
+        "--where",
+        action="append",
+        default=[],
+        help="Filter expression, e.g. phot_g_mean_mag<=13.5 or ra~80:90",
+    )
+    parser.add_argument(
+        "--fields",
+        default="source_id,ra,dec,phot_g_mean_mag,bp_rp",
+        help="Comma-separated fields for output",
+    )
     parser.add_argument("--head", type=int, default=10, help="Preview rows")
-    parser.add_argument("--sort", default="", help="Sort by field or field:desc")
-    parser.add_argument("--count-only", action="store_true", help="Only print counts")
-    parser.add_argument("--stats", action="store_true", help="Print numeric stats for selected fields")
-    parser.add_argument("--out", default="", help="Output file (.csv or .jsonl)")
+    parser.add_argument(
+        "--sort", default="", help="Sort by field or field:desc"
+    )
+    parser.add_argument(
+        "--count-only", action="store_true", help="Only print counts"
+    )
+    parser.add_argument(
+        "--stats",
+        action="store_true",
+        help="Print numeric stats for selected fields",
+    )
+    parser.add_argument(
+        "--out", default="", help="Output file (.csv or .jsonl)"
+    )
     args = parser.parse_args()
 
     data = add_virtual_fields(load_dataset(Path(args.input)))
@@ -473,7 +562,11 @@ def main() -> None:
             sort_spec = sql_query.sort
         row_limit = sql_query.limit
     else:
-        selected_fields = [resolve_field(x.strip(), data) for x in args.fields.split(",") if x.strip()]
+        selected_fields = [
+            resolve_field(x.strip(), data)
+            for x in args.fields.split(",")
+            if x.strip()
+        ]
         for expr in args.where:
             conditions.append(parse_where(expr, data))
 
@@ -483,7 +576,9 @@ def main() -> None:
     idx = np.where(mask)[0]
 
     if sql_query is not None and sql_query.aggregations:
-        labels, values = compute_aggregations(sql_query.aggregations, data, idx)
+        labels, values = compute_aggregations(
+            sql_query.aggregations, data, idx
+        )
         print(f"rows_total={n_total}")
         print(f"rows_filtered={len(idx)}")
         if not args.count_only:
@@ -511,7 +606,11 @@ def main() -> None:
 
     if args.stats and selected_fields:
         for f in selected_fields:
-            col = np.asarray(data[f][idx]) if len(idx) else np.asarray([], dtype=np.float64)
+            col = (
+                np.asarray(data[f][idx])
+                if len(idx)
+                else np.asarray([], dtype=np.float64)
+            )
             if col.dtype.kind in "iuf" and len(col) > 0:
                 colf = np.asarray(col, dtype=np.float64)
                 print(

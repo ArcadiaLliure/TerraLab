@@ -4,7 +4,6 @@ from typing import Callable, List, Optional, Sequence, Tuple
 
 from TerraLab.scene.projection import local_sidereal_angle
 
-
 SkyCoord = Tuple[float, float]  # (alt_deg, az_deg)
 
 
@@ -55,7 +54,9 @@ def angular_distance(a: SkyCoord, b: SkyCoord) -> float:
     return math.degrees(math.acos(dot))
 
 
-def slerp_arc_points(a: SkyCoord, b: SkyCoord, n_points: int = 64) -> List[SkyCoord]:
+def slerp_arc_points(
+    a: SkyCoord, b: SkyCoord, n_points: int = 64
+) -> List[SkyCoord]:
     """
     Returns sampled points along the shortest great-circle arc from a to b.
     """
@@ -80,7 +81,9 @@ def slerp_arc_points(a: SkyCoord, b: SkyCoord, n_points: int = 64) -> List[SkyCo
     return out
 
 
-def destination_point(center: SkyCoord, bearing_deg: float, distance_deg: float) -> SkyCoord:
+def destination_point(
+    center: SkyCoord, bearing_deg: float, distance_deg: float
+) -> SkyCoord:
     """
     Direct geodesic on unit sphere in local horizon coordinates.
     Uses (alt, az) as (lat, lon).
@@ -239,19 +242,22 @@ def altaz_to_ra_dec(
     return float(ra), float(dec)
 
 
-def get_sun_alt_az(hour: float, latitude_deg: float, day_of_year: int) -> SkyCoord:
+def get_sun_alt_az(
+    hour: float, latitude_deg: float, day_of_year: int
+) -> SkyCoord:
     """Approximate solar Alt/Az for UI shading and daylight decisions."""
-    dec_deg = -23.44 * math.cos(math.radians((360.0 / 365.0) * (float(day_of_year) + 10.0)))
+    dec_deg = -23.44 * math.cos(
+        math.radians((360.0 / 365.0) * (float(day_of_year) + 10.0))
+    )
     dec_rad = math.radians(dec_deg)
     lat_rad = math.radians(float(latitude_deg))
 
     ha_deg = (float(hour) - 12.0) * 15.0
     ha_rad = math.radians(ha_deg)
 
-    sin_alt = (
-        math.sin(dec_rad) * math.sin(lat_rad)
-        + math.cos(dec_rad) * math.cos(lat_rad) * math.cos(ha_rad)
-    )
+    sin_alt = math.sin(dec_rad) * math.sin(lat_rad) + math.cos(
+        dec_rad
+    ) * math.cos(lat_rad) * math.cos(ha_rad)
     sin_alt = max(-1.0, min(1.0, sin_alt))
     alt_deg = math.degrees(math.asin(sin_alt))
 
@@ -259,7 +265,9 @@ def get_sun_alt_az(hour: float, latitude_deg: float, day_of_year: int) -> SkyCoo
     if abs(cos_alt_val) < 1e-4:
         az_deg = 180.0
     else:
-        cos_az = (math.sin(dec_rad) - sin_alt * math.sin(lat_rad)) / (cos_alt_val * math.cos(lat_rad))
+        cos_az = (math.sin(dec_rad) - sin_alt * math.sin(lat_rad)) / (
+            cos_alt_val * math.cos(lat_rad)
+        )
         cos_az = max(-1.0, min(1.0, cos_az))
         az_deg = math.degrees(math.acos(cos_az))
         if math.sin(ha_rad) > 0:
@@ -267,9 +275,13 @@ def get_sun_alt_az(hour: float, latitude_deg: float, day_of_year: int) -> SkyCoo
     return float(alt_deg), float(az_deg)
 
 
-def calculate_sun_times(latitude_deg: float, day_of_year: int) -> Tuple[float, float]:
+def calculate_sun_times(
+    latitude_deg: float, day_of_year: int
+) -> Tuple[float, float]:
     """Approximate sunrise/sunset local solar hours."""
-    dec = -23.44 * math.cos(math.radians((360.0 / 365.0) * (float(day_of_year) + 10.0)))
+    dec = -23.44 * math.cos(
+        math.radians((360.0 / 365.0) * (float(day_of_year) + 10.0))
+    )
     lat_rad = math.radians(float(latitude_deg))
     dec_rad = math.radians(dec)
 

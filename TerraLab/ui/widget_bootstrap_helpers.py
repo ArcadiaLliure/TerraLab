@@ -2,18 +2,244 @@
 
 from __future__ import annotations
 
-def widget_start_scope_full_preload_async(widget, reason: str = "runtime", force_rebuild: bool = False):
+
+def _bind_impl_globals():
     from TerraLab.ui import sky_widget_impl as _impl
+
+    globals().update(_impl.__dict__)
+
+
+def _set_horizon_progress_label_async(widget, msg: str) -> None:
+    text = str(msg or "")
+    widget._last_horizon_progress_text = text
+    lbl = getattr(widget, "lbl_loading", None)
+    if lbl is None:
+        return
+    if not text:
+        lbl.hide()
+        return
+    lbl.setText(text)
+    fm = lbl.fontMetrics()
+    required_w = fm.horizontalAdvance(text) + 28
+    required_h = max(fm.height() + 12, 32)
+    lbl.resize(
+        min(max(required_w, 360), max(360, widget.width() - 20)),
+        required_h,
+    )
+    if lbl.isHidden():
+        lbl.show()
+        lbl.raise_()
+    # Asynchronous repaint request (do not block UI thread with repaint()).
+    lbl.update()
+
+
+def _on_horizon_progress_state_from_worker(widget, state):
+    _bind_impl_globals()
+    if not isinstance(state, dict):
+        return
+    job_id = str(state.get("job_id", "") or "")
+    if (
+        job_id
+        and getattr(widget, "_active_horizon_job_id", None)
+        and job_id != widget._active_horizon_job_id
+    ):
+        return
+    percent = max(0.0, min(100.0, float(state.get("percent", 0.0))))
+    phase = str(state.get("phase", "") or "")
+    now_mono = float(time.perf_counter())
+    last_ui_ts = float(getattr(widget, "_horizon_progress_ui_ts", 0.0))
+    min_interval = max(
+        0.05, float(getattr(widget, "_horizon_progress_min_interval_s", 0.10))
+    )
+    is_final = percent >= 99.9 or phase in {"save", "done"}
+    if (not is_final) and (now_mono - last_ui_ts) < min_interval:
+        return
+    widget._horizon_progress_ui_ts = now_mono
+    percent_text = f"{percent:.1f}"
+    if percent_text.endswith(".0"):
+        percent_text = percent_text[:-2]
+    current = state.get("current")
+    total = state.get("total")
+    msg = getTraduction(
+        "Horizon.CalculatingHorizon", "Calculating horizon: {pct}%"
+    ).format(pct=percent_text)
+    if current is not None and total:
+        msg = f"{msg} - {int(current)}/{int(total)}"
+    _set_horizon_progress_label_async(widget, msg)
+
+
+def _cancel_pending_horizon_preview(widget) -> None:
+    next_id = int(getattr(widget, "_horizon_preview_schedule_id", 0)) + 1
+    widget._horizon_preview_schedule_id = next_id
+    widget._horizon_preview_flush_scheduled = False
+    widget._horizon_preview_pending_payload = None
+
+
+def _flush_horizon_preview_payload(widget, schedule_id: int) -> None:
+    _bind_impl_globals()
+    if int(schedule_id) != int(
+        getattr(widget, "_horizon_preview_schedule_id", 0)
+    ):
+        return
+    widget._horizon_preview_flush_scheduled = False
+    payload = getattr(widget, "_horizon_preview_pending_payload", None)
+    widget._horizon_preview_pending_payload = None
+    if not isinstance(payload, dict):
+        return
+    # Reuse the existing UI handler for profile->overlay application.
+    widget.on_horizon_preview_ready(payload)
+    widget._horizon_preview_last_apply_ts = float(time.perf_counter())
+    if getattr(widget, "_horizon_preview_pending_payload", None) is not None:
+        widget._horizon_preview_flush_scheduled = True
+        next_id = int(getattr(widget, "_horizon_preview_schedule_id", 0)) + 1
+        widget._horizon_preview_schedule_id = next_id
+        min_interval = max(
+            0.10,
+            float(getattr(widget, "_horizon_preview_min_interval_s", 0.50)),
+        )
+        QTimer.singleShot(
+            int(round(min_interval * 1000.0)),
+            lambda w=widget, sid=next_id: _flush_horizon_preview_payload(
+                w, sid
+            ),
+        )
+
+
+def _on_horizon_preview_ready_from_worker(widget, payload):
+    _bind_impl_globals()
+    if not isinstance(payload, dict):
+        return
+    job_id = str(payload.get("job_id", "") or "")
+    if job_id and job_id != getattr(widget, "_active_horizon_job_id", None):
+        return
+    widget._horizon_preview_pending_payload = dict(payload)
+    if bool(getattr(widget, "_horizon_preview_flush_scheduled", False)):
+        return
+    now_mono = float(time.perf_counter())
+    last_apply = float(getattr(widget, "_horizon_preview_last_apply_ts", 0.0))
+    min_interval = max(
+        0.10, float(getattr(widget, "_horizon_preview_min_interval_s", 0.50))
+    )
+    delay = max(0.0, min_interval - max(0.0, now_mono - last_apply))
+    widget._horizon_preview_flush_scheduled = True
+    next_id = int(getattr(widget, "_horizon_preview_schedule_id", 0)) + 1
+    widget._horizon_preview_schedule_id = next_id
+    QTimer.singleShot(
+        int(round(delay * 1000.0)),
+        lambda w=widget, sid=next_id: _flush_horizon_preview_payload(w, sid),
+    )
+
+
+def _on_horizon_profile_ready_from_worker(widget, payload):
+    _bind_impl_globals()
+    _cancel_pending_horizon_preview(widget)
+    # Final profile should be applied immediately; old logic remains in widget method.
+    widget.on_horizon_profile_ready(payload)
+
+
+def _bootstrap_sync_auto_bortle(widget, retries_left: int = 10) -> None:
+    """
+    Try to sync auto Bortle once HorizonWorker initialization is ready.
+
+    This avoids requiring manual "reset LP" clicks after startup.
+    """
+    _bind_impl_globals()
+    if not bool(getattr(widget, "is_auto_bortle", True)):
+        return
+    worker = getattr(widget, "horizon_worker", None)
+    if worker is None:
+        return
+    if bool(getattr(worker, "is_initialized", False)):
+        try:
+            widget.reset_lp_to_auto()
+        except Exception as exc:
+            print(f"[AstroWidget] Auto-Bortle startup sync error: {exc}")
+        return
+    if int(retries_left) <= 0:
+        return
+    QTimer.singleShot(
+        250,
+        lambda w=widget, r=int(retries_left) - 1: _bootstrap_sync_auto_bortle(
+            w, r
+        ),
+    )
+
+
+def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
+    _bind_impl_globals()
+    if int(token) != int(getattr(widget, "_catalog_ready_pipeline_token", 0)):
+        return
+    if stage == 0:
+        widget.build_search_index()
+        QTimer.singleShot(
+            0,
+            lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
+                w, t, 1
+            ),
+        )
+        return
+    if stage == 1:
+        widget._apply_scope_preloaded_spatial_index()
+        QTimer.singleShot(
+            0,
+            lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
+                w, t, 2
+            ),
+        )
+        return
+    if stage == 2:
+        widget._ensure_scope_catalog_loaded()
+        QTimer.singleShot(
+            0,
+            lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
+                w, t, 3
+            ),
+        )
+        return
+    if stage == 3:
+        if widget.canvas.scope_mode_enabled():
+            widget._ensure_scope_spatial_index_warmup()
+        QTimer.singleShot(
+            0,
+            lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
+                w, t, 4
+            ),
+        )
+        return
+    if stage == 4:
+        if getattr(widget, "scene_load_stage", "boot") in {"boot", "base_sky"}:
+            widget._set_scene_load_stage("stars_ready")
+        widget.canvas.update()
+        thread = getattr(widget, "_catalog_thread", None)
+        if thread is not None:
+            try:
+                thread.quit()
+            except Exception:
+                pass
+
+
+def widget_start_scope_full_preload_async(
+    widget, reason: str = "runtime", force_rebuild: bool = False
+):
+    from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
-    if str(getattr(self, "scope_preload_mode", "startup_full")) != "startup_full":
+    if (
+        str(getattr(self, "scope_preload_mode", "startup_full"))
+        != "startup_full"
+    ):
         return
     if bool(getattr(self, "_scope_preload_in_progress", False)):
         return
-    if bool(getattr(self, "_scope_preload_ready", False)) and (not bool(force_rebuild)):
+    if bool(getattr(self, "_scope_preload_ready", False)) and (
+        not bool(force_rebuild)
+    ):
         self._apply_scope_preloaded_spatial_index()
         return
-    if bool(getattr(self, "_scope_preload_started", False)) and (not bool(force_rebuild)):
+    if bool(getattr(self, "_scope_preload_started", False)) and (
+        not bool(force_rebuild)
+    ):
         return
     ra_all = getattr(self, "np_ra", None)
     dec_all = getattr(self, "np_dec", None)
@@ -24,8 +250,7 @@ def widget_start_scope_full_preload_async(widget, reason: str = "runtime", force
         return
     use_in_memory = (
         (not subset_only)
-        and
-        ra_all is not None
+        and ra_all is not None
         and dec_all is not None
         and mag_all is not None
         and int(ra_rows) > 0
@@ -35,7 +260,12 @@ def widget_start_scope_full_preload_async(widget, reason: str = "runtime", force
         in_memory_max_rows = int(
             max(
                 100_000,
-                int(get_config_value("performance.scope_preload_in_memory_max_rows", 5_000_000)),
+                int(
+                    get_config_value(
+                        "performance.scope_preload_in_memory_max_rows",
+                        5_000_000,
+                    )
+                ),
             )
         )
     except Exception:
@@ -48,16 +278,26 @@ def widget_start_scope_full_preload_async(widget, reason: str = "runtime", force
         )
     runtime_npz = ""
     try:
-        runtime_catalog_hint = os.path.join(str(getattr(self, "_stars_catalog_dir", "") or ""), "stars_catalog.npy")
+        runtime_catalog_hint = os.path.join(
+            str(getattr(self, "_stars_catalog_dir", "") or ""),
+            "stars_catalog.npy",
+        )
         if runtime_catalog_hint and os.path.isfile(runtime_catalog_hint):
             runtime_npz = runtime_catalog_hint
         if use_in_memory:
-            from TerraLab.data.stars_dataset import get_runtime_catalog_source_info
-            source_path = str(get_runtime_catalog_source_info().get("source_path", "") or "")
+            from TerraLab.data.stars_dataset import (
+                get_runtime_catalog_source_info,
+            )
+
+            source_path = str(
+                get_runtime_catalog_source_info().get("source_path", "") or ""
+            )
             if source_path and os.path.isfile(source_path):
                 runtime_npz = source_path
     except Exception as exc:
-        print(f"[AstroWidget] Scope preload runtime path hint unavailable: {exc}")
+        print(
+            f"[AstroWidget] Scope preload runtime path hint unavailable: {exc}"
+        )
     self._scope_preload_started = True
     self._scope_preload_in_progress = True
     self._scope_preload_failed = False
@@ -79,9 +319,13 @@ def widget_start_scope_full_preload_async(widget, reason: str = "runtime", force
     stars_dir = str(getattr(self, "_stars_catalog_dir", "") or "")
     max_mag = float("nan")
     if use_in_memory:
-        print(f"[AstroWidget] Scope preload using in-memory catalog ({len(ra_all)} stars).")
+        print(
+            f"[AstroWidget] Scope preload using in-memory catalog ({len(ra_all)} stars)."
+        )
     elif subset_only:
-        print("[AstroWidget] Scope preload forcing disk catalog (startup catalog is subset).")
+        print(
+            "[AstroWidget] Scope preload forcing disk catalog (startup catalog is subset)."
+        )
     thread = QThread()
     worker = ScopeFullPreloadWorker()
     worker.moveToThread(thread)
@@ -94,7 +338,9 @@ def widget_start_scope_full_preload_async(widget, reason: str = "runtime", force
     thread.finished.connect(thread.deleteLater)
     if use_in_memory:
         thread.started.connect(
-            lambda w=worker, ra=ra_all, dec=dec_all, mag=mag_all, npz=runtime_npz, sdir=stars_dir, cdir=cache_dir, mm=max_mag, sv=self._scope_preload_schema_version, fr=bool(force_rebuild): w.run_from_arrays(
+            lambda w=worker, ra=ra_all, dec=dec_all, mag=mag_all, npz=runtime_npz, sdir=stars_dir, cdir=cache_dir, mm=max_mag, sv=self._scope_preload_schema_version, fr=bool(
+                force_rebuild
+            ): w.run_from_arrays(
                 ra,
                 dec,
                 mag,
@@ -108,7 +354,9 @@ def widget_start_scope_full_preload_async(widget, reason: str = "runtime", force
         )
     else:
         thread.started.connect(
-            lambda w=worker, npz=runtime_npz, sdir=stars_dir, cdir=cache_dir, mm=max_mag, sv=self._scope_preload_schema_version, fr=bool(force_rebuild): w.run(
+            lambda w=worker, npz=runtime_npz, sdir=stars_dir, cdir=cache_dir, mm=max_mag, sv=self._scope_preload_schema_version, fr=bool(
+                force_rebuild
+            ): w.run(
                 npz,
                 sdir,
                 cdir,
@@ -125,15 +373,40 @@ def widget_start_scope_full_preload_async(widget, reason: str = "runtime", force
     except Exception:
         pass
 
+
 def widget_start_async_bootstrap(widget):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     if getattr(self, "_async_bootstrap_started", False):
         return
     self._async_bootstrap_started = True
+    self._horizon_progress_ui_ts = 0.0
+    self._horizon_progress_min_interval_s = max(
+        0.05,
+        float(
+            get_config_value(
+                "performance.horizon_progress_min_interval_s", 0.10
+            )
+        ),
+    )
+    self._horizon_preview_min_interval_s = max(
+        0.10,
+        float(
+            get_config_value(
+                "performance.horizon_preview_min_interval_s", 0.50
+            )
+        ),
+    )
+    self._horizon_preview_last_apply_ts = 0.0
+    self._horizon_preview_schedule_id = 0
+    self._horizon_preview_flush_scheduled = False
+    self._horizon_preview_pending_payload = None
     try:
-        from TerraLab.widgets.scope_runtime_cache import ScopeRuntimeCacheManager
+        from TerraLab.widgets.scope_runtime_cache import (
+            ScopeRuntimeCacheManager,
+        )
 
         scope_cache_dir = os.path.join(
             str(getattr(self, "_stars_catalog_dir", "") or ""),
@@ -163,20 +436,35 @@ def widget_start_async_bootstrap(widget):
     if not bool(getattr(self, "defer_catalog_until_horizon_preview", True)):
         self._start_catalog_loader_async(reason="bootstrap")
     else:
-        print("[AstroWidget] Star catalog loading deferred until horizon ready.")
+        print(
+            "[AstroWidget] Star catalog loading deferred until horizon ready."
+        )
         self._catalog_defer_t0 = time.perf_counter()
         QTimer.singleShot(15000, self._try_start_catalog_loader_deferred)
     # --- Horizon worker bootstrap ---
     from TerraLab.terrain.worker import HorizonWorker
+
     self.horizon_thread = QThread()
     self.horizon_worker = HorizonWorker()
     saved_offset = float(get_config_value("observer_offset", 0.0))
     self.horizon_worker.set_observer_offset(saved_offset)
     self.horizon_worker.moveToThread(self.horizon_thread)
-    self.horizon_worker.profile_ready.connect(self.on_horizon_profile_ready)
-    self.horizon_worker.preview_ready.connect(self.on_horizon_preview_ready)
-    self.horizon_worker.progress_state.connect(self.on_horizon_progress_state)
-    self.horizon_worker.error_occurred.connect(lambda err: print(f"[HorizonWorker] THREAD ERROR: {err}"))
+    self.horizon_worker.profile_ready.connect(
+        lambda payload, w=self: _on_horizon_profile_ready_from_worker(
+            w, payload
+        )
+    )
+    self.horizon_worker.preview_ready.connect(
+        lambda payload, w=self: _on_horizon_preview_ready_from_worker(
+            w, payload
+        )
+    )
+    self.horizon_worker.progress_state.connect(
+        lambda state, w=self: _on_horizon_progress_state_from_worker(w, state)
+    )
+    self.horizon_worker.error_occurred.connect(
+        lambda err: print(f"[HorizonWorker] THREAD ERROR: {err}")
+    )
     self.request_horizon_bake.connect(self.horizon_worker.request_bake)
     print("[AstroWidget] Starting Horizon Thread... (Path managed by Worker)")
     self.horizon_thread.start()
@@ -188,14 +476,36 @@ def widget_start_async_bootstrap(widget):
         f"[AstroWidget] Horizon Thread started. ID: "
         f"{int(self.horizon_thread.currentThreadId()) if self.horizon_thread.currentThreadId() else 'N/A'}"
     )
+
     def trigger_bake():
-        print(f"[AstroWidget] Emitting bake request for {self.latitude}, {self.longitude}")
+        print(
+            f"[AstroWidget] Emitting bake request for {self.latitude}, {self.longitude}"
+        )
         self._begin_horizon_bake()
-    QTimer.singleShot(300, lambda: QMetaObject.invokeMethod(self.horizon_worker, "initialize", Qt.QueuedConnection))
+
+    QTimer.singleShot(
+        300,
+        lambda: QMetaObject.invokeMethod(
+            self.horizon_worker, "initialize", Qt.QueuedConnection
+        ),
+    )
+    QTimer.singleShot(550, lambda w=self: _bootstrap_sync_auto_bortle(w, 12))
     QTimer.singleShot(900, trigger_bake)
 
-def widget_on_catalog_ready(widget, celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp):
+
+def widget_on_catalog_ready(
+    widget,
+    celestial_objects,
+    np_ra,
+    np_dec,
+    np_mag,
+    np_r,
+    np_g,
+    np_b,
+    np_bp_rp,
+):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     """Callback when star catalog finishes loading in background."""
@@ -213,31 +523,48 @@ def widget_on_catalog_ready(widget, celestial_objects, np_ra, np_dec, np_mag, np
         try:
             self._scope_catalog_loaded_max_mag = max(
                 float(self._scope_catalog_loaded_max_mag),
-                float(np.nanmax(np.asarray(np_mag, dtype=np.float32)))
-                if np_mag is not None and len(np_mag) > 0
-                else float(STAR_CATALOG_NAKED_EYE_MAX_MAG),
+                (
+                    float(np.nanmax(np.asarray(np_mag, dtype=np.float32)))
+                    if np_mag is not None and len(np_mag) > 0
+                    else float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
+                ),
             )
         except Exception:
             pass
         try:
             if np_mag is not None and len(np_mag) > 0:
                 self._catalog_max_mag = max(
-                    float(getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                    float(
+                        getattr(
+                            self,
+                            "_catalog_max_mag",
+                            STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                        )
+                    ),
                     float(np.nanmax(np.asarray(np_mag, dtype=np.float32))),
                 )
         except Exception:
             pass
     array_rows = int(len(np_ra)) if np_ra is not None else 0
-    named_rows = int(len(celestial_objects)) if celestial_objects is not None else 0
+    named_rows = (
+        int(len(celestial_objects)) if celestial_objects is not None else 0
+    )
     fallback_active = False
     fallback_reason = ""
     self._catalog_loaded_subset_only = False
     try:
         worker = getattr(self, "_catalog_worker", None)
-        load_mode = str(getattr(worker, "last_load_mode", "unknown") or "unknown")
-        source_kind = str(getattr(worker, "last_source_kind", "unknown") or "unknown")
+        load_mode = str(
+            getattr(worker, "last_load_mode", "unknown") or "unknown"
+        )
+        source_kind = str(
+            getattr(worker, "last_source_kind", "unknown") or "unknown"
+        )
         total_rows_hint = int(getattr(worker, "last_total_rows", 0) or 0)
-        catalog_max_hint = float(getattr(worker, "last_catalog_max_mag", float("nan")) or float("nan"))
+        catalog_max_hint = float(
+            getattr(worker, "last_catalog_max_mag", float("nan"))
+            or float("nan")
+        )
         if load_mode == "runtime_subset":
             self._catalog_loaded_subset_only = True
             self._scope_full_catalog_attached = False
@@ -255,7 +582,13 @@ def widget_on_catalog_ready(widget, celestial_objects, np_ra, np_dec, np_mag, np
                 )
         if np.isfinite(catalog_max_hint):
             self._catalog_max_mag = max(
-                float(getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                float(
+                    getattr(
+                        self,
+                        "_catalog_max_mag",
+                        STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                    )
+                ),
                 float(catalog_max_hint),
             )
         if load_mode == "random_fallback":
@@ -281,25 +614,26 @@ def widget_on_catalog_ready(widget, celestial_objects, np_ra, np_dec, np_mag, np
         "catalog_ready",
         rows=int(array_rows),
         named_rows=int(named_rows),
-        max_mag=float(getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+        max_mag=float(
+            getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)
+        ),
         delta_ms_boot=self._boot_delta_ms(),
     )
     self._refresh_stars_status_indicator()
-    self.build_search_index()
-    # Do not start full scope preload during startup subset load.
-    # Startup must stay responsive; preload is triggered on scope activation.
-    self._apply_scope_preloaded_spatial_index()
-    self._ensure_scope_catalog_loaded()
-    if self.canvas.scope_mode_enabled():
-        self._ensure_scope_spatial_index_warmup()
-    if getattr(self, "scene_load_stage", "boot") in {"boot", "base_sky"}:
-        self._set_scene_load_stage("stars_ready")
-    self.canvas.update()
-    # Clean up thread
-    self._catalog_thread.quit()
+    # Run heavy post-ready work in small queued steps to keep UI responsive.
+    next_token = int(getattr(self, "_catalog_ready_pipeline_token", 0)) + 1
+    self._catalog_ready_pipeline_token = next_token
+    QTimer.singleShot(
+        0,
+        lambda w=self, t=next_token: _run_catalog_ready_pipeline_stage(
+            w, t, 0
+        ),
+    )
+
 
 def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     if np is None:
@@ -309,8 +643,16 @@ def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
     stars_dir = getattr(self, "_stars_catalog_dir", "")
     if not stars_dir or not os.path.isdir(stars_dir):
         return
-    loaded_max_mag = float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG))
-    catalog_max_mag = float(getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG))
+    loaded_max_mag = float(
+        getattr(
+            self,
+            "_scope_catalog_loaded_max_mag",
+            STAR_CATALOG_NAKED_EYE_MAX_MAG,
+        )
+    )
+    catalog_max_mag = float(
+        getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)
+    )
     force_runtime_full = False
     if bool(getattr(self, "_catalog_loaded_subset_only", False)):
         ext_npy = os.path.join(stars_dir, "stars_catalog_extension.npy")
@@ -318,7 +660,8 @@ def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
         if not has_extension:
             try:
                 has_extension = any(
-                    str(name).lower().endswith(".npz") and str(name).upper().startswith("MAGNITUD_")
+                    str(name).lower().endswith(".npz")
+                    and str(name).upper().startswith("MAGNITUD_")
                     for name in os.listdir(stars_dir)
                 )
             except Exception:
@@ -326,24 +669,36 @@ def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
         if not has_extension:
             force_runtime_full = True
     if force_runtime_full:
-        scope_active = bool(getattr(getattr(self, "canvas", None), "scope_mode_enabled", lambda: False)())
+        scope_active = bool(
+            getattr(
+                getattr(self, "canvas", None),
+                "scope_mode_enabled",
+                lambda: False,
+            )()
+        )
         if (not bool(force_now)) and (not scope_active):
             return
     if (not force_runtime_full) and loaded_max_mag >= (catalog_max_mag - 1e-3):
         return
     self._scope_catalog_loading = True
     if force_runtime_full:
-        self._scope_set_data_state("loading_deep", reason="scope_catalog_runtime_full")
+        self._scope_set_data_state(
+            "loading_deep", reason="scope_catalog_runtime_full"
+        )
     thread = QThread()
     worker = CatalogLoaderWorker()
     worker.moveToThread(thread)
     worker.scope_extension_ready.connect(self._on_scope_extension_ready)
     if hasattr(worker, "scope_extension_progress"):
-        worker.scope_extension_progress.connect(self._on_scope_extension_progress)
+        worker.scope_extension_progress.connect(
+            self._on_scope_extension_progress
+        )
     thread.finished.connect(worker.deleteLater)
     thread.finished.connect(thread.deleteLater)
     thread.started.connect(
-        lambda w=worker, s=stars_dir, m=loaded_max_mag, fr=bool(force_runtime_full): w.load_scope_extensions(
+        lambda w=worker, s=stars_dir, m=loaded_max_mag, fr=bool(
+            force_runtime_full
+        ): w.load_scope_extensions(
             s,
             m,
             getattr(self, "np_ra", None),
@@ -364,12 +719,18 @@ def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
     except Exception:
         pass
     if force_runtime_full:
-        print("[AstroWidget] Scope full runtime catalog loading in background...")
+        print(
+            "[AstroWidget] Scope full runtime catalog loading in background..."
+        )
     else:
-        print(f"[AstroWidget] Scope catalog extension loading from > {loaded_max_mag:.2f} mag...")
+        print(
+            f"[AstroWidget] Scope catalog extension loading from > {loaded_max_mag:.2f} mag..."
+        )
+
 
 def widget_ensure_scope_spatial_index_warmup(widget):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     if np is None:
@@ -377,15 +738,24 @@ def widget_ensure_scope_spatial_index_warmup(widget):
     # Avoid parallel heavy jobs: preload already builds the persistent full index.
     if bool(getattr(self, "_scope_preload_in_progress", False)):
         return
-    if time.monotonic() < float(getattr(self, "_scope_index_suspend_until", 0.0)):
+    if time.monotonic() < float(
+        getattr(self, "_scope_index_suspend_until", 0.0)
+    ):
         return
-    if self._scope_preload_should_wait() and (not bool(getattr(self, "_scope_preload_ready", False))):
+    if self._scope_preload_should_wait() and (
+        not bool(getattr(self, "_scope_preload_ready", False))
+    ):
         return
-    if bool(getattr(self, "_scope_preload_ready", False)) and self._apply_scope_preloaded_spatial_index():
+    if (
+        bool(getattr(self, "_scope_preload_ready", False))
+        and self._apply_scope_preloaded_spatial_index()
+    ):
         return
     if not self.canvas.scope_mode_enabled():
         return
-    stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
+    stars_renderer = getattr(
+        getattr(self.canvas, "sky_renderer", None), "stars_renderer", None
+    )
     if stars_renderer is None:
         return
     ra_all = getattr(self, "np_ra", None)
@@ -401,11 +771,16 @@ def widget_ensure_scope_spatial_index_warmup(widget):
         stars_renderer._scope_grid_key == key
         and stars_renderer._scope_grid_indices is not None
         and stars_renderer._scope_grid_offsets is not None
-        and float(getattr(self, "_scope_index_loaded_mag_cap", 0.0)) >= (target_mag_cap - 1e-3)
+        and float(getattr(self, "_scope_index_loaded_mag_cap", 0.0))
+        >= (target_mag_cap - 1e-3)
     ):
         return
     if getattr(self, "_scope_index_loading", False):
-        if target_mag_cap > float(getattr(self, "_scope_index_requested_mag_cap", 0.0)) + 0.05:
+        if (
+            target_mag_cap
+            > float(getattr(self, "_scope_index_requested_mag_cap", 0.0))
+            + 0.05
+        ):
             self._scope_index_requested_mag_cap = float(target_mag_cap)
             self._scope_index_rewarm_requested = True
         return
@@ -450,25 +825,38 @@ def widget_ensure_scope_spatial_index_warmup(widget):
         f"(<= {target_mag_cap:.2f} mag)."
     )
 
-def widget_on_scope_extension_ready(widget, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp, loaded_max_mag):
+
+def widget_on_scope_extension_ready(
+    widget, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp, loaded_max_mag
+):
     from TerraLab.ui import sky_widget_impl as _impl
+
     globals().update(_impl.__dict__)
     self = widget
     self._scope_catalog_loading = False
     try:
         scope_worker = getattr(self, "_scope_catalog_worker", None)
         scope_payload = getattr(scope_worker, "scope_extension_payload", None)
-        if isinstance(scope_payload, dict) and str(scope_payload.get("mode", "")) == "runtime_mmap_bundle":
+        if (
+            isinstance(scope_payload, dict)
+            and str(scope_payload.get("mode", "")) == "runtime_mmap_bundle"
+        ):
             catalog_path = str(scope_payload.get("catalog_path", "") or "")
             r_path = str(scope_payload.get("r_path", "") or "")
             g_path = str(scope_payload.get("g_path", "") or "")
             b_path = str(scope_payload.get("b_path", "") or "")
             if not catalog_path or (not os.path.isfile(catalog_path)):
                 raise RuntimeError("Missing runtime mmap catalog path")
-            from TerraLab.widgets.scope_runtime_cache import ScopeRuntimeCacheManager
+            from TerraLab.widgets.scope_runtime_cache import (
+                ScopeRuntimeCacheManager,
+            )
 
-            cache_mgr = ScopeRuntimeCacheManager.from_cache_dir(os.path.dirname(catalog_path))
-            resolved = cache_mgr.resolve_bundle_payload_paths(catalog_path, r_path, g_path, b_path)
+            cache_mgr = ScopeRuntimeCacheManager.from_cache_dir(
+                os.path.dirname(catalog_path)
+            )
+            resolved = cache_mgr.resolve_bundle_payload_paths(
+                catalog_path, r_path, g_path, b_path
+            )
             catalog_path = str(resolved.get("catalog_path", "") or "")
             r_path = str(resolved.get("r_path", "") or "")
             g_path = str(resolved.get("g_path", "") or "")
@@ -485,7 +873,9 @@ def widget_on_scope_extension_ready(widget, np_ra, np_dec, np_mag, np_r, np_g, n
                 raise RuntimeError("Invalid runtime mmap catalog format")
             names = set(arr.dtype.names or ())
             if not {"ra", "dec", "phot_g_mean_mag"}.issubset(names):
-                raise RuntimeError("Runtime mmap catalog missing required fields")
+                raise RuntimeError(
+                    "Runtime mmap catalog missing required fields"
+                )
             self._scope_runtime_catalog_mmap = arr
             self.np_ra = np.asarray(arr["ra"])
             self.np_dec = np.asarray(arr["dec"])
@@ -493,7 +883,9 @@ def widget_on_scope_extension_ready(widget, np_ra, np_dec, np_mag, np_r, np_g, n
             if "bp_rp" in names:
                 self.np_bp_rp = np.asarray(arr["bp_rp"], dtype=np.float32)
             else:
-                self.np_bp_rp = np.full(int(len(self.np_mag)), 0.8, dtype=np.float32)
+                self.np_bp_rp = np.full(
+                    int(len(self.np_mag)), 0.8, dtype=np.float32
+                )
             rgb_fallback = None
             if r_path and os.path.isfile(r_path):
                 self.np_r = np.load(r_path, mmap_mode="r", allow_pickle=False)
@@ -513,35 +905,54 @@ def widget_on_scope_extension_ready(widget, np_ra, np_dec, np_mag, np_r, np_g, n
                 if rgb_fallback is None:
                     rgb_fallback = _bp_rp_to_rgb_arrays(self.np_bp_rp)
                 self.np_b = rgb_fallback[2]
-            self._catalog_mag_sorted = bool(scope_payload.get("catalog_sorted", False))
+            self._catalog_mag_sorted = bool(
+                scope_payload.get("catalog_sorted", False)
+            )
             self._catalog_loaded_subset_only = False
             self._scope_full_catalog_attached = True
             self._refresh_scope_data_state(reason="scope_extension_mmap_ready")
-            rows = int(scope_payload.get("rows", len(self.np_ra)) or len(self.np_ra))
+            rows = int(
+                scope_payload.get("rows", len(self.np_ra)) or len(self.np_ra)
+            )
             print(
                 f"[AstroWidget] Scope extension attached via mmap bundle: "
                 f"{rows} stars."
             )
-            self._start_scope_full_preload_async(reason="scope_catalog_ready", force_rebuild=False)
+            self._start_scope_full_preload_async(
+                reason="scope_catalog_ready", force_rebuild=False
+            )
             self.canvas._cached_star_image = None
             self.canvas._cached_trail_image = None
             if self.canvas.scope_mode_enabled():
                 self._ensure_scope_spatial_index_warmup()
             self.canvas.update()
             try:
-                max_hint = float(scope_payload.get("loaded_max_mag", loaded_max_mag) or loaded_max_mag)
+                max_hint = float(
+                    scope_payload.get("loaded_max_mag", loaded_max_mag)
+                    or loaded_max_mag
+                )
                 if np.isfinite(max_hint):
                     self._catalog_max_mag = max(
-                        float(getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                        float(
+                            getattr(
+                                self,
+                                "_catalog_max_mag",
+                                STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                            )
+                        ),
                         max_hint,
                     )
             except Exception:
                 pass
-            self._set_gaia_extension_status_label("Finalitzat", keep_seconds=20.0)
+            self._set_gaia_extension_status_label(
+                "Finalitzat", keep_seconds=20.0
+            )
             return
         if np_ra is not None and len(np_ra) > 0:
             # Worker already merges base + extension in background to avoid blocking the UI thread.
-            scope_mode = str(getattr(scope_worker, "last_scope_load_mode", "") or "")
+            scope_mode = str(
+                getattr(scope_worker, "last_scope_load_mode", "") or ""
+            )
             self.np_ra = np_ra
             self.np_dec = np_dec
             self.np_mag = np_mag
@@ -553,8 +964,12 @@ def widget_on_scope_extension_ready(widget, np_ra, np_dec, np_mag, np_r, np_g, n
             self._catalog_loaded_subset_only = False
             self._scope_full_catalog_attached = True
             self._refresh_scope_data_state(reason="scope_extension_ready")
-            print(f"[AstroWidget] Scope extension merged in background: {len(np_ra)} stars.")
-            self._start_scope_full_preload_async(reason="scope_catalog_ready", force_rebuild=False)
+            print(
+                f"[AstroWidget] Scope extension merged in background: {len(np_ra)} stars."
+            )
+            self._start_scope_full_preload_async(
+                reason="scope_catalog_ready", force_rebuild=False
+            )
             self.canvas._cached_star_image = None
             self.canvas._cached_trail_image = None
             if self.canvas.scope_mode_enabled():
@@ -564,34 +979,62 @@ def widget_on_scope_extension_ready(widget, np_ra, np_dec, np_mag, np_r, np_g, n
                 max_hint = float(loaded_max_mag)
                 if np.isfinite(max_hint):
                     self._catalog_max_mag = max(
-                        float(getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                        float(
+                            getattr(
+                                self,
+                                "_catalog_max_mag",
+                                STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                            )
+                        ),
                         max_hint,
                     )
             except Exception:
                 pass
-            self._set_gaia_extension_status_label("Finalitzat", keep_seconds=20.0)
+            self._set_gaia_extension_status_label(
+                "Finalitzat", keep_seconds=20.0
+            )
         else:
             print("[AstroWidget] Scope extension already up to date.")
-            ext_path = os.path.join(getattr(self, "_stars_catalog_dir", ""), "stars_catalog_extension.npy")
+            ext_path = os.path.join(
+                getattr(self, "_stars_catalog_dir", ""),
+                "stars_catalog_extension.npy",
+            )
             if os.path.isfile(ext_path):
-                self._set_gaia_extension_status_label("Finalitzat", keep_seconds=20.0)
+                self._set_gaia_extension_status_label(
+                    "Finalitzat", keep_seconds=20.0
+                )
             self._refresh_scope_data_state(reason="scope_extension_uptodate")
     except Exception as e:
         print(f"[AstroWidget] Scope extension merge error: {e}")
-        self._set_gaia_extension_status_label(f"Error carregant extensio: {e}", keep_seconds=20.0)
-        self._scope_set_data_state("error_deep", reason="scope_extension_error")
+        self._set_gaia_extension_status_label(
+            f"Error carregant extensio: {e}", keep_seconds=20.0
+        )
+        self._scope_set_data_state(
+            "error_deep", reason="scope_extension_error"
+        )
     finally:
         try:
             self._scope_catalog_loaded_max_mag = max(
-                float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                float(
+                    getattr(
+                        self,
+                        "_scope_catalog_loaded_max_mag",
+                        STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                    )
+                ),
                 float(loaded_max_mag),
             )
         except Exception:
             pass
         try:
-            ext_path = os.path.join(getattr(self, "_stars_catalog_dir", ""), "stars_catalog_extension.npy")
+            ext_path = os.path.join(
+                getattr(self, "_stars_catalog_dir", ""),
+                "stars_catalog_extension.npy",
+            )
             if os.path.isfile(ext_path):
-                self._gaia_extension_mtime_loaded = float(os.path.getmtime(ext_path))
+                self._gaia_extension_mtime_loaded = float(
+                    os.path.getmtime(ext_path)
+                )
         except Exception:
             pass
         self._cleanup_scope_catalog_loader()

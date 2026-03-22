@@ -13,7 +13,6 @@ from TerraLab.widgets.spherical_math import (
     slerp_arc_points,
 )
 
-
 SkyCoord = Tuple[float, float]  # (alt_deg, az_deg)
 
 
@@ -26,8 +25,8 @@ class SensorPreset:
 
 SENSOR_PRESETS: Dict[str, SensorPreset] = {
     # Hook: phase 2 can be expanded with real devices.
-    "tiny": SensorPreset("tiny", 5.37, 4.04),         # ~1/2.8"
-    "aps_c": SensorPreset("aps_c", 23.6, 15.7),       # APS-C
+    "tiny": SensorPreset("tiny", 5.37, 4.04),  # ~1/2.8"
+    "aps_c": SensorPreset("aps_c", 23.6, 15.7),  # APS-C
     "full_frame": SensorPreset("full_frame", 36.0, 24.0),
 }
 
@@ -39,10 +38,10 @@ class TelescopeScopeController:
     SPEED_FAST = "fast"
 
     # Requested movement characteristics
-    SLOW_HOLD_DEG_PER_S = 0.5 / 60.0      # 0.5 arcmin / s
-    FAST_HOLD_DEG_PER_S = 0.5             # 0.5 deg / s
-    SLOW_STEP_DEG = 0.05 / 60.0           # 0.05 arcmin
-    FAST_STEP_DEG = 0.05                  # 0.05 deg
+    SLOW_HOLD_DEG_PER_S = 0.5 / 60.0  # 0.5 arcmin / s
+    FAST_HOLD_DEG_PER_S = 0.5  # 0.5 deg / s
+    SLOW_STEP_DEG = 0.05 / 60.0  # 0.05 arcmin
+    FAST_STEP_DEG = 0.05  # 0.05 deg
 
     def __init__(self):
         self.enabled = False
@@ -52,7 +51,9 @@ class TelescopeScopeController:
         self.speed_mode = self.SPEED_SLOW
         self.focal_mm = 250.0
         self.sensor_key = "tiny"
-        self.aspect_ratio_override: Optional[float] = None  # width / height for rectangle mode
+        self.aspect_ratio_override: Optional[float] = (
+            None  # width / height for rectangle mode
+        )
         self.center: Optional[SkyCoord] = None
         self.dragging = False
         self.manual_override: Optional[Tuple[float, float]] = None
@@ -93,9 +94,14 @@ class TelescopeScopeController:
             return
         self.aspect_ratio_override = max(0.2, min(5.0, r))
 
-    def set_manual_fov(self, width_deg: float, height_deg: Optional[float] = None) -> None:
+    def set_manual_fov(
+        self, width_deg: float, height_deg: Optional[float] = None
+    ) -> None:
         h = width_deg if height_deg is None else height_deg
-        self.manual_override = (max(0.01, float(width_deg)), max(0.01, float(h)))
+        self.manual_override = (
+            max(0.01, float(width_deg)),
+            max(0.01, float(h)),
+        )
 
     def clear_manual_fov(self) -> None:
         self.manual_override = None
@@ -104,13 +110,18 @@ class TelescopeScopeController:
         if self.manual_override is not None:
             w, h = self.manual_override
         else:
-            sensor = SENSOR_PRESETS.get(self.sensor_key, SENSOR_PRESETS["tiny"])
+            sensor = SENSOR_PRESETS.get(
+                self.sensor_key, SENSOR_PRESETS["tiny"]
+            )
             f = max(1e-3, self.focal_mm)
             w = math.degrees(2.0 * math.atan(sensor.width_mm / (2.0 * f)))
             h = math.degrees(2.0 * math.atan(sensor.height_mm / (2.0 * f)))
 
         # Flexible aspect ratio only affects rectangle format.
-        if self.shape == self.SHAPE_RECT and self.aspect_ratio_override is not None:
+        if (
+            self.shape == self.SHAPE_RECT
+            and self.aspect_ratio_override is not None
+        ):
             ar = max(0.2, min(5.0, float(self.aspect_ratio_override)))
             w = max(0.01, float(w))
             h = max(0.01, float(h))
@@ -121,12 +132,22 @@ class TelescopeScopeController:
         return max(0.01, w), max(0.01, h)
 
     def short_step_deg(self) -> float:
-        return self.SLOW_STEP_DEG if self.speed_mode == self.SPEED_SLOW else self.FAST_STEP_DEG
+        return (
+            self.SLOW_STEP_DEG
+            if self.speed_mode == self.SPEED_SLOW
+            else self.FAST_STEP_DEG
+        )
 
     def hold_rate_deg_per_s(self) -> float:
-        return self.SLOW_HOLD_DEG_PER_S if self.speed_mode == self.SPEED_SLOW else self.FAST_HOLD_DEG_PER_S
+        return (
+            self.SLOW_HOLD_DEG_PER_S
+            if self.speed_mode == self.SPEED_SLOW
+            else self.FAST_HOLD_DEG_PER_S
+        )
 
-    def handle_click(self, sx: float, sy: float, unproject_fn: Callable) -> bool:
+    def handle_click(
+        self, sx: float, sy: float, unproject_fn: Callable
+    ) -> bool:
         if not self.enabled:
             return False
         sky = screen_to_sky(sx, sy, unproject_fn)
@@ -183,16 +204,29 @@ class TelescopeScopeController:
         if self.center is None or self.awaiting_center_click:
             painter.save()
             painter.setRenderHint(QPainter.Antialiasing, True)
-            wait_txt = getTraduction("Scope.ClickCenter", "Click para fijar el centro de la mira")
+            wait_txt = getTraduction(
+                "Scope.ClickCenter", "Click para fijar el centro de la mira"
+            )
             txt_rect = QRectF(14.0, 12.0, max(80.0, float(width) - 28.0), 34.0)
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(0, 0, 0, 125))
             painter.drawRoundedRect(txt_rect, 6.0, 6.0)
             painter.setPen(QColor(255, 255, 255, 225))
-            painter.drawText(txt_rect.adjusted(10.0, 0.0, -10.0, 0.0), Qt.AlignLeft | Qt.AlignVCenter, wait_txt)
+            painter.drawText(
+                txt_rect.adjusted(10.0, 0.0, -10.0, 0.0),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                wait_txt,
+            )
             painter.setPen(QPen(QColor(255, 255, 255, 55), 1.0, Qt.DashLine))
             painter.setBrush(Qt.NoBrush)
-            painter.drawRect(QRectF(7.0, 7.0, max(1.0, float(width) - 14.0), max(1.0, float(height) - 14.0)))
+            painter.drawRect(
+                QRectF(
+                    7.0,
+                    7.0,
+                    max(1.0, float(width) - 14.0),
+                    max(1.0, float(height) - 14.0),
+                )
+            )
             painter.restore()
             return
 
@@ -239,7 +273,9 @@ class TelescopeScopeController:
                 painter.setBrush(QColor(0, 0, 0, 150))
                 painter.drawRoundedRect(box, 8.0, 8.0)
                 painter.setPen(QColor(255, 255, 255, 235))
-                painter.drawText(box.adjusted(10.0, 0.0, -10.0, 0.0), Qt.AlignCenter, txt)
+                painter.drawText(
+                    box.adjusted(10.0, 0.0, -10.0, 0.0), Qt.AlignCenter, txt
+                )
 
         # Border + glow
         painter.setBrush(Qt.NoBrush)
@@ -329,11 +365,15 @@ class TelescopeScopeController:
         arm = 8.0
 
         # Very subtle compact center reticle.
-        painter.setPen(QPen(QColor(255, 255, 255, 60), 1.4, Qt.SolidLine, Qt.RoundCap))
+        painter.setPen(
+            QPen(QColor(255, 255, 255, 60), 1.4, Qt.SolidLine, Qt.RoundCap)
+        )
         painter.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
         painter.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
 
-        painter.setPen(QPen(QColor(255, 255, 255, 150), 0.8, Qt.SolidLine, Qt.RoundCap))
+        painter.setPen(
+            QPen(QColor(255, 255, 255, 150), 0.8, Qt.SolidLine, Qt.RoundCap)
+        )
         painter.drawLine(QPointF(cx - arm, cy), QPointF(cx + arm, cy))
         painter.drawLine(QPointF(cx, cy - arm), QPointF(cx, cy + arm))
 
@@ -361,10 +401,18 @@ class TelescopeScopeController:
 
         fov_w, fov_h = self.current_fov()
         if self.shape == self.SHAPE_CIRCLE:
-            text = getTraduction("Scope.HudFovCircle", "FOV: {d}").format(d=fmt_angle(min(fov_w, fov_h)))
+            text = getTraduction("Scope.HudFovCircle", "FOV: {d}").format(
+                d=fmt_angle(min(fov_w, fov_h))
+            )
         else:
-            text = getTraduction("Scope.HudFovRect", "FOV: {w} x {h}").format(w=fmt_angle(fov_w), h=fmt_angle(fov_h))
-        speed = getTraduction("Scope.HudSlow", "LENTO") if self.speed_mode == self.SPEED_SLOW else getTraduction("Scope.HudFast", "RAPIDO")
+            text = getTraduction("Scope.HudFovRect", "FOV: {w} x {h}").format(
+                w=fmt_angle(fov_w), h=fmt_angle(fov_h)
+            )
+        speed = (
+            getTraduction("Scope.HudSlow", "LENTO")
+            if self.speed_mode == self.SPEED_SLOW
+            else getTraduction("Scope.HudFast", "RAPIDO")
+        )
         base_line = f"{text} | {getTraduction('Scope.HudMove', 'Movimiento')}: {speed} (M)"
         extras: List[str] = []
         if hud_extra_lines:
@@ -393,7 +441,9 @@ class TelescopeScopeController:
         left_w, left_h = panel_size(left_lines)
         right_w, right_h = panel_size(right_lines)
 
-        def draw_panel(x: float, y: float, w: float, h: float, lines: List[str]) -> None:
+        def draw_panel(
+            x: float, y: float, w: float, h: float, lines: List[str]
+        ) -> None:
             if not lines:
                 return
             x = max(4.0, min(float(width) - w - 4.0, x))
@@ -418,4 +468,3 @@ class TelescopeScopeController:
 
         draw_panel(left_x, y_left, left_w, left_h, left_lines)
         draw_panel(right_x, y_right, right_w, right_h, right_lines)
-

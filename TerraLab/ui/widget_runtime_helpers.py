@@ -9,9 +9,11 @@ from datetime import datetime, timedelta
 from PyQt5.QtCore import QDate, QPointF, Qt
 from PyQt5.QtWidgets import QApplication, QCalendarWidget, QDialog, QVBoxLayout
 
-from TerraLab.common.utils import getTraduction, get_config_value, set_config_value
-from TerraLab.widgets.telescope_runtime import update_telescope_hud
-from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeInputs
+from TerraLab.common.utils import (
+    get_config_value,
+    getTraduction,
+    set_config_value,
+)
 from TerraLab.widgets.sky_legacy_components import (
     STAR_CATALOG_NAKED_EYE_MAX_MAG,
     _bp_rp_to_rgb_arrays,
@@ -20,6 +22,8 @@ from TerraLab.widgets.sky_legacy_components import (
     _load_star_npz_arrays,
     _select_base_star_catalog_entry,
 )
+from TerraLab.widgets.telescope_runtime import update_telescope_hud
+from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeInputs
 
 try:
     import numpy as np
@@ -27,7 +31,9 @@ except Exception:  # pragma: no cover
     np = None
 
 
-def recompute_visual_magnitude_model(widget, target_alt_deg=None, sun_alt_deg=-18.0, now_utc=None):
+def recompute_visual_magnitude_model(
+    widget, target_alt_deg=None, sun_alt_deg=-18.0, now_utc=None
+):
     if target_alt_deg is None:
         target_alt_deg = getattr(widget.canvas, "elevation_angle", 40.0)
 
@@ -37,17 +43,27 @@ def recompute_visual_magnitude_model(widget, target_alt_deg=None, sun_alt_deg=-1
         bortle_class = 1.0 + (7.6 - float(widget.magnitude_limit)) / 0.5
     bortle_class = max(1.0, min(9.0, bortle_class))
 
-    focal_mm = float(getattr(widget.canvas.scope_controller, "focal_mm", 250.0))
+    focal_mm = float(
+        getattr(widget.canvas.scope_controller, "focal_mm", 250.0)
+    )
     if hasattr(widget, "scope_focal_spin"):
         try:
             focal_mm = float(widget.scope_focal_spin.value())
         except Exception:
             pass
     aperture_mm_effective = widget._effective_scope_aperture_mm(focal_mm)
-    instrument_profile = str(getattr(widget, "scope_instrument_profile", "telescope"))
-    eyepiece_mm = float(widget.scope_eyepiece_mm if instrument_profile == "telescope" else focal_mm)
+    instrument_profile = str(
+        getattr(widget, "scope_instrument_profile", "telescope")
+    )
+    eyepiece_mm = float(
+        widget.scope_eyepiece_mm
+        if instrument_profile == "telescope"
+        else focal_mm
+    )
 
-    scope_enabled = bool(getattr(widget.canvas, "scope_mode_enabled", lambda: False)())
+    scope_enabled = bool(
+        getattr(widget.canvas, "scope_mode_enabled", lambda: False)()
+    )
     runtime_state = {
         "scope_enabled": scope_enabled,
         "lat": float(widget.latitude),
@@ -58,9 +74,18 @@ def recompute_visual_magnitude_model(widget, target_alt_deg=None, sun_alt_deg=-1
         "ocular_mm": eyepiece_mm,
         "instrument_profile": instrument_profile,
         "k_fallback": float(widget.scope_k_fallback),
-        "weather_enabled": bool(getattr(widget.canvas.weather, "enabled", False)),
-        "copernicus_api_key": str(get_config_value("copernicus_api_key", "") or ""),
-        "copernicus_api_url": str(get_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api") or ""),
+        "weather_enabled": bool(
+            getattr(widget.canvas.weather, "enabled", False)
+        ),
+        "copernicus_api_key": str(
+            get_config_value("copernicus_api_key", "") or ""
+        ),
+        "copernicus_api_url": str(
+            get_config_value(
+                "copernicus_api_url", "https://cds.climate.copernicus.eu/api"
+            )
+            or ""
+        ),
         "now_utc": now_utc,
         "_wx_cache": widget.scope_atmo_metrics.get("_wx_cache", {}),
     }
@@ -76,10 +101,14 @@ def recompute_visual_magnitude_model(widget, target_alt_deg=None, sun_alt_deg=-1
     if atmo_loss is None:
         atmo_loss = 0.0
 
-    sensor_profile = str(getattr(widget.canvas.scope_controller, "sensor_key", "tiny"))
+    sensor_profile = str(
+        getattr(widget.canvas.scope_controller, "sensor_key", "tiny")
+    )
     if hasattr(widget, "scope_sensor_combo"):
         try:
-            current_sensor = widget.scope_sensor_combo.itemData(widget.scope_sensor_combo.currentIndex())
+            current_sensor = widget.scope_sensor_combo.itemData(
+                widget.scope_sensor_combo.currentIndex()
+            )
             if current_sensor:
                 sensor_profile = str(current_sensor)
         except Exception:
@@ -101,7 +130,9 @@ def recompute_visual_magnitude_model(widget, target_alt_deg=None, sun_alt_deg=-1
     )
     result = widget.visual_magnitude_engine.compute(inputs)
     widget.visual_magnitude_result = result
-    widget.auto_star_scale_multiplier = float(result.star_scale_factor) if scope_enabled else 1.0
+    widget.auto_star_scale_multiplier = (
+        float(result.star_scale_factor) if scope_enabled else 1.0
+    )
     return result
 
 
@@ -114,7 +145,9 @@ def request_relocation(widget):
         old_hemi_n = widget.latitude >= 0
         new_hemi_n = new_lat >= 0
         if old_hemi_n != new_hemi_n:
-            widget.canvas.azimuth_offset = (widget.canvas.azimuth_offset + 180) % 360
+            widget.canvas.azimuth_offset = (
+                widget.canvas.azimuth_offset + 180
+            ) % 360
 
         widget.latitude = new_lat
         widget.longitude = new_lon
@@ -137,7 +170,10 @@ def request_relocation(widget):
         # Keep observer-local civil time aligned with the selected coordinates.
         try:
             from timezonefinder import TimezoneFinder
-            tz_name = TimezoneFinder().timezone_at(lat=widget.latitude, lng=widget.longitude)
+
+            tz_name = TimezoneFinder().timezone_at(
+                lat=widget.latitude, lng=widget.longitude
+            )
             if tz_name:
                 widget.observer_timezone = str(tz_name)
                 set_config_value("observer_timezone", widget.observer_timezone)
@@ -147,14 +183,17 @@ def request_relocation(widget):
         if hasattr(widget, "weather"):
             widget.weather.set_location(widget.latitude, widget.longitude)
         if hasattr(widget, "canvas") and hasattr(widget.canvas, "weather"):
-            widget.canvas.weather.set_location(widget.latitude, widget.longitude)
+            widget.canvas.weather.set_location(
+                widget.latitude, widget.longitude
+            )
 
         widget.bake_debounce_timer.start(1500)
 
         if hasattr(widget, "lbl_loading"):
             widget.on_horizon_progress_state(
                 {
-                    "job_id": getattr(widget, "_active_horizon_job_id", "") or "",
+                    "job_id": getattr(widget, "_active_horizon_job_id", "")
+                    or "",
                     "phase": "prepare",
                     "percent": 0.0,
                     "current": 0,
@@ -162,17 +201,21 @@ def request_relocation(widget):
                 }
             )
 
-        widget.time_bar.update_params(widget.latitude, widget.longitude, widget.manual_day)
+        widget.time_bar.update_params(
+            widget.latitude, widget.longitude, widget.manual_day
+        )
 
         if hasattr(widget, "horizon_worker"):
-            bare = widget.horizon_worker.get_bare_elevation(widget.latitude, widget.longitude)
+            bare = widget.horizon_worker.get_bare_elevation(
+                widget.latitude, widget.longitude
+            )
             widget._last_dem_elevation = bare
             widget.update_altitude_label()
-
-            auto_bortle = widget.horizon_worker.get_bortle_estimate(widget.latitude, widget.longitude)
-            widget.canvas.auto_bortle_estimate = auto_bortle
-            if widget.is_auto_bortle:
-                widget.slider_light.set_silent_value(auto_bortle)
+        if bool(getattr(widget, "is_auto_bortle", True)):
+            try:
+                widget.reset_lp_to_auto()
+            except Exception:
+                pass
 
         if hasattr(widget.canvas, "hint_overlay"):
             dem_m = getattr(widget, "_last_dem_elevation", None)
@@ -203,7 +246,10 @@ def widget_update_loop(widget):
     except Exception:
         target_interval_ms = 16
 
-    if hasattr(widget, "timer") and widget.timer.interval() != target_interval_ms:
+    if (
+        hasattr(widget, "timer")
+        and widget.timer.interval() != target_interval_ms
+    ):
         widget.timer.setInterval(target_interval_ms)
 
     now_mono = time.monotonic()
@@ -232,16 +278,28 @@ def widget_update_loop(widget):
         prev_day = int(getattr(widget, "manual_day", 0))
         widget.manual_year = now.year
         widget.manual_day = (now - datetime(now.year, 1, 1)).days
-        day_changed = (widget.manual_year != prev_year) or (widget.manual_day != prev_day)
+        day_changed = (widget.manual_year != prev_year) or (
+            widget.manual_day != prev_day
+        )
         if day_changed and hasattr(widget, "lbl_date"):
             widget.lbl_date.setText(widget.format_date(widget.manual_day))
         if day_changed and hasattr(widget, "time_bar"):
-            widget.time_bar.update_params(widget.latitude, widget.longitude, widget.manual_day)
+            widget.time_bar.update_params(
+                widget.latitude, widget.longitude, widget.manual_day
+            )
         h = now.hour + now.minute / 60.0 + now.second / 3600.0
-        if run_hud_tick and hasattr(widget, "time_bar") and widget.time_bar.isVisible():
+        if (
+            run_hud_tick
+            and hasattr(widget, "time_bar")
+            and widget.time_bar.isVisible()
+        ):
             widget.time_bar.set_time(h)
     else:
-        dt_hours = max(0.001, float(getattr(widget.timer, "interval", lambda: 16)())) / 1000.0 / 3600.0
+        dt_hours = (
+            max(0.001, float(getattr(widget.timer, "interval", lambda: 16)()))
+            / 1000.0
+            / 3600.0
+        )
         widget.manual_hour += dt_hours
         if widget.manual_hour >= 24.0:
             widget.manual_hour -= 24.0
@@ -249,7 +307,11 @@ def widget_update_loop(widget):
         elif widget.manual_hour < 0:
             widget.manual_hour += 24.0
             widget.manual_day -= 1
-        if run_hud_tick and hasattr(widget, "time_bar") and widget.time_bar.isVisible():
+        if (
+            run_hud_tick
+            and hasattr(widget, "time_bar")
+            and widget.time_bar.isVisible()
+        ):
             widget.time_bar.set_time(widget.manual_hour)
 
     if (
@@ -288,7 +350,11 @@ def widget_update_loop(widget):
         if hasattr(widget, "lbl_trail_time"):
             widget.lbl_trail_time.setText("")
 
-    if run_scope_tick and hasattr(widget, "scope_panel") and widget.scope_panel.isVisible():
+    if (
+        run_scope_tick
+        and hasattr(widget, "scope_panel")
+        and widget.scope_panel.isVisible()
+    ):
         widget._sync_scope_coord_inputs_from_canvas()
 
     if run_climate_tick:
@@ -319,8 +385,12 @@ def open_calendar(widget):
     cal.setGridVisible(False)
     cal.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
 
-    current_date = datetime(widget.manual_year, 1, 1) + timedelta(days=widget.manual_day)
-    cal.setSelectedDate(QDate(current_date.year, current_date.month, current_date.day))
+    current_date = datetime(widget.manual_year, 1, 1) + timedelta(
+        days=widget.manual_day
+    )
+    cal.setSelectedDate(
+        QDate(current_date.year, current_date.month, current_date.day)
+    )
 
     def on_date_selected():
         qdate = cal.selectedDate()
@@ -335,7 +405,9 @@ def open_calendar(widget):
     cal.activated.connect(on_date_selected)
     layout.addWidget(cal)
 
-    pos = widget.lbl_date.mapToGlobal(QPointF(0, widget.lbl_date.height()).toPoint())
+    pos = widget.lbl_date.mapToGlobal(
+        QPointF(0, widget.lbl_date.height()).toPoint()
+    )
     screen = QApplication.primaryScreen().geometry()
     sz = cal.sizeHint()
     if pos.y() + sz.height() > screen.bottom():
@@ -355,16 +427,38 @@ def run_smoke_scenes(widget):
         "az": float(c.azimuth_offset),
         "el": float(c.elevation_angle),
         "scope_enabled": bool(c.scope_mode_enabled()),
-        "scope_center": tuple(c.scope_controller.center) if getattr(c.scope_controller, "center", None) else None,
+        "scope_center": (
+            tuple(c.scope_controller.center)
+            if getattr(c.scope_controller, "center", None)
+            else None
+        ),
         "use_real_time": bool(getattr(widget, "use_real_time", False)),
         "manual_hour": float(getattr(widget, "manual_hour", 22.0)),
         "timebar_hour": float(getattr(widget.time_bar, "current_hour", 22.0)),
     }
 
     scenes = [
-        {"name": "normal", "zoom": 1.0, "az": 180.0, "el": 35.0, "scope": False},
-        {"name": "telescope", "zoom": 12.0, "az": 180.0, "el": 45.0, "scope": True},
-        {"name": "high_density", "zoom": 24.0, "az": 180.0, "el": 60.0, "scope": False},
+        {
+            "name": "normal",
+            "zoom": 1.0,
+            "az": 180.0,
+            "el": 35.0,
+            "scope": False,
+        },
+        {
+            "name": "telescope",
+            "zoom": 12.0,
+            "az": 180.0,
+            "el": 45.0,
+            "scope": True,
+        },
+        {
+            "name": "high_density",
+            "zoom": 24.0,
+            "az": 180.0,
+            "el": 60.0,
+            "scope": False,
+        },
     ]
 
     print("[SmokeScenes] start")
@@ -377,8 +471,13 @@ def run_smoke_scenes(widget):
             c.azimuth_offset = float(scene["az"])
             c.elevation_angle = float(scene["el"])
             c.set_scope_enabled(bool(scene["scope"]))
-            if scene["scope"] and getattr(c.scope_controller, "center", None) is None:
-                c.scope_controller.set_center((float(scene["el"]), float(scene["az"])))
+            if (
+                scene["scope"]
+                and getattr(c.scope_controller, "center", None) is None
+            ):
+                c.scope_controller.set_center(
+                    (float(scene["el"]), float(scene["az"]))
+                )
 
             c.debug_render_metrics = True
             c.update()
@@ -386,7 +485,11 @@ def run_smoke_scenes(widget):
             c.repaint()
             QApplication.processEvents()
 
-            stars_count = c._scope_hud_star_count() if c.scope_mode_enabled() else c._visible_star_count_raw()
+            stars_count = (
+                c._scope_hud_star_count()
+                if c.scope_mode_enabled()
+                else c._visible_star_count_raw()
+            )
             snap = c.scene_diagnostics.snapshot()
             fov = 100.0 / max(0.001, float(c.zoom_level))
             print(
@@ -416,13 +519,17 @@ def run_smoke_scenes(widget):
 
 def load_catalog(widget):
     local_dir = os.path.dirname(os.path.abspath(__file__))
-    stars_dir = os.path.normpath(os.path.join(local_dir, "..", "data", "stars"))
+    stars_dir = os.path.normpath(
+        os.path.join(local_dir, "..", "data", "stars")
+    )
 
     widget.celestial_objects = []
     if np is not None:
         try:
             entries = _discover_star_catalog_npz_entries(stars_dir)
-            base_entry = _select_base_star_catalog_entry(entries, max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG)
+            base_entry = _select_base_star_catalog_entry(
+                entries, max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG
+            )
             if base_entry is not None:
                 base = _load_star_npz_arrays(
                     base_entry["path"],
@@ -434,20 +541,34 @@ def load_catalog(widget):
                     dec = base["dec"][order]
                     mag = base["mag"][order]
                     bp_rp = base["bp_rp"][order]
-                    sid = base["source_id"][order] if base["source_id"] is not None else None
-                    widget.celestial_objects = _build_celestial_objects_from_arrays(
-                        ra,
-                        dec,
-                        mag,
-                        bp_rp,
-                        source_id=sid,
+                    sid = (
+                        base["source_id"][order]
+                        if base["source_id"] is not None
+                        else None
+                    )
+                    widget.celestial_objects = (
+                        _build_celestial_objects_from_arrays(
+                            ra,
+                            dec,
+                            mag,
+                            bp_rp,
+                            source_id=sid,
+                        )
                     )
                     widget.np_ra = np.asarray(ra, dtype=np.float32)
                     widget.np_dec = np.asarray(dec, dtype=np.float32)
                     widget.np_mag = np.asarray(mag, dtype=np.float32)
-                    widget.np_r, widget.np_g, widget.np_b = _bp_rp_to_rgb_arrays(bp_rp)
+                    widget.np_r, widget.np_g, widget.np_b = (
+                        _bp_rp_to_rgb_arrays(bp_rp)
+                    )
                     widget._scope_catalog_loaded_max_mag = max(
-                        float(getattr(widget, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+                        float(
+                            getattr(
+                                widget,
+                                "_scope_catalog_loaded_max_mag",
+                                STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                            )
+                        ),
                         float(STAR_CATALOG_NAKED_EYE_MAX_MAG),
                     )
                     print(
@@ -476,10 +597,19 @@ def load_catalog(widget):
 
     if np is not None:
         try:
-            widget.np_ra = np.array([s["ra"] for s in widget.celestial_objects], dtype=np.float32)
-            widget.np_dec = np.array([s["dec"] for s in widget.celestial_objects], dtype=np.float32)
-            widget.np_mag = np.array([s["mag"] for s in widget.celestial_objects], dtype=np.float32)
-            bprp = np.array([s.get("bp_rp", 0.8) for s in widget.celestial_objects], dtype=np.float32)
+            widget.np_ra = np.array(
+                [s["ra"] for s in widget.celestial_objects], dtype=np.float32
+            )
+            widget.np_dec = np.array(
+                [s["dec"] for s in widget.celestial_objects], dtype=np.float32
+            )
+            widget.np_mag = np.array(
+                [s["mag"] for s in widget.celestial_objects], dtype=np.float32
+            )
+            bprp = np.array(
+                [s.get("bp_rp", 0.8) for s in widget.celestial_objects],
+                dtype=np.float32,
+            )
             widget.np_r, widget.np_g, widget.np_b = _bp_rp_to_rgb_arrays(bprp)
             print(f"NumPy Optimization: {len(widget.np_ra)} stars vectorized.")
         except Exception as e:

@@ -11,7 +11,6 @@ from typing import Any
 
 from TerraLab.common.app_paths import app_root
 
-
 RUNNER_CODE = r"""
 import argparse
 from PyQt5.QtCore import QTimer
@@ -50,11 +49,15 @@ print(
 
 
 RUNTIME_READ_RE = re.compile(r"\[stars_dataset\]\s+source=runtime_cache")
-CATALOG_LOAD_RE = re.compile(r"Runtime dataset loaded: .* in ([0-9]+(?:\.[0-9]+)?)s")
+CATALOG_LOAD_RE = re.compile(
+    r"Runtime dataset loaded: .* in ([0-9]+(?:\.[0-9]+)?)s"
+)
 DATASET_LOADED_RE = re.compile(r"Runtime dataset loaded:")
 
 
-def _read_perf_events_since(path: Path, offset: int) -> tuple[int, list[dict[str, Any]]]:
+def _read_perf_events_since(
+    path: Path, offset: int
+) -> tuple[int, list[dict[str, Any]]]:
     if (not path.exists()) or (not path.is_file()):
         return 0, []
     raw = path.read_bytes()
@@ -75,7 +78,9 @@ def _read_perf_events_since(path: Path, offset: int) -> tuple[int, list[dict[str
     return len(raw), events
 
 
-def _find_event_ms(events: list[dict[str, Any]], event: str, *, stage: str | None = None) -> float | None:
+def _find_event_ms(
+    events: list[dict[str, Any]], event: str, *, stage: str | None = None
+) -> float | None:
     for item in events:
         if str(item.get("event", "")) != str(event):
             continue
@@ -102,7 +107,7 @@ def _find_duration_ms(
 
 def _parse_stdout(stdout: str) -> dict[str, Any]:
     runtime_reads = len(RUNTIME_READ_RE.findall(stdout))
-    in_mem_preload = ("Scope preload using in-memory catalog" in stdout)
+    in_mem_preload = "Scope preload using in-memory catalog" in stdout
     scopepreload_lines = stdout.count("[ScopePreload]")
     dataset_loaded_count = len(DATASET_LOADED_RE.findall(stdout))
 
@@ -162,11 +167,15 @@ def _run_once(
     catalog_ready_ms = _find_event_ms(events, "catalog_ready")
     preload_start_ms = _find_event_ms(events, "scope_preload_start")
     preload_ready_ms = _find_event_ms(events, "scope_preload_ready")
-    preload_duration_ms = _find_duration_ms(events, "scope_preload_start", "scope_preload_ready")
+    preload_duration_ms = _find_duration_ms(
+        events, "scope_preload_start", "scope_preload_ready"
+    )
     scope_req_ms = _find_event_ms(events, "scope_activation_request")
     scope_ready_ms = _find_event_ms(events, "scope_activation_ready")
     scope_enabled_ms = _find_event_ms(events, "scope_mode_enabled")
-    scope_wait_ms = _find_duration_ms(events, "scope_activation_wait_start", "scope_activation_ready")
+    scope_wait_ms = _find_duration_ms(
+        events, "scope_activation_wait_start", "scope_activation_ready"
+    )
     activation_to_enabled_ms = None
     if scope_req_ms is not None and scope_enabled_ms is not None:
         activation_to_enabled_ms = float(scope_enabled_ms - scope_req_ms)
@@ -197,7 +206,9 @@ def _fmt_ms(value: float | None) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Benchmark TerraLab startup/scope pipeline automatically.")
+    parser = argparse.ArgumentParser(
+        description="Benchmark TerraLab startup/scope pipeline automatically."
+    )
     parser.add_argument("--runs", type=int, default=2)
     parser.add_argument("--activate-after", type=float, default=95.0)
     parser.add_argument("--quit-after", type=float, default=145.0)
@@ -239,25 +250,53 @@ def main() -> int:
             f"activation={_fmt_ms(row['activation_to_enabled_ms'])}"
         )
 
-    read_counts = [int(r["stdout_metrics"]["runtime_cache_reads"]) for r in results]
-    dataset_load_counts = [int(r["stdout_metrics"]["runtime_dataset_load_count"]) for r in results]
-    preload_durations = [float(r["preload_duration_ms"]) for r in results if r["preload_duration_ms"] is not None]
+    read_counts = [
+        int(r["stdout_metrics"]["runtime_cache_reads"]) for r in results
+    ]
+    dataset_load_counts = [
+        int(r["stdout_metrics"]["runtime_dataset_load_count"]) for r in results
+    ]
+    preload_durations = [
+        float(r["preload_duration_ms"])
+        for r in results
+        if r["preload_duration_ms"] is not None
+    ]
     activation_durations = [
-        float(r["activation_to_enabled_ms"]) for r in results if r["activation_to_enabled_ms"] is not None
+        float(r["activation_to_enabled_ms"])
+        for r in results
+        if r["activation_to_enabled_ms"] is not None
     ]
     summary = {
         "runs": len(results),
-        "runtime_cache_reads_avg": float(statistics.fmean(read_counts)) if read_counts else None,
+        "runtime_cache_reads_avg": (
+            float(statistics.fmean(read_counts)) if read_counts else None
+        ),
         "runtime_cache_reads_max": max(read_counts) if read_counts else None,
         "runtime_dataset_load_count_avg": (
-            float(statistics.fmean(dataset_load_counts)) if dataset_load_counts else None
+            float(statistics.fmean(dataset_load_counts))
+            if dataset_load_counts
+            else None
         ),
-        "runtime_dataset_load_count_max": max(dataset_load_counts) if dataset_load_counts else None,
-        "preload_duration_ms_avg": float(statistics.fmean(preload_durations)) if preload_durations else None,
-        "activation_to_enabled_ms_avg": float(statistics.fmean(activation_durations)) if activation_durations else None,
-        "objective_double_read_ok": (max(dataset_load_counts) <= 1) if dataset_load_counts else None,
+        "runtime_dataset_load_count_max": (
+            max(dataset_load_counts) if dataset_load_counts else None
+        ),
+        "preload_duration_ms_avg": (
+            float(statistics.fmean(preload_durations))
+            if preload_durations
+            else None
+        ),
+        "activation_to_enabled_ms_avg": (
+            float(statistics.fmean(activation_durations))
+            if activation_durations
+            else None
+        ),
+        "objective_double_read_ok": (
+            (max(dataset_load_counts) <= 1) if dataset_load_counts else None
+        ),
         "objective_warm_activation_ok": (
-            float(statistics.fmean(activation_durations)) <= 2000.0 if activation_durations else None
+            float(statistics.fmean(activation_durations)) <= 2000.0
+            if activation_durations
+            else None
         ),
         "results": results,
     }
@@ -266,7 +305,9 @@ def main() -> int:
     if args.output_json:
         out = Path(args.output_json)
         out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+        out.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
     return 0
 
 

@@ -5,14 +5,22 @@ import threading
 from typing import Any, Dict, Optional
 
 from PyQt5.QtCore import QLocale
-from PyQt5.QtGui import QFont, QFontDatabase, QFontInfo, QTextCharFormat, QTextCursor, QTextFormat
+from PyQt5.QtGui import (
+    QFont,
+    QFontDatabase,
+    QFontInfo,
+    QTextCharFormat,
+    QTextCursor,
+    QTextFormat,
+)
 from PyQt5.QtWidgets import QPlainTextEdit, QTextEdit
 
 from TerraLab.common.app_paths import (
     config_path as runtime_config_path,
+)
+from TerraLab.common.app_paths import (
     ensure_runtime_layout,
 )
-
 
 LANGUAGE_PRIORITY = ("ca", "es", "en", "fr", "it", "pt", "de", "nl", "el")
 LANGUAGE_OPTIONS: Dict[str, str] = {
@@ -51,9 +59,13 @@ def resource_path(relative_path: str) -> str:
             norm_rel = rel.replace("\\", "/")
             external_candidate = None
             if "data/terrain_cache" in norm_rel:
-                external_candidate = os.path.join(exe_dir, "maps", os.path.basename(rel))
+                external_candidate = os.path.join(
+                    exe_dir, "maps", os.path.basename(rel)
+                )
             elif "data/stars" in norm_rel:
-                external_candidate = os.path.join(exe_dir, "stars", os.path.basename(rel))
+                external_candidate = os.path.join(
+                    exe_dir, "stars", os.path.basename(rel)
+                )
             if external_candidate and os.path.exists(external_candidate):
                 return os.path.abspath(external_candidate)
         except Exception:
@@ -75,7 +87,9 @@ def resource_path(relative_path: str) -> str:
     return os.path.abspath(path)
 
 
-def _normalize_translation_payload(payload: object) -> Dict[str, Dict[str, str]]:
+def _normalize_translation_payload(
+    payload: object,
+) -> Dict[str, Dict[str, str]]:
     if not isinstance(payload, dict):
         return {}
 
@@ -115,7 +129,9 @@ def _load_translations() -> Dict[str, Dict[str, str]]:
     global _translations_cache
     if _translations_cache is None:
         try:
-            with open(resource_path("data/translations.json"), "r", encoding="utf-8") as f:
+            with open(
+                resource_path("data/translations.json"), "r", encoding="utf-8"
+            ) as f:
                 raw = json.load(f)
             _translations_cache = _normalize_translation_payload(raw)
         except Exception:
@@ -149,7 +165,9 @@ def _load_config() -> Dict[str, Any]:
                 try:
                     with path.open("r", encoding="utf-8") as f:
                         payload = json.load(f)
-                    _config_cache = payload if isinstance(payload, dict) else {}
+                    _config_cache = (
+                        payload if isinstance(payload, dict) else {}
+                    )
                 except Exception:
                     _config_cache = {}
             else:
@@ -194,7 +212,9 @@ def get_config_value(path: str, default=None, *, refresh: bool = False):
     return cur
 
 
-def _set_nested_value(container: Dict[str, Any], dotted_key: str, value: Any) -> None:
+def _set_nested_value(
+    container: Dict[str, Any], dotted_key: str, value: Any
+) -> None:
     parts = [p for p in str(dotted_key).split(".") if p]
     if not parts:
         return

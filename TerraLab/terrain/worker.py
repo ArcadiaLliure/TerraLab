@@ -47,22 +47,56 @@ class HorizonWorker(QObject):
         self._current_temp_dir = None
 
     def set_observer_offset(self, offset: float):
+        """Defineix observer offset a la instancia de HorizonWorker.
+
+        Par?metres:
+        - offset (float): Valor del parametre 'offset'.
+
+        Retorna:
+        - None.
+        """
         self.observer_offset = offset
 
     def _store_progress(self, state: Optional[dict]) -> None:
         with self._progress_lock:
             self._progress_state = dict(state) if state else None
-            self._progress_text = self._format_progress_text(state) if state else ""
+            self._progress_text = (
+                self._format_progress_text(state) if state else ""
+            )
 
     def get_progress_text(self) -> str:
+        """Obte progress text de la instancia de HorizonWorker.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - str: Valor retornat pel metode.
+        """
         with self._progress_lock:
             return self._progress_text
 
     def get_progress_state(self):
+        """Obte progress state de la instancia de HorizonWorker.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         with self._progress_lock:
             return dict(self._progress_state) if self._progress_state else None
 
     def reload_config(self):
+        """Executa el metode reload_config de la classe HorizonWorker.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         self.needs_reload = True
         self.tiles_dir = None
 
@@ -98,37 +132,26 @@ class HorizonWorker(QObject):
 
         tiles_dir = self._resolve_tiles_dir()
         if not tiles_dir or not os.path.exists(tiles_dir):
-            self.error_occurred.emit(f"Tiles directory not configured or found: {tiles_dir}")
+            self.error_occurred.emit(
+                f"Tiles directory not configured or found: {tiles_dir}"
+            )
             return
 
         try:
+
             def index_callback(_percent, _msg):
                 return None
 
-            is_tiff = False
-            tiff_path = None
-            if os.path.isfile(tiles_dir) and tiles_dir.lower().endswith((".tif", ".tiff")):
-                is_tiff = True
-                tiff_path = tiles_dir
-            elif os.path.isdir(tiles_dir):
-                tifs = [f for f in os.listdir(tiles_dir) if f.lower().endswith((".tif", ".tiff"))]
-                if tifs:
-                    is_tiff = True
-                    tiff_path = os.path.join(tiles_dir, tifs[0])
+            from TerraLab.terrain.providers import create_raster_provider
 
-            if is_tiff and tiff_path:
-                from TerraLab.terrain.providers import TiffRasterWindowProvider
-
-                self.provider = TiffRasterWindowProvider(tiff_path)
-            else:
-                from TerraLab.terrain.providers import AscRasterProvider
-
-                self.provider = AscRasterProvider(tiles_dir)
-
-            self.provider.initialize(progress_callback=index_callback)
+            self.provider = create_raster_provider(
+                tiles_dir, progress_callback=index_callback
+            )
             try:
                 from TerraLab.config import ConfigManager
-                from TerraLab.terrain.light_pollution_sampler import LightPollutionSampler
+                from TerraLab.terrain.light_pollution_sampler import (
+                    LightPollutionSampler,
+                )
 
                 config = ConfigManager()
                 lp_enabled = bool(config.get("light_pollution_enabled", True))
@@ -137,12 +160,21 @@ class HorizonWorker(QObject):
                     lp_path = config.get("dvnl_path", "")
                     if not lp_path or not os.path.exists(lp_path):
                         base_dir = os.path.dirname(os.path.dirname(__file__))
-                        local_default = os.path.join(base_dir, "data", "light_pollution", "C_DVNL 2022.tif")
+                        local_default = os.path.join(
+                            base_dir,
+                            "data",
+                            "light_pollution",
+                            "C_DVNL 2022.tif",
+                        )
                         if os.path.exists(local_default):
                             lp_path = local_default
-                self.light_sampler = LightPollutionSampler(lp_path if lp_path and os.path.exists(lp_path) else None)
+                self.light_sampler = LightPollutionSampler(
+                    lp_path if lp_path and os.path.exists(lp_path) else None
+                )
             except Exception as exc:
-                print(f"[HorizonWorker] Warning: Light pollution sampler unavailable: {exc}")
+                print(
+                    f"[HorizonWorker] Warning: Light pollution sampler unavailable: {exc}"
+                )
                 self.light_sampler = None
 
             self.is_initialized = True
@@ -153,6 +185,15 @@ class HorizonWorker(QObject):
             self.progress_message.emit("")
 
     def get_bare_elevation(self, lat: float, lon: float) -> Optional[float]:
+        """Obte bare elevation de la instancia de HorizonWorker.
+
+        Par?metres:
+        - lat (float): Valor del parametre 'lat'.
+        - lon (float): Valor del parametre 'lon'.
+
+        Retorna:
+        - Optional[float]: Valor retornat pel metode.
+        """
         if not self.is_initialized or not self.provider:
             return None
         try:
@@ -163,18 +204,44 @@ class HorizonWorker(QObject):
             return None
 
     def get_bortle_estimate(self, lat: float, lon: float) -> int:
+        """Obte bortle estimate de la instancia de HorizonWorker.
+
+        Par?metres:
+        - lat (float): Valor del parametre 'lat'.
+        - lon (float): Valor del parametre 'lon'.
+
+        Retorna:
+        - int: Valor retornat pel metode.
+        """
         if not self.is_initialized or not self.light_sampler:
             return 4
         sqm, bortle = self.light_sampler.estimate_zenith_sqm(lat, lon)
         return bortle
 
     def get_sqm_estimate(self, lat: float, lon: float) -> float:
+        """Obte sqm estimate de la instancia de HorizonWorker.
+
+        Par?metres:
+        - lat (float): Valor del parametre 'lat'.
+        - lon (float): Valor del parametre 'lon'.
+
+        Retorna:
+        - float: Valor retornat pel metode.
+        """
         if not self.is_initialized or not self.light_sampler:
             return 21.0
         sqm, _ = self.light_sampler.estimate_zenith_sqm(lat, lon)
         return sqm
 
     def abort_current_job(self) -> None:
+        """Executa el metode abort_current_job de la classe HorizonWorker.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         with self._process_lock:
             proc = self._current_process
             job_id = self._current_job_id
@@ -182,14 +249,18 @@ class HorizonWorker(QObject):
             return
         try:
             if proc.poll() is None:
-                print(f"[HorizonWorker] Terminating horizon bake job {job_id}...")
+                print(
+                    f"[HorizonWorker] Terminating horizon bake job {job_id}..."
+                )
                 proc.terminate()
                 try:
                     proc.wait(timeout=1.5)
                 except subprocess.TimeoutExpired:
                     proc.kill()
         except Exception as exc:
-            print(f"[HorizonWorker] Warning terminating bake job {job_id}: {exc}")
+            print(
+                f"[HorizonWorker] Warning terminating bake job {job_id}: {exc}"
+            )
 
     def _cleanup_temp_dir(self, temp_dir: Optional[str]) -> None:
         if not temp_dir:
@@ -201,7 +272,9 @@ class HorizonWorker(QObject):
         except Exception:
             pass
 
-    def _build_subprocess_command(self, job: dict, output_path: str, preview_path: str):
+    def _build_subprocess_command(
+        self, job: dict, output_path: str, preview_path: str
+    ):
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         cmd = [
             sys.executable,
@@ -255,7 +328,9 @@ class HorizonWorker(QObject):
             percent_text = percent_text[:-2]
         current = state.get("current")
         total = state.get("total")
-        base = getTraduction("Horizon.CalculatingHorizon", "Calculating horizon: {pct}%").format(pct=percent_text)
+        base = getTraduction(
+            "Horizon.CalculatingHorizon", "Calculating horizon: {pct}%"
+        ).format(pct=percent_text)
         if current is not None and total:
             return f"{base} · {int(current)}/{int(total)}"
         return base
@@ -278,13 +353,23 @@ class HorizonWorker(QObject):
 
     @pyqtSlot(object)
     def request_bake(self, job: object):
+        """Executa el metode request_bake de la classe HorizonWorker.
+
+        Par?metres:
+        - job (object): Valor del parametre 'job'.
+
+        Retorna:
+        - None.
+        """
         try:
             if not isinstance(job, dict):
                 raise TypeError("Horizon bake job must be a dict")
 
             tiles_dir = self._resolve_tiles_dir()
             if not tiles_dir or not os.path.exists(tiles_dir):
-                self.error_occurred.emit(f"Tiles directory not configured or found: {tiles_dir}")
+                self.error_occurred.emit(
+                    f"Tiles directory not configured or found: {tiles_dir}"
+                )
                 return
 
             job = dict(job)
@@ -295,7 +380,9 @@ class HorizonWorker(QObject):
             temp_dir = tempfile.mkdtemp(prefix=f"tl_horizon_{job['job_id']}_")
             output_path = os.path.join(temp_dir, "profile_final.npz")
             preview_path = os.path.join(temp_dir, "profile_preview.npz")
-            base_dir, cmd = self._build_subprocess_command(job, output_path, preview_path)
+            base_dir, cmd = self._build_subprocess_command(
+                job, output_path, preview_path
+            )
 
             self.abort_current_job()
             self._cleanup_temp_dir(self._current_temp_dir)
@@ -374,10 +461,14 @@ class HorizonWorker(QObject):
                 elif event_type == "done":
                     profile_path = str(event.get("profile_path", "") or "")
                     if not profile_path or not os.path.exists(profile_path):
-                        raise RuntimeError("Horizon bake completed without profile output")
+                        raise RuntimeError(
+                            "Horizon bake completed without profile output"
+                        )
                     profile = HorizonProfile.load(profile_path)
                     profile._band_defs = band_defs
-                    self.profile_ready.emit({"job_id": active_job_id, "profile": profile})
+                    self.profile_ready.emit(
+                        {"job_id": active_job_id, "profile": profile}
+                    )
                     final_emitted = True
                 elif event_type == "error":
                     message = str(event.get("message", "Unknown bake error"))
@@ -386,7 +477,9 @@ class HorizonWorker(QObject):
             return_code = proc.wait()
             stderr_thread.join(timeout=0.2)
             if return_code != 0 and not final_emitted:
-                raise RuntimeError(f"Horizon bake subprocess failed with exit code {return_code}")
+                raise RuntimeError(
+                    f"Horizon bake subprocess failed with exit code {return_code}"
+                )
         except Exception as exc:
             print(f"[HorizonWorker] CRITICAL ERROR during bake: {exc}")
             import traceback

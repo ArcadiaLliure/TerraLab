@@ -55,7 +55,7 @@ def astro_canvas_init(obj, parent):
     self.dome_flattening = 0.5
     self.trained_observer = False
     self.atmospheric_context = 0.5
-    self.eclipse_lock_mode = True
+    self.eclipse_lock_mode = False
     # Weather System
     self.weather = WeatherSystem(
         self.width(),
@@ -373,6 +373,7 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     QTimer.singleShot(200, self._start_async_bootstrap)
     QTimer.singleShot(0, self._maybe_run_first_time_onboarding)
     QTimer.singleShot(1500, self._maybe_resume_pending_gaia_download)
+
 
 
 

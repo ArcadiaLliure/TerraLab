@@ -6,9 +6,14 @@ import os
 import sys
 import time
 from typing import Iterable
+
 import numpy as np
 
-from TerraLab.terrain.engine import HorizonBaker, HorizonProfile, generate_bands
+from TerraLab.terrain.engine import (
+    HorizonBaker,
+    HorizonProfile,
+    generate_bands,
+)
 
 
 def _emit_event(event_type: str, **payload) -> None:
@@ -25,7 +30,9 @@ def _phase_progress(job_id: str, phase: str, start_pct: float, end_pct: float):
     def _callback(percent: float, _msg: str = "") -> None:
         sub_pct = max(0.0, min(100.0, float(percent)))
         mapped = float(start_pct) + (sub_pct / 100.0) * span
-        _emit_event("progress", job_id=job_id, phase=phase, percent=round(mapped, 1))
+        _emit_event(
+            "progress", job_id=job_id, phase=phase, percent=round(mapped, 1)
+        )
 
     return _callback
 
@@ -44,36 +51,30 @@ def _resolve_light_pollution_path() -> str:
         pass
 
     base_dir = os.path.dirname(os.path.dirname(__file__))
-    local_default = os.path.join(base_dir, "data", "light_pollution", "C_DVNL 2022.tif")
+    local_default = os.path.join(
+        base_dir, "data", "light_pollution", "C_DVNL 2022.tif"
+    )
     if os.path.exists(local_default):
         return local_default
     return ""
 
 
 def _create_provider(tiles_dir: str, progress_callback=None):
-    is_tiff = False
-    tiff_path = None
+    """
+    Create the terrain DEM provider used by the bake subprocess.
 
-    if os.path.isfile(tiles_dir) and tiles_dir.lower().endswith((".tif", ".tiff")):
-        is_tiff = True
-        tiff_path = tiles_dir
-    elif os.path.isdir(tiles_dir):
-        tifs = [f for f in os.listdir(tiles_dir) if f.lower().endswith((".tif", ".tiff"))]
-        if tifs:
-            is_tiff = True
-            tiff_path = os.path.join(tiles_dir, tifs[0])
+    Input CRS:
+        - The provider API accepts observer coordinates in `EPSG:4326`.
+    Internal CRS:
+        - Horizon sampling runs in `EPSG:25831`.
+    Output CRS:
+        - Not applicable (returns a provider object).
+    """
+    from TerraLab.terrain.providers import create_raster_provider
 
-    if is_tiff and tiff_path:
-        from TerraLab.terrain.providers import TiffRasterWindowProvider
-
-        provider = TiffRasterWindowProvider(tiff_path)
-    else:
-        from TerraLab.terrain.providers import AscRasterProvider
-
-        provider = AscRasterProvider(tiles_dir)
-
-    provider.initialize(progress_callback=progress_callback)
-    return provider
+    return create_raster_provider(
+        tiles_dir, progress_callback=progress_callback
+    )
 
 
 def _circular_distance_deg(a: float, b: float) -> float:
@@ -101,8 +102,23 @@ def _build_priority_azimuth_order(
 
 def _atomic_save_profile(profile: HorizonProfile, path: str) -> None:
     tmp_path = f"{path}.tmp.npz"
-    profile.save(tmp_path)
-    os.replace(tmp_path, path)
+    max_attempts = 6
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            profile.save(tmp_path)
+            os.replace(tmp_path, path)
+            return
+        except PermissionError as exc:
+            last_exc = exc
+            # On Windows the preview file can be briefly locked by the reader.
+            # Retry a few times before giving up.
+            time.sleep(0.03 * (attempt + 1))
+        except Exception:
+            # Keep non-permission errors visible to caller.
+            raise
+    if last_exc is not None:
+        raise last_exc
 
 
 def _save_preview_snapshot(
@@ -137,7 +153,9 @@ def main():
     except Exception:
         pass
 
-    parser = argparse.ArgumentParser(description="Bake a horizon profile in a separate process.")
+    parser = argparse.ArgumentParser(
+        description="Bake a horizon profile in a separate process."
+    )
     parser.add_argument("--job-id", required=True)
     parser.add_argument("--lat", type=float, required=True)
     parser.add_argument("--lon", type=float, required=True)
@@ -161,13 +179,24 @@ def main():
 
     try:
         if not os.path.exists(args.tiles_dir):
-            raise FileNotFoundError(f"Tiles directory not found: {args.tiles_dir}")
+            raise FileNotFoundError(
+                f"Tiles directory not found: {args.tiles_dir}"
+            )
 
-        _emit_event("progress", job_id=job_id, phase="prepare", percent=0.0, current=0, total=0)
+        _emit_event(
+            "progress",
+            job_id=job_id,
+            phase="prepare",
+            percent=0.0,
+            current=0,
+            total=0,
+        )
         with contextlib.redirect_stdout(sys.stderr):
             provider = _create_provider(
                 args.tiles_dir,
-                progress_callback=_phase_progress(job_id, "prepare", 0.0, 15.0),
+                progress_callback=_phase_progress(
+                    job_id, "prepare", 0.0, 15.0
+                ),
             )
             baker = HorizonBaker(provider)
             x_utm, y_utm = provider.transform_coordinates(args.lat, args.lon)
@@ -177,7 +206,9 @@ def main():
                     x_utm,
                     y_utm,
                     vis_radius,
-                    progress_callback=_phase_progress(job_id, "prepare", 15.0, 35.0),
+                    progress_callback=_phase_progress(
+                        job_id, "prepare", 15.0, 35.0
+                    ),
                     abort_check=None,
                 )
             except TypeError:
@@ -185,16 +216,34 @@ def main():
                     x_utm,
                     y_utm,
                     vis_radius,
-                    progress_callback=_phase_progress(job_id, "prepare", 15.0, 35.0),
+                    progress_callback=_phase_progress(
+                        job_id, "prepare", 15.0, 35.0
+                    ),
                 )
 
             try:
-                from TerraLab.terrain.light_pollution_sampler import LightPollutionSampler
+                from TerraLab.terrain.light_pollution_sampler import (
+                    LightPollutionSampler,
+                )
+                from TerraLab.terrain.providers import CRS_TERRAIN_INTERNAL
 
                 lp_path = _resolve_light_pollution_path()
-                light_sampler = LightPollutionSampler(lp_path if lp_path else None)
+                light_sampler = LightPollutionSampler(
+                    lp_path if lp_path else None
+                )
+                if light_sampler and lp_path:
+                    light_sampler.prepare_region_from_terrain_xy(
+                        x_terrain=float(x_utm),
+                        y_terrain=float(y_utm),
+                        radius_m=float(vis_radius),
+                        input_crs=CRS_TERRAIN_INTERNAL,
+                    )
             except Exception as exc:
-                print(f"[HorizonBakeProcess] Light pollution sampler unavailable: {exc}", file=sys.stderr, flush=True)
+                print(
+                    f"[HorizonBakeProcess] Light pollution sampler unavailable: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 light_sampler = None
 
             try:
@@ -214,20 +263,37 @@ def main():
             preview_every = max(12, min(48, int(max(1, len(azimuths) // 18))))
             last_preview_emit = {"t": 0.0}
 
-            def _preview_callback(current, total, az_arr, bands_arr, domes, peak_distances, resolved_mask):
+            def _preview_callback(
+                current,
+                total,
+                az_arr,
+                bands_arr,
+                domes,
+                peak_distances,
+                resolved_mask,
+            ):
                 now = time.time()
                 if current < total and (now - last_preview_emit["t"]) < 0.20:
                     return
-                _save_preview_snapshot(
-                    preview_path,
-                    args.lat,
-                    args.lon,
-                    az_arr,
-                    bands_arr,
-                    domes,
-                    peak_distances,
-                    np.asarray(resolved_mask, dtype=bool),
-                )
+                try:
+                    _save_preview_snapshot(
+                        preview_path,
+                        args.lat,
+                        args.lon,
+                        az_arr,
+                        bands_arr,
+                        domes,
+                        peak_distances,
+                        np.asarray(resolved_mask, dtype=bool),
+                    )
+                except Exception as exc:
+                    # Preview persistence is best-effort; do not abort the bake.
+                    print(
+                        f"[HorizonBakeProcess] Preview snapshot skipped: {exc}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return
                 last_preview_emit["t"] = now
                 _emit_event(
                     "preview",
@@ -238,7 +304,13 @@ def main():
                     total=int(total),
                 )
 
-            azimuths_arr, bands, light_domes, light_peak_distances, resolved_mask = baker.bake_progressive(
+            (
+                azimuths_arr,
+                bands,
+                light_domes,
+                light_peak_distances,
+                resolved_mask,
+            ) = baker.bake_progressive(
                 obs_x=x_utm,
                 obs_y=y_utm,
                 obs_h_ground=float(ground_h) + float(args.observer_offset),
@@ -252,7 +324,15 @@ def main():
                     job_id=job_id,
                     phase="bake",
                     percent=round(35.0 + (float(pct) / 100.0) * 63.0, 1),
-                    current=int(max(0, min(len(azimuths), round((float(pct) / 100.0) * len(azimuths))))),
+                    current=int(
+                        max(
+                            0,
+                            min(
+                                len(azimuths),
+                                round((float(pct) / 100.0) * len(azimuths)),
+                            ),
+                        )
+                    ),
                     total=int(len(azimuths)),
                 ),
                 preview_callback=_preview_callback,
@@ -261,7 +341,14 @@ def main():
                 abort_check=None,
             )
 
-            _emit_event("progress", job_id=job_id, phase="save", percent=99.0, current=len(azimuths), total=len(azimuths))
+            _emit_event(
+                "progress",
+                job_id=job_id,
+                phase="save",
+                percent=99.0,
+                current=len(azimuths),
+                total=len(azimuths),
+            )
             final_profile = HorizonProfile(
                 azimuths=azimuths_arr,
                 bands=bands,

@@ -21,20 +21,62 @@ class Diagnostics:
         self._starts: Dict[str, float] = {}
 
     def reset(self) -> None:
+        """Executa el metode reset de la classe Diagnostics.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         self._counters.clear()
         self._timings_ms.clear()
         self._starts.clear()
 
     def set_counter(self, name: str, value: float) -> None:
+        """Defineix counter a la instancia de Diagnostics.
+
+        Par?metres:
+        - name (str): Valor del parametre 'name'.
+        - value (float): Valor del parametre 'value'.
+
+        Retorna:
+        - None.
+        """
         self._counters[name] = value
 
     def inc_counter(self, name: str, delta: float = 1.0) -> None:
+        """Executa el metode inc_counter de la classe Diagnostics.
+
+        Par?metres:
+        - name (str): Valor del parametre 'name'.
+        - delta (float): Valor del parametre 'delta'.
+
+        Retorna:
+        - None.
+        """
         self._counters[name] = self._counters.get(name, 0.0) + delta
 
     def start_timer(self, name: str) -> None:
+        """Executa el metode start_timer de la classe Diagnostics.
+
+        Par?metres:
+        - name (str): Valor del parametre 'name'.
+
+        Retorna:
+        - None.
+        """
         self._starts[name] = time.perf_counter()
 
     def stop_timer(self, name: str) -> float:
+        """Executa el metode stop_timer de la classe Diagnostics.
+
+        Par?metres:
+        - name (str): Valor del parametre 'name'.
+
+        Retorna:
+        - float: Valor retornat pel metode.
+        """
         start = self._starts.pop(name, None)
         if start is None:
             return 0.0
@@ -43,14 +85,34 @@ class Diagnostics:
         return elapsed_ms
 
     def snapshot(self) -> DiagnosticsSnapshot:
+        """Executa el metode snapshot de la classe Diagnostics.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - DiagnosticsSnapshot: Valor retornat pel metode.
+        """
         return DiagnosticsSnapshot(
             counters=dict(self._counters),
             timings_ms=dict(self._timings_ms),
         )
 
     def to_log_line(self, prefix: str = "[Diagnostics]") -> str:
-        counters_part = " ".join(f"{k}={v}" for k, v in sorted(self._counters.items()))
-        timings_part = " ".join(f"{k}={v:.2f}ms" for k, v in sorted(self._timings_ms.items()))
+        """Executa el metode to_log_line de la classe Diagnostics.
+
+        Par?metres:
+        - prefix (str): Valor del parametre 'prefix'.
+
+        Retorna:
+        - str: Valor retornat pel metode.
+        """
+        counters_part = " ".join(
+            f"{k}={v}" for k, v in sorted(self._counters.items())
+        )
+        timings_part = " ".join(
+            f"{k}={v:.2f}ms" for k, v in sorted(self._timings_ms.items())
+        )
         if counters_part and timings_part:
             return f"{prefix} {counters_part} | {timings_part}"
         if counters_part:

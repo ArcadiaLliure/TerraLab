@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from PyQt5.QtCore import Qt, QRectF
+from PyQt5.QtCore import QRectF, Qt
 from PyQt5.QtWidgets import QWidget
 
 from TerraLab.common.utils import set_config_value
@@ -17,6 +17,14 @@ class CanvasInputHandler:
         self._canvas = canvas
 
     def handle_mouse_press(self, event):
+        """Executa el metode handle_mouse_press de la classe CanvasInputHandler.
+
+        Par?metres:
+        - event (Any): Valor del parametre 'event'.
+
+        Retorna:
+        - None.
+        """
         c = self._canvas
         if c.drawing_mode_enabled():
             if event.button() == Qt.LeftButton:
@@ -32,17 +40,23 @@ class CanvasInputHandler:
                 else:
                     c._drawing_ctrl_pan_started = False
                     c._drawing_ctrl_click_pending = False
-                    ut_hour, day_of_year_utc, _, _ = c._get_current_utc_context()
+                    ut_hour, day_of_year_utc, _, _ = (
+                        c._get_current_utc_context()
+                    )
                     c.constellation_controller.on_left_click(
                         event.x(),
                         event.y(),
                         c.project_universal_stereo,
-                        lambda ra, dec: c._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                        lambda ra, dec: c._ra_dec_to_alt_az(
+                            ra, dec, ut_hour, day_of_year_utc
+                        ),
                         c._pick_star_at,
                         force_add=bool(event.modifiers() & Qt.ShiftModifier),
                         additive_select=False,
                     )
-                    if hasattr(c.parent_widget, "_sync_constellation_controls"):
+                    if hasattr(
+                        c.parent_widget, "_sync_constellation_controls"
+                    ):
                         c.parent_widget._sync_constellation_controls()
                     c.update()
             elif event.button() == Qt.RightButton:
@@ -52,7 +66,9 @@ class CanvasInputHandler:
                     event.x(),
                     event.y(),
                     c.project_universal_stereo,
-                    lambda ra, dec: c._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                    lambda ra, dec: c._ra_dec_to_alt_az(
+                        ra, dec, ut_hour, day_of_year_utc
+                    ),
                 )
                 if hasattr(c.parent_widget, "_sync_constellation_controls"):
                     c.parent_widget._sync_constellation_controls()
@@ -82,7 +98,9 @@ class CanvasInputHandler:
                     c._scope_camera_click_pending = False
                     # Avoid reusing a previously camera-throttled star frame while starting reticle drag.
                     c._cached_star_image = None
-                    c.scope_controller.handle_click(event.x(), event.y(), c.unproject_stereo)
+                    c.scope_controller.handle_click(
+                        event.x(), event.y(), c.unproject_stereo
+                    )
                     c.scope_controller.start_drag(event.x(), event.y())
                 c.update()
             event.accept()
@@ -115,6 +133,14 @@ class CanvasInputHandler:
             c.press_pos = event.pos()
 
     def handle_mouse_move(self, event):
+        """Executa el metode handle_mouse_move de la classe CanvasInputHandler.
+
+        Par?metres:
+        - event (Any): Valor del parametre 'event'.
+
+        Retorna:
+        - None.
+        """
         c = self._canvas
         if c.drawing_mode_enabled():
             if c.dragging:
@@ -123,7 +149,7 @@ class CanvasInputHandler:
                 if c._drawing_ctrl_click_pending and (abs(dx) + abs(dy) >= 3):
                     c._drawing_ctrl_pan_started = True
                 if c._drawing_ctrl_pan_started:
-                    c.azimuth_offset = (c.azimuth_offset - dx * 0.5)
+                    c.azimuth_offset = c.azimuth_offset - dx * 0.5
                     c.elevation_angle += dy * 0.5
                     c.elevation_angle = max(-90, min(90, c.elevation_angle))
                 c.last_mouse_x = event.x()
@@ -148,7 +174,7 @@ class CanvasInputHandler:
                     c._scope_camera_pan_started = True
                 if c._scope_camera_pan_started:
                     sensitivity = c._scope_secondary_drag_deg_per_px()
-                    c.azimuth_offset = (c.azimuth_offset - dx * sensitivity)
+                    c.azimuth_offset = c.azimuth_offset - dx * sensitivity
                     c.elevation_angle += dy * sensitivity
                     c.elevation_angle = max(-90, min(90, c.elevation_angle))
                     c._mark_scope_interaction(0.18)
@@ -157,7 +183,9 @@ class CanvasInputHandler:
                 c.update()
                 event.accept()
                 return
-            if c.scope_controller.drag_move(event.x(), event.y(), c.unproject_stereo):
+            if c.scope_controller.drag_move(
+                event.x(), event.y(), c.unproject_stereo
+            ):
                 c._mark_scope_interaction(0.18)
                 c.update()
             event.accept()
@@ -167,7 +195,7 @@ class CanvasInputHandler:
             if c.dragging:
                 dx = event.x() - c.last_mouse_x
                 dy = event.y() - c.last_mouse_y
-                c.azimuth_offset = (c.azimuth_offset - dx * 0.5)
+                c.azimuth_offset = c.azimuth_offset - dx * 0.5
                 c.elevation_angle += dy * 0.5
                 c.elevation_angle = max(-90, min(90, c.elevation_angle))
                 c.last_mouse_x = event.x()
@@ -182,7 +210,9 @@ class CanvasInputHandler:
                 c.project_universal_stereo,
             )
             if not consumed:
-                c.measurement_controller.update_preview_cursor(event.x(), event.y(), c.unproject_stereo)
+                c.measurement_controller.update_preview_cursor(
+                    event.x(), event.y(), c.unproject_stereo
+                )
             c.update()
             event.accept()
             return
@@ -190,7 +220,7 @@ class CanvasInputHandler:
         if c.dragging:
             dx = event.x() - c.last_mouse_x
             dy = event.y() - c.last_mouse_y
-            c.azimuth_offset = (c.azimuth_offset - dx * 0.5)
+            c.azimuth_offset = c.azimuth_offset - dx * 0.5
             c.elevation_angle += dy * 0.5
             c.elevation_angle = max(-90, min(90, c.elevation_angle))
             c.last_mouse_x = event.x()
@@ -200,26 +230,43 @@ class CanvasInputHandler:
             c.update()
 
     def handle_mouse_release(self, event):
+        """Executa el metode handle_mouse_release de la classe CanvasInputHandler.
+
+        Par?metres:
+        - event (Any): Valor del parametre 'event'.
+
+        Retorna:
+        - None.
+        """
         c = self._canvas
         if c.drawing_mode_enabled():
             if c.dragging:
-                was_ctrl_click = bool(c._drawing_ctrl_click_pending and (not c._drawing_ctrl_pan_started))
+                was_ctrl_click = bool(
+                    c._drawing_ctrl_click_pending
+                    and (not c._drawing_ctrl_pan_started)
+                )
                 c.dragging = False
                 c._drawing_ctrl_pan_started = False
                 c._drawing_ctrl_click_pending = False
                 c._cached_trail_image = None
                 if was_ctrl_click and event.button() == Qt.LeftButton:
-                    ut_hour, day_of_year_utc, _, _ = c._get_current_utc_context()
+                    ut_hour, day_of_year_utc, _, _ = (
+                        c._get_current_utc_context()
+                    )
                     c.constellation_controller.on_left_click(
                         event.x(),
                         event.y(),
                         c.project_universal_stereo,
-                        lambda ra, dec: c._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                        lambda ra, dec: c._ra_dec_to_alt_az(
+                            ra, dec, ut_hour, day_of_year_utc
+                        ),
                         c._pick_star_at,
                         force_add=False,
                         additive_select=True,
                     )
-                    if hasattr(c.parent_widget, "_sync_constellation_controls"):
+                    if hasattr(
+                        c.parent_widget, "_sync_constellation_controls"
+                    ):
                         c.parent_widget._sync_constellation_controls()
                 c.update()
             event.accept()
@@ -231,19 +278,31 @@ class CanvasInputHandler:
                 event.accept()
                 return
             if c.dragging:
-                was_scope_click = bool(c._scope_camera_click_pending and (not c._scope_camera_pan_started))
+                was_scope_click = bool(
+                    c._scope_camera_click_pending
+                    and (not c._scope_camera_pan_started)
+                )
                 c.dragging = False
                 c._scope_camera_pan_started = False
                 c._scope_camera_click_pending = False
                 # Invalidate trail cache only when movement STOPS to trigger a clean bake.
                 c._cached_trail_image = None
-                if was_scope_click and event.button() == Qt.LeftButton and (event.pos() - c.press_pos).manhattanLength() < 5:
-                    c._set_selected_target(c._pick_target_at(event.x(), event.y()))
+                if (
+                    was_scope_click
+                    and event.button() == Qt.LeftButton
+                    and (event.pos() - c.press_pos).manhattanLength() < 5
+                ):
+                    c._set_selected_target(
+                        c._pick_target_at(event.x(), event.y())
+                    )
                 c.update()
                 event.accept()
                 return
             c.scope_controller.end_drag()
-            if event.button() == Qt.LeftButton and (event.pos() - c.press_pos).manhattanLength() < 5:
+            if (
+                event.button() == Qt.LeftButton
+                and (event.pos() - c.press_pos).manhattanLength() < 5
+            ):
                 c._set_selected_target(c._pick_target_at(event.x(), event.y()))
             c.update()
             event.accept()
@@ -282,7 +341,9 @@ class CanvasInputHandler:
         c._cached_trail_image = None
         c.update()
 
-        if event.button() == Qt.LeftButton and bool(getattr(c, "_suppress_constellation_release_click", False)):
+        if event.button() == Qt.LeftButton and bool(
+            getattr(c, "_suppress_constellation_release_click", False)
+        ):
             c._suppress_constellation_release_click = False
             event.accept()
             return
@@ -300,14 +361,20 @@ class CanvasInputHandler:
                     event.x(),
                     event.y(),
                     c.project_universal_stereo,
-                    lambda ra, dec: c._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                    lambda ra, dec: c._ra_dec_to_alt_az(
+                        ra, dec, ut_hour, day_of_year_utc
+                    ),
                     c._pick_star_at,
                     force_add=False,
-                    additive_select=bool(event.modifiers() & Qt.ControlModifier),
+                    additive_select=bool(
+                        event.modifiers() & Qt.ControlModifier
+                    ),
                     allow_when_disabled=True,
                 )
                 if consumed:
-                    if hasattr(c.parent_widget, "_sync_constellation_controls"):
+                    if hasattr(
+                        c.parent_widget, "_sync_constellation_controls"
+                    ):
                         c.parent_widget._sync_constellation_controls()
                     c.update()
                     event.accept()
@@ -315,6 +382,14 @@ class CanvasInputHandler:
             c._set_selected_target(c._pick_target_at(event.x(), event.y()))
 
     def handle_mouse_double_click(self, event):
+        """Executa el metode handle_mouse_double_click de la classe CanvasInputHandler.
+
+        Par?metres:
+        - event (Any): Valor del parametre 'event'.
+
+        Retorna:
+        - None.
+        """
         c = self._canvas
         if c.drawing_mode_enabled():
             if event.button() == Qt.LeftButton:
@@ -324,16 +399,30 @@ class CanvasInputHandler:
                     event.x(),
                     event.y(),
                     c.project_universal_stereo,
-                    lambda ra, dec: c._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
-                    additive_select=bool(event.modifiers() & Qt.ControlModifier),
+                    lambda ra, dec: c._ra_dec_to_alt_az(
+                        ra, dec, ut_hour, day_of_year_utc
+                    ),
+                    additive_select=bool(
+                        event.modifiers() & Qt.ControlModifier
+                    ),
                 )
-                if isinstance(action, dict) and action.get("action") == "rename_group":
-                    if hasattr(c.parent_widget, "rename_constellation_group_by_index"):
+                if (
+                    isinstance(action, dict)
+                    and action.get("action") == "rename_group"
+                ):
+                    if hasattr(
+                        c.parent_widget, "rename_constellation_group_by_index"
+                    ):
                         rect = action.get("label_rect")
                         label_rect = None
                         if isinstance(rect, (tuple, list)) and len(rect) == 4:
                             try:
-                                label_rect = QRectF(float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+                                label_rect = QRectF(
+                                    float(rect[0]),
+                                    float(rect[1]),
+                                    float(rect[2]),
+                                    float(rect[3]),
+                                )
                             except Exception:
                                 label_rect = None
                         c.parent_widget.rename_constellation_group_by_index(
@@ -361,19 +450,28 @@ class CanvasInputHandler:
                 event.x(),
                 event.y(),
                 c.project_universal_stereo,
-                lambda ra, dec: c._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
+                lambda ra, dec: c._ra_dec_to_alt_az(
+                    ra, dec, ut_hour, day_of_year_utc
+                ),
                 additive_select=bool(event.modifiers() & Qt.ControlModifier),
                 allow_when_disabled=True,
             )
             if isinstance(action, dict) and action.get("action") != "none":
                 c._suppress_constellation_release_click = True
                 if action.get("action") == "rename_group":
-                    if hasattr(c.parent_widget, "rename_constellation_group_by_index"):
+                    if hasattr(
+                        c.parent_widget, "rename_constellation_group_by_index"
+                    ):
                         rect = action.get("label_rect")
                         label_rect = None
                         if isinstance(rect, (tuple, list)) and len(rect) == 4:
                             try:
-                                label_rect = QRectF(float(rect[0]), float(rect[1]), float(rect[2]), float(rect[3]))
+                                label_rect = QRectF(
+                                    float(rect[0]),
+                                    float(rect[1]),
+                                    float(rect[2]),
+                                    float(rect[3]),
+                                )
                             except Exception:
                                 label_rect = None
                         c.parent_widget.rename_constellation_group_by_index(
@@ -395,13 +493,23 @@ class CanvasInputHandler:
         QWidget.mouseDoubleClickEvent(c, event)
 
     def handle_key_press(self, event):
+        """Executa el metode handle_key_press de la classe CanvasInputHandler.
+
+        Par?metres:
+        - event (Any): Valor del parametre 'event'.
+
+        Retorna:
+        - None.
+        """
         c = self._canvas
         key = event.key()
 
         if c.drawing_mode_enabled():
             if (event.modifiers() & Qt.ControlModifier) and key == Qt.Key_Z:
                 if c.constellation_controller.undo():
-                    if hasattr(c.parent_widget, "_sync_constellation_controls"):
+                    if hasattr(
+                        c.parent_widget, "_sync_constellation_controls"
+                    ):
                         c.parent_widget._sync_constellation_controls()
                     c.update()
                 event.accept()
@@ -422,7 +530,9 @@ class CanvasInputHandler:
             if key in (Qt.Key_Delete, Qt.Key_Backspace):
                 if c.constellation_controller.has_deletable_selection():
                     c.constellation_controller.delete_selected()
-                    if hasattr(c.parent_widget, "_sync_constellation_controls"):
+                    if hasattr(
+                        c.parent_widget, "_sync_constellation_controls"
+                    ):
                         c.parent_widget._sync_constellation_controls()
                     c.update()
                 event.accept()
@@ -439,7 +549,8 @@ class CanvasInputHandler:
             if key == Qt.Key_M:
                 new_mode = (
                     TelescopeScopeController.SPEED_FAST
-                    if c.scope_controller.speed_mode == TelescopeScopeController.SPEED_SLOW
+                    if c.scope_controller.speed_mode
+                    == TelescopeScopeController.SPEED_SLOW
                     else TelescopeScopeController.SPEED_SLOW
                 )
                 c.scope_controller.set_speed_mode(new_mode)
@@ -479,13 +590,20 @@ class CanvasInputHandler:
             event.accept()
             return
 
-        if c.measurement_tool_active() and (event.modifiers() & Qt.ControlModifier) and key == Qt.Key_Z:
+        if (
+            c.measurement_tool_active()
+            and (event.modifiers() & Qt.ControlModifier)
+            and key == Qt.Key_Z
+        ):
             if c.measurement_controller.undo():
                 c.update()
             event.accept()
             return
 
-        if c.measurement_tool_active() and key in (Qt.Key_Delete, Qt.Key_Backspace):
+        if c.measurement_tool_active() and key in (
+            Qt.Key_Delete,
+            Qt.Key_Backspace,
+        ):
             c.measurement_controller.delete_selected()
             c.update()
             event.accept()
@@ -493,12 +611,20 @@ class CanvasInputHandler:
 
         if key == Qt.Key_F9:
             c.debug_render_metrics = not bool(c.debug_render_metrics)
-            set_config_value("debug_render_metrics", bool(c.debug_render_metrics))
-            print(f"[SkyDiagnostics] debug_render_metrics={c.debug_render_metrics}")
+            set_config_value(
+                "debug_render_metrics", bool(c.debug_render_metrics)
+            )
+            print(
+                f"[SkyDiagnostics] debug_render_metrics={c.debug_render_metrics}"
+            )
             event.accept()
             return
 
-        if (event.modifiers() & Qt.ControlModifier) and (event.modifiers() & Qt.ShiftModifier) and key == Qt.Key_S:
+        if (
+            (event.modifiers() & Qt.ControlModifier)
+            and (event.modifiers() & Qt.ShiftModifier)
+            and key == Qt.Key_S
+        ):
             if hasattr(c.parent_widget, "run_smoke_scenes"):
                 c.parent_widget.run_smoke_scenes()
             event.accept()
@@ -509,9 +635,22 @@ class CanvasInputHandler:
         QWidget.keyPressEvent(c, event)
 
     def handle_key_release(self, event):
+        """Executa el metode handle_key_release de la classe CanvasInputHandler.
+
+        Par?metres:
+        - event (Any): Valor del parametre 'event'.
+
+        Retorna:
+        - None.
+        """
         c = self._canvas
         key = event.key()
-        if c.scope_mode_enabled() and key in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right):
+        if c.scope_mode_enabled() and key in (
+            Qt.Key_Up,
+            Qt.Key_Down,
+            Qt.Key_Left,
+            Qt.Key_Right,
+        ):
             if not event.isAutoRepeat():
                 c._scope_pressed_keys.discard(key)
                 if not c._scope_pressed_keys:
@@ -521,6 +660,14 @@ class CanvasInputHandler:
         QWidget.keyReleaseEvent(c, event)
 
     def handle_wheel(self, event):
+        """Executa el metode handle_wheel de la classe CanvasInputHandler.
+
+        Par?metres:
+        - event (Any): Valor del parametre 'event'.
+
+        Retorna:
+        - None.
+        """
         c = self._canvas
         degrees = event.angleDelta().y() / 8.0
         steps = degrees / 15.0

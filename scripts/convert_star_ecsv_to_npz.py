@@ -5,7 +5,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-
 USECOLS = ["source_id", "ra", "dec", "phot_g_mean_mag", "bp_rp"]
 
 
@@ -26,7 +25,9 @@ def count_ecsv_rows(path: Path) -> int:
     return count
 
 
-def convert_file(ecsv_path: Path, npz_path: Path, chunksize: int, overwrite: bool) -> None:
+def convert_file(
+    ecsv_path: Path, npz_path: Path, chunksize: int, overwrite: bool
+) -> None:
     if npz_path.exists() and not overwrite:
         print(f"[SKIP] {npz_path.name} already exists")
         return
@@ -53,11 +54,23 @@ def convert_file(ecsv_path: Path, npz_path: Path, chunksize: int, overwrite: boo
     )
 
     for chunk in reader:
-        sid_chunk = pd.to_numeric(chunk["source_id"], errors="coerce").fillna(-1).to_numpy(dtype=np.int64, copy=False)
-        ra_chunk = pd.to_numeric(chunk["ra"], errors="coerce").to_numpy(dtype=np.float32, copy=False)
-        dec_chunk = pd.to_numeric(chunk["dec"], errors="coerce").to_numpy(dtype=np.float32, copy=False)
-        mag_chunk = pd.to_numeric(chunk["phot_g_mean_mag"], errors="coerce").to_numpy(dtype=np.float32, copy=False)
-        bprp_chunk = pd.to_numeric(chunk["bp_rp"], errors="coerce").to_numpy(dtype=np.float32, copy=False)
+        sid_chunk = (
+            pd.to_numeric(chunk["source_id"], errors="coerce")
+            .fillna(-1)
+            .to_numpy(dtype=np.int64, copy=False)
+        )
+        ra_chunk = pd.to_numeric(chunk["ra"], errors="coerce").to_numpy(
+            dtype=np.float32, copy=False
+        )
+        dec_chunk = pd.to_numeric(chunk["dec"], errors="coerce").to_numpy(
+            dtype=np.float32, copy=False
+        )
+        mag_chunk = pd.to_numeric(
+            chunk["phot_g_mean_mag"], errors="coerce"
+        ).to_numpy(dtype=np.float32, copy=False)
+        bprp_chunk = pd.to_numeric(chunk["bp_rp"], errors="coerce").to_numpy(
+            dtype=np.float32, copy=False
+        )
 
         n = len(chunk)
         end = offset + n
@@ -74,7 +87,9 @@ def convert_file(ecsv_path: Path, npz_path: Path, chunksize: int, overwrite: boo
         ra[offset:end] = ra_chunk
         dec[offset:end] = dec_chunk
         mag[offset:end] = mag_chunk
-        bp_rp[offset:end] = np.nan_to_num(bprp_chunk, nan=0.8, posinf=2.0, neginf=-0.5)
+        bp_rp[offset:end] = np.nan_to_num(
+            bprp_chunk, nan=0.8, posinf=2.0, neginf=-0.5
+        )
 
         offset = end
         print(f"[{ecsv_path.name}] {offset}/{total_rows}")
@@ -104,14 +119,20 @@ def convert_file(ecsv_path: Path, npz_path: Path, chunksize: int, overwrite: boo
     )
 
     dt = time.time() - t0
-    print(f"[OK] {ecsv_path.name} -> {npz_path.name} ({len(ra)} rows) in {dt:.1f}s")
+    print(
+        f"[OK] {ecsv_path.name} -> {npz_path.name} ({len(ra)} rows) in {dt:.1f}s"
+    )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Convert Gaia ECSV catalogs to NPZ")
+    parser = argparse.ArgumentParser(
+        description="Convert Gaia ECSV catalogs to NPZ"
+    )
     parser.add_argument(
         "--stars-dir",
-        default=str(Path(__file__).resolve().parents[1] / "TerraLab" / "data" / "stars"),
+        default=str(
+            Path(__file__).resolve().parents[1] / "TerraLab" / "data" / "stars"
+        ),
         help="Directory containing MAGNITUD_*.ecsv files",
     )
     parser.add_argument("--chunksize", type=int, default=1_000_000)
@@ -129,7 +150,12 @@ def main() -> None:
     print(f"Converting {len(ecsv_files)} ECSV files in: {stars_dir}")
     for ecsv_path in ecsv_files:
         npz_path = ecsv_path.with_suffix(".npz")
-        convert_file(ecsv_path, npz_path, chunksize=args.chunksize, overwrite=args.overwrite)
+        convert_file(
+            ecsv_path,
+            npz_path,
+            chunksize=args.chunksize,
+            overwrite=args.overwrite,
+        )
 
 
 if __name__ == "__main__":

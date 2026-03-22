@@ -43,7 +43,9 @@ def _is_nside_ok(nside: int) -> bool:
     return False
 
 
-def _query_disc_pixels(nside: int, ra_deg: float, dec_deg: float, radius_deg: float) -> np.ndarray:
+def _query_disc_pixels(
+    nside: int, ra_deg: float, dec_deg: float, radius_deg: float
+) -> np.ndarray:
     if hpg is not None:
         return np.asarray(
             hpg.query_circle(
@@ -70,7 +72,9 @@ def _query_disc_pixels(nside: int, ra_deg: float, dec_deg: float, radius_deg: fl
             ),
             dtype=np.uint32,
         )
-    raise RuntimeError("No HEALPix backend available. Install hpgeom or healpy.")
+    raise RuntimeError(
+        "No HEALPix backend available. Install hpgeom or healpy."
+    )
 
 
 class CatalegEstelarHEALPix:
@@ -87,22 +91,35 @@ class CatalegEstelarHEALPix:
             Path to `stars_catalog_healpy.idx.npz`.
         """
         if _backend_name() == "none":
-            raise RuntimeError("A HEALPix backend is required. Install with: pip install hpgeom")
+            raise RuntimeError(
+                "A HEALPix backend is required. Install with: pip install hpgeom"
+            )
 
         self.catalog_path = Path(catalog_npy).expanduser().resolve()
         self.index_path = Path(index_npz).expanduser().resolve()
 
-        self._catalog = np.load(self.catalog_path, mmap_mode="r", allow_pickle=False)
-        if not isinstance(self._catalog, np.ndarray) or self._catalog.dtype.names is None:
-            raise ValueError(f"Expected structured NPY catalog: {self.catalog_path}")
+        self._catalog = np.load(
+            self.catalog_path, mmap_mode="r", allow_pickle=False
+        )
+        if (
+            not isinstance(self._catalog, np.ndarray)
+            or self._catalog.dtype.names is None
+        ):
+            raise ValueError(
+                f"Expected structured NPY catalog: {self.catalog_path}"
+            )
 
         with np.load(self.index_path, allow_pickle=False) as idx:
-            self.pixels_unics = np.asarray(idx["pixels_unics"], dtype=np.uint32)
+            self.pixels_unics = np.asarray(
+                idx["pixels_unics"], dtype=np.uint32
+            )
             self.inicis = np.asarray(idx["inicis"], dtype=np.int64)
             self.comptes = np.asarray(idx["comptes"], dtype=np.int64)
             nside_arr = np.asarray(idx["nside"]).reshape(-1)
             if len(nside_arr) <= 0:
-                raise ValueError(f"Index '{self.index_path}' does not contain a valid nside value.")
+                raise ValueError(
+                    f"Index '{self.index_path}' does not contain a valid nside value."
+                )
             self.nside = int(nside_arr[0])
 
         self._validate_index()
@@ -139,19 +156,31 @@ class CatalegEstelarHEALPix:
 
     def _validate_index(self) -> None:
         """Validate index shape and monotonic properties."""
-        if self.pixels_unics.ndim != 1 or self.inicis.ndim != 1 or self.comptes.ndim != 1:
+        if (
+            self.pixels_unics.ndim != 1
+            or self.inicis.ndim != 1
+            or self.comptes.ndim != 1
+        ):
             raise ValueError("HEALPix index arrays must be 1D.")
-        if not (len(self.pixels_unics) == len(self.inicis) == len(self.comptes)):
+        if not (
+            len(self.pixels_unics) == len(self.inicis) == len(self.comptes)
+        ):
             raise ValueError("HEALPix index arrays length mismatch.")
-        if len(self.pixels_unics) > 1 and np.any(self.pixels_unics[1:] < self.pixels_unics[:-1]):
-            raise ValueError("HEALPix index pixels_unics must be sorted ascending.")
+        if len(self.pixels_unics) > 1 and np.any(
+            self.pixels_unics[1:] < self.pixels_unics[:-1]
+        ):
+            raise ValueError(
+                "HEALPix index pixels_unics must be sorted ascending."
+            )
         if len(self.comptes) > 0 and np.any(self.comptes < 0):
             raise ValueError("HEALPix index comptes cannot be negative.")
         if not _is_nside_ok(int(self.nside)):
             raise ValueError(f"Invalid NSIDE in index: {self.nside}")
 
     @staticmethod
-    def _empty_result() -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    def _empty_result() -> (
+        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+    ):
         """Return empty arrays with expected dtypes."""
         return (
             np.empty(0, dtype=np.float64),  # ra
@@ -232,7 +261,10 @@ class CatalegEstelarHEALPix:
             stop = start + count
             chunk = self._catalog[start:stop]
             if has_mag_lim:
-                keep = np.asarray(chunk["phot_g_mean_mag"], dtype=np.float32) <= mag_lim
+                keep = (
+                    np.asarray(chunk["phot_g_mean_mag"], dtype=np.float32)
+                    <= mag_lim
+                )
                 if not np.any(keep):
                     continue
                 chunk = chunk[keep]
@@ -242,10 +274,9 @@ class CatalegEstelarHEALPix:
             # query_disc returns intersecting pixels; apply exact angular cone filter.
             ra_rad = np.radians(np.asarray(chunk["ra"], dtype=np.float64))
             dec_rad = np.radians(np.asarray(chunk["dec"], dtype=np.float64))
-            cos_sep = (
-                np.sin(dec_rad) * sin_dec0
-                + np.cos(dec_rad) * cos_dec0 * np.cos(ra_rad - ra0_rad)
-            )
+            cos_sep = np.sin(dec_rad) * sin_dec0 + np.cos(
+                dec_rad
+            ) * cos_dec0 * np.cos(ra_rad - ra0_rad)
             keep_fov = cos_sep >= cos_radius
             if not np.any(keep_fov):
                 continue
@@ -255,7 +286,9 @@ class CatalegEstelarHEALPix:
 
             ra_parts.append(np.asarray(chunk["ra"], dtype=np.float64))
             dec_parts.append(np.asarray(chunk["dec"], dtype=np.float64))
-            mag_parts.append(np.asarray(chunk["phot_g_mean_mag"], dtype=np.float32))
+            mag_parts.append(
+                np.asarray(chunk["phot_g_mean_mag"], dtype=np.float32)
+            )
             bprp_parts.append(np.asarray(chunk["bp_rp"], dtype=np.float32))
 
         if not ra_parts:

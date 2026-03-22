@@ -26,20 +26,61 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description="Stack Gaia ECSV/CSV/ZST files and build runtime artifacts"
     )
-    parser.add_argument("inputs", nargs="+", help="Input Gaia tables (.ecsv, .csv or .zst)")
-    parser.add_argument("--output-dir", default=_default_output_dir(), help="Destination folder")
-    parser.add_argument("--basename", default="stars_catalog", help="Output base name")
-    parser.add_argument("--zst-level", type=int, default=12, help="Zstandard level")
-    parser.add_argument("--write-npz", dest="write_npz", action="store_true", default=False)
-    parser.add_argument("--no-write-npz", dest="write_npz", action="store_false")
-    parser.add_argument("--write-npy", dest="write_npy", action="store_true", default=True)
-    parser.add_argument("--no-write-npy", dest="write_npy", action="store_false")
-    parser.add_argument("--write-zst", dest="write_zst", action="store_true", default=False)
-    parser.add_argument("--no-write-zst", dest="write_zst", action="store_false")
-    parser.add_argument("--build-healpy-index", dest="build_healpy_index", action="store_true", default=False)
-    parser.add_argument("--no-build-healpy-index", dest="build_healpy_index", action="store_false")
-    parser.add_argument("--healpy-nside", type=int, default=512, help="HEALPix NSIDE (power of 2)")
-    parser.add_argument("--healpy-chunk-rows", type=int, default=2_000_000, help="Rows per HEALPix build chunk")
+    parser.add_argument(
+        "inputs", nargs="+", help="Input Gaia tables (.ecsv, .csv or .zst)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        default=_default_output_dir(),
+        help="Destination folder",
+    )
+    parser.add_argument(
+        "--basename", default="stars_catalog", help="Output base name"
+    )
+    parser.add_argument(
+        "--zst-level", type=int, default=12, help="Zstandard level"
+    )
+    parser.add_argument(
+        "--write-npz", dest="write_npz", action="store_true", default=False
+    )
+    parser.add_argument(
+        "--no-write-npz", dest="write_npz", action="store_false"
+    )
+    parser.add_argument(
+        "--write-npy", dest="write_npy", action="store_true", default=True
+    )
+    parser.add_argument(
+        "--no-write-npy", dest="write_npy", action="store_false"
+    )
+    parser.add_argument(
+        "--write-zst", dest="write_zst", action="store_true", default=False
+    )
+    parser.add_argument(
+        "--no-write-zst", dest="write_zst", action="store_false"
+    )
+    parser.add_argument(
+        "--build-healpy-index",
+        dest="build_healpy_index",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--no-build-healpy-index",
+        dest="build_healpy_index",
+        action="store_false",
+    )
+    parser.add_argument(
+        "--healpy-nside",
+        type=int,
+        default=512,
+        help="HEALPix NSIDE (power of 2)",
+    )
+    parser.add_argument(
+        "--healpy-chunk-rows",
+        type=int,
+        default=2_000_000,
+        help="Rows per HEALPix build chunk",
+    )
     args = parser.parse_args()
 
     def _progress(percent: float, message: str) -> None:

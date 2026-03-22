@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+
 try:
     import numpy as np
 except Exception:  # pragma: no cover
@@ -15,10 +16,26 @@ class CanvasSelection:
 
     @staticmethod
     def normalize_planet_key(value):
+        """Executa el metode normalize_planet_key de la classe CanvasSelection.
+
+        Par?metres:
+        - value (Any): Valor del parametre 'value'.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         return str(value or "").strip().lower().replace(" ", "")
 
     @staticmethod
     def extract_star_coords(star_obj):
+        """Executa el metode extract_star_coords de la classe CanvasSelection.
+
+        Par?metres:
+        - star_obj (Any): Valor del parametre 'star_obj'.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         if not isinstance(star_obj, dict):
             return None
         try:
@@ -30,7 +47,19 @@ class CanvasSelection:
             return None
         return ra % 360.0, max(-90.0, min(90.0, dec))
 
-    def pick_sky_object_at(self, sx: float, sy: float, click_radius: float = 20.0):
+    def pick_sky_object_at(
+        self, sx: float, sy: float, click_radius: float = 20.0
+    ):
+        """Executa el metode pick_sky_object_at de la classe CanvasSelection.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+        - click_radius (float): Valor del parametre 'click_radius'.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         c = self._canvas
         x = float(sx)
         y = float(sy)
@@ -40,7 +69,9 @@ class CanvasSelection:
             dx = float(item.get("sx", 0.0)) - x
             dy = float(item.get("sy", 0.0)) - y
             d = math.hypot(dx, dy)
-            rr = max(float(click_radius), float(item.get("radius_px", 0.0)) + 5.0)
+            rr = max(
+                float(click_radius), float(item.get("radius_px", 0.0)) + 5.0
+            )
             if d > rr:
                 continue
             score = d / max(1.0, rr)
@@ -77,6 +108,16 @@ class CanvasSelection:
         return None
 
     def pick_star_at(self, sx: float, sy: float, click_radius: float = 20.0):
+        """Executa el metode pick_star_at de la classe CanvasSelection.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+        - click_radius (float): Valor del parametre 'click_radius'.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         c = self._canvas
         best_star = None
         best_dist = float(click_radius)
@@ -85,10 +126,18 @@ class CanvasSelection:
 
         # Fast path: numpy screen buffers from main-thread renderer.
         try:
-            if np is not None and hasattr(c, "visible_stars_sx") and hasattr(c, "visible_stars_sy"):
+            if (
+                np is not None
+                and hasattr(c, "visible_stars_sx")
+                and hasattr(c, "visible_stars_sy")
+            ):
                 sx_arr = c.visible_stars_sx
                 sy_arr = c.visible_stars_sy
-                if len(sx_arr) > 0 and len(sy_arr) > 0 and len(getattr(c, "visible_stars", [])) > 0:
+                if (
+                    len(sx_arr) > 0
+                    and len(sy_arr) > 0
+                    and len(getattr(c, "visible_stars", [])) > 0
+                ):
                     dists = np.hypot(sx_arr - x, sy_arr - y)
                     if len(dists) > 0:
                         i = int(np.argmin(dists))
@@ -124,6 +173,15 @@ class CanvasSelection:
         return best_star
 
     def pick_target_at(self, sx: float, sy: float):
+        """Executa el metode pick_target_at de la classe CanvasSelection.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         c = self._canvas
         sky_target = self.pick_sky_object_at(float(sx), float(sy))
         if sky_target is not None:
@@ -135,4 +193,3 @@ class CanvasSelection:
         if ngc_target is not None:
             return ngc_target
         return None
-

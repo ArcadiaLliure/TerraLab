@@ -12,7 +12,6 @@ except Exception:  # pragma: no cover
 
 from TerraLab.util.math2d import clamp, lerp, saturate
 
-
 # Blue -> White -> Yellow -> Orange -> Red
 _COLOR_NODES = (
     (-0.5, (155, 187, 255)),
@@ -24,7 +23,9 @@ _COLOR_NODES = (
 )
 
 
-def _mix_rgb(a: Sequence[int], b: Sequence[int], t: float) -> Tuple[int, int, int]:
+def _mix_rgb(
+    a: Sequence[int], b: Sequence[int], t: float
+) -> Tuple[int, int, int]:
     return (
         int(clamp(round(lerp(float(a[0]), float(b[0]), t)), 0.0, 255.0)),
         int(clamp(round(lerp(float(a[1]), float(b[1]), t)), 0.0, 255.0)),
@@ -32,7 +33,9 @@ def _mix_rgb(a: Sequence[int], b: Sequence[int], t: float) -> Tuple[int, int, in
     )
 
 
-def color_from_bp_rp(bp_rp: float, pure_colors: bool = True, desaturate_mix: float = 0.30) -> Tuple[int, int, int]:
+def color_from_bp_rp(
+    bp_rp: float, pure_colors: bool = True, desaturate_mix: float = 0.30
+) -> Tuple[int, int, int]:
     """Convert Gaia BP-RP index into plausible RGB."""
     v = 0.8 if bp_rp is None else float(bp_rp)
     if not math.isfinite(v):

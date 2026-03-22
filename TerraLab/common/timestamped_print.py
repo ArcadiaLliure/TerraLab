@@ -12,7 +12,11 @@ _ENABLED = False
 
 def _now_timestamp() -> str:
     # Local timezone with milliseconds for human-readable latency tracing.
-    return datetime.now(timezone.utc).astimezone().isoformat(timespec="milliseconds")
+    return (
+        datetime.now(timezone.utc)
+        .astimezone()
+        .isoformat(timespec="milliseconds")
+    )
 
 
 def _prefix_lines(message: str, timestamp: str) -> str:
@@ -51,4 +55,3 @@ def enable_timestamped_print() -> None:
         return
     builtins.print = _timestamped_print
     _ENABLED = True
-

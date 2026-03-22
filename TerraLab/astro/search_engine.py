@@ -20,11 +20,29 @@ class AstroSearchEngine:
 
     @staticmethod
     def normalize_key(text: str) -> str:
+        """Executa el metode normalize_key de la classe AstroSearchEngine.
+
+        Par?metres:
+        - text (str): Valor del parametre 'text'.
+
+        Retorna:
+        - str: Valor retornat pel metode.
+        """
         lowered = (text or "").strip().lower()
         folded = unicodedata.normalize("NFKD", lowered)
         return "".join(ch for ch in folded if not unicodedata.combining(ch))
 
     def build_index(self, celestial_objects, named_star_entries, ngc_entries):
+        """Executa el metode build_index de la classe AstroSearchEngine.
+
+        Par?metres:
+        - celestial_objects (Any): Valor del parametre 'celestial_objects'.
+        - named_star_entries (Any): Valor del parametre 'named_star_entries'.
+        - ngc_entries (Any): Valor del parametre 'ngc_entries'.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         self.search_index = {}
         self.search_lookup = {}
 
@@ -72,16 +90,37 @@ class AstroSearchEngine:
                 register_name(name, {"type": "star", "obj": star})
 
         for obj in ngc_entries or []:
-            info = {"type": "ngc", "obj": obj, "name": getattr(obj, "common_name", None) or getattr(obj, "name", "NGC")}
+            info = {
+                "type": "ngc",
+                "obj": obj,
+                "name": getattr(obj, "common_name", None)
+                or getattr(obj, "name", "NGC"),
+            }
             for alias in iter_ngc_aliases(obj):
                 register_name(alias, info)
 
         return self.search_index, self.search_lookup
 
     def names(self) -> list[str]:
+        """Executa el metode names de la classe AstroSearchEngine.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - list[str]: Valor retornat pel metode.
+        """
         return sorted(list(self.search_index.keys()), key=lambda x: x.lower())
 
     def lookup(self, text: str) -> Optional[dict]:
+        """Executa el metode lookup de la classe AstroSearchEngine.
+
+        Par?metres:
+        - text (str): Valor del parametre 'text'.
+
+        Retorna:
+        - Optional[dict]: Valor retornat pel metode.
+        """
         raw = str(text or "").strip()
         if not raw:
             return None
@@ -98,6 +137,15 @@ class AstroSearchEngine:
         return None
 
     def center_on_object(self, widget, info: dict) -> None:
+        """Executa el metode center_on_object de la classe AstroSearchEngine.
+
+        Par?metres:
+        - widget (Any): Valor del parametre 'widget'.
+        - info (dict): Valor del parametre 'info'.
+
+        Retorna:
+        - None.
+        """
         az = alt = None
         selected_payload = None
 
@@ -121,7 +169,11 @@ class AstroSearchEngine:
                     kind = "sun"
                     key = "sun"
                     label = "Sun"
-                elif p_key == "moon" or target_name in ("lluna", "luna", "moon"):
+                elif p_key == "moon" or target_name in (
+                    "lluna",
+                    "luna",
+                    "moon",
+                ):
                     moon = data.get("moon", {})
                     az = moon.get("az")
                     alt = moon.get("alt")
@@ -132,7 +184,10 @@ class AstroSearchEngine:
                     for p in data.get("planets", []):
                         p_key_low = self.normalize_key(p.get("key", ""))
                         p_name_low = self.normalize_key(p.get("name", ""))
-                        if p_key_low.startswith(p_key) or p_name_low == target_name:
+                        if (
+                            p_key_low.startswith(p_key)
+                            or p_name_low == target_name
+                        ):
                             az = p.get("az")
                             alt = p.get("alt")
                             key = p_key_low or p_name_low or key
@@ -149,11 +204,18 @@ class AstroSearchEngine:
             az, alt = widget.get_horizontal_coords(obj.ra_deg, obj.dec_deg)
             selected_payload = {"kind": "ngc", "obj": obj, "info": info}
         else:
-            selected_payload = {"kind": str(info.get("type", "object")), "obj": info.get("obj"), "info": info}
+            selected_payload = {
+                "kind": str(info.get("type", "object")),
+                "obj": info.get("obj"),
+                "info": info,
+            }
 
         if az is not None and alt is not None:
             az %= 360.0
-            if isinstance(selected_payload, dict) and selected_payload.get("kind") == "sky":
+            if (
+                isinstance(selected_payload, dict)
+                and selected_payload.get("kind") == "sky"
+            ):
                 selected_payload["az"] = float(az)
                 selected_payload["alt"] = float(alt)
             widget.target_azimuth = None
@@ -195,11 +257,17 @@ def build_search_index_for_widget(widget) -> None:
     widget.search_index = dict(engine.search_index)
     widget.search_lookup = dict(engine.search_lookup)
     widget._attach_search_completer(engine.names())
-    print(f"[AstroWidget] Search index built: {len(widget.search_index)} objects.")
+    print(
+        f"[AstroWidget] Search index built: {len(widget.search_index)} objects."
+    )
 
 
 def on_search_triggered_for_widget(widget, text_override=None) -> None:
-    raw = text_override if isinstance(text_override, str) else widget.txt_search.text()
+    raw = (
+        text_override
+        if isinstance(text_override, str)
+        else widget.txt_search.text()
+    )
     text = str(raw).strip()
     if not text:
         return
@@ -208,7 +276,9 @@ def on_search_triggered_for_widget(widget, text_override=None) -> None:
     if info:
         center_on_object_for_widget(widget, info)
     else:
-        msg = getTraduction("Astro.SearchNotFound", "Object '{name}' not found in index.").format(name=text)
+        msg = getTraduction(
+            "Astro.SearchNotFound", "Object '{name}' not found in index."
+        ).format(name=text)
         print(f"[AstroWidget] {msg}")
 
 
@@ -222,7 +292,12 @@ def _resolve_named_star_path(path: str | Path | None) -> str:
         p = Path(path)
         if p.is_file():
             return str(p)
-    return str(Path(__file__).resolve().parents[1] / "data" / "stars" / "no_gaia_stars.json")
+    return str(
+        Path(__file__).resolve().parents[1]
+        / "data"
+        / "stars"
+        / "no_gaia_stars.json"
+    )
 
 
 def load_named_star_entries(path: str | Path | None = None):

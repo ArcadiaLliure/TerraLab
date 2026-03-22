@@ -11,7 +11,6 @@ from TerraLab.widgets.physical_math import (
     VisualPhotometryMath,
 )
 
-
 # Compensacio de render de mLim:
 # - 0.0: prioritat a realisme fisic pur.
 # - >0: compensa perdues visuals extra del pipeline de render.
@@ -31,7 +30,9 @@ COPERNICUS_AOD_VARIABLE = "total_aerosol_optical_depth_550nm"
 COPERNICUS_PRESSURE_VARIABLE = "surface_pressure"
 CDS_CACHE_TTL_SECONDS = 12 * 3600
 CDS_CACHE_KEY_AOD = f"{COPERNICUS_CAMS_DATASET}:{COPERNICUS_AOD_VARIABLE}"
-CDS_CACHE_KEY_PRESSURE = f"{COPERNICUS_CAMS_DATASET}:{COPERNICUS_PRESSURE_VARIABLE}"
+CDS_CACHE_KEY_PRESSURE = (
+    f"{COPERNICUS_CAMS_DATASET}:{COPERNICUS_PRESSURE_VARIABLE}"
+)
 CDS_CACHE_KEY_COMBINED = f"{COPERNICUS_CAMS_DATASET}:combined_metrics"
 
 
@@ -41,10 +42,14 @@ def _build_cds_client(timeout_s=15, api_key=None, api_url=None):
     except Exception:
         return None
 
-    config_api_key = str(api_key or get_config_value("copernicus_api_key", "") or "").strip()
+    config_api_key = str(
+        api_key or get_config_value("copernicus_api_key", "") or ""
+    ).strip()
     config_api_url = str(
         api_url
-        or get_config_value("copernicus_api_url", "https://cds.climate.copernicus.eu/api")
+        or get_config_value(
+            "copernicus_api_url", "https://cds.climate.copernicus.eu/api"
+        )
         or "https://cds.climate.copernicus.eu/api"
     ).strip()
 
@@ -55,7 +60,13 @@ def _build_cds_client(timeout_s=15, api_key=None, api_url=None):
 
     # Versions of cdsapi have slightly different constructor args.
     base_kwargs_list = (
-        {"quiet": True, "debug": False, "verify": True, "timeout": timeout_s, "progress": False},
+        {
+            "quiet": True,
+            "debug": False,
+            "verify": True,
+            "timeout": timeout_s,
+            "progress": False,
+        },
         {"quiet": True, "debug": False, "verify": True, "timeout": timeout_s},
         {"quiet": True, "debug": False},
     )
@@ -79,7 +90,9 @@ def _copernicus_cycle_from_utc(now_utc):
     return run_date, run_time, str(max(0, lead_hour))
 
 
-def _download_copernicus_cams_snapshot(lat, lon, now_utc, api_key=None, api_url=None):
+def _download_copernicus_cams_snapshot(
+    lat, lon, now_utc, api_key=None, api_url=None
+):
     client = _build_cds_client(api_key=api_key, api_url=api_url)
     if client is None:
         return None
@@ -112,8 +125,16 @@ def _download_copernicus_cams_snapshot(lat, lon, now_utc, api_key=None, api_url=
         {**base_request, "format": "netcdf"},
         {**analysis_request, "data_format": "netcdf"},
         {**analysis_request, "format": "netcdf"},
-        {**base_request, "variable": ["aod550", "surface_pressure"], "data_format": "netcdf"},
-        {**base_request, "variable": ["aod550", "sp"], "data_format": "netcdf"},
+        {
+            **base_request,
+            "variable": ["aod550", "surface_pressure"],
+            "data_format": "netcdf",
+        },
+        {
+            **base_request,
+            "variable": ["aod550", "sp"],
+            "data_format": "netcdf",
+        },
     ]
 
     workdir = tempfile.mkdtemp(prefix="terralab_cds_")
@@ -124,7 +145,10 @@ def _download_copernicus_cams_snapshot(lat, lon, now_utc, api_key=None, api_url=
                 if os.path.exists(target_path):
                     os.remove(target_path)
                 client.retrieve(COPERNICUS_CAMS_DATASET, request, target_path)
-                if os.path.exists(target_path) and os.path.getsize(target_path) > 0:
+                if (
+                    os.path.exists(target_path)
+                    and os.path.getsize(target_path) > 0
+                ):
                     return target_path
             except Exception:
                 continue
@@ -186,7 +210,9 @@ def _extract_aod_pressure_from_netcdf(path):
             extract_dir = tempfile.mkdtemp(prefix="terralab_cds_zip_")
             cleanup_paths.append(extract_dir)
             with zipfile.ZipFile(path, "r") as zf:
-                nc_members = [m for m in zf.namelist() if str(m).lower().endswith(".nc")]
+                nc_members = [
+                    m for m in zf.namelist() if str(m).lower().endswith(".nc")
+                ]
                 if not nc_members:
                     return None, None
                 extracted_member = zf.extract(nc_members[0], path=extract_dir)
@@ -209,9 +235,19 @@ def _extract_aod_pressure_from_netcdf(path):
                         "aod550",
                     ),
                 )
-                pressure_var = _find_variable(variables, ("surface_pressure", "sp"))
-                aod = _first_scalar_value(aod_var) if aod_var is not None else None
-                pressure_hpa = _first_scalar_value(pressure_var) if pressure_var is not None else None
+                pressure_var = _find_variable(
+                    variables, ("surface_pressure", "sp")
+                )
+                aod = (
+                    _first_scalar_value(aod_var)
+                    if aod_var is not None
+                    else None
+                )
+                pressure_hpa = (
+                    _first_scalar_value(pressure_var)
+                    if pressure_var is not None
+                    else None
+                )
         except Exception:
             from scipy.io import netcdf  # type: ignore
 
@@ -225,10 +261,20 @@ def _extract_aod_pressure_from_netcdf(path):
                         "aod550",
                     ),
                 )
-                pressure_var = _find_variable(variables, ("surface_pressure", "sp"))
-                aod = _first_scalar_value(aod_var.data if aod_var is not None else None) if aod_var is not None else None
+                pressure_var = _find_variable(
+                    variables, ("surface_pressure", "sp")
+                )
+                aod = (
+                    _first_scalar_value(
+                        aod_var.data if aod_var is not None else None
+                    )
+                    if aod_var is not None
+                    else None
+                )
                 pressure_hpa = (
-                    _first_scalar_value(pressure_var.data if pressure_var is not None else None)
+                    _first_scalar_value(
+                        pressure_var.data if pressure_var is not None else None
+                    )
                     if pressure_var is not None
                     else None
                 )
@@ -255,12 +301,16 @@ def _extract_aod_pressure_from_netcdf(path):
     return aod, pressure_hpa
 
 
-def fetch_copernicus_aod_pressure(lat, lon, now_utc, api_key=None, api_url=None):
+def fetch_copernicus_aod_pressure(
+    lat, lon, now_utc, api_key=None, api_url=None
+):
     if not isinstance(now_utc, datetime):
         now_utc = datetime.utcnow()
     elif now_utc.tzinfo is not None:
         now_utc = now_utc.replace(tzinfo=None)
-    snapshot_path = _download_copernicus_cams_snapshot(lat, lon, now_utc, api_key=api_key, api_url=api_url)
+    snapshot_path = _download_copernicus_cams_snapshot(
+        lat, lon, now_utc, api_key=api_key, api_url=api_url
+    )
     if not snapshot_path:
         return None, None
     try:
@@ -301,7 +351,9 @@ def _read_cds_cached_metrics(cache, now_utc):
 
     aod_entry = datasets.get(CDS_CACHE_KEY_AOD)
     pressure_entry = datasets.get(CDS_CACHE_KEY_PRESSURE)
-    if _cache_entry_is_fresh(aod_entry, now_utc) and _cache_entry_is_fresh(pressure_entry, now_utc):
+    if _cache_entry_is_fresh(aod_entry, now_utc) and _cache_entry_is_fresh(
+        pressure_entry, now_utc
+    ):
         return aod_entry.get("value"), pressure_entry.get("value")
     return None, None
 
@@ -312,7 +364,11 @@ def _write_cds_cached_metrics(cache, now_utc, aod, pressure_hpa):
         datasets = dict(cache.get("datasets", {}))
     datasets[CDS_CACHE_KEY_AOD] = {"ts": now_utc, "value": aod}
     datasets[CDS_CACHE_KEY_PRESSURE] = {"ts": now_utc, "value": pressure_hpa}
-    datasets[CDS_CACHE_KEY_COMBINED] = {"ts": now_utc, "aod": aod, "pressure_hpa": pressure_hpa}
+    datasets[CDS_CACHE_KEY_COMBINED] = {
+        "ts": now_utc,
+        "aod": aod,
+        "pressure_hpa": pressure_hpa,
+    }
     return {
         "ts": now_utc,
         "aod": aod,
@@ -322,14 +378,18 @@ def _write_cds_cached_metrics(cache, now_utc, aod, pressure_hpa):
 
 
 def compute_extinction_k(aod, pressure_hpa, k_fallback=0.20):
-    return AtmosphericMath.extinction_k_mag_per_airmass(aod, pressure_hpa, k_fallback=k_fallback)
+    return AtmosphericMath.extinction_k_mag_per_airmass(
+        aod, pressure_hpa, k_fallback=k_fallback
+    )
 
 
 def _is_camera_profile(instrument_profile):
     return InstrumentOpticsMath.is_camera_profile(instrument_profile)
 
 
-def _compute_exit_pupil_mm(aperture_mm, focal_mm, ocular_mm, instrument_profile):
+def _compute_exit_pupil_mm(
+    aperture_mm, focal_mm, ocular_mm, instrument_profile
+):
     if _is_camera_profile(instrument_profile):
         return None
     magnification = InstrumentOpticsMath.magnification(
@@ -345,7 +405,9 @@ def _compute_exit_pupil_mm(aperture_mm, focal_mm, ocular_mm, instrument_profile)
 
 
 def _compute_loss_and_transmission(extinction_k_mag_airmass, airmass_x):
-    loss_mag = AtmosphericMath.loss_mag_from_k_airmass(extinction_k_mag_airmass, airmass_x)
+    loss_mag = AtmosphericMath.loss_mag_from_k_airmass(
+        extinction_k_mag_airmass, airmass_x
+    )
     transmission = AtmosphericMath.transmission_from_loss_mag(loss_mag)
     return loss_mag, transmission
 
@@ -354,7 +416,9 @@ def _compute_bortle_nelm_mag(bortle_class):
     return VisualPhotometryMath.bortle_to_nelm_mag(bortle_class)
 
 
-def _compute_general_render_mlim_mag(bortle_class, render_compensation_mag=DEFAULT_RENDER_MLIM_COMPENSATION_MAG):
+def _compute_general_render_mlim_mag(
+    bortle_class, render_compensation_mag=DEFAULT_RENDER_MLIM_COMPENSATION_MAG
+):
     return VisualPhotometryMath.general_render_limit_mag(
         bortle_class=bortle_class,
         render_compensation_mag=render_compensation_mag,
@@ -403,10 +467,18 @@ def update_telescope_hud(state, allow_remote_fetch=True):
                 api_key=copernicus_api_key,
                 api_url=copernicus_api_url if copernicus_api_url else None,
             )
-            state["_wx_cache"] = _write_cds_cached_metrics(cache, now_utc, aod, pressure_hpa)
-        elif aod is not None and pressure_hpa is not None and isinstance(cache, dict):
+            state["_wx_cache"] = _write_cds_cached_metrics(
+                cache, now_utc, aod, pressure_hpa
+            )
+        elif (
+            aod is not None
+            and pressure_hpa is not None
+            and isinstance(cache, dict)
+        ):
             # Preserve existing structure and refresh flat fields for compatibility.
-            state["_wx_cache"] = _write_cds_cached_metrics(cache, now_utc, aod, pressure_hpa)
+            state["_wx_cache"] = _write_cds_cached_metrics(
+                cache, now_utc, aod, pressure_hpa
+            )
     else:
         # Climate switch OFF => force offline fallback (k_fallback).
         aod = None
@@ -456,7 +528,9 @@ def update_star_rendering_params(state):
     scope_mlim = float(state.get("scope_mlim", 6.0))
     manual_mlim = float(state.get("manual_mlim", 6.0))
     render_compensation_mag = float(
-        state.get("render_compensation_mag", DEFAULT_RENDER_MLIM_COMPENSATION_MAG)
+        state.get(
+            "render_compensation_mag", DEFAULT_RENDER_MLIM_COMPENSATION_MAG
+        )
     )
 
     if auto_bortle:
@@ -470,8 +544,12 @@ def update_star_rendering_params(state):
 
     general_mlim = max(-12.0, min(9.0, general_mlim))
     state["general_mlim_physical"] = float(physical_nelm)
-    state["general_mlim_compensation_mag"] = float(render_compensation_mag if auto_bortle else 0.0)
-    state["general_mlim_compensation_description"] = RENDER_MLIM_COMPENSATION_DESCRIPTION
+    state["general_mlim_compensation_mag"] = float(
+        render_compensation_mag if auto_bortle else 0.0
+    )
+    state["general_mlim_compensation_description"] = (
+        RENDER_MLIM_COMPENSATION_DESCRIPTION
+    )
     state["general_mlim"] = general_mlim
     state["scope_mlim"] = scope_mlim
     state["render_mag_limit"] = scope_mlim if scope_enabled else general_mlim

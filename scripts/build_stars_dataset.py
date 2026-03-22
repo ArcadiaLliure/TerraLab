@@ -34,7 +34,13 @@ except Exception:  # pragma: no cover
 
 REQUIRED_COLS = ("ra", "dec", "phot_g_mean_mag", "bp_rp")
 OPTIONAL_COLS = ("pmra", "pmdec", "parallax", "source_id")
-JSON_SUPPLEMENT_PATH = Path(__file__).resolve().parents[1] / "TerraLab" / "data" / "stars" / "gaia_stars.json"
+JSON_SUPPLEMENT_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "TerraLab"
+    / "data"
+    / "stars"
+    / "gaia_stars.json"
+)
 
 
 def _read_with_astropy(path: Path) -> Dict[str, np.ndarray]:
@@ -81,7 +87,10 @@ def normalize_arrays(raw: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
     ra = np.asarray(raw["ra"], dtype=np.float64)
     dec = np.asarray(raw["dec"], dtype=np.float64)
     mag = np.asarray(raw["phot_g_mean_mag"], dtype=np.float32)
-    bp_rp = np.asarray(raw.get("bp_rp", np.full(len(mag), 0.8, dtype=np.float32)), dtype=np.float32)
+    bp_rp = np.asarray(
+        raw.get("bp_rp", np.full(len(mag), 0.8, dtype=np.float32)),
+        dtype=np.float32,
+    )
 
     if len(bp_rp) != len(mag):
         bp_rp = np.full(len(mag), 0.8, dtype=np.float32)
@@ -103,14 +112,18 @@ def normalize_arrays(raw: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         if len(arr_np) != len(valid):
             continue
         if key == "source_id":
-            out[key] = np.nan_to_num(arr_np, nan=-1).astype(np.int64, copy=False)[valid]
+            out[key] = np.nan_to_num(arr_np, nan=-1).astype(
+                np.int64, copy=False
+            )[valid]
         else:
             out[key] = np.asarray(arr_np, dtype=np.float32)[valid]
 
     return out
 
 
-def concat_chunks(chunks: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
+def concat_chunks(
+    chunks: List[Dict[str, np.ndarray]],
+) -> Dict[str, np.ndarray]:
     keys = set()
     for c in chunks:
         keys.update(c.keys())
@@ -125,7 +138,9 @@ def concat_chunks(chunks: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
     return out
 
 
-def _read_named_star_json_supplement(path: Path) -> Dict[str, np.ndarray] | None:
+def _read_named_star_json_supplement(
+    path: Path,
+) -> Dict[str, np.ndarray] | None:
     # Temporary patch:
     # gaia_stars.json is used to backfill missing bright/named stars while the ECSV
     # source is incomplete. This must remain optional: if the JSON disappears later,
@@ -167,7 +182,11 @@ def _read_named_star_json_supplement(path: Path) -> Dict[str, np.ndarray] | None
             continue
         raw[key] = np.asarray(
             [
-                row[pos] if isinstance(row, (list, tuple)) and pos < len(row) else np.nan
+                (
+                    row[pos]
+                    if isinstance(row, (list, tuple)) and pos < len(row)
+                    else np.nan
+                )
                 for row in rows
             ],
             dtype=object,
@@ -177,7 +196,9 @@ def _read_named_star_json_supplement(path: Path) -> Dict[str, np.ndarray] | None
     return normalize_arrays(raw)
 
 
-def _dedupe_by_source_id_first(arrays: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+def _dedupe_by_source_id_first(
+    arrays: Dict[str, np.ndarray],
+) -> Dict[str, np.ndarray]:
     source_id = arrays.get("source_id")
     if source_id is None:
         return arrays
@@ -196,7 +217,9 @@ def _dedupe_by_source_id_first(arrays: Dict[str, np.ndarray]) -> Dict[str, np.nd
     _, first_pos = np.unique(valid_sid, return_index=True)
     keep_valid_idx = valid_idx[first_pos]
     invalid_idx = np.where(~valid_mask)[0]
-    keep_idx = np.sort(np.concatenate((keep_valid_idx, invalid_idx))).astype(np.int64, copy=False)
+    keep_idx = np.sort(np.concatenate((keep_valid_idx, invalid_idx))).astype(
+        np.int64, copy=False
+    )
 
     if len(keep_idx) == n:
         return arrays
@@ -213,7 +236,9 @@ def _dedupe_by_source_id_first(arrays: Dict[str, np.ndarray]) -> Dict[str, np.nd
 
 def compress_npz_to_zst(npz_path: Path, zst_path: Path, level: int) -> None:
     if zstd is None:
-        raise RuntimeError("zstandard is required to create .zst dataset. Install with: pip install zstandard")
+        raise RuntimeError(
+            "zstandard is required to create .zst dataset. Install with: pip install zstandard"
+        )
 
     cctx = zstd.ZstdCompressor(level=level)
     with npz_path.open("rb") as src, zst_path.open("wb") as dst:
@@ -222,10 +247,14 @@ def compress_npz_to_zst(npz_path: Path, zst_path: Path, level: int) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build TerraLab stars dataset ECSV -> ZST")
+    parser = argparse.ArgumentParser(
+        description="Build TerraLab stars dataset ECSV -> ZST"
+    )
     parser.add_argument(
         "--stars-dir",
-        default=str(Path(__file__).resolve().parents[1] / "gaia_stars" / "ecsv"),
+        default=str(
+            Path(__file__).resolve().parents[1] / "gaia_stars" / "ecsv"
+        ),
         help="Directory containing *.ecsv files",
     )
     parser.add_argument("--zstd-level", type=int, default=12)
@@ -243,7 +272,9 @@ def main() -> None:
     chunks: List[Dict[str, np.ndarray]] = []
     total_rows = 0
 
-    print(f"[build_stars_dataset] Reading {len(ecsv_files)} ECSV file(s) from {stars_dir}")
+    print(
+        f"[build_stars_dataset] Reading {len(ecsv_files)} ECSV file(s) from {stars_dir}"
+    )
     for path in ecsv_files:
         t_file = time.time()
         raw = read_ecsv_columns(path)
@@ -266,7 +297,9 @@ def main() -> None:
             "[build_stars_dataset] Temporary named-star supplement appended: "
             f"{len(supplement['ra'])} rows from {JSON_SUPPLEMENT_PATH.name}"
         )
-    print(f"[build_stars_dataset] Stage done: supplement ({time.time()-t_stage:.2f}s)")
+    print(
+        f"[build_stars_dataset] Stage done: supplement ({time.time()-t_stage:.2f}s)"
+    )
 
     print(
         "[build_stars_dataset] Stage: concatenate chunks "
@@ -284,7 +317,9 @@ def main() -> None:
         print("[build_stars_dataset] Stage: deduplicate by source_id")
         t_stage = time.time()
         merged = _dedupe_by_source_id_first(merged)
-        print(f"[build_stars_dataset] Stage done: deduplicate ({time.time()-t_stage:.2f}s)")
+        print(
+            f"[build_stars_dataset] Stage done: deduplicate ({time.time()-t_stage:.2f}s)"
+        )
     merged_rows = len(merged.get("ra", []))
     if merged_rows == 0:
         raise SystemExit("No rows after normalization")
