@@ -1,6 +1,8 @@
 import abc
 import math
 import os
+import threading
+import sys
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -10,6 +12,7 @@ from TerraLab.common.locks import RASTERIO_LOCK
 
 CRS_GEOGRAPHIC = "EPSG:4326"
 CRS_TERRAIN_INTERNAL = "EPSG:25831"
+PYPROJ_TRANSFORMER_LOCK = threading.Lock()
 
 
 def resolve_primary_dem_tiff_path(tiles_dir: str) -> Optional[str]:
@@ -115,9 +118,10 @@ class RasterProvider(abc.ABC):
             Tuple[float, float]: `(x_internal, y_internal)` in `EPSG:25831`.
         """
         if not hasattr(self, "_tr_geo_to_internal"):
-            self._tr_geo_to_internal = Transformer.from_crs(
-                CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL, always_xy=True
-            )
+            with PYPROJ_TRANSFORMER_LOCK:
+                self._tr_geo_to_internal = Transformer.from_crs(
+                    CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL, always_xy=True
+                )
         x_internal, y_internal = self._tr_geo_to_internal.transform(lon, lat)
         return float(x_internal), float(y_internal)
 
@@ -134,9 +138,10 @@ class RasterProvider(abc.ABC):
         """
         try:
             if not hasattr(self, "_tr_internal_to_geo"):
-                self._tr_internal_to_geo = Transformer.from_crs(
-                    CRS_TERRAIN_INTERNAL, CRS_GEOGRAPHIC, always_xy=True
-                )
+                with PYPROJ_TRANSFORMER_LOCK:
+                    self._tr_internal_to_geo = Transformer.from_crs(
+                        CRS_TERRAIN_INTERNAL, CRS_GEOGRAPHIC, always_xy=True
+                    )
             lon, lat = self._tr_internal_to_geo.transform(x, y)
             if (
                 math.isnan(lat)
@@ -209,14 +214,20 @@ class AscRasterProvider(RasterProvider):
         """
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        from TerraLab.common.utils import getTraduction
+        from TerraLab.common.utils import getTraduction, get_config_value
 
         if not self.index:
             return
 
         tiles_needed = self.index.get_overlapping_tiles(cx, cy, radius)
         total_tiles = len(tiles_needed)
-        n_tile_workers = min(8, total_tiles or 1)
+        safe_tile_loading = bool(
+            get_config_value("performance.safe_dem_tile_loading", True)
+        )
+        if safe_tile_loading and os.name == "nt" and sys.version_info >= (3, 13):
+            n_tile_workers = 1
+        else:
+            n_tile_workers = min(8, total_tiles or 1)
         loaded_count = 0
         last_reported_percent = -1
 
@@ -322,9 +333,10 @@ class TiffRasterWindowProvider(RasterProvider):
             self.is_geo = True
 
         self.dest_crs_str = dest_crs
-        self._tr_internal_to_native = Transformer.from_crs(
-            CRS_TERRAIN_INTERNAL, self.dest_crs_str, always_xy=True
-        )
+        with PYPROJ_TRANSFORMER_LOCK:
+            self._tr_internal_to_native = Transformer.from_crs(
+                CRS_TERRAIN_INTERNAL, self.dest_crs_str, always_xy=True
+            )
         self.ds_transform = self.dataset.transform
         self.ds_width = self.dataset.width
         self.ds_height = self.dataset.height

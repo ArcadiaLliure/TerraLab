@@ -21,7 +21,11 @@ from rasterio.windows import from_bounds
 
 from TerraLab.common.locks import RASTERIO_LOCK
 from TerraLab.light_pollution.bortle import sqm_to_bortle_class
-from TerraLab.terrain.providers import CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL
+from TerraLab.terrain.providers import (
+    CRS_GEOGRAPHIC,
+    CRS_TERRAIN_INTERNAL,
+    PYPROJ_TRANSFORMER_LOCK,
+)
 
 
 class LightPollutionSampler:
@@ -183,18 +187,43 @@ class LightPollutionSampler:
         terrain_crs_final = str(
             terrain_crs or self._terrain_crs_for_transform or self.terrain_crs
         )
+        resolved_src_key = str(resolved_src_crs)
+        terrain_key = str(terrain_crs_final)
+
+        with self._lock:
+            cached_src_crs = self._src_crs
+            cached_src_key = str(cached_src_crs) if cached_src_crs is not None else ""
+            cached_terrain_key = str(self._terrain_crs_for_transform or "")
+            if (
+                cached_src_key == resolved_src_key
+                and cached_terrain_key == terrain_key
+                and self._tr_geo_to_src is not None
+                and self._tr_terrain_to_src is not None
+            ):
+                return {
+                    "src_crs": cached_src_crs,
+                    "is_geographic": bool(self._is_geographic),
+                    "terrain_crs": terrain_crs_final,
+                    "tr_geo_to_src": self._tr_geo_to_src,
+                    "tr_terrain_to_src": self._tr_terrain_to_src,
+                }
+
+        with PYPROJ_TRANSFORMER_LOCK:
+            tr_geo_to_src = Transformer.from_crs(
+                CRS_GEOGRAPHIC, resolved_src_crs, always_xy=True
+            )
+            tr_terrain_to_src = Transformer.from_crs(
+                terrain_crs_final, resolved_src_crs, always_xy=True
+            )
+
         return {
             "src_crs": resolved_src_crs,
             "is_geographic": bool(
                 getattr(resolved_src_crs, "is_geographic", False)
             ),
             "terrain_crs": terrain_crs_final,
-            "tr_geo_to_src": Transformer.from_crs(
-                CRS_GEOGRAPHIC, resolved_src_crs, always_xy=True
-            ),
-            "tr_terrain_to_src": Transformer.from_crs(
-                terrain_crs_final, resolved_src_crs, always_xy=True
-            ),
+            "tr_geo_to_src": tr_geo_to_src,
+            "tr_terrain_to_src": tr_terrain_to_src,
         }
 
     def _update_context_locked(self, context: dict) -> None:
@@ -203,6 +232,30 @@ class LightPollutionSampler:
         self._tr_geo_to_src = context["tr_geo_to_src"]
         self._tr_terrain_to_src = context["tr_terrain_to_src"]
         self._terrain_crs_for_transform = str(context["terrain_crs"])
+
+    def _get_cached_context(
+        self,
+        terrain_crs: Optional[str] = None,
+        require_terrain_transform: bool = False,
+    ) -> Optional[dict]:
+        terrain_crs_final = str(
+            terrain_crs or self._terrain_crs_for_transform or self.terrain_crs
+        )
+        with self._lock:
+            if self._src_crs is None or self._tr_geo_to_src is None:
+                return None
+            if require_terrain_transform:
+                if self._tr_terrain_to_src is None:
+                    return None
+                if str(self._terrain_crs_for_transform or "") != terrain_crs_final:
+                    return None
+            return {
+                "src_crs": self._src_crs,
+                "is_geographic": bool(self._is_geographic),
+                "terrain_crs": str(self._terrain_crs_for_transform or terrain_crs_final),
+                "tr_geo_to_src": self._tr_geo_to_src,
+                "tr_terrain_to_src": self._tr_terrain_to_src,
+            }
 
     def _radius_to_raster_units(self, radius_m: float, is_geographic: bool) -> float:
         if is_geographic:
@@ -401,7 +454,9 @@ class LightPollutionSampler:
 
             with RASTERIO_LOCK:
                 with rasterio.open(self.raster_path) as src:
-                    context = self._build_runtime_context(src)
+                    context = self._get_cached_context()
+                    if context is None:
+                        context = self._build_runtime_context(src)
                     x_src, y_src = context["tr_geo_to_src"].transform(lon, lat)
                     self._debug(
                         f"estimate direct lat/lon=({lat:.6f},{lon:.6f}) -> "
@@ -567,7 +622,14 @@ class LightPollutionSampler:
             )
             with RASTERIO_LOCK:
                 with rasterio.open(self.raster_path) as src:
-                    context = self._build_runtime_context(src, terrain_crs=input_crs)
+                    context = self._get_cached_context(
+                        terrain_crs=input_crs,
+                        require_terrain_transform=True,
+                    )
+                    if context is None:
+                        context = self._build_runtime_context(
+                            src, terrain_crs=input_crs
+                        )
                     x_src, y_src = context["tr_terrain_to_src"].transform(
                         x_terrain, y_terrain
                     )
@@ -616,7 +678,9 @@ class LightPollutionSampler:
 
             with RASTERIO_LOCK:
                 with rasterio.open(self.raster_path) as src:
-                    context = self._build_runtime_context(src)
+                    context = self._get_cached_context()
+                    if context is None:
+                        context = self._build_runtime_context(src)
                     x_src, y_src = context["tr_geo_to_src"].transform(lon, lat)
                     with self._lock:
                         self._update_context_locked(context)
@@ -666,7 +730,14 @@ class LightPollutionSampler:
 
             with RASTERIO_LOCK:
                 with rasterio.open(self.raster_path) as src:
-                    context = self._build_runtime_context(src, terrain_crs=input_crs)
+                    context = self._get_cached_context(
+                        terrain_crs=input_crs,
+                        require_terrain_transform=True,
+                    )
+                    if context is None:
+                        context = self._build_runtime_context(
+                            src, terrain_crs=input_crs
+                        )
                     x_src, y_src = context["tr_terrain_to_src"].transform(
                         x_terrain, y_terrain
                     )

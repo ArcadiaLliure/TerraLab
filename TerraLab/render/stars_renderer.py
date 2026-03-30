@@ -210,9 +210,18 @@ def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
             sun_alt_deg=-18.0,
         )
         auto_bortle = bool(getattr(pw, "is_auto_bortle", True))
+        light_pollution_enabled = bool(
+            getattr(pw, "light_pollution_enabled", True)
+        )
         if auto_bortle:
             bortle_class = max(
-                1.0, min(9.0, float(getattr(pw, "auto_bortle_estimate", 1)))
+                1.0,
+                min(
+                    9.0,
+                    float(getattr(pw, "auto_bortle_estimate", 1))
+                    if light_pollution_enabled
+                    else 1.0,
+                ),
             )
         else:
             bortle_class = max(
@@ -980,6 +989,14 @@ class StarsRenderer:
         else:
             ut_key = int(round(ut_hour * 3600.0))
 
+        year_utc = getattr(state, "year_utc", getattr(state, "year", None))
+        try:
+            year_utc = int(year_utc) if year_utc is not None else None
+            if int(year_utc) <= 0:
+                year_utc = None
+        except Exception:
+            year_utc = None
+
         try:
             ptr_ra = int(np.asarray(ra_all).__array_interface__["data"][0])
             ptr_dec = int(np.asarray(dec_all).__array_interface__["data"][0])
@@ -999,6 +1016,7 @@ class StarsRenderer:
             int(round(float(getattr(state, "latitude", 0.0)) * 1000.0)),
             int(round(float(getattr(state, "longitude", 0.0)) * 1000.0)),
             int(getattr(state, "day_of_year", 0)),
+            int(year_utc) if year_utc is not None else 0,
             ut_key,
         )
 
@@ -1018,6 +1036,7 @@ class StarsRenderer:
             longitude_deg=float(getattr(state, "longitude", 0.0)),
             ut_hour=ut_hour,
             day_of_year=int(getattr(state, "day_of_year", 0)),
+            year=year_utc,
         )
         if alt_deg is None:
             return None, None
@@ -1336,10 +1355,10 @@ class StarsRenderer:
         scope_allow_sync_index_build = bool(
             extras.get("scope_allow_sync_index_build", False)
         )
-        allow_sync_scope_index_build = bool(
-            scope_allow_sync_index_build
-            or int(len(ra_all)) <= int(scope_sync_index_build_max_rows)
-        )
+        # Never auto-enable synchronous scope index builds from paint/render
+        # heuristics. Sync builds here can freeze the UI during interactions.
+        # Keep sync path available only behind explicit config opt-in.
+        allow_sync_scope_index_build = bool(scope_allow_sync_index_build)
 
         try:
             pending_cap_interaction = int(

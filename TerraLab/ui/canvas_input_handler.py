@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import time
 
-from PyQt5.QtCore import QRectF, Qt
-from PyQt5.QtWidgets import QWidget
+from PyQt5.QtCore import QRectF, Qt, QTimer
+from PyQt5.QtWidgets import QApplication, QWidget
 
 from TerraLab.common.utils import set_config_value
 from TerraLab.widgets.spherical_math import screen_to_sky
@@ -40,7 +40,7 @@ class CanvasInputHandler:
                 else:
                     c._drawing_ctrl_pan_started = False
                     c._drawing_ctrl_click_pending = False
-                    ut_hour, day_of_year_utc, _, _ = (
+                    ut_hour, day_of_year_utc, year_utc, _ = (
                         c._get_current_utc_context()
                     )
                     c.constellation_controller.on_left_click(
@@ -48,7 +48,7 @@ class CanvasInputHandler:
                         event.y(),
                         c.project_universal_stereo,
                         lambda ra, dec: c._ra_dec_to_alt_az(
-                            ra, dec, ut_hour, day_of_year_utc
+                            ra, dec, ut_hour, day_of_year_utc, year_utc=year_utc
                         ),
                         c._pick_star_at,
                         force_add=bool(event.modifiers() & Qt.ShiftModifier),
@@ -61,13 +61,13 @@ class CanvasInputHandler:
                     c.update()
             elif event.button() == Qt.RightButton:
                 c.setFocus()
-                ut_hour, day_of_year_utc, _, _ = c._get_current_utc_context()
+                ut_hour, day_of_year_utc, year_utc, _ = c._get_current_utc_context()
                 c.constellation_controller.on_right_click(
                     event.x(),
                     event.y(),
                     c.project_universal_stereo,
                     lambda ra, dec: c._ra_dec_to_alt_az(
-                        ra, dec, ut_hour, day_of_year_utc
+                        ra, dec, ut_hour, day_of_year_utc, year_utc=year_utc
                     ),
                 )
                 if hasattr(c.parent_widget, "_sync_constellation_controls"):
@@ -80,8 +80,7 @@ class CanvasInputHandler:
             if event.button() == Qt.LeftButton:
                 c.press_pos = event.pos()
                 if event.modifiers() & Qt.ControlModifier:
-                    # Ctrl + drag: move camera.
-                    # Disable camera lock but keep target tracking active for the scope itself.
+                    # Ctrl + drag: només càmera. La mira es manté fixa.
                     c.scope_camera_lock_to_target = False
                     c.scope_controller.end_drag()
                     c.dragging = True
@@ -89,19 +88,69 @@ class CanvasInputHandler:
                     c.last_mouse_y = event.y()
                     c._scope_camera_pan_started = False
                     c._scope_camera_click_pending = True
+                    c._scope_combined_drag_active = False
+                    c._scope_reticle_drag_armed = False
                 else:
                     # Drag without Ctrl: move scope reticle.
-                    # Manual reticle movement unlocks reticle tracking from current Goto target.
+                    # Manual reticle movement exits any active target-lock flow.
+                    # This prevents a previous Goto target from re-steering the camera
+                    # right after the user manually centers the reticle on a new star.
+                    if getattr(c, "selected_target", None) is not None:
+                        c._set_selected_target(None)
                     c.scope_reticle_lock_to_target = False
+                    c.scope_camera_lock_to_target = False
                     c.dragging = False
                     c._scope_camera_pan_started = False
                     c._scope_camera_click_pending = False
+                    c._scope_combined_drag_active = False
+                    c._scope_reticle_drag_armed = True
+                    c.last_mouse_x = event.x()
+                    c.last_mouse_y = event.y()
                     # Avoid reusing a previously camera-throttled star frame while starting reticle drag.
                     c._cached_star_image = None
-                    c.scope_controller.handle_click(
+                    click_sky = screen_to_sky(
+                        float(event.x()),
+                        float(event.y()),
+                        c.unproject_stereo,
+                    )
+                    before_center = getattr(c.scope_controller, "center", None)
+                    log_fn = getattr(c, "_goto_debug_log", None)
+                    debug_enabled_fn = getattr(c, "_goto_debug_enabled", None)
+                    debug_enabled = (
+                        bool(debug_enabled_fn())
+                        if callable(debug_enabled_fn)
+                        else False
+                    )
+                    if callable(log_fn) and debug_enabled:
+                        log_fn(
+                            "scope_left_press "
+                            f"s=({event.x():.1f},{event.y():.1f}) "
+                            f"sky={click_sky} "
+                            f"before_center={before_center} "
+                            f"cam=({float(getattr(c, 'elevation_angle', 0.0)):.5f},"
+                            f"{float(getattr(c, 'azimuth_offset', 0.0)):.5f})"
+                        )
+                    handled = c.scope_controller.handle_click(
                         event.x(), event.y(), c.unproject_stereo
                     )
-                    c.scope_controller.start_drag(event.x(), event.y())
+                    c._mark_scope_interaction(0.25)
+                    if bool(handled):
+                        parent_widget = getattr(c, "parent_widget", None)
+                        if parent_widget is not None and hasattr(
+                            parent_widget, "_ensure_scope_catalog_loaded"
+                        ):
+                            QTimer.singleShot(
+                                0,
+                                lambda w=parent_widget: w._ensure_scope_catalog_loaded(
+                                    force_now=True
+                                ),
+                            )
+                    if callable(log_fn) and debug_enabled:
+                        log_fn(
+                            "scope_left_press_result "
+                            f"handled={bool(handled)} "
+                            f"after_center={getattr(c.scope_controller, 'center', None)}"
+                        )
                 c.update()
             event.accept()
             return
@@ -167,6 +216,24 @@ class CanvasInputHandler:
             return
 
         if c.scope_mode_enabled():
+            # Failsafe: if mouse release is missed (focus change, OS menu, etc.),
+            # clear stale drag flags so scope GoTo/reticle control cannot remain stuck.
+            try:
+                left_pressed = bool(
+                    int(QApplication.mouseButtons()) & int(Qt.LeftButton)
+                )
+            except Exception:
+                left_pressed = True
+            if not left_pressed:
+                if bool(getattr(c.scope_controller, "dragging", False)):
+                    c.scope_controller.end_drag()
+                if bool(getattr(c, "dragging", False)):
+                    c.dragging = False
+                c._scope_camera_pan_started = False
+                c._scope_camera_click_pending = False
+                c._scope_combined_drag_active = False
+                c._scope_reticle_drag_armed = False
+
             if c.dragging:
                 dx = event.x() - c.last_mouse_x
                 dy = event.y() - c.last_mouse_y
@@ -178,11 +245,24 @@ class CanvasInputHandler:
                     c.elevation_angle += dy * sensitivity
                     c.elevation_angle = max(-90, min(90, c.elevation_angle))
                     c._mark_scope_interaction(0.18)
+                # En mode combinat, la mateixa mira segueix el cursor.
+                if bool(getattr(c, "_scope_combined_drag_active", False)):
+                    c.scope_controller.drag_move(
+                        event.x(), event.y(), c.unproject_stereo
+                    )
                 c.last_mouse_x = event.x()
                 c.last_mouse_y = event.y()
                 c.update()
                 event.accept()
                 return
+            if left_pressed and bool(getattr(c, "_scope_reticle_drag_armed", False)):
+                try:
+                    drag_delta = int((event.pos() - c.press_pos).manhattanLength())
+                except Exception:
+                    drag_delta = 0
+                if drag_delta >= 3:
+                    c.scope_controller.start_drag(event.x(), event.y())
+                    c._scope_reticle_drag_armed = False
             if c.scope_controller.drag_move(
                 event.x(), event.y(), c.unproject_stereo
             ):
@@ -250,7 +330,7 @@ class CanvasInputHandler:
                 c._drawing_ctrl_click_pending = False
                 c._cached_trail_image = None
                 if was_ctrl_click and event.button() == Qt.LeftButton:
-                    ut_hour, day_of_year_utc, _, _ = (
+                    ut_hour, day_of_year_utc, year_utc, _ = (
                         c._get_current_utc_context()
                     )
                     c.constellation_controller.on_left_click(
@@ -258,7 +338,7 @@ class CanvasInputHandler:
                         event.y(),
                         c.project_universal_stereo,
                         lambda ra, dec: c._ra_dec_to_alt_az(
-                            ra, dec, ut_hour, day_of_year_utc
+                            ra, dec, ut_hour, day_of_year_utc, year_utc=year_utc
                         ),
                         c._pick_star_at,
                         force_add=False,
@@ -273,6 +353,7 @@ class CanvasInputHandler:
             return
 
         if c.scope_mode_enabled():
+            c._scope_reticle_drag_armed = False
             if event.button() == Qt.RightButton:
                 c._show_object_context_menu(event)
                 event.accept()
@@ -285,12 +366,15 @@ class CanvasInputHandler:
                 c.dragging = False
                 c._scope_camera_pan_started = False
                 c._scope_camera_click_pending = False
+                c._scope_combined_drag_active = False
+                c.scope_controller.end_drag()
                 # Invalidate trail cache only when movement STOPS to trigger a clean bake.
                 c._cached_trail_image = None
                 if (
                     was_scope_click
                     and event.button() == Qt.LeftButton
                     and (event.pos() - c.press_pos).manhattanLength() < 5
+                    and bool(event.modifiers() & Qt.ShiftModifier)
                 ):
                     c._set_selected_target(
                         c._pick_target_at(event.x(), event.y())
@@ -299,11 +383,45 @@ class CanvasInputHandler:
                 event.accept()
                 return
             c.scope_controller.end_drag()
+            c._scope_combined_drag_active = False
             if (
                 event.button() == Qt.LeftButton
                 and (event.pos() - c.press_pos).manhattanLength() < 5
             ):
-                c._set_selected_target(c._pick_target_at(event.x(), event.y()))
+                # Scope-click must stay responsive: avoid expensive pick/resolve work
+                # on every click. Left-click is primarily for recentering reticle.
+                # Explicit object selection remains available with Shift+click or
+                # right-click context menu.
+                if bool(event.modifiers() & Qt.ShiftModifier):
+                    picked_target = c._pick_target_at(event.x(), event.y())
+                    log_fn = getattr(c, "_goto_debug_log", None)
+                    debug_enabled_fn = getattr(c, "_goto_debug_enabled", None)
+                    debug_enabled = (
+                        bool(debug_enabled_fn())
+                        if callable(debug_enabled_fn)
+                        else False
+                    )
+                    if callable(log_fn) and debug_enabled:
+                        target_repr_fn = getattr(c, "_target_debug_repr", None)
+                        target_repr = (
+                            target_repr_fn(picked_target)
+                            if callable(target_repr_fn)
+                            else repr(picked_target)
+                        )
+                        log_fn(
+                            "scope_left_release_select "
+                            f"target={target_repr} "
+                            f"locks_before(cam={bool(getattr(c, 'scope_camera_lock_to_target', False))},"
+                            f"ret={bool(getattr(c, 'scope_reticle_lock_to_target', False))})"
+                        )
+                    c._set_selected_target(picked_target)
+                    if callable(log_fn) and debug_enabled:
+                        log_fn(
+                            "scope_left_release_after_select "
+                            f"locks_after(cam={bool(getattr(c, 'scope_camera_lock_to_target', False))},"
+                            f"ret={bool(getattr(c, 'scope_reticle_lock_to_target', False))}) "
+                            f"scope_center={getattr(c.scope_controller, 'center', None)}"
+                        )
             c.update()
             event.accept()
             return
@@ -356,13 +474,13 @@ class CanvasInputHandler:
                 and (not c.scope_mode_enabled())
                 and (not c.measurement_tool_active())
             ):
-                ut_hour, day_of_year_utc, _, _ = c._get_current_utc_context()
+                ut_hour, day_of_year_utc, year_utc, _ = c._get_current_utc_context()
                 consumed = c.constellation_controller.on_left_click(
                     event.x(),
                     event.y(),
                     c.project_universal_stereo,
                     lambda ra, dec: c._ra_dec_to_alt_az(
-                        ra, dec, ut_hour, day_of_year_utc
+                        ra, dec, ut_hour, day_of_year_utc, year_utc=year_utc
                     ),
                     c._pick_star_at,
                     force_add=False,
@@ -394,13 +512,13 @@ class CanvasInputHandler:
         if c.drawing_mode_enabled():
             if event.button() == Qt.LeftButton:
                 c.setFocus()
-                ut_hour, day_of_year_utc, _, _ = c._get_current_utc_context()
+                ut_hour, day_of_year_utc, year_utc, _ = c._get_current_utc_context()
                 action = c.constellation_controller.on_double_click(
                     event.x(),
                     event.y(),
                     c.project_universal_stereo,
                     lambda ra, dec: c._ra_dec_to_alt_az(
-                        ra, dec, ut_hour, day_of_year_utc
+                        ra, dec, ut_hour, day_of_year_utc, year_utc=year_utc
                     ),
                     additive_select=bool(
                         event.modifiers() & Qt.ControlModifier
@@ -445,13 +563,13 @@ class CanvasInputHandler:
             and (not c.measurement_tool_active())
         ):
             c.setFocus()
-            ut_hour, day_of_year_utc, _, _ = c._get_current_utc_context()
+            ut_hour, day_of_year_utc, year_utc, _ = c._get_current_utc_context()
             action = c.constellation_controller.on_double_click(
                 event.x(),
                 event.y(),
                 c.project_universal_stereo,
                 lambda ra, dec: c._ra_dec_to_alt_az(
-                    ra, dec, ut_hour, day_of_year_utc
+                    ra, dec, ut_hour, day_of_year_utc, year_utc=year_utc
                 ),
                 additive_select=bool(event.modifiers() & Qt.ControlModifier),
                 allow_when_disabled=True,

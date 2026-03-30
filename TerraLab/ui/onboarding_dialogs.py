@@ -15,6 +15,7 @@ from PyQt5.QtCore import (
     QProcess,
     QProcessEnvironment,
     Qt,
+    QTimer,
     QThread,
     QUrl,
     pyqtSignal,
@@ -42,7 +43,11 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from TerraLab.common.utils import getTraduction, set_config_value
+from TerraLab.common.utils import (
+    getTraduction,
+    get_config_value,
+    set_config_value,
+)
 from TerraLab.data.assets_manager import AssetManager
 
 _ASTRO_DIALOG_STYLE = """
@@ -222,10 +227,15 @@ class AssetOnboardingDialog(QDialog):
         self._gaia_tap_state_path: Optional[Path] = None
         self._gaia_visible_ready = False
         self._gaia_process_detached = False
+        self._gaia_download_mode = "tiles"
+        self._gaia_state_watch_timer: Optional[QTimer] = None
+        self._gaia_last_polled_state_signature = ""
 
         self.setWindowTitle(f"TerraLab - {self.spec.title}")
         self.setModal(True)
-        self.resize(760, 500)
+        # Algun entorns Windows eleven el minim vertical real (>540) per marges/frame.
+        # Partir d'una alcada inicial superior evita avisos de geometria i finestres truncades.
+        self.resize(760, 560)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         if self.asset_id == "gaia_catalog":
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -267,14 +277,16 @@ class AssetOnboardingDialog(QDialog):
                 gaia_log_path = self._resolve_gaia_tap_log_path()
                 gaia_log_line = f"\nLog persistent: {gaia_log_path}\n"
             except Exception:
-                gaia_log_line = "\nLog persistent: %APPDATA%/TerraLab/logs/gaia_tap_last.log\n"
+                gaia_log_line = (
+                    "\nLog persistent: %APPDATA%/TerraLab/logs/gaia_tiles_last.log\n"
+                )
             extra_help = (
-                "\n\nEl boto 'Descarregar automaticament' executa el TAP en segon pla (Python natiu).\n"
-                "Flux: primer prepara estrelles visibles (mag <= 8), i despres continua per lots "
+                "\n\nEl boto 'Descarregar automaticament' executa el flux Gaia per teseles en segon pla.\n"
+                "Flux: primer crea la tesela general (mag < 8), i despres completa teseles profundes "
                 "fins a la magnitud objectiu, amb progressio reanudable.\n"
                 f"{gaia_log_line}"
                 "Opcional (avancat): pots executar-ho manualment amb:\n"
-                "python tools/download_gaia_tap.py --mag-limit 15 --yes"
+                "python tools/download_gaia_tiles.py --mag-limit 0 --tile-size-deg 10"
             )
         details.setText(
             f"Font oficial:\n{self.spec.source_url}\n\n"
@@ -361,6 +373,9 @@ class AssetOnboardingDialog(QDialog):
         footer.addWidget(self.btn_close)
         root.addLayout(footer)
 
+        if self.asset_id == "gaia_catalog":
+            self._start_gaia_state_watch_timer()
+
         if self.asset_id == "climate_metno":
             self.btn_open_source.setEnabled(True)
             self.btn_auto_download.setEnabled(False)
@@ -433,10 +448,7 @@ class AssetOnboardingDialog(QDialog):
                 state.get("status", "")
             ).lower() not in {"done", "completed", "success"}
             if pending:
-                try:
-                    pct = float(state.get("progress_percent", 0.0) or 0.0)
-                except Exception:
-                    pct = 0.0
+                pct = self._state_progress_percent(state)
                 msg = (
                     "S'ha detectat una descarrega Gaia pendent.\n"
                     f"Progres guardat: {pct:.1f}%.\n\n"
@@ -477,18 +489,18 @@ class AssetOnboardingDialog(QDialog):
         resolved_mag_limit = mag_limit
         if not resume:
             if resolved_mag_limit is None:
-                mag_default = 15.0
+                mag_default = 0.0
                 try:
                     mag_default = float(
-                        self.manager.layout.get("gaia_mag_limit_default", 15.0)
+                        self.manager.layout.get("gaia_mag_limit_default", 0.0)
                     )
                 except Exception:
                     pass
                 mag_dialog = QInputDialog(self)
                 mag_dialog.setWindowTitle("Gaia TAP")
-                mag_dialog.setLabelText("Magnitud maxima G:")
+                mag_dialog.setLabelText("Magnitud maxima G (0 = sense limit):")
                 mag_dialog.setInputMode(QInputDialog.DoubleInput)
-                mag_dialog.setDoubleRange(1.0, 23.0)
+                mag_dialog.setDoubleRange(0.0, 23.0)
                 mag_dialog.setDoubleDecimals(2)
                 mag_dialog.setDoubleValue(float(mag_default))
                 mag_dialog.setStyleSheet(_ASTRO_DIALOG_STYLE)
@@ -499,12 +511,16 @@ class AssetOnboardingDialog(QDialog):
                 resolved_mag_limit = float(resolved_mag_limit)
 
         project_root = Path(__file__).resolve().parents[1]
-        script_path = project_root / "tools" / "download_gaia_tap.py"
+        tile_script_path = project_root / "tools" / "download_gaia_tiles.py"
+        legacy_script_path = project_root / "tools" / "download_gaia_tap.py"
+        use_tiles_flow = tile_script_path.exists()
+        script_path = tile_script_path if use_tiles_flow else legacy_script_path
         if not script_path.exists():
             QMessageBox.critical(
                 self, "TerraLab", f"No s'ha trobat l'script: {script_path}"
             )
             return
+        self._gaia_download_mode = "tiles" if use_tiles_flow else "tap"
 
         if self._gaia_tap_process is not None:
             QMessageBox.information(
@@ -529,19 +545,57 @@ class AssetOnboardingDialog(QDialog):
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONUNBUFFERED", "1")
         process.setProcessEnvironment(env)
-        args = [
-            "-u",
-            str(script_path),
-            "--yes",
-            "--state-file",
-            str(state_path),
-            "--log-file",
-            str(log_path),
-        ]
-        if resume:
-            args.append("--resume")
+        args = ["-u", str(script_path)]
+        max_parallel_requests = self._gaia_max_parallel_requests()
+        if use_tiles_flow:
+            try:
+                tile_size_deg = float(
+                    get_config_value("gaia_tile_size_deg", 10.0)
+                )
+            except Exception:
+                tile_size_deg = 10.0
+            tile_size_deg = float(max(2.0, min(30.0, tile_size_deg)))
+            try:
+                output_dir = Path(
+                    str(self.manager.layout.get("data_gaia", project_root))
+                ).expanduser()
+            except Exception:
+                output_dir = project_root
+            args.extend(
+                [
+                    "--output-dir",
+                    str(output_dir),
+                    "--state-file",
+                    str(state_path),
+                    "--max-concurrent-requests",
+                    str(max_parallel_requests),
+                    "--tile-size-deg",
+                    f"{tile_size_deg:.2f}",
+                ]
+            )
+            if resume:
+                pass
+            else:
+                args.append("--no-resume")
+                args.extend(
+                    ["--mag-limit", f"{float(resolved_mag_limit):.2f}"]
+                )
         else:
-            args.extend(["--mag-limit", f"{float(resolved_mag_limit):.2f}"])
+            args.extend(
+                [
+                    "--yes",
+                    "--state-file",
+                    str(state_path),
+                    "--log-file",
+                    str(log_path),
+                ]
+            )
+            if resume:
+                args.append("--resume")
+            else:
+                args.extend(
+                    ["--mag-limit", f"{float(resolved_mag_limit):.2f}"]
+                )
         process.setArguments(args)
         process.setProcessChannelMode(QProcess.MergedChannels)
         process.readyReadStandardOutput.connect(self._on_gaia_tap_output)
@@ -552,9 +606,20 @@ class AssetOnboardingDialog(QDialog):
         self.btn_attach.setEnabled(False)
         self.btn_auto_download.setEnabled(False)
         self.btn_close.setEnabled(False)
-        self.progress.setRange(
-            0, 0
-        )  # indeterminate while waiting first progress markers
+        if resume:
+            resume_state = self._load_gaia_tap_state()
+            resume_pct = self._state_progress_percent(resume_state)
+            if resume_pct > 0.0:
+                self.progress.setRange(0, 100)
+                self.progress.setValue(
+                    max(0, min(100, int(round(resume_pct))))
+                )
+            else:
+                self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(
+                0, 0
+            )  # indeterminate while waiting first progress markers
         self.lbl_status.setText(
             getTraduction(
                 "Onboarding.DownloadingStars", "Descarregant estrelles..."
@@ -564,6 +629,11 @@ class AssetOnboardingDialog(QDialog):
         self.txt_process_log.setVisible(True)
         self._append_gaia_tap_log_line(f"[gaia-tap] log file: {log_path}")
         self._append_gaia_tap_log_line(f"[gaia-tap] state file: {state_path}")
+        if use_tiles_flow:
+            self._append_gaia_tap_log_line(
+                "[gaia-tap] mode=tiles "
+                f"max_concurrent_requests={max_parallel_requests}"
+            )
         self._gaia_tap_out_buffer = ""
         self._gaia_tap_process = process
         process.start()
@@ -589,27 +659,202 @@ class AssetOnboardingDialog(QDialog):
             root = Path(self.manager.layout.get("root", Path.home())).resolve()
         except Exception:
             root = Path.home()
-        return root / "logs" / "gaia_tap_last.log"
+        return root / "logs" / "gaia_tiles_last.log"
 
     def _resolve_gaia_tap_state_path(self) -> Path:
         try:
             root = Path(self.manager.layout.get("root", Path.home())).resolve()
         except Exception:
             root = Path.home()
+        return root / "logs" / "gaia_tiles_state.json"
+
+    def _resolve_legacy_gaia_tap_state_path(self) -> Path:
+        """Retorna la ruta legacy del fitxer d'estat Gaia TAP."""
+        try:
+            root = Path(self.manager.layout.get("root", Path.home())).resolve()
+        except Exception:
+            root = Path.home()
         return root / "logs" / "gaia_tap_state.json"
 
-    def _load_gaia_tap_state(self) -> Optional[dict]:
-        path = self._resolve_gaia_tap_state_path()
+    def _resolve_gaia_tiles_runtime_state_path(self) -> Path:
+        """Retorna la ruta runtime de l'estat per teseles (`data_gaia`)."""
+        try:
+            runtime_gaia_dir = Path(
+                str(self.manager.layout.get("data_gaia", ""))
+            ).expanduser()
+        except Exception:
+            runtime_gaia_dir = Path()
+        return runtime_gaia_dir / "gaia_tiles_state.json"
+
+    def _load_json_state_file(self, path: Path) -> Optional[dict]:
+        """Carrega un fitxer d'estat JSON si existeix i és vàlid."""
         if not path.exists():
             return None
         try:
             with path.open("r", encoding="utf-8") as fh:
                 payload = json.load(fh)
             if isinstance(payload, dict):
+                payload["_state_path"] = str(path)
                 return payload
         except Exception:
             return None
         return None
+
+    def _load_gaia_tap_state(self) -> Optional[dict]:
+        tile_state = self._load_json_state_file(self._resolve_gaia_tap_state_path())
+        runtime_tile_state = self._load_json_state_file(
+            self._resolve_gaia_tiles_runtime_state_path()
+        )
+        legacy_state = self._load_json_state_file(
+            self._resolve_legacy_gaia_tap_state_path()
+        )
+        if isinstance(tile_state, dict):
+            tile_status = str(tile_state.get("status", "")).lower()
+            if tile_status not in {"done", "completed", "success"}:
+                return tile_state
+        if isinstance(runtime_tile_state, dict):
+            runtime_status = str(runtime_tile_state.get("status", "")).lower()
+            if runtime_status not in {"done", "completed", "success"}:
+                return runtime_tile_state
+        if isinstance(legacy_state, dict):
+            legacy_status = str(legacy_state.get("status", "")).lower()
+            if legacy_status not in {"done", "completed", "success"}:
+                return legacy_state
+        if isinstance(tile_state, dict):
+            return tile_state
+        if isinstance(runtime_tile_state, dict):
+            return runtime_tile_state
+        if isinstance(legacy_state, dict):
+            return legacy_state
+        return None
+
+    def _state_progress_percent(self, state: Optional[dict]) -> float:
+        """Calcula percentatge de progrés aproximat per estat Gaia."""
+        if not isinstance(state, dict):
+            return 0.0
+        try:
+            if "progress_percent" in state:
+                return float(max(0.0, min(100.0, float(state.get("progress_percent", 0.0) or 0.0))))
+        except Exception:
+            pass
+        deep_tiles = state.get("deep_tiles")
+        if not isinstance(deep_tiles, dict):
+            return 0.0
+        try:
+            tile_size = float(state.get("tile_size_deg", 5.0) or 5.0)
+        except Exception:
+            tile_size = 5.0
+        tile_size = max(0.1, float(tile_size))
+        total_tiles = int((360.0 / tile_size) * (180.0 / tile_size))
+        done_tiles = sum(
+            1
+            for item in deep_tiles.values()
+            if isinstance(item, dict) and bool(item.get("done", False))
+        )
+        pct = 10.0 + 85.0 * (float(done_tiles) / float(max(1, total_tiles)))
+        if bool(state.get("general_tile_done", False)):
+            pct = max(pct, 9.0)
+        if str(state.get("status", "")).lower() in {"done", "completed", "success"}:
+            pct = 100.0
+        return float(max(0.0, min(100.0, pct)))
+
+    def _gaia_state_is_pending(self, state: Optional[dict]) -> bool:
+        """Retorna `True` si l'estat Gaia indica descarrega pendent."""
+        if not isinstance(state, dict):
+            return False
+        status_name = str(state.get("status", "")).strip().lower()
+        phase_name = str(state.get("phase", "")).strip().lower()
+        done_tokens = {"done", "completed", "success"}
+        return status_name not in done_tokens and phase_name not in done_tokens
+
+    def _gaia_state_status_text(self, state: dict, percent_value: float) -> str:
+        """Construeix text breu de progrés per estat Gaia."""
+        status_message = str(state.get("status_message", "") or "").strip()
+        tile_id = str(state.get("current_tile_id", "") or "").strip()
+        if not status_message:
+            status_message = "Descarregant Gaia per teseles"
+        if tile_id:
+            status_message = f"{status_message} [{tile_id}]"
+        return f"{status_message} ({percent_value:.1f}%)"
+
+    def _start_gaia_state_watch_timer(self) -> None:
+        """Activa polling periòdic de l'estat Gaia per refrescar el diàleg."""
+        if self.asset_id != "gaia_catalog":
+            return
+        if self._gaia_state_watch_timer is not None:
+            return
+        timer = QTimer(self)
+        timer.setInterval(900)
+        timer.timeout.connect(self._poll_gaia_state_feedback)
+        self._gaia_state_watch_timer = timer
+        timer.start()
+        QTimer.singleShot(120, self._poll_gaia_state_feedback)
+
+    def _stop_gaia_state_watch_timer(self) -> None:
+        """Atura el polling d'estat Gaia si està actiu."""
+        timer = self._gaia_state_watch_timer
+        if timer is None:
+            return
+        try:
+            timer.stop()
+        except Exception:
+            pass
+
+    def _poll_gaia_state_feedback(self) -> None:
+        """Actualitza progrés del diàleg des de fitxer d'estat Gaia."""
+        if self.asset_id != "gaia_catalog":
+            return
+        if self._gaia_tap_process is not None:
+            # Quan el procés llançat per aquest diàleg està viu, el progrés ja arriba per stdout.
+            return
+        state = self._load_gaia_tap_state()
+        if not self._gaia_state_is_pending(state):
+            return
+        assert isinstance(state, dict)
+
+        progress_percent = self._state_progress_percent(state)
+        status_text = self._gaia_state_status_text(state, progress_percent)
+        signature = f"{status_text}|{int(round(progress_percent))}"
+        if signature != self._gaia_last_polled_state_signature:
+            self._gaia_last_polled_state_signature = signature
+            if not bool(self.txt_process_log.isVisible()):
+                self.txt_process_log.setVisible(True)
+            self.txt_process_log.append(f"[gaia-state] {status_text}")
+
+        if progress_percent <= 0.0:
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(
+                max(0, min(100, int(round(progress_percent))))
+            )
+        self.lbl_status.setText(status_text)
+
+    def _gaia_max_parallel_requests(self) -> int:
+        """Retorna concurrencia TAP per al flux Gaia per teseles."""
+        raw_candidates = []
+        try:
+            raw_candidates.append(
+                self.manager.layout.get("gaia_max_concurrent_requests")
+            )
+        except Exception:
+            pass
+        try:
+            raw_candidates.append(
+                get_config_value("gaia_max_concurrent_requests", 2)
+            )
+        except Exception:
+            pass
+        raw_candidates.append(2)
+
+        for raw_value in raw_candidates:
+            try:
+                parsed_value = int(raw_value)
+                if parsed_value > 0:
+                    return int(max(1, min(8, parsed_value)))
+            except Exception:
+                continue
+        return 2
 
     def _gaia_tap_log_hint(self) -> str:
         path = self._gaia_tap_log_path
@@ -675,13 +920,53 @@ class AssetOnboardingDialog(QDialog):
         state = self._load_gaia_tap_state()
         if not isinstance(state, dict):
             return
+        # Flux nou per teseles: tancar quan la tesela general ja existeix.
+        if "general_tile_done" in state or "deep_tiles" in state:
+            if not bool(state.get("general_tile_done", False)):
+                return
+            output_dir_raw = str(
+                state.get("output_dir", "")
+                or self.manager.layout.get("data_gaia", "")
+            ).strip()
+            if not output_dir_raw:
+                return
+            output_dir = Path(output_dir_raw).expanduser()
+            tile_all_path = output_dir / "tile_all.npz"
+            if not tile_all_path.exists() or (not tile_all_path.is_file()):
+                return
+            if tile_all_path.stat().st_size <= 0:
+                return
+            try:
+                with np.load(tile_all_path, allow_pickle=False) as tile_npz:
+                    if "ra" in tile_npz:
+                        row_count = int(len(tile_npz["ra"]))
+                    elif "RA" in tile_npz:
+                        row_count = int(len(tile_npz["RA"]))
+                    else:
+                        row_count = 0
+                if row_count <= 0:
+                    return
+            except Exception:
+                return
+
+            self._gaia_visible_ready = True
+            self._completed = True
+            self._detach_gaia_tap_process_for_background()
+            self.progress.setRange(0, 100)
+            pct_val = self._state_progress_percent(state)
+            self.progress.setValue(max(0, min(100, int(round(pct_val)))))
+            self.lbl_status.setText(
+                "Tesela general preparada. Es continua descarregant en segon pla..."
+            )
+            self.accept()
+            return
+
+        # Flux legacy TAP: manté compatibilitat.
         if not bool(state.get("visible_ready", False)):
             return
         output_dir = Path(str(state.get("output_dir", "") or "")).expanduser()
         basename = (
-            str(
-                state.get("basename", "stars_catalog") or "stars_catalog"
-            ).strip()
+            str(state.get("basename", "stars_catalog") or "stars_catalog").strip()
             or "stars_catalog"
         )
         candidates = (
@@ -689,42 +974,15 @@ class AssetOnboardingDialog(QDialog):
             output_dir / f"{basename}.npz",
             output_dir / f"{basename}.zst",
         )
-        visible_catalog_path = next(
-            (p for p in candidates if p.exists() and p.is_file()), None
-        )
-        if visible_catalog_path is None:
+        visible_catalog_path = next((p for p in candidates if p.exists() and p.is_file()), None)
+        if visible_catalog_path is None or visible_catalog_path.stat().st_size <= 0:
             return
-        if visible_catalog_path.stat().st_size <= 0:
-            return
-        if str(visible_catalog_path.suffix).lower() in {".npy", ".npz"}:
-            try:
-                if visible_catalog_path.suffix.lower() == ".npy":
-                    arr = np.load(
-                        visible_catalog_path, mmap_mode="r", allow_pickle=False
-                    )
-                    rows = int(len(arr))
-                else:
-                    with np.load(
-                        visible_catalog_path, allow_pickle=False
-                    ) as data:
-                        if "ra" in data:
-                            rows = int(len(data["ra"]))
-                        elif "RA" in data:
-                            rows = int(len(data["RA"]))
-                        else:
-                            rows = 0
-                if rows <= 0:
-                    return
-            except Exception:
-                return
+
         self._gaia_visible_ready = True
         self._completed = True
         self._detach_gaia_tap_process_for_background()
         self.progress.setRange(0, 100)
-        try:
-            pct_val = float(state.get("progress_percent", 0.0) or 0.0)
-        except Exception:
-            pct_val = 0.0
+        pct_val = self._state_progress_percent(state)
         self.progress.setValue(max(0, min(100, int(round(pct_val)))))
         self.lbl_status.setText(
             "Cataleg visible preparat. Es continua descarregant en segon pla..."
@@ -735,6 +993,13 @@ class AssetOnboardingDialog(QDialog):
         text = str(line or "").rstrip("\r\n")
         if not text:
             return
+        try:
+            if self._gaia_tap_log_path is not None:
+                self._gaia_tap_log_path.parent.mkdir(parents=True, exist_ok=True)
+                with self._gaia_tap_log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(text + "\n")
+        except Exception:
+            pass
         self.txt_process_log.append(text)
         self.lbl_status.setText(text)
 
@@ -759,17 +1024,24 @@ class AssetOnboardingDialog(QDialog):
             except Exception:
                 pass
 
-        m3 = re.search(r"\[gaia-progress\]\s+([0-9]+(?:\.[0-9]+)?)%", text)
+        m3 = re.search(
+            r"\[gaia-progress\]\s+([0-9]+(?:\.[0-9]+)?)%\s*(.*)$",
+            text,
+        )
         if m3:
             try:
                 pct3 = max(0, min(100, int(round(float(m3.group(1))))))
                 if self.progress.maximum() == 0:
                     self.progress.setRange(0, 100)
                 self.progress.setValue(pct3)
-                status = getTraduction(
-                    "Onboarding.DownloadingStars", "Descarregant estrelles..."
-                )
-                self.lbl_status.setText(f"{status} ({pct3}%)")
+                msg_text = str(m3.group(2) or "").strip()
+                if msg_text:
+                    self.lbl_status.setText(f"{msg_text} ({pct3}%)")
+                else:
+                    status = getTraduction(
+                        "Onboarding.DownloadingStars", "Descarregant estrelles..."
+                    )
+                    self.lbl_status.setText(f"{status} ({pct3}%)")
             except Exception:
                 pass
 
@@ -812,11 +1084,11 @@ class AssetOnboardingDialog(QDialog):
         if ok:
             self.progress.setValue(100)
             self._completed = True
-            self.lbl_status.setText("Cataleg Gaia preparat correctament.")
+            self.lbl_status.setText("Dades Gaia preparades correctament.")
             QMessageBox.information(
                 self,
                 "TerraLab",
-                "Importacio Gaia completada.\n\n"
+                "Preparacio Gaia completada.\n\n"
                 "Les dades ja son dins la carpeta de TerraLab.\n"
                 "Si vols, ja pots esborrar el fitxer original.\n\n"
                 f"{log_hint}",
@@ -831,14 +1103,14 @@ class AssetOnboardingDialog(QDialog):
         pct_hint = ""
         if isinstance(state, dict):
             try:
-                pct_val = float(state.get("progress_percent", 0.0) or 0.0)
+                pct_val = self._state_progress_percent(state)
                 pct_hint = (
                     f"\nProgres guardat: {pct_val:.1f}% (es pot reprendre)."
                 )
             except Exception:
                 pct_hint = ""
         self.lbl_status.setText(
-            "Gaia TAP ha finalitzat, pero no s'ha detectat un cataleg valid."
+            "La descarrega Gaia ha finalitzat, pero no s'ha detectat un cataleg valid."
         )
         status_name = (
             "normal" if exit_status == QProcess.NormalExit else "crash"
@@ -846,14 +1118,14 @@ class AssetOnboardingDialog(QDialog):
         QMessageBox.warning(
             self,
             "TerraLab",
-            "El proces TAP ha acabat, pero TerraLab no troba el cataleg Gaia preparat.\n"
+            "El proces Gaia ha acabat, pero TerraLab no troba el cataleg Gaia preparat.\n"
             f"Exit code: {int(exit_code)} ({status_name}).\n"
             f"{log_hint}{pct_hint}",
         )
 
     def _on_gaia_tap_error(self, _error):
         proc = self._gaia_tap_process
-        err_txt = "Error executant Gaia TAP."
+        err_txt = "Error executant la descarrega Gaia."
         if proc is not None:
             try:
                 err_txt = str(proc.errorString() or err_txt)
@@ -866,7 +1138,7 @@ class AssetOnboardingDialog(QDialog):
         self.btn_attach.setEnabled(True)
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         self.btn_close.setEnabled(True)
-        self.lbl_status.setText("Error en Gaia TAP.")
+        self.lbl_status.setText("Error en descarrega Gaia.")
         QMessageBox.critical(self, "TerraLab", f"{err_txt}\n\n{log_hint}")
 
     def _collect_options(self) -> dict:
@@ -969,6 +1241,7 @@ class AssetOnboardingDialog(QDialog):
         Retorna:
         - None.
         """
+        self._stop_gaia_state_watch_timer()
         proc = self._gaia_tap_process
         if proc is not None:
             try:

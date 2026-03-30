@@ -165,6 +165,8 @@ class AssetManager:
             p_npz = Path(layout["data_gaia"]) / "stars_catalog.npz"
             p_zst = Path(layout["data_gaia"]) / "stars_catalog.zst"
             p_npy = Path(layout["data_gaia"]) / "stars_catalog.npy"
+            p_tile_manifest = Path(layout["data_gaia"]) / "tile_manifest.json"
+            p_tile_all = Path(layout["data_gaia"]) / "tile_all.npz"
             for candidate in (p_npy, p_npz, p_zst):
                 if candidate.exists():
                     return {
@@ -172,6 +174,12 @@ class AssetManager:
                         "reason": "ok",
                         "path": str(candidate),
                     }
+            if p_tile_manifest.exists() and p_tile_all.exists():
+                return {
+                    "ready": True,
+                    "reason": "ok_tile_manifest",
+                    "path": str(p_tile_manifest),
+                }
             packaged_dir = (
                 Path(__file__).resolve().parents[1] / "data" / "stars"
             )
@@ -339,7 +347,10 @@ class AssetManager:
             import rasterio
             from pyproj import Transformer
 
-            from TerraLab.terrain.providers import CRS_GEOGRAPHIC
+            from TerraLab.terrain.providers import (
+                CRS_GEOGRAPHIC,
+                PYPROJ_TRANSFORMER_LOCK,
+            )
         except Exception:
             return None
 
@@ -357,7 +368,10 @@ class AssetManager:
             return None
 
         try:
-            tr = Transformer.from_crs(src_crs, CRS_GEOGRAPHIC, always_xy=True)
+            with PYPROJ_TRANSFORMER_LOCK:
+                tr = Transformer.from_crs(
+                    src_crs, CRS_GEOGRAPHIC, always_xy=True
+                )
             lon, lat = tr.transform(center_x, center_y)
         except Exception:
             return None
@@ -385,6 +399,7 @@ class AssetManager:
             from TerraLab.terrain.providers import (
                 CRS_GEOGRAPHIC,
                 CRS_TERRAIN_INTERNAL,
+                PYPROJ_TRANSFORMER_LOCK,
             )
         except Exception:
             return None
@@ -422,9 +437,10 @@ class AssetManager:
         center_x = 0.5 * (min_x + max_x)
         center_y = 0.5 * (min_y + max_y)
         try:
-            tr = Transformer.from_crs(
-                CRS_TERRAIN_INTERNAL, CRS_GEOGRAPHIC, always_xy=True
-            )
+            with PYPROJ_TRANSFORMER_LOCK:
+                tr = Transformer.from_crs(
+                    CRS_TERRAIN_INTERNAL, CRS_GEOGRAPHIC, always_xy=True
+                )
             lon, lat = tr.transform(center_x, center_y)
         except Exception:
             return None

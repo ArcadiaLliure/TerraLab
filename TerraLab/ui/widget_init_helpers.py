@@ -206,21 +206,34 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
         self.milkyway_overlay_sample_scale = 1.0
         set_config_value("milkyway_overlay_sample_scale", 1.0)
     tex_name = os.path.basename(str(self.milkyway_overlay_texture_path)).lower()
+    _cfg_missing = object()
+    _saved_ra_offset = get_config_value("milkyway_overlay_ra_offset_deg", _cfg_missing)
+    _saved_lat_flip = get_config_value("milkyway_overlay_lat_flip", _cfg_missing)
+    _saved_lon_flip = get_config_value("milkyway_overlay_lon_flip", _cfg_missing)
+    _saved_ra_offset_is_zero = False
+    try:
+        if _saved_ra_offset is _cfg_missing:
+            _saved_ra_offset_is_zero = True
+        else:
+            _saved_ra_offset_is_zero = abs(float(_saved_ra_offset)) < 1e-6
+    except Exception:
+        _saved_ra_offset_is_zero = False
     if (
         str(self.milkyway_overlay_coord_frame).strip().lower().startswith("gal")
         and tex_name in ("milkyway_overlay.png", "via_negra.png")
-        and abs(float(self.milkyway_overlay_ra_offset_deg)) < 1e-6
+        and _saved_ra_offset_is_zero
     ):
         # Migració conservadora: els assets galàctics inclosos tenen lon 0 al centre del mapa.
         self.milkyway_overlay_ra_offset_deg = 180.0
         set_config_value("milkyway_overlay_ra_offset_deg", 180.0)
     if str(self.milkyway_overlay_coord_frame).strip().lower().startswith("gal") and tex_name == "milkyway_overlay.png":
-        # Migració conservadora: aquest asset concret ve amb latitud galàctica invertida.
-        self.milkyway_overlay_lat_flip = True
-        set_config_value("milkyway_overlay_lat_flip", True)
-        # Migració conservadora: aquest asset concret porta longitud galàctica invertida.
-        self.milkyway_overlay_lon_flip = True
-        set_config_value("milkyway_overlay_lon_flip", True)
+        # One-time conservative migration: do not overwrite user calibration.
+        if _saved_lat_flip is _cfg_missing:
+            self.milkyway_overlay_lat_flip = True
+            set_config_value("milkyway_overlay_lat_flip", True)
+        if _saved_lon_flip is _cfg_missing:
+            self.milkyway_overlay_lon_flip = True
+            set_config_value("milkyway_overlay_lon_flip", True)
     self.dust_map_enabled = bool(get_config_value("dust_map_enabled", False))
     default_dust_map = str(Path(self.runtime_layout.get("data_planck", get_base_dir())) / "planck_dust_opacity_eq_u16.npz")
     self.dust_map_path = str(get_config_value("dust_map_path", default_dust_map))

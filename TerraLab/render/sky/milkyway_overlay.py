@@ -479,11 +479,19 @@ class MilkyWayOverlay:
             self._effective_sample_scale(cfg, interaction_active)
         )
         dust_stamp = self._dust_map_stamp if cfg.dust_map_enabled else None
+        year_utc = getattr(state, "year_utc", getattr(state, "year", None))
+        try:
+            year_utc = int(year_utc) if year_utc is not None else None
+            if int(year_utc) <= 0:
+                year_utc = None
+        except Exception:
+            year_utc = None
         lst_deg = float(
             local_sidereal_angle(
                 day_of_year=int(getattr(state, "day_of_year", 0)),
                 ut_hour=float(getattr(state, "ut_hour", 0.0)),
                 longitude_deg=float(getattr(state, "longitude", 0.0)),
+                year=year_utc,
             )
         )
         # Fem quantitzacio adaptativa per evitar reconstruccio per variacions minimes.
@@ -562,6 +570,7 @@ class MilkyWayOverlay:
             longitude_deg=float(getattr(state, "longitude", 0.0)),
             ut_hour=float(getattr(state, "ut_hour", 0.0)),
             day_of_year=int(getattr(state, "day_of_year", 0)),
+            year_utc=getattr(state, "year_utc", getattr(state, "year", None)),
         )
 
         lon_deg, lat_deg = self._to_texture_lon_lat(
@@ -738,6 +747,7 @@ class MilkyWayOverlay:
         longitude_deg: float,
         ut_hour: float,
         day_of_year: int,
+        year_utc: Optional[int] = None,
     ):
         lat = math.radians(float(latitude_deg))
         sin_lat = math.sin(lat)
@@ -763,6 +773,7 @@ class MilkyWayOverlay:
                 day_of_year=int(day_of_year),
                 ut_hour=float(ut_hour),
                 longitude_deg=float(longitude_deg),
+                year=int(year_utc) if year_utc is not None else None,
             )
         )
         ra_deg = np.asarray((lst - ha_deg) % 360.0, dtype=np.float32)

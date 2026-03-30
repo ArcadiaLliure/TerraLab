@@ -24,6 +24,7 @@ class SceneState:
     longitude: float = 0.0
     ut_hour: float = 0.0
     day_of_year: int = 0
+    year_utc: int = 0
 
     # Sky lighting context
     sun_alt: float = -90.0
@@ -64,6 +65,11 @@ class SceneState:
     horizon_profile: Any = None
     extras: dict = field(default_factory=dict)
 
+    @property
+    def year(self) -> int:
+        """Alias de compatibilitat per a codi legacy de render."""
+        return int(self.year_utc)
+
 
 def build_star_scene_state(
     canvas, hour, sun_alt, sun_az, mag_limit, eff_lat, day_of_year
@@ -78,8 +84,32 @@ def build_star_scene_state(
     if day_of_year is None:
         day_of_year = int(getattr(pw, "manual_day", 0))
 
+    year_utc = int(getattr(pw, "manual_year", 0))
+    try:
+        if callable(getattr(canvas, "_get_current_utc_context", None)):
+            _, _, detected_year_utc, _ = canvas._get_current_utc_context()
+            year_utc = int(detected_year_utc)
+    except Exception:
+        pass
+
     canvas._sync_camera_state()
     scope_enabled = bool(canvas.scope_mode_enabled())
+    is_auto_bortle = bool(getattr(pw, "is_auto_bortle", True))
+    light_pollution_enabled = bool(
+        getattr(pw, "light_pollution_enabled", True)
+    )
+    if is_auto_bortle:
+        raw_bortle_class = (
+            float(getattr(pw, "auto_bortle_estimate", 1.0))
+            if light_pollution_enabled
+            else 1.0
+        )
+    else:
+        manual_eye_limit_mag = float(
+            getattr(pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)
+        )
+        raw_bortle_class = 1.0 + (7.6 - manual_eye_limit_mag) / 0.5
+    effective_bortle_class = float(clamp(raw_bortle_class, 1.0, 9.0))
 
     extras = {
         "star_gamma": (
@@ -219,14 +249,11 @@ def build_star_scene_state(
             get_config_value("milkyway_overlay_opacity", 0.65),
         )
     )
-    default_mw_texture = str(
-        Path(
-            getattr(pw, "runtime_layout", {}).get(
-                "data_milkyway", get_base_dir()
-            )
-        )
-        / "milkyway_overlay.png"
-    )
+    runtime_layout = getattr(pw, "runtime_layout", {}) or {}
+    data_milkyway_dir = runtime_layout.get("data_milkyway")
+    if not data_milkyway_dir:
+        data_milkyway_dir = Path(get_base_dir()) / "data" / "milkyway"
+    default_mw_texture = str(Path(data_milkyway_dir) / "milkyway_overlay.png")
     mw_texture_path = str(
         getattr(
             pw,
@@ -249,13 +276,11 @@ def build_star_scene_state(
             pw, "dust_map_enabled", get_config_value("dust_map_enabled", False)
         )
     )
+    data_planck_dir = runtime_layout.get("data_planck")
+    if not data_planck_dir:
+        data_planck_dir = Path(get_base_dir()) / "data" / "planck"
     default_dust_map = str(
-        Path(
-            getattr(pw, "runtime_layout", {}).get(
-                "data_planck", get_base_dir()
-            )
-        )
-        / "planck_dust_opacity_eq_u16.npz"
+        Path(data_planck_dir) / "planck_dust_opacity_eq_u16.npz"
     )
     dust_map_path = str(
         getattr(
@@ -309,11 +334,12 @@ def build_star_scene_state(
         "lon_flip": bool(mw_lon_flip),
         "sample_scale": float(clamp(mw_sample_scale, 0.10, 1.0)),
         "auto_opacity": True,
-        "is_auto_bortle": bool(getattr(pw, "is_auto_bortle", True)),
-        "bortle": float(getattr(pw, "auto_bortle_estimate", 1.0)),
+        "is_auto_bortle": bool(is_auto_bortle),
+        "bortle": float(effective_bortle_class),
         "manual_mag_limit": float(
             getattr(pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)
         ),
+        "light_pollution_enabled": bool(light_pollution_enabled),
         "scope_enabled": bool(scope_enabled),
         "scope_iso": float(max(1.0, float(getattr(pw, "scope_iso", 800.0)))),
         "scope_exposure_s": float(
@@ -550,6 +576,7 @@ def build_star_scene_state(
         longitude=float(getattr(pw, "longitude", 0.0)),
         ut_hour=float(hour),
         day_of_year=int(day_of_year),
+        year_utc=int(year_utc),
         sun_alt=float(sun_alt),
         sun_az=float(sun_az),
         ra=ra_render,
@@ -569,8 +596,8 @@ def build_star_scene_state(
             getattr(pw, "spike_magnitude_threshold", 2.0)
         ),
         scope_k_fallback=float(getattr(pw, "scope_k_fallback", 0.20)),
-        bortle=float(getattr(pw, "auto_bortle_estimate", 1.0)),
-        is_auto_bortle=bool(getattr(pw, "is_auto_bortle", False)),
+        bortle=float(effective_bortle_class),
+        is_auto_bortle=bool(is_auto_bortle),
         scope_enabled=scope_enabled,
         interaction_active=bool(
             canvas._camera_interaction_active(

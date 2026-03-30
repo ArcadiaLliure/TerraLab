@@ -1,8 +1,8 @@
-"""Public UI entrypoint for the sky widget."""
+"""Punt d'entrada públic de UI per al widget del cel."""
 
 from __future__ import annotations
 
-from TerraLab.ui.sky_widget_impl import AstronomicalWidget as SkyWidget
+from TerraLab.ui.astronomical_widget import AstronomicalWidget as SkyWidget
 
 AstronomicalWidget = SkyWidget
 

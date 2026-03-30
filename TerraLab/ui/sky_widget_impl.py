@@ -1,6 +1,7 @@
 # -*- coding: latin-1 -*-
 import math
 import os
+import sys
 import time
 import random
 import json
@@ -16,6 +17,10 @@ try:
     from zoneinfo import ZoneInfo
 except Exception:
     ZoneInfo = None
+try:
+    from dateutil import tz as dateutil_tz
+except Exception:
+    dateutil_tz = None
 try:
     from timezonefinder import TimezoneFinder
 except Exception:
@@ -766,6 +771,13 @@ class AstroCanvas(QWidget):
             except Exception:
                 tzinfo = None
 
+        # Fallback with DST-aware rules when zoneinfo data is unavailable.
+        if tzinfo is None and tz_name and dateutil_tz is not None:
+            try:
+                tzinfo = dateutil_tz.gettz(tz_name)
+            except Exception:
+                tzinfo = None
+
         # Prefer machine local timezone when political timezone resolution is unavailable.
         if tzinfo is None:
             try:
@@ -847,8 +859,8 @@ class AstroCanvas(QWidget):
             return
         self._set_selected_target(target)
         self.scope_camera_lock_to_target = True
-        ut_hour, day_of_year_utc = self._current_ut_context()
-        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc)
+        ut_hour, day_of_year_utc, year_utc, _ = self._get_current_utc_context()
+        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc, year_utc=year_utc)
         if sky is None:
             return
         # Goto is just a shortcut into the same scope-jump flow.
@@ -888,18 +900,18 @@ class AstroCanvas(QWidget):
             self._set_selected_target(None)
         else:
             self._set_selected_target({"kind": "star", "star": star_obj})
-    def _selected_target_sky_position(self, ut_hour: float, day_of_year_utc: int):
+    def _selected_target_sky_position(self, ut_hour: float, day_of_year_utc: int, year_utc: int = None):
         target = self.selected_target
         if not isinstance(target, dict):
             return None
         if target.get("kind") == "star":
-            return self._star_alt_az(target.get("star"), ut_hour, day_of_year_utc)
+            return self._star_alt_az(target.get("star"), ut_hour, day_of_year_utc, year_utc=year_utc)
         if target.get("kind") == "ngc":
             obj = target.get("obj")
             if obj is None:
                 return None
             try:
-                return self._ra_dec_to_alt_az(float(obj.ra_deg), float(obj.dec_deg), ut_hour, day_of_year_utc)
+                return self._ra_dec_to_alt_az(float(obj.ra_deg), float(obj.dec_deg), ut_hour, day_of_year_utc, year_utc=year_utc)
             except Exception:
                 return None
         if target.get("kind") != "sky":
@@ -926,13 +938,18 @@ class AstroCanvas(QWidget):
             return float(target.get("alt")), float(target.get("az")) % 360.0
         except Exception:
             return None
-    def _star_alt_az(self, star_obj, ut_hour: float, day_of_year_utc: int):
+    def _star_alt_az(self, star_obj, ut_hour: float, day_of_year_utc: int, year_utc: int = None):
         coords = self._extract_star_coords(star_obj)
         if coords is None:
             return None
         ra, dec = coords
-        return self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc)
-    def _ra_dec_to_alt_az(self, ra_deg: float, dec_deg: float, ut_hour: float, day_of_year_utc: int):
+        return self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc, year_utc=year_utc)
+    def _ra_dec_to_alt_az(self, ra_deg: float, dec_deg: float, ut_hour: float, day_of_year_utc: int, year_utc: int = None):
+        if year_utc is None:
+            try:
+                year_utc = int(getattr(self.parent_widget, "manual_year", datetime.now().year))
+            except Exception:
+                year_utc = datetime.now().year
         return ra_dec_to_alt_az(
             float(ra_deg),
             float(dec_deg),
@@ -940,6 +957,7 @@ class AstroCanvas(QWidget):
             int(day_of_year_utc),
             float(self.parent_widget.latitude),
             float(self.parent_widget.longitude),
+            year=int(year_utc),
             default_az_deg=float(self.azimuth_offset),
         )
     def _get_current_utc_context(self):
@@ -961,9 +979,14 @@ class AstroCanvas(QWidget):
         sky = screen_to_sky(float(sx), float(sy), self.unproject_stereo)
         if sky is None:
             return None
-        ut_hour, day_of_year_utc, _, _ = self._get_current_utc_context()
-        return self._altaz_to_ra_dec(sky[0], sky[1], ut_hour, day_of_year_utc)
-    def _altaz_to_ra_dec(self, alt_deg: float, az_deg: float, ut_hour: float, day_of_year_utc: int):
+        ut_hour, day_of_year_utc, year_utc, _ = self._get_current_utc_context()
+        return self._altaz_to_ra_dec(sky[0], sky[1], ut_hour, day_of_year_utc, year_utc=year_utc)
+    def _altaz_to_ra_dec(self, alt_deg: float, az_deg: float, ut_hour: float, day_of_year_utc: int, year_utc: int = None):
+        if year_utc is None:
+            try:
+                year_utc = int(getattr(self.parent_widget, "manual_year", datetime.now().year))
+            except Exception:
+                year_utc = datetime.now().year
         return altaz_to_ra_dec(
             float(alt_deg),
             float(az_deg),
@@ -971,6 +994,7 @@ class AstroCanvas(QWidget):
             int(day_of_year_utc),
             float(self.parent_widget.latitude),
             float(self.parent_widget.longitude),
+            year=int(year_utc),
         )
     def _format_ra_hms(self, ra_deg: float) -> str:
         h_total = (float(ra_deg) % 360.0) / 15.0
@@ -993,7 +1017,8 @@ class AstroCanvas(QWidget):
     def _draw_selected_target_marker(self, painter: QPainter, ut_hour: float, day_of_year_utc: int):
         if self.scope_mode_enabled() or self.selected_target is None:
             return
-        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc)
+        _, _, year_utc, _ = self._get_current_utc_context()
+        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc, year_utc=year_utc)
         if sky is None:
             return
         pt = self.project_universal_stereo(sky[0], sky[1])
@@ -1037,7 +1062,11 @@ class AstroCanvas(QWidget):
         # In scope mode, selected targets are tracked: camera and scope center follow sky motion.
         if (not self.scope_mode_enabled()) or self.selected_target is None:
             return
-        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc)
+        # Never fight direct user input; give manual scope interaction priority.
+        if self._scope_motion_active():
+            return
+        _, _, year_utc, _ = self._get_current_utc_context()
+        sky = self._selected_target_sky_position(ut_hour, day_of_year_utc, year_utc=year_utc)
         if sky is None:
             return
         alt, az = sky
@@ -1367,6 +1396,15 @@ class AstroCanvas(QWidget):
             eff_lat=eff_lat,
             day_of_year=day_of_year,
         )
+        # Cataleg actiu del frame per garantir pick/goto coherents.
+        self._active_catalog_ra = getattr(state, "ra", None)
+        self._active_catalog_dec = getattr(state, "dec", None)
+        self._active_catalog_mag = getattr(state, "mag", None)
+        self._active_catalog_bp_rp = getattr(state, "bp_rp", None)
+        self._active_catalog_r = getattr(state, "color_r", None)
+        self._active_catalog_g = getattr(state, "color_g", None)
+        self._active_catalog_b = getattr(state, "color_b", None)
+        self._active_catalog_ids = getattr(state, "star_ids", None)
         self.scene_diagnostics.reset()
         ctx = RenderContext(
             painter=painter,
@@ -1757,6 +1795,7 @@ class AstronomicalWidget(CustomWidgetBase):
     request_trails_signal = pyqtSignal()
     # Signal to start baking in background thread
     request_horizon_bake = pyqtSignal(object)
+    request_horizon_bortle = pyqtSignal(float, float, int)
     def __init__(self, parent=None, **kwargs):
         return astronomical_widget_init(self, parent, **kwargs)
     def _set_scene_load_stage(self, stage: str):
@@ -2060,6 +2099,52 @@ class AstronomicalWidget(CustomWidgetBase):
         return widget_start_async_bootstrap(self)
     def _start_catalog_loader_async(self, reason: str = "runtime"):
         if bool(getattr(self, "_catalog_bootstrap_started", False)):
+            return
+        np_ra = getattr(self, "np_ra", None)
+        np_dec = getattr(self, "np_dec", None)
+        np_mag = getattr(self, "np_mag", None)
+        np_r = getattr(self, "np_r", None)
+        np_g = getattr(self, "np_g", None)
+        np_b = getattr(self, "np_b", None)
+        np_bp_rp = getattr(self, "np_bp_rp", None)
+        subset_only = bool(getattr(self, "_catalog_loaded_subset_only", False))
+        try:
+            existing_rows = int(len(np_ra)) if np_ra is not None else 0
+        except Exception:
+            existing_rows = 0
+        has_consistent_arrays = (
+            np_ra is not None
+            and np_dec is not None
+            and np_mag is not None
+            and np_r is not None
+            and np_g is not None
+            and np_b is not None
+            and np_bp_rp is not None
+            and existing_rows > 0
+            and existing_rows == int(len(np_dec)) == int(len(np_mag))
+        )
+        # With StarDataCoordinator refactor active, keep current in-memory catalog
+        # and skip legacy worker source probing.
+        if has_consistent_arrays and (not subset_only) and existing_rows >= 5000:
+            self._catalog_bootstrap_started = True
+            print(
+                "[AstroWidget] Star catalog loader skipped: using in-memory "
+                f"catalog rows={existing_rows} (reason={reason})"
+            )
+            try:
+                existing_named = getattr(self, "celestial_objects", [])
+                self._on_catalog_ready(
+                    existing_named,
+                    np_ra,
+                    np_dec,
+                    np_mag,
+                    np_r,
+                    np_g,
+                    np_b,
+                    np_bp_rp,
+                )
+            except Exception as e:
+                print(f"[AstroWidget] In-memory catalog finalize failed: {e}")
             return
         self._catalog_bootstrap_started = True
         self._catalog_thread = QThread()
@@ -2457,7 +2542,11 @@ class AstronomicalWidget(CustomWidgetBase):
             self.title_bar.hide()
         layout = self.content_layout
         layout.setContentsMargins(0, 0, 0, 0)
-        self.canvas = AstroCanvas(self)
+        try:
+            from TerraLab.ui.astro_canvas import AstroCanvas as ReducedAstroCanvas
+            self.canvas = ReducedAstroCanvas(self)
+        except Exception:
+            self.canvas = AstroCanvas(self)
         layout.addWidget(self.canvas, 1)
         # Loading indicator stays available from the first visible frame.
         self.lbl_loading = QLabel(getTraduction("Astro.LoadingTopography", "? Carregant topografia..."), self)
@@ -3136,19 +3225,21 @@ class AstronomicalWidget(CustomWidgetBase):
         set_config_value("light_pollution_enabled", bool(checked))
         if hasattr(self, "horizon_worker"):
             self.horizon_worker.reload_config()
-            QTimer.singleShot(
-                0,
-                lambda: QMetaObject.invokeMethod(self.horizon_worker, "initialize", Qt.QueuedConnection),
-            )
+            if not (os.name == "nt" and sys.version_info >= (3, 13)):
+                QTimer.singleShot(
+                    0,
+                    lambda: QMetaObject.invokeMethod(self.horizon_worker, "initialize", Qt.QueuedConnection),
+                )
         if checked:
             if bool(getattr(self, "is_auto_bortle", True)):
                 QTimer.singleShot(80, self.reset_lp_to_auto)
         else:
-            self.auto_bortle_estimate = 4
-            self.canvas.auto_bortle_estimate = 4
-            set_config_value("auto_bortle_estimate", 4)
+            # Amb LP desactivada, el comportament esperat és equivalent a Bortle 1.
+            self.auto_bortle_estimate = 1
+            self.canvas.auto_bortle_estimate = 1
+            set_config_value("auto_bortle_estimate", 1)
             if hasattr(self, "slider_light") and bool(getattr(self, "is_auto_bortle", True)):
-                self.slider_light.set_silent_value(4)
+                self.slider_light.set_silent_value(1)
         self.canvas.update()
     def on_milkyway_toggled(self, checked):
         checked = bool(checked)
@@ -3270,19 +3361,42 @@ class AstronomicalWidget(CustomWidgetBase):
         return None
     def _ensure_copernicus_credentials_prompt(self):
         return widget_ensure_copernicus_credentials_prompt(self)
-    def reset_lp_to_auto(self):
-        """Action for the reset button: pulls the current satellite estimate."""
-        if not self.horizon_worker: return
-        val = self.horizon_worker.get_bortle_estimate(self.latitude, self.longitude)
-        print(f"[AstroWidget] Resetting LP to auto-estimated Bortle: {val}")
-        self.combo_lp_mode.setCurrentIndex(0) # Switch to Auto mode
-        self.slider_light.set_silent_value(val)
-        self.auto_bortle_estimate = val
-        self.canvas.auto_bortle_estimate = val
-        set_config_value("auto_bortle_estimate", int(val))
+    def _request_auto_bortle_estimate(self) -> bool:
+        """Demana una estimacio Bortle al HorizonWorker de forma asincrona."""
+        worker = getattr(self, "horizon_worker", None)
+        if worker is None or not hasattr(self, "request_horizon_bortle"):
+            return False
+        request_id = int(getattr(self, "_auto_bortle_request_seq", 0)) + 1
+        self._auto_bortle_request_seq = request_id
+        self._auto_bortle_pending_request_id = request_id
+        self.request_horizon_bortle.emit(
+            float(self.latitude),
+            float(self.longitude),
+            int(request_id),
+        )
+        return True
+    def _apply_auto_bortle_estimate(self, bortle_value: int) -> None:
+        """Aplica una classe Bortle validada al model visual i a la UI."""
+        valor_bortle = int(max(1, min(9, int(bortle_value))))
+        print(f"[AstroWidget] Resetting LP to auto-estimated Bortle: {valor_bortle}")
+        self.combo_lp_mode.setCurrentIndex(0)
+        self.slider_light.set_silent_value(valor_bortle)
+        self.auto_bortle_estimate = valor_bortle
+        self.canvas.auto_bortle_estimate = valor_bortle
+        set_config_value("auto_bortle_estimate", int(valor_bortle))
         if hasattr(self.canvas, 'weather'):
-            self.canvas.weather.set_bortle(val)
+            self.canvas.weather.set_bortle(valor_bortle)
         self.canvas.update()
+    def on_horizon_bortle_estimate(self, request_id: int, lat: float, lon: float, bortle_value: int) -> None:
+        """Rep l'estimacio Bortle del worker i descarta respostes antigues."""
+        pending_request_id = int(getattr(self, "_auto_bortle_pending_request_id", 0))
+        if pending_request_id and int(request_id) != pending_request_id:
+            return
+        self._auto_bortle_pending_request_id = 0
+        self._apply_auto_bortle_estimate(int(bortle_value))
+    def reset_lp_to_auto(self):
+        """Demana l'estimacio Bortle actual al worker (no bloquejant)."""
+        self._request_auto_bortle_estimate()
     def update_lp_slider(self, val):
         if self.is_auto_bortle:
             self.auto_bortle_estimate = val
@@ -3423,6 +3537,7 @@ class AstronomicalWidget(CustomWidgetBase):
             return n.hour + n.minute/60.0
         return self.manual_hour
 """  """
+
 
 
 

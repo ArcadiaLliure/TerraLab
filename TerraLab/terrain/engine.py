@@ -10,6 +10,7 @@ curvature correction.
 import glob
 import math
 import os
+from pathlib import Path
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -17,7 +18,11 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from TerraLab.terrain.providers import CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL
+from TerraLab.terrain.providers import (
+    CRS_GEOGRAPHIC,
+    CRS_TERRAIN_INTERNAL,
+    PYPROJ_TRANSFORMER_LOCK,
+)
 
 # --- Constants ---
 R_EARTH = 6_371_000.0
@@ -456,6 +461,10 @@ class TileCache:
         self.capacity = capacity
         self.cache: OrderedDict = OrderedDict()
         self._lock = threading.Lock()
+        self._tile_io_lock = threading.Lock()
+        self._packaged_cache_root = (
+            Path(__file__).resolve().parents[1] / "data" / "terrain_cache"
+        )
 
     def load(
         self, tile_info: Dict
@@ -479,11 +488,9 @@ class TileCache:
         base_name, ext = os.path.splitext(filename)
 
         # 1. Try packaged cache (TerraLab/data/terrain_cache)
-        # Import resource_path here or ensure it's imported at top
-        from TerraLab.common.utils import resource_path
-
-        packaged_npy = resource_path(
-            os.path.join("data", "terrain_cache", base_name + ".npy")
+        # Use deterministic path computation without runtime mkdir side-effects.
+        packaged_npy = str(
+            self._packaged_cache_root / f"{base_name}.npy"
         )
 
         # 2. Try adjacent cache (original location)
@@ -497,7 +504,16 @@ class TileCache:
 
         if candidate_npy:
             try:
-                data = np.load(candidate_npy, mmap_mode="r")
+                with self._tile_io_lock:
+                    # Stability-first on Windows/Python 3.13:
+                    # avoid memmap-backed arrays loaded from worker threads.
+                    data = np.load(
+                        candidate_npy,
+                        mmap_mode=None,
+                        allow_pickle=False,
+                    )
+                    # Ensure independent in-memory buffer (no file-backed view).
+                    data = np.asarray(data, dtype=np.float32)
                 with self._lock:
                     self.cache[path] = (data, header)
                     if len(self.cache) > self.capacity:
@@ -545,17 +561,18 @@ class TileCache:
                 f"[HorizonEngine] Parsing with Pandas: {os.path.basename(path)}..."
             )
             try:
-                import pandas as pd
+                with self._tile_io_lock:
+                    import pandas as pd
 
-                df = pd.read_csv(
-                    path,
-                    skiprows=header_lines,
-                    sep=r"\s+",
-                    header=None,
-                    dtype=np.float32,
-                    engine="c",
-                )
-                data_raw = df.values.flatten()
+                    df = pd.read_csv(
+                        path,
+                        skiprows=header_lines,
+                        sep=r"\s+",
+                        header=None,
+                        dtype=np.float32,
+                        engine="c",
+                    )
+                    data_raw = df.values.flatten()
             except Exception as e:
                 print(f"[HorizonEngine] Error parsing {path} with Pandas: {e}")
                 return None, None
@@ -579,7 +596,10 @@ class TileCache:
 
             # Save binary cache to original location if possible
             try:
-                np.save(output_npy, data)
+                with self._tile_io_lock:
+                    temp_output_npy = f"{output_npy}.tmp.npy"
+                    np.save(temp_output_npy, data)
+                    os.replace(temp_output_npy, output_npy)
                 # print(f"[HorizonEngine] Saved cache: {os.path.basename(output_npy)}")
             except:
                 pass
@@ -631,9 +651,10 @@ class DemSampler:
         from pyproj import Transformer
 
         if self._transformer_inv is None:
-            self._transformer_inv = Transformer.from_crs(
-                CRS_TERRAIN_INTERNAL, CRS_GEOGRAPHIC, always_xy=True
-            )
+            with PYPROJ_TRANSFORMER_LOCK:
+                self._transformer_inv = Transformer.from_crs(
+                    CRS_TERRAIN_INTERNAL, CRS_GEOGRAPHIC, always_xy=True
+                )
         lon, lat = self._transformer_inv.transform(x, y)
         return lat, lon
 
@@ -1313,9 +1334,10 @@ def bake_and_save(
     from pyproj import Transformer
 
     # Transform observer from geographic to terrain internal coordinates.
-    transformer = Transformer.from_crs(
-        CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL, always_xy=True
-    )
+    with PYPROJ_TRANSFORMER_LOCK:
+        transformer = Transformer.from_crs(
+            CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL, always_xy=True
+        )
     x_utm, y_utm = transformer.transform(lon, lat)
     print(f"[HorizonEngine] Observer UTM: {x_utm:.2f}, {y_utm:.2f}")
 

@@ -207,6 +207,32 @@ def draw_moon_skyfield_impl(
         return
     if alpha <= 0.01:
         return
+    try:
+        sf_cache = getattr(canvas, "_sf_cache", None)
+        if isinstance(sf_cache, dict):
+            data = sf_cache.get("data", None)
+            m_cached = data.get("moon", None) if isinstance(data, dict) else None
+            if isinstance(m_cached, dict) and ("alt" in m_cached) and ("az" in m_cached):
+                c_alt = float(m_cached.get("alt"))
+                c_az = float(m_cached.get("az")) % 360.0
+                dalt = abs(float(alt) - c_alt)
+                daz = abs((((float(az) - c_az) + 180.0) % 360.0) - 180.0)
+                drift = math.hypot(dalt, daz)
+                if drift > 0.5:
+                    now_mono = float(time.monotonic())
+                    last_log = float(
+                        getattr(canvas, "_moon_draw_cache_drift_log_ts", 0.0)
+                    )
+                    if (now_mono - last_log) >= 2.0:
+                        print(
+                            "[MoonDebug] draw input vs cache drift "
+                            f"deg={drift:.3f} "
+                            f"draw=({float(alt):.3f},{float(az)%360.0:.3f}) "
+                            f"cache=({c_alt:.3f},{c_az:.3f})"
+                        )
+                        canvas._moon_draw_cache_drift_log_ts = now_mono
+    except Exception:
+        pass
     pt = canvas.project_universal_stereo(alt, az)
     if not pt:
         return
@@ -245,10 +271,11 @@ def draw_moon_skyfield_impl(
             t_s = QTransform()
             t_s.translate(sx, sy)
             final_s_path = t_s.map(raw_s_path)
-            target_r = r
-            if r >= s_rad:
-                target_r = max(r, s_rad + 1.0)
-            raw_m_path = canvas.get_refracted_body_path(target_r, s_alt, pixels_per_deg)
+            # Keep strict physical radius parity with the already-computed
+            # Sun/Moon pixel radii. A forced +1 px Moon causes abrupt ingress
+            # when the discs are small on screen.
+            target_r = float(r)
+            raw_m_path = canvas.get_refracted_body_path(target_r, alt, pixels_per_deg)
             t_m = QTransform()
             t_m.translate(x, y)
             final_m_path = t_m.map(raw_m_path)
@@ -394,6 +421,12 @@ def draw_ngc_overlay_impl(canvas, painter: QPainter, ut_hour: float, day_of_year
     canvas.visible_ngc_objects = []
     parent = getattr(canvas, "parent_widget", None)
     if parent is None or not hasattr(parent, "_load_ngc_search_entries"):
+        return
+    try:
+        sun_alt = float(canvas.get_sun_alt_az(float(ut_hour), float(parent.latitude), int(day_of_year_utc))[0])
+    except Exception:
+        sun_alt = 90.0
+    if sun_alt > -6.0:
         return
     try:
         catalog = parent._load_ngc_search_entries()
@@ -804,19 +837,77 @@ def get_eclipse_dimming_factor_impl(canvas, ut_hour, day_of_year):
     except Exception:
         return 1.0
 
+
+def _angular_radius_px_local(
+    canvas,
+    alt_deg: float,
+    az_deg: float,
+    angular_radius_deg: float,
+    fallback_pixels_per_deg: float,
+) -> float:
+    """Convert angular radius to pixels using local projection scale."""
+    try:
+        center = canvas.project_universal_stereo(float(alt_deg), float(az_deg))
+        if not center:
+            raise RuntimeError("center_not_projectable")
+
+        cx, cy = float(center[0]), float(center[1])
+        ang = float(angular_radius_deg)
+        samples = []
+
+        # Sample 1: altitude offset.
+        p_alt = canvas.project_universal_stereo(float(alt_deg) + ang, float(az_deg))
+        if p_alt:
+            samples.append(math.hypot(float(p_alt[0]) - cx, float(p_alt[1]) - cy))
+
+        # Sample 2: azimuth offset corrected by cos(alt) to keep angular distance.
+        cos_alt = max(0.15, abs(math.cos(math.radians(float(alt_deg)))))
+        p_az = canvas.project_universal_stereo(
+            float(alt_deg),
+            (float(az_deg) + (ang / cos_alt)) % 360.0,
+        )
+        if p_az:
+            samples.append(math.hypot(float(p_az[0]) - cx, float(p_az[1]) - cy))
+
+        if samples:
+            value = float(sum(samples) / len(samples))
+            if math.isfinite(value) and value > 0.0:
+                return value
+    except Exception:
+        pass
+
+    return max(1.0, float(angular_radius_deg) * float(fallback_pixels_per_deg))
+
+
+def _disc_visibility_floor_px(canvas) -> float:
+    """Small on-screen floor so Sun/Moon remain readable in wide FOV views."""
+    try:
+        side = float(min(int(canvas.width()), int(canvas.height())))
+        # ~2 px at 1080p, capped to avoid oversized discs.
+        return float(max(1.8, min(3.0, side * 0.0019)))
+    except Exception:
+        return 2.0
+
+
 def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_light=1.0, mag_limit=None):
     if mag_limit is None: mag_limit = 6.0
     bortle = getattr(canvas.parent_widget, 'auto_bortle_estimate', getattr(canvas, 'auto_bortle_estimate', 1))
+    show_sun_moon = bool(
+        canvas._parent_checkbox_checked("chk_sun_moon", default=True)
+    )
+    show_planets = bool(
+        canvas._parent_checkbox_checked("chk_planets", default=True)
+    )
     # USE CACHE if available
     if hasattr(canvas, '_sf_cache') and canvas._sf_cache['data']:
         try:
             data = canvas._sf_cache['data']
             
-            # Physical Scaling setup
+            # Physical scaling setup (real angular size)
             w, h = canvas.width(), canvas.height()
             R_proj = min(w, h) / 2.0 * canvas.zoom_level
             pixels_per_deg = R_proj / 90.0
-            celestial_scale = 10.0
+            celestial_scale = 1.0
             scope_enabled = bool(canvas.scope_mode_enabled())
             scope_disc_cap_px = None
             scope_planet_cap_px = None
@@ -828,19 +919,31 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                 celestial_scale = 1.0
             
             # Sun Data
-            s = data['sun']
-            alt_s_deg = s['alt']
-            az_s_deg = s['az']
-            dist_s_km = s['dist_km']
-            sun_ang_radius_deg = s['rad_deg']
+            s = data.get('sun', {})
+            alt_s_deg = float(s.get('alt', -90.0))
+            az_s_deg = float(s.get('az', 0.0))
+            sun_ang_radius_deg = float(s.get('rad_deg', 0.2666))
             
             # Moon Data
-            m = data['moon']
-            alt_m_real_deg = m['alt']
-            az_m_real_deg = m['az']
-            d_moon_km = m['dist_km']
-            moon_ang_radius_deg = m['rad_deg']
-            sep_real = m['sep_real']
+            m = data.get('moon', {})
+            alt_m_real_deg = float(m.get('alt', -90.0))
+            az_m_real_deg = float(m.get('az', 0.0))
+            moon_ang_radius_deg = float(m.get('rad_deg', 0.2725))
+            sep_real = m.get('sep_real', None)
+            if sep_real is None:
+                try:
+                    alt_s_r = math.radians(float(alt_s_deg))
+                    az_s_r = math.radians(float(az_s_deg))
+                    alt_m_r = math.radians(float(alt_m_real_deg))
+                    az_m_r = math.radians(float(az_m_real_deg))
+                    cos_sep = (
+                        math.sin(alt_s_r) * math.sin(alt_m_r)
+                        + math.cos(alt_s_r) * math.cos(alt_m_r) * math.cos(az_s_r - az_m_r)
+                    )
+                    sep_real = math.degrees(math.acos(max(-1.0, min(1.0, cos_sep))))
+                except Exception:
+                    sep_real = 180.0
+            sep_real = float(sep_real)
             physical_overlap_deg = float(sun_ang_radius_deg) + float(moon_ang_radius_deg)
             physical_total_margin_deg = abs(float(sun_ang_radius_deg) - float(moon_ang_radius_deg))
             is_eclipsing_physical = float(sep_real) < physical_overlap_deg
@@ -854,38 +957,39 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
             alt_m_vis = float(alt_m_real_deg)
             az_m_vis = float(az_m_real_deg)
 
-            # Keep perceptual scaling for regular views, but disable it near
-            # conjunction so eclipse timing/magnitude stay physically coherent.
-            scale_s = canvas.perceived_disc_scale(alt_s_deg)
-            scale_m = canvas.perceived_disc_scale(alt_m_vis)
-            if float(sep_real) < 12.0:
-                scale_s = 1.0
-                scale_m = 1.0
+            # Real-size mode: no perceptual inflation.
+            scale_s = 1.0
+            scale_m = 1.0
 
-            # In eclipse-lock mode we prioritize physical geometry strictly.
-            eclipse_lock = bool(getattr(canvas, "eclipse_lock_mode", False))
-            disc_scale = float(celestial_scale)
-            if eclipse_lock and float(sep_real) < 2.0:
-                disc_scale = 1.0
+            # Real-size mode: physical angular diameter only.
+            disc_scale = 1.0
 
-            # Optional visual compensation (only when eclipse lock is OFF):
-            # if discs are inflated, inflate center separation by the same
-            # factor so partial/total classification remains coherent.
-            if (not eclipse_lock) and float(sep_real) < 2.0 and disc_scale > 1.0001:
-                d_alt = float(alt_m_vis) - float(alt_s_deg)
-                d_az = float(az_m_vis) - float(az_s_deg)
-                d_az = ((d_az + 180.0) % 360.0) - 180.0
-                geom_mult = float(disc_scale)
-                alt_m_vis = float(alt_s_deg) + d_alt * geom_mult
-                az_m_vis = (float(az_s_deg) + d_az * geom_mult) % 360.0
+            # Keep Moon center physically anchored.
+            # Previous visual "separation compensation" displaced the Moon
+            # relative to selection/highlight layers.
 
-            sun_radius_px = max(3.0, sun_ang_radius_deg * pixels_per_deg * disc_scale * scale_s)
-            moon_radius_px = max(3.0, moon_ang_radius_deg * pixels_per_deg * disc_scale * scale_m)
+            sun_ang_vis_deg = float(sun_ang_radius_deg) * float(disc_scale) * float(scale_s)
+            moon_ang_vis_deg = float(moon_ang_radius_deg) * float(disc_scale) * float(scale_m)
+            sun_radius_px = _angular_radius_px_local(
+                canvas,
+                float(alt_s_deg),
+                float(az_s_deg),
+                sun_ang_vis_deg,
+                pixels_per_deg,
+            )
+            moon_radius_px = _angular_radius_px_local(
+                canvas,
+                float(alt_m_vis),
+                float(az_m_vis),
+                moon_ang_vis_deg,
+                pixels_per_deg,
+            )
+            min_disc_px = _disc_visibility_floor_px(canvas)
+            sun_radius_px = max(float(min_disc_px), float(sun_radius_px))
+            moon_radius_px = max(float(min_disc_px), float(moon_radius_px))
             if scope_disc_cap_px is not None:
                 sun_radius_px = min(sun_radius_px, float(scope_disc_cap_px))
                 moon_radius_px = min(moon_radius_px, float(scope_disc_cap_px))
-
-            show_sun_moon = canvas._parent_checkbox_checked("chk_sun_moon", default=True)
 
             # ... Sun Color (Copied logic, can optimize later) ...
             c_zenith = QColor(255, 255, 240)
@@ -948,15 +1052,15 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                 canvas.draw_moon_skyfield(painter, alt_m_vis, az_m_vis, illumination, rotation_deg, moon_radius_px, 1.0, is_eclipsing, (alt_s_deg > -6), sun_params=(alt_s_deg, az_s_deg, sun_radius_px), pixels_per_deg=visual_ppd, tint_color=moon_tint)
             
             # Planets
-            show_planets = canvas._parent_checkbox_checked("chk_planets", default=True)
-                
             if show_planets:
-                for p in data['planets']:
+                for p in data.get('planets', []):
                     # Recompute visibility
+                    p_alt = float(p.get('alt', -90.0))
+                    p_az = float(p.get('az', 0.0))
                     s_alt_rad = math.radians(alt_s_deg)
                     s_az_rad = math.radians(az_s_deg)
-                    p_alt_rad = math.radians(p['alt'])
-                    p_az_rad = math.radians(p['az'])
+                    p_alt_rad = math.radians(p_alt)
+                    p_az_rad = math.radians(p_az)
                     
                     sin_p = math.sin(p_alt_rad)
                     sin_s = math.sin(s_alt_rad)
@@ -969,7 +1073,7 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                     dir_modifier = -4.0 * cos_gamma
                     
                     # Airmass Extinction for Planets
-                    h_p = max(0.1, p['alt'])
+                    h_p = max(0.1, p_alt)
                     airmass_p = 1.0 / (math.sin(math.radians(h_p)) + 0.15 * (h_p + 3.885)**-1.253)
                     k_p = float(getattr(canvas.parent_widget, "scope_k_fallback", 0.20))
                     p_ext = k_p * (airmass_p - 1.0)
@@ -985,19 +1089,42 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                     fade_in = max(0.0, min(1.0, diff * 2.0))
                     
                     if fade_in > 0.01:
-                        p_rad = max(2.0, (p['sz']/10.0) * pixels_per_deg * 2.0)
+                        p_sz = float(p.get('sz', 6.0))
+                        p_rad = max(2.0, (p_sz / 10.0) * pixels_per_deg * 2.0)
                         if scope_planet_cap_px is not None:
                             p_rad = min(p_rad, float(scope_planet_cap_px))
                         
                         # Apply fade to alpha
-                        p_col = QColor(p['col'])
+                        p_col_src = p.get('col', QColor(200, 200, 200))
+                        if isinstance(p_col_src, QColor):
+                            p_col = QColor(p_col_src)
+                        else:
+                            try:
+                                p_col = QColor(*p_col_src)
+                            except Exception:
+                                p_col = QColor(200, 200, 200)
                         p_col.setAlphaF(fade_in)
-                        
-                        canvas.draw_planet(painter, p['alt'], p['az'], p['name'], p_col, p_rad, mag, key=p.get('key'))
+                        p_name = str(p.get('name', p.get('key', 'Planet')))
+                        canvas.draw_planet(
+                            painter,
+                            p_alt,
+                            p_az,
+                            p_name,
+                            p_col,
+                            p_rad,
+                            mag,
+                            key=p.get('key'),
+                        )
 
             return
         except Exception as e:
-            # print(f"Draw Cache Error: {e}")
+            now_mono = float(time.monotonic())
+            last_log = float(
+                getattr(canvas, "_overlay_cache_render_error_log_ts", 0.0)
+            )
+            if (now_mono - last_log) >= 2.0:
+                print(f"[Overlay] Skyfield cache render fallback: {e}")
+                canvas._overlay_cache_render_error_log_ts = now_mono
             pass
     
     # Fallback to Original Logic if no cache
@@ -1036,7 +1163,7 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         # Previous logic (12.0 / zoom) kept the size static on screen.
         # We now use a constant scale so it grows naturally with the camera zoom (pixels_per_deg).
         # We use 10.0 as a base "Cinematic Scale" so it looks impressive but not overwhelming.
-        celestial_scale = 10.0
+        celestial_scale = 1.0
         scope_enabled = bool(canvas.scope_mode_enabled())
         if scope_enabled:
             celestial_scale = 1.0
@@ -1082,34 +1209,71 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         alt_m_vis = float(alt_m_real.degrees)
         az_m_vis = float(az_m_real.degrees)
 
-        # Keep perceptual scaling for regular views, but disable it near
-        # conjunction so eclipse timing/magnitude stay physically coherent.
-        scale_s = canvas.perceived_disc_scale(alt_s.degrees)
-        scale_m = canvas.perceived_disc_scale(alt_m_vis)
-        if float(sep_real) < 12.0:
-            scale_s = 1.0
-            scale_m = 1.0
+        # If cache data exists, keep Moon center aligned with the same source
+        # used by selection/highlight layers to avoid split positions.
+        cache_data = None
+        try:
+            sf_cache = getattr(canvas, "_sf_cache", None)
+            if isinstance(sf_cache, dict):
+                cache_data = sf_cache.get("data", None)
+        except Exception:
+            cache_data = None
+        if isinstance(cache_data, dict):
+            m_cached = cache_data.get("moon", None)
+            if isinstance(m_cached, dict) and ("alt" in m_cached) and ("az" in m_cached):
+                try:
+                    cached_alt = float(m_cached.get("alt"))
+                    cached_az = float(m_cached.get("az")) % 360.0
+                    raw_dalt = abs(float(alt_m_vis) - cached_alt)
+                    raw_daz = abs((((float(az_m_vis) - cached_az) + 180.0) % 360.0) - 180.0)
+                    drift_deg = math.hypot(raw_dalt, raw_daz)
+                    if drift_deg > 0.5:
+                        now_mono = float(time.monotonic())
+                        last_log = float(
+                            getattr(canvas, "_moon_cache_drift_log_ts", 0.0)
+                        )
+                        if (now_mono - last_log) >= 2.0:
+                            print(
+                                "[MoonDebug] fallback/live vs cache drift "
+                                f"deg={drift_deg:.3f} "
+                                f"live=({float(alt_m_vis):.3f},{float(az_m_vis)%360.0:.3f}) "
+                                f"cache=({cached_alt:.3f},{cached_az:.3f})"
+                            )
+                            canvas._moon_cache_drift_log_ts = now_mono
+                    alt_m_vis = cached_alt
+                    az_m_vis = cached_az
+                except Exception:
+                    pass
 
-        # In eclipse-lock mode we prioritize physical geometry strictly.
-        eclipse_lock = bool(getattr(canvas, "eclipse_lock_mode", False))
-        disc_scale = float(celestial_scale)
-        if eclipse_lock and float(sep_real) < 2.0:
-            disc_scale = 1.0
+        # Real-size mode: no perceptual/cinematic inflation.
+        scale_s = 1.0
+        scale_m = 1.0
+        disc_scale = 1.0
 
-        # Optional visual compensation (only when eclipse lock is OFF):
-        # if discs are inflated, inflate center separation by the same
-        # factor so partial/total classification remains coherent.
-        if (not eclipse_lock) and float(sep_real) < 2.0 and disc_scale > 1.0001:
-            d_alt = float(alt_m_vis) - float(alt_s.degrees)
-            d_az = float(az_m_vis) - float(az_s.degrees)
-            d_az = ((d_az + 180.0) % 360.0) - 180.0
-            geom_mult = float(disc_scale)
-            alt_m_vis = float(alt_s.degrees) + d_alt * geom_mult
-            az_m_vis = (float(az_s.degrees) + d_az * geom_mult) % 360.0
+        # Keep Moon center physically anchored.
+        # Previous visual "separation compensation" displaced the Moon
+        # relative to selection/highlight layers.
 
         # Clamp min radius
-        sun_radius_px = max(3.0, sun_ang_radius_deg * pixels_per_deg * disc_scale * scale_s)
-        moon_radius_px = max(3.0, moon_ang_radius_deg * pixels_per_deg * disc_scale * scale_m)
+        sun_ang_vis_deg = float(sun_ang_radius_deg) * float(disc_scale) * float(scale_s)
+        moon_ang_vis_deg = float(moon_ang_radius_deg) * float(disc_scale) * float(scale_m)
+        sun_radius_px = _angular_radius_px_local(
+            canvas,
+            float(alt_s.degrees),
+            float(az_s.degrees),
+            sun_ang_vis_deg,
+            pixels_per_deg,
+        )
+        moon_radius_px = _angular_radius_px_local(
+            canvas,
+            float(alt_m_vis),
+            float(az_m_vis),
+            moon_ang_vis_deg,
+            pixels_per_deg,
+        )
+        min_disc_px = _disc_visibility_floor_px(canvas)
+        sun_radius_px = max(float(min_disc_px), float(sun_radius_px))
+        moon_radius_px = max(float(min_disc_px), float(moon_radius_px))
         
         # --- SUN COLOR (Atmospheric Extinction) ---
         # Zenith: White/Yellow
@@ -1156,7 +1320,8 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
             eff_sun_color.setAlpha(new_alpha)
             eff_corona_opacity *= (1.0 - dim_factor)
 
-        canvas.draw_sun_skyfield(painter, alt_s.degrees, az_s.degrees, sun_radius_px, eff_sun_color, eff_corona_opacity, visual_ppd)
+        if show_sun_moon:
+            canvas.draw_sun_skyfield(painter, alt_s.degrees, az_s.degrees, sun_radius_px, eff_sun_color, eff_corona_opacity, visual_ppd)
         
         s_earth = earth.at(t).observe(sun)
         m_earth = earth.at(t).observe(moon)
@@ -1199,10 +1364,10 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
              b = int(235 * (1-t_moon_set) + 100 * t_moon_set)
              moon_tint = QColor(r, g, b)
 
-        canvas.draw_moon_skyfield(painter, alt_m_vis, az_m_vis, illumination, rotation_deg, moon_radius_px, moon_alpha, is_eclipsing, is_day, sun_params=(alt_s.degrees, az_s.degrees, sun_radius_px), pixels_per_deg=visual_ppd, tint_color=moon_tint)
+        if show_sun_moon:
+            canvas.draw_moon_skyfield(painter, alt_m_vis, az_m_vis, illumination, rotation_deg, moon_radius_px, moon_alpha, is_eclipsing, is_day, sun_params=(alt_s.degrees, az_s.degrees, sun_radius_px), pixels_per_deg=visual_ppd, tint_color=moon_tint)
         
         # Logger (Every 30s)
-        import time
         now_ts = time.time()
         if not hasattr(canvas, 'last_log_time'): canvas.last_log_time = 0
         if now_ts - canvas.last_log_time > 99999999999:
@@ -1215,7 +1380,7 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         # 3. Planets (All times, visibility depends on Magnitude Limit)
         # The manual check 'if s_alt_deg < -6' prevented Venus/Jupiter from appearing in Civil Twilight.
         # Removed it. The 'mag <= local_limit' check inside handles it correctly.
-        if True:
+        if show_planets:
             planets = {
                 'mercury': ('Mercury', QColor(169, 169, 169), 4),
                 'venus': ('Venus', QColor(255, 220, 150), 7),

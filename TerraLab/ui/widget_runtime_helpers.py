@@ -31,17 +31,37 @@ except Exception:  # pragma: no cover
     np = None
 
 
+def _resolve_effective_bortle_class(widget) -> float:
+    """Calcula la classe Bortle efectiva segons mode i estat de contaminació lumínica.
+
+    Si la contaminació lumínica està desactivada i el mode és automàtic,
+    forcem Bortle 1 per eliminar el glow artificial del cel.
+    """
+    is_auto_bortle = bool(getattr(widget, "is_auto_bortle", True))
+    light_pollution_enabled = bool(
+        getattr(widget, "light_pollution_enabled", True)
+    )
+
+    if is_auto_bortle:
+        if not light_pollution_enabled:
+            return 1.0
+        raw_bortle = float(getattr(widget, "auto_bortle_estimate", 1.0))
+    else:
+        manual_eye_limit_mag = float(
+            getattr(widget, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)
+        )
+        raw_bortle = 1.0 + (7.6 - manual_eye_limit_mag) / 0.5
+
+    return max(1.0, min(9.0, float(raw_bortle)))
+
+
 def recompute_visual_magnitude_model(
     widget, target_alt_deg=None, sun_alt_deg=-18.0, now_utc=None
 ):
     if target_alt_deg is None:
         target_alt_deg = getattr(widget.canvas, "elevation_angle", 40.0)
 
-    if widget.is_auto_bortle:
-        bortle_class = float(widget.auto_bortle_estimate)
-    else:
-        bortle_class = 1.0 + (7.6 - float(widget.magnitude_limit)) / 0.5
-    bortle_class = max(1.0, min(9.0, bortle_class))
+    bortle_class = _resolve_effective_bortle_class(widget)
 
     focal_mm = float(
         getattr(widget.canvas.scope_controller, "focal_mm", 250.0)
@@ -356,10 +376,23 @@ def widget_update_loop(widget):
         and widget.scope_panel.isVisible()
     ):
         widget._sync_scope_coord_inputs_from_canvas()
+        if bool(getattr(widget.canvas, "scope_mode_enabled", lambda: False)()):
+            try:
+                widget._ensure_scope_catalog_loaded(force_now=False)
+            except Exception:
+                pass
 
     if run_climate_tick:
         widget._refresh_climate_status_indicator()
         widget._refresh_stars_status_indicator()
+        try:
+            from TerraLab.ui.widget_misc_helpers import (
+                widget_refresh_gaia_download_feedback,
+            )
+
+            widget_refresh_gaia_download_feedback(widget)
+        except Exception:
+            pass
     widget.canvas.update()
 
 

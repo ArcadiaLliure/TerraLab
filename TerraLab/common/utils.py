@@ -38,12 +38,23 @@ LANGUAGE_OPTIONS: Dict[str, str] = {
 _translations_cache: Optional[Dict[str, Dict[str, str]]] = None
 _config_cache: Optional[Dict[str, Any]] = None
 _config_lock = threading.Lock()
+_base_dir_cache: Optional[str] = None
+_base_dir_lock = threading.Lock()
 
 
 def get_base_dir() -> str:
     """Return TerraLab runtime root (`%APPDATA%/TerraLab` on Windows)."""
-    layout = ensure_runtime_layout()
-    return str(layout["root"])
+    global _base_dir_cache
+    cached = _base_dir_cache
+    if cached:
+        return str(cached)
+    with _base_dir_lock:
+        cached = _base_dir_cache
+        if cached:
+            return str(cached)
+        layout = ensure_runtime_layout()
+        _base_dir_cache = str(layout["root"])
+        return str(_base_dir_cache)
 
 
 def resource_path(relative_path: str) -> str:

@@ -11,6 +11,7 @@ import signal
 import sys
 import time
 import traceback
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, TextIO
@@ -24,6 +25,9 @@ if __package__ in (None, ""):
         sys.path.insert(0, str(_repo_root))
 
 from TerraLab.common.app_paths import ensure_runtime_layout
+from TerraLab.common.deprecation_registry import (
+    register_deprecated_method,
+)
 from TerraLab.common.utils import set_config_value
 from TerraLab.util.gaia_importer import build_gaia_catalog_from_tables
 
@@ -35,6 +39,16 @@ except Exception:  # pragma: no cover
 
 TAP_BASE_URL = "https://gea.esac.esa.int/tap-server/tap"
 VISIBLE_MAG_LIMIT_DEFAULT = 8.0
+
+register_deprecated_method(
+    entry_id="TerraLab.tools.download_gaia_tap.main",
+    module_path="TerraLab.tools.download_gaia_tap",
+    class_name=None,
+    method_name="main",
+    replacement="TerraLab.data.gaia_downloader.main",
+    phase_introduced=2,
+    notes="CLI legacy monolitic substituit per descarrega per teseles",
+)
 
 
 class _TeeStream:
@@ -873,6 +887,14 @@ def _plan_extension_batches(
 
 
 def main() -> int:
+    warnings.warn(
+        (
+            "TerraLab.tools.download_gaia_tap.main esta deprecated. "
+            "Useu TerraLab.data.gaia_downloader.main."
+        ),
+        DeprecationWarning,
+        stacklevel=2,
+    )
     parser = argparse.ArgumentParser(
         description=(
             "Download Gaia DR3 progressively: visible stars first, then background extension by batches."

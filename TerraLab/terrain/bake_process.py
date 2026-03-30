@@ -16,12 +16,63 @@ from TerraLab.terrain.engine import (
 )
 
 
+_EVENT_STREAM = None
+_EVENT_STREAM_INIT_FAILED = False
+
+
+def _resolve_event_stream():
+    """Resol el canal de sortida dels esdeveniments JSON del subprocess."""
+    global _EVENT_STREAM
+    global _EVENT_STREAM_INIT_FAILED
+
+    if _EVENT_STREAM is not None:
+        return _EVENT_STREAM
+    if _EVENT_STREAM_INIT_FAILED:
+        return None
+
+    for stream in (getattr(sys, "__stdout__", None), getattr(sys, "stdout", None)):
+        if stream is None:
+            continue
+        if hasattr(stream, "write") and hasattr(stream, "flush"):
+            _EVENT_STREAM = stream
+            return _EVENT_STREAM
+
+    try:
+        # Important a Windows/pythonw: pot no existir cap stream d'alt nivell.
+        _EVENT_STREAM = os.fdopen(
+            os.dup(1),
+            "w",
+            encoding="utf-8",
+            errors="replace",
+            buffering=1,
+        )
+        return _EVENT_STREAM
+    except Exception:
+        _EVENT_STREAM_INIT_FAILED = True
+        return None
+
+
 def _emit_event(event_type: str, **payload) -> None:
+    """Emet un esdeveniment JSONL cap al pare sense bloquejar el bake."""
     event = {"type": event_type, **payload}
     line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
-    out = getattr(sys, "__stdout__", sys.stdout)
-    out.write(line)
-    out.flush()
+    event_stream = _resolve_event_stream()
+    if event_stream is None:
+        print(
+            f"[HorizonBakeProcess] Event stream unavailable (event={event_type}).",
+            file=sys.stderr,
+            flush=True,
+        )
+        return
+    try:
+        event_stream.write(line)
+        event_stream.flush()
+    except Exception as exc:
+        print(
+            f"[HorizonBakeProcess] Event emit failed ({event_type}): {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _phase_progress(job_id: str, phase: str, start_pct: float, end_pct: float):
@@ -144,6 +195,7 @@ def _save_preview_snapshot(
 
 
 def main():
+    """Punt d'entrada del subprocess de bake d'horitzo."""
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
@@ -170,6 +222,16 @@ def main():
     args = parser.parse_args()
 
     job_id = str(args.job_id)
+    print(
+        (
+            "[HorizonBakeProcess] Start "
+            f"job={job_id} "
+            f"exe={sys.executable} "
+            f"event_stream_ready={_resolve_event_stream() is not None}"
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
     provider = None
     light_sampler = None
     preview_path = os.path.abspath(args.preview_path)

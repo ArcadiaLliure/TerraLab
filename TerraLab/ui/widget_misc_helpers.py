@@ -2,6 +2,159 @@
 
 from __future__ import annotations
 
+import json
+import time
+from pathlib import Path
+from typing import Optional
+
+from TerraLab.common.deprecation_registry import (
+    emit_deprecation_warning,
+    register_deprecated_method,
+)
+
+register_deprecated_method(
+    entry_id="TerraLab.ui.widget_misc_helpers.widget_reload_star_catalog_async",
+    module_path="TerraLab.ui.widget_misc_helpers",
+    class_name=None,
+    method_name="widget_reload_star_catalog_async",
+    replacement="TerraLab.data.star_data_coordinator.StarDataCoordinator.load_general_tile",
+    phase_introduced=6,
+    notes="Recarrega legacy substituida per coordinador de tesela general",
+)
+
+
+def _load_gaia_state_from_json(path: Path) -> Optional[dict]:
+    """Carrega un fitxer JSON d'estat Gaia i valida format minim."""
+    state_path = Path(path).expanduser()
+    if not state_path.exists():
+        return None
+    try:
+        with state_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    payload["_state_path"] = str(state_path)
+    return payload
+
+
+def _is_gaia_state_pending(state: Optional[dict]) -> bool:
+    """Indica si un estat Gaia representa una descarrega pendent."""
+    if not isinstance(state, dict):
+        return False
+    status = str(state.get("status", "")).strip().lower()
+    phase = str(state.get("phase", "")).strip().lower()
+    done_tokens = {"done", "completed", "success"}
+    return status not in done_tokens and phase not in done_tokens
+
+
+def _gaia_state_progress_percent(state: Optional[dict]) -> float:
+    """Calcula percentatge de progres per estat legacy o per teseles."""
+    if not isinstance(state, dict):
+        return 0.0
+    try:
+        if "progress_percent" in state:
+            return float(
+                max(
+                    0.0,
+                    min(
+                        100.0,
+                        float(state.get("progress_percent", 0.0) or 0.0),
+                    ),
+                )
+            )
+    except Exception:
+        pass
+
+    deep_tiles = state.get("deep_tiles")
+    if not isinstance(deep_tiles, dict):
+        return 0.0
+
+    try:
+        tile_size_deg = float(state.get("tile_size_deg", 5.0) or 5.0)
+    except Exception:
+        tile_size_deg = 5.0
+    tile_size_deg = max(0.1, float(tile_size_deg))
+    total_tiles = int((360.0 / tile_size_deg) * (180.0 / tile_size_deg))
+    done_tiles = sum(
+        1
+        for item in deep_tiles.values()
+        if isinstance(item, dict) and bool(item.get("done", False))
+    )
+    progress = 10.0 + 85.0 * (float(done_tiles) / float(max(1, total_tiles)))
+    if bool(state.get("general_tile_done", False)):
+        progress = max(progress, 9.0)
+    if str(state.get("status", "")).strip().lower() in {
+        "done",
+        "completed",
+        "success",
+    }:
+        progress = 100.0
+    return float(max(0.0, min(100.0, progress)))
+
+
+def _gaia_state_target_mag(state: Optional[dict]) -> float:
+    """Extreu magnitud objectiu des d'estat legacy o estat per teseles."""
+    if not isinstance(state, dict):
+        return 0.0
+    for key_name in ("mag_limit", "target_mag"):
+        try:
+            value = float(state.get(key_name, 0.0) or 0.0)
+            if value > 0.0:
+                return value
+        except Exception:
+            continue
+    return 0.0
+
+
+def _candidate_gaia_state_paths(widget) -> list[Path]:
+    """Construeix rutes candidates d'estat Gaia (nou + legacy)."""
+    runtime_layout = getattr(widget, "runtime_layout", {}) or {}
+    try:
+        root_dir = Path(runtime_layout.get("root", Path.home())).resolve()
+    except Exception:
+        root_dir = Path.home()
+    try:
+        data_gaia_dir = Path(
+            str(runtime_layout.get("data_gaia", ""))
+        ).expanduser()
+    except Exception:
+        data_gaia_dir = Path()
+
+    ordered_candidates = [
+        root_dir / "logs" / "gaia_tiles_state.json",
+        data_gaia_dir / "gaia_tiles_state.json",
+        root_dir / "logs" / "gaia_tap_state.json",
+    ]
+    unique_paths: list[Path] = []
+    seen_paths: set[str] = set()
+    for candidate in ordered_candidates:
+        key = str(candidate)
+        if not key or key in seen_paths:
+            continue
+        seen_paths.add(key)
+        unique_paths.append(candidate)
+    return unique_paths
+
+
+def _find_pending_gaia_state(widget) -> Optional[dict]:
+    """Localitza el millor estat Gaia pendent per mostrar prompt de resume."""
+    legacy_loader = getattr(widget, "_load_pending_gaia_state", None)
+    if callable(legacy_loader):
+        try:
+            loaded_state = legacy_loader()
+            if _is_gaia_state_pending(loaded_state):
+                return loaded_state
+        except Exception:
+            pass
+
+    for candidate_path in _candidate_gaia_state_paths(widget):
+        loaded_state = _load_gaia_state_from_json(candidate_path)
+        if _is_gaia_state_pending(loaded_state):
+            return loaded_state
+    return None
+
 
 def widget_apply_scope_preloaded_spatial_index(widget):
     from TerraLab.ui import sky_widget_impl as _impl
@@ -139,21 +292,21 @@ def widget_maybe_resume_pending_gaia_download(widget):
     if bool(getattr(self, "_gaia_resume_prompt_shown", False)):
         return
     self._gaia_resume_prompt_shown = True
-    state = self._load_pending_gaia_state()
+    state = _find_pending_gaia_state(self)
     if not isinstance(state, dict):
         return
-    try:
-        pct = float(state.get("progress_percent", 0.0) or 0.0)
-    except Exception:
-        pct = 0.0
-    try:
-        target_mag = float(state.get("target_mag", 0.0) or 0.0)
-    except Exception:
-        target_mag = 0.0
-    prompt = getTraduction(
-        "Astro.GaiaResumePrompt",
-        "Hi ha una descarrega Gaia pendent ({pct:.1f}% fins ara, objectiu mag {mag:.2f}).\n\nVols reprendre-la ara en segon pla?",
-    ).format(pct=pct, mag=target_mag)
+    pct = _gaia_state_progress_percent(state)
+    target_mag = _gaia_state_target_mag(state)
+    if target_mag > 0.0:
+        prompt = getTraduction(
+            "Astro.GaiaResumePrompt",
+            "Hi ha una descarrega Gaia pendent ({pct:.1f}% fins ara, objectiu mag {mag:.2f}).\n\nVols reprendre-la ara en segon pla?",
+        ).format(pct=pct, mag=target_mag)
+    else:
+        prompt = getTraduction(
+            "Astro.GaiaResumePromptNoMag",
+            "Hi ha una descarrega Gaia pendent ({pct:.1f}% fins ara).\n\nVols reprendre-la ara en segon pla?",
+        ).format(pct=pct)
     ans = QMessageBox.question(
         self,
         "TerraLab",
@@ -183,6 +336,11 @@ def widget_maybe_resume_pending_gaia_download(widget):
 
 
 def widget_reload_star_catalog_async(widget):
+    """DEPRECATED: useu StarDataCoordinator.load_general_tile()."""
+    emit_deprecation_warning(
+        "TerraLab.ui.widget_misc_helpers.widget_reload_star_catalog_async",
+        "TerraLab.data.star_data_coordinator.StarDataCoordinator.load_general_tile",
+    )
     from TerraLab.ui import sky_widget_impl as _impl
 
     globals().update(_impl.__dict__)
@@ -580,6 +738,63 @@ def widget_refresh_climate_status_indicator(widget):
         )
         self.lbl_climate_fallback.setToolTip(reason)
         self.lbl_climate_fallback.show()
+
+
+def widget_refresh_gaia_download_feedback(widget):
+    """Actualitza feedback visual de descarrega Gaia pendent a la UI principal."""
+    from TerraLab.ui import sky_widget_impl as _impl
+
+    globals().update(_impl.__dict__)
+    self = widget
+    label_widget = getattr(self, "lbl_gaia_download_status", None)
+    progress_widget = getattr(self, "progress_gaia_download", None)
+    stars_toggle = getattr(self, "chk_enable_sky", None)
+    if label_widget is None or progress_widget is None or stars_toggle is None:
+        return
+    if not bool(stars_toggle.isChecked()):
+        label_widget.hide()
+        progress_widget.hide()
+        return
+
+    now_mono = time.monotonic()
+    last_poll_mono = float(
+        getattr(self, "_gaia_download_status_last_poll_mono", 0.0)
+    )
+    min_interval_s = float(
+        getattr(self, "_gaia_download_status_min_interval_s", 0.9)
+    )
+    if (now_mono - last_poll_mono) < max(0.2, min_interval_s):
+        return
+    self._gaia_download_status_last_poll_mono = now_mono
+
+    pending_state = _find_pending_gaia_state(self)
+    if not _is_gaia_state_pending(pending_state):
+        label_widget.hide()
+        progress_widget.hide()
+        return
+
+    percent_value = _gaia_state_progress_percent(pending_state)
+    message_text = str(pending_state.get("status_message", "") or "").strip()
+    tile_identifier = str(pending_state.get("current_tile_id", "") or "").strip()
+    if not message_text:
+        message_text = "Descarregant Gaia per teseles"
+    if tile_identifier:
+        message_text = f"{message_text} ({tile_identifier})"
+
+    label_widget.setText(f"Gaia: {message_text}")
+    label_widget.setToolTip(
+        str(pending_state.get("_state_path", "") or "gaia_tiles_state.json")
+    )
+    label_widget.show()
+
+    if percent_value <= 0.0:
+        progress_widget.setRange(0, 0)
+    else:
+        progress_widget.setRange(0, 100)
+        progress_widget.setValue(
+            max(0, min(100, int(round(float(percent_value)))))
+        )
+    progress_widget.show()
 
 
 def widget_ensure_copernicus_credentials_prompt(widget):

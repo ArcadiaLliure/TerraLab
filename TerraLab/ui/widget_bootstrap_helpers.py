@@ -2,6 +2,30 @@
 
 from __future__ import annotations
 
+from TerraLab.common.deprecation_registry import (
+    emit_deprecation_warning,
+    register_deprecated_method,
+)
+
+register_deprecated_method(
+    entry_id="TerraLab.ui.widget_bootstrap_helpers.widget_ensure_scope_catalog_loaded",
+    module_path="TerraLab.ui.widget_bootstrap_helpers",
+    class_name=None,
+    method_name="widget_ensure_scope_catalog_loaded",
+    replacement="TerraLab.data.star_data_coordinator.StarDataCoordinator.load_deep_tile",
+    phase_introduced=7,
+    notes="Carrega deep legacy substituida per carrega per teseles",
+)
+register_deprecated_method(
+    entry_id="TerraLab.ui.widget_bootstrap_helpers.widget_ensure_scope_spatial_index_warmup",
+    module_path="TerraLab.ui.widget_bootstrap_helpers",
+    class_name=None,
+    method_name="widget_ensure_scope_spatial_index_warmup",
+    replacement="TerraLab.data.star_data_coordinator.StarDataCoordinator.build_scope_index",
+    phase_introduced=7,
+    notes="Escalfament d'index scope mogut al coordinador de dades",
+)
+
 
 def _bind_impl_globals():
     from TerraLab.ui import sky_widget_impl as _impl
@@ -66,6 +90,37 @@ def _on_horizon_progress_state_from_worker(widget, state):
     if current is not None and total:
         msg = f"{msg} - {int(current)}/{int(total)}"
     _set_horizon_progress_label_async(widget, msg)
+
+
+def _on_horizon_worker_error(widget, error_message: str) -> None:
+    """Publica errors del bake d'horitzo a la UI i reinicia estat minim."""
+    _bind_impl_globals()
+    message_text = str(error_message or "").strip()
+    if not message_text:
+        message_text = "Error desconegut al bake d'horitzo"
+    print(f"[HorizonWorker] THREAD ERROR: {message_text}")
+    widget._active_horizon_job_id = None
+    _set_horizon_progress_label_async(widget, f"Error horitzo: {message_text}")
+
+
+def _on_horizon_bortle_estimate_from_worker(
+    widget,
+    request_id: int,
+    lat: float,
+    lon: float,
+    bortle_value: int,
+) -> None:
+    """Propaga l'estimacio Bortle del worker cap al widget UI."""
+    _bind_impl_globals()
+    try:
+        widget.on_horizon_bortle_estimate(
+            int(request_id),
+            float(lat),
+            float(lon),
+            int(bortle_value),
+        )
+    except Exception as exc:
+        print(f"[AstroWidget] Bortle estimate callback error: {exc}")
 
 
 def _cancel_pending_horizon_preview(widget) -> None:
@@ -462,10 +517,22 @@ def widget_start_async_bootstrap(widget):
     self.horizon_worker.progress_state.connect(
         lambda state, w=self: _on_horizon_progress_state_from_worker(w, state)
     )
+    self.horizon_worker.bortle_estimate_ready.connect(
+        lambda request_id, lat, lon, bortle_value, w=self: _on_horizon_bortle_estimate_from_worker(
+            w,
+            request_id,
+            lat,
+            lon,
+            bortle_value,
+        )
+    )
     self.horizon_worker.error_occurred.connect(
-        lambda err: print(f"[HorizonWorker] THREAD ERROR: {err}")
+        lambda err, w=self: _on_horizon_worker_error(w, err)
     )
     self.request_horizon_bake.connect(self.horizon_worker.request_bake)
+    self.request_horizon_bortle.connect(
+        self.horizon_worker.request_bortle_estimate
+    )
     print("[AstroWidget] Starting Horizon Thread... (Path managed by Worker)")
     self.horizon_thread.start()
     try:
@@ -509,7 +576,51 @@ def widget_on_catalog_ready(
     globals().update(_impl.__dict__)
     self = widget
     """Callback when star catalog finishes loading in background."""
-    self.celestial_objects = celestial_objects
+    try:
+        existing_ra = getattr(self, "np_ra", None)
+        existing_rows = int(len(existing_ra)) if existing_ra is not None else 0
+    except Exception:
+        existing_rows = 0
+    incoming_rows = int(len(np_ra)) if np_ra is not None else 0
+
+    load_mode = "unknown"
+    source_kind = "unknown"
+    try:
+        worker = getattr(self, "_catalog_worker", None)
+        load_mode = str(getattr(worker, "last_load_mode", "unknown") or "unknown")
+        source_kind = str(
+            getattr(worker, "last_source_kind", "unknown") or "unknown"
+        )
+    except Exception:
+        pass
+
+    # Never replace a valid in-memory/deep catalog with a tiny fallback payload.
+    fallback_like = (
+        load_mode == "random_fallback"
+        or source_kind in {"unknown", "none", "json_fallback", "ecsv_fallback"}
+    )
+    ignore_fallback_override = bool(
+        fallback_like and existing_rows >= 5000 and incoming_rows > 0 and incoming_rows <= 1000
+    )
+    if ignore_fallback_override:
+        print(
+            "[AstroWidget] Ignoring fallback catalog payload to preserve loaded dataset: "
+            f"existing_rows={existing_rows} incoming_rows={incoming_rows} "
+            f"mode={load_mode} source={source_kind}"
+        )
+        np_ra = getattr(self, "np_ra", None)
+        np_dec = getattr(self, "np_dec", None)
+        np_mag = getattr(self, "np_mag", None)
+        np_r = getattr(self, "np_r", None)
+        np_g = getattr(self, "np_g", None)
+        np_b = getattr(self, "np_b", None)
+        np_bp_rp = getattr(self, "np_bp_rp", None)
+        incoming_rows = int(len(np_ra)) if np_ra is not None else 0
+        load_mode = "preserved_existing"
+        source_kind = "preserved_existing"
+    else:
+        self.celestial_objects = celestial_objects
+
     self._catalog_mag_sorted = False
     if np_ra is not None:
         self.np_ra = np_ra
@@ -554,12 +665,6 @@ def widget_on_catalog_ready(
     self._catalog_loaded_subset_only = False
     try:
         worker = getattr(self, "_catalog_worker", None)
-        load_mode = str(
-            getattr(worker, "last_load_mode", "unknown") or "unknown"
-        )
-        source_kind = str(
-            getattr(worker, "last_source_kind", "unknown") or "unknown"
-        )
         total_rows_hint = int(getattr(worker, "last_total_rows", 0) or 0)
         catalog_max_hint = float(
             getattr(worker, "last_catalog_max_mag", float("nan"))
@@ -620,6 +725,11 @@ def widget_on_catalog_ready(
         delta_ms_boot=self._boot_delta_ms(),
     )
     self._refresh_stars_status_indicator()
+    # Si hi ha manifest per teseles, inicialitza coordinador un cop tenim UI/canvas.
+    try:
+        _scope_try_init_star_data_coordinator(self)
+    except Exception:
+        pass
     # Run heavy post-ready work in small queued steps to keep UI responsive.
     next_token = int(getattr(self, "_catalog_ready_pipeline_token", 0)) + 1
     self._catalog_ready_pipeline_token = next_token
@@ -632,11 +742,43 @@ def widget_on_catalog_ready(
 
 
 def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
+    """DEPRECATED: useu StarDataCoordinator.load_deep_tile()."""
+    emit_deprecation_warning(
+        "TerraLab.ui.widget_bootstrap_helpers.widget_ensure_scope_catalog_loaded",
+        "TerraLab.data.star_data_coordinator.StarDataCoordinator.load_deep_tile",
+    )
     from TerraLab.ui import sky_widget_impl as _impl
 
     globals().update(_impl.__dict__)
     self = widget
     if np is None:
+        return
+    coordinator = _scope_try_init_star_data_coordinator(self)
+    if coordinator is not None:
+        self._scope_catalog_loading = False
+        scope_enabled = bool(
+            getattr(
+                getattr(self, "canvas", None),
+                "scope_mode_enabled",
+                lambda: False,
+            )()
+        )
+        if (not bool(force_now)) and (not scope_enabled):
+            return
+        center_tile_id = _scope_pick_central_tile_id(self, coordinator)
+        if not center_tile_id:
+            return
+        if (
+            (not bool(force_now))
+            and str(getattr(self, "_scope_last_tile_request", "") or "")
+            == str(center_tile_id)
+        ):
+            return
+        self._scope_last_tile_request = str(center_tile_id)
+        print(f"[AstroWidget] Scope tile request: {center_tile_id}")
+        coordinator.load_deep_tile(center_tile_id)
+        coordinator.preload_adjacent_tiles(center_tile_id)
+        coordinator.build_scope_index(center_tile_id)
         return
     if getattr(self, "_scope_catalog_loading", False):
         return
@@ -728,12 +870,284 @@ def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
         )
 
 
+def _scope_try_init_star_data_coordinator(widget):
+    """Inicialitza coordinador per teseles si hi ha `tile_manifest.json`."""
+    _bind_impl_globals()
+    self = widget
+    coordinator = getattr(self, "star_data_coordinator", None)
+    if coordinator is not None:
+        return coordinator
+
+    try:
+        from pathlib import Path
+
+        from TerraLab.data.star_data_coordinator import StarDataCoordinator
+    except Exception:
+        return None
+
+    runtime_layout = getattr(self, "runtime_layout", {}) or {}
+    gaia_dir = str(runtime_layout.get("data_gaia", "") or "").strip()
+    if not gaia_dir:
+        return None
+    manifest_path = Path(gaia_dir).expanduser() / "tile_manifest.json"
+    if not manifest_path.is_file():
+        return None
+
+    try:
+        coordinator = StarDataCoordinator(manifest_path)
+    except Exception as exc:
+        try:
+            print(
+                "[AstroWidget] StarDataCoordinator init error: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        except Exception:
+            pass
+        return None
+
+    self.star_data_coordinator = coordinator
+    try:
+        print(f"[AstroWidget] StarDataCoordinator ready: {manifest_path}")
+    except Exception:
+        pass
+    try:
+        coordinator.general_tile_ready.connect(
+            lambda payload, w=self: _scope_apply_coordinator_payload(
+                w, payload, "general"
+            )
+        )
+        coordinator.extension_ready.connect(
+            lambda payload, w=self: _scope_apply_coordinator_payload(
+                w, payload, "extension"
+            )
+        )
+        coordinator.scope_index_ready.connect(
+            lambda payload, w=self: _scope_apply_coordinator_scope_index(
+                w, payload
+            )
+        )
+        coordinator.error_occurred.connect(
+            lambda msg: print(f"[AstroWidget] StarDataCoordinator error: {msg}")
+        )
+        coordinator.load_general_tile()
+    except Exception as exc:
+        try:
+            print(
+                "[AstroWidget] StarDataCoordinator signal wiring error: "
+                f"{type(exc).__name__}: {exc}"
+            )
+        except Exception:
+            pass
+    return coordinator
+
+
+def _scope_apply_coordinator_payload(widget, payload, reason: str) -> None:
+    """Aplica dataset actiu del coordinador al widget legacy."""
+    _bind_impl_globals()
+    self = widget
+    if np is None or (not isinstance(payload, dict)):
+        return
+    try:
+        np_ra = np.asarray(payload.get("ra", np.empty(0, dtype=np.float32)))
+        np_dec = np.asarray(payload.get("dec", np.empty(0, dtype=np.float32)))
+        np_mag = np.asarray(payload.get("mag", np.empty(0, dtype=np.float32)))
+        np_r = np.asarray(payload.get("r", np.empty(0, dtype=np.float32)))
+        np_g = np.asarray(payload.get("g", np.empty(0, dtype=np.float32)))
+        np_b = np.asarray(payload.get("b", np.empty(0, dtype=np.float32)))
+        np_bp_rp = np.asarray(
+            payload.get("bp_rp", np.full(len(np_mag), 0.8, dtype=np.float32))
+        )
+    except Exception:
+        return
+
+    row_count = int(len(np_ra))
+    if row_count <= 0:
+        return
+    if not (
+        row_count == int(len(np_dec))
+        == int(len(np_mag))
+        == int(len(np_r))
+        == int(len(np_g))
+        == int(len(np_b))
+    ):
+        return
+
+    loaded_tile_ids = payload.get("loaded_tile_ids", ())
+    try:
+        signature = tuple(sorted(str(tid) for tid in loaded_tile_ids))
+    except Exception:
+        signature = tuple()
+
+    prev_signature = tuple(
+        getattr(self, "_scope_manifest_active_signature", tuple()) or tuple()
+    )
+    prev_ra = getattr(self, "np_ra", None)
+    prev_rows = int(len(prev_ra)) if prev_ra is not None else 0
+    if signature == prev_signature and prev_rows == row_count:
+        return
+
+    self.np_ra = np_ra
+    self.np_dec = np_dec
+    self.np_mag = np_mag
+    self.np_r = np_r
+    self.np_g = np_g
+    self.np_b = np_b
+    self.np_bp_rp = np_bp_rp
+    self._scope_manifest_active_signature = signature
+    self._scope_catalog_loading = False
+    self._scope_full_catalog_attached = True
+    self._catalog_loaded_subset_only = False
+    self._catalog_mag_sorted = False
+    self._refresh_scope_data_state(reason=f"coordinator_{str(reason)}")
+    try:
+        max_loaded = float(np.nanmax(np_mag))
+    except Exception:
+        max_loaded = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
+    self._scope_catalog_loaded_max_mag = max(
+        float(
+            getattr(
+                self,
+                "_scope_catalog_loaded_max_mag",
+                STAR_CATALOG_NAKED_EYE_MAX_MAG,
+            )
+        ),
+        float(max_loaded),
+    )
+    self._catalog_max_mag = max(
+        float(getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
+        float(max_loaded),
+    )
+    try:
+        self._scope_set_data_state(
+            "ready_deep", reason=f"coordinator_{str(reason)}"
+        )
+    except Exception:
+        pass
+    canvas = getattr(self, "canvas", None)
+    if canvas is not None:
+        try:
+            canvas._cached_star_image = None
+            canvas._cached_trail_image = None
+        except Exception:
+            pass
+        try:
+            canvas.update()
+        except Exception:
+            pass
+
+
+def _scope_apply_coordinator_scope_index(widget, payload) -> None:
+    """Aplica index scope publicat pel coordinador al renderer actual."""
+    _bind_impl_globals()
+    self = widget
+    if not isinstance(payload, dict):
+        return
+    sorted_indices = payload.get("sorted_indices")
+    offsets = payload.get("offsets")
+    if sorted_indices is None or offsets is None:
+        return
+    ra_all = getattr(self, "np_ra", None)
+    dec_all = getattr(self, "np_dec", None)
+    if ra_all is None or dec_all is None:
+        return
+    expected_rows = int(payload.get("row_count", 0) or 0)
+    if expected_rows > 0 and expected_rows != int(len(ra_all)):
+        return
+    stars_renderer = getattr(
+        getattr(getattr(self, "canvas", None), "sky_renderer", None),
+        "stars_renderer",
+        None,
+    )
+    if stars_renderer is None:
+        return
+    try:
+        catalog_key = stars_renderer._catalog_array_key(ra_all, dec_all)
+        self._on_scope_spatial_index_ready(
+            catalog_key,
+            sorted_indices,
+            offsets,
+            float(payload.get("loaded_max_mag", 0.0) or 0.0),
+        )
+    except Exception as exc:
+        try:
+            print(f"[AstroWidget] scope index payload apply error: {exc}")
+        except Exception:
+            pass
+
+
+def _scope_pick_central_tile_id(widget, coordinator) -> str:
+    """Resol la tesela central segons centre scope en RA/Dec."""
+    _bind_impl_globals()
+    self = widget
+    canvas = getattr(self, "canvas", None)
+    if canvas is None:
+        return ""
+    if not bool(getattr(canvas, "scope_mode_enabled", lambda: False)()):
+        return ""
+
+    scope_ctrl = getattr(canvas, "scope_controller", None)
+    center = getattr(scope_ctrl, "center", None)
+    if center is None:
+        return ""
+
+    try:
+        import math
+
+        ut_hour, day_of_year_utc = canvas._current_ut_context()
+        ra_dec = canvas._altaz_to_ra_dec(
+            float(center[0]),
+            float(center[1]),
+            float(ut_hour),
+            int(day_of_year_utc),
+        )
+        if ra_dec is None:
+            return ""
+        ra_center = float(ra_dec[0])
+        dec_center = float(ra_dec[1])
+        try:
+            fov_w, fov_h = scope_ctrl.current_fov()
+            radius = 0.5 * math.hypot(float(fov_w), float(fov_h))
+        except Exception:
+            radius = 5.0
+        radius = float(max(2.0, min(45.0, radius)))
+        tiles = coordinator.manifest().get_tiles_for_region(
+            ra_center=ra_center,
+            dec_center=dec_center,
+            radius_deg=radius,
+        )
+        if not tiles:
+            return ""
+
+        def _tile_distance_sq(tile):
+            tile_ra = (
+                0.5 * (float(tile.ra_min) + float(tile.ra_max))
+            ) % 360.0
+            delta_ra = abs(((tile_ra - ra_center + 180.0) % 360.0) - 180.0)
+            tile_dec = 0.5 * (float(tile.dec_min) + float(tile.dec_max))
+            delta_dec = float(tile_dec - dec_center)
+            return float(delta_ra * delta_ra + delta_dec * delta_dec)
+
+        best_tile = min(tiles, key=_tile_distance_sq)
+        return str(getattr(best_tile, "tile_id", "") or "")
+    except Exception:
+        return ""
+
+
 def widget_ensure_scope_spatial_index_warmup(widget):
+    """DEPRECATED: useu StarDataCoordinator.build_scope_index()."""
+    emit_deprecation_warning(
+        "TerraLab.ui.widget_bootstrap_helpers.widget_ensure_scope_spatial_index_warmup",
+        "TerraLab.data.star_data_coordinator.StarDataCoordinator.build_scope_index",
+    )
     from TerraLab.ui import sky_widget_impl as _impl
 
     globals().update(_impl.__dict__)
     self = widget
     if np is None:
+        return
+    # Refactor path: `StarDataCoordinator` ja construeix i publica index scope.
+    # Evitem relancar el warm-up legacy (costos i duplicat).
+    if getattr(self, "star_data_coordinator", None) is not None:
         return
     # Avoid parallel heavy jobs: preload already builds the persistent full index.
     if bool(getattr(self, "_scope_preload_in_progress", False)):

@@ -325,6 +325,32 @@ def build_deferred_controls_ui(widget):
     h_stars_row.addWidget(self.lbl_stars_fallback)
     h_stars_row.addStretch(1)
     v_chk.addLayout(h_stars_row)
+    self.lbl_gaia_download_status = QLabel("")
+    self.lbl_gaia_download_status.setVisible(False)
+    self.lbl_gaia_download_status.setStyleSheet(
+        "font-size: 9px; color: #204a87;"
+    )
+    from PyQt5.QtWidgets import QProgressBar as _QProgressBar
+
+    self.progress_gaia_download = _QProgressBar()
+    self.progress_gaia_download.setVisible(False)
+    self.progress_gaia_download.setRange(0, 100)
+    self.progress_gaia_download.setValue(0)
+    self.progress_gaia_download.setTextVisible(False)
+    self.progress_gaia_download.setFixedHeight(7)
+    self.progress_gaia_download.setStyleSheet(
+        "QProgressBar {"
+        "  border: 1px solid #7f9db9;"
+        "  border-radius: 3px;"
+        "  background: #f3f7fc;"
+        "}"
+        "QProgressBar::chunk {"
+        "  background: #4a90e2;"
+        "  border-radius: 2px;"
+        "}"
+    )
+    v_chk.addWidget(self.lbl_gaia_download_status)
+    v_chk.addWidget(self.progress_gaia_download)
     v_chk.addWidget(self.lbl_milkyway_status)
     v_chk.addWidget(self.lbl_climate_fallback)
     self._refresh_milkyway_status_indicator()

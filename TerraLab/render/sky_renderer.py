@@ -9,6 +9,7 @@ from PyQt5.QtGui import QColor, QImage, QPainter, QPixmap
 from TerraLab.render.grid_renderer import GridRenderer
 from TerraLab.render.horizon_renderer import HorizonRenderer
 from TerraLab.render.overlays_renderer import OverlaysRenderer
+from TerraLab.render.scope_renderer import ScopeRenderer
 from TerraLab.render.sky.milkyway_overlay import MilkyWayOverlay
 from TerraLab.render.stars_renderer import StarsRenderer
 
@@ -16,6 +17,7 @@ from TerraLab.render.stars_renderer import StarsRenderer
 class SkyRenderer:
     def __init__(self) -> None:
         self.stars_renderer = StarsRenderer()
+        self.scope_renderer = ScopeRenderer(self.stars_renderer)
         self.horizon_renderer = HorizonRenderer()
         self.grid_renderer = GridRenderer()
         self.milkyway_overlay = MilkyWayOverlay()
@@ -47,7 +49,10 @@ class SkyRenderer:
 
         if diag is not None:
             diag.start_timer("renderer_stars")
-        stars_result = self.stars_renderer.render(ctx, state)
+        if bool(getattr(state, "scope_enabled", False)):
+            stars_result = self.scope_renderer.render(ctx, state)
+        else:
+            stars_result = self.stars_renderer.render(ctx, state)
         if diag is not None:
             diag.stop_timer("renderer_stars")
 
@@ -317,15 +322,23 @@ def draw_background_impl(
         "is_auto_bortle",
         getattr(canvas, "is_auto_bortle", True),
     )
-    bortle = (
-        getattr(
-            canvas.parent_widget,
-            "auto_bortle_estimate",
-            getattr(canvas, "auto_bortle_estimate", 1),
-        )
-        if is_auto_bortle
-        else 1
+    light_pollution_enabled = bool(
+        getattr(canvas.parent_widget, "light_pollution_enabled", True)
     )
+    if is_auto_bortle:
+        raw_bortle = (
+            getattr(
+                canvas.parent_widget,
+                "auto_bortle_estimate",
+                getattr(canvas, "auto_bortle_estimate", 1),
+            )
+            if light_pollution_enabled
+            else 1.0
+        )
+    else:
+        # En mode manual, el cel de fons es manté sense glow Bortle.
+        raw_bortle = 1.0
+    bortle = max(1.0, min(9.0, float(raw_bortle)))
     twilight_factor = 1.0
     if sun_alt >= 0:
         twilight_factor = 0.0

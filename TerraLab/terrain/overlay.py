@@ -11,6 +11,7 @@ village-object rendering are independent concerns.
 import math
 import os
 import random
+import time
 
 import numpy as np
 from PyQt5.QtCore import QObject, QPointF, Qt, pyqtSignal
@@ -313,9 +314,13 @@ class HorizonOverlay(QObject):
             * 99.0
         )
 
-        print(
-            f"[HorizonOverlay] Updating profile for {profile.observer_lat}, {profile.observer_lon} ({len(effective_defs)} layers)"
-        )
+        now_mono = float(time.monotonic())
+        last_log = float(getattr(self, "_last_set_profile_log_mono", 0.0))
+        if (now_mono - last_log) >= 2.0:
+            print(
+                f"[HorizonOverlay] Updating profile for {profile.observer_lat}, {profile.observer_lon} ({len(effective_defs)} layers)"
+            )
+            self._last_set_profile_log_mono = now_mono
         self._layers.clear()
 
         try:

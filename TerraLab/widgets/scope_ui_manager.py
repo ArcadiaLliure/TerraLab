@@ -104,17 +104,52 @@ class ScopeUIManager:
         dec_deg = dec_sign * (dec_d + (dec_m / 60.0) + (dec_s / 3600.0))
 
         try:
+            # Manual GoTo should not remain tied to previous selected-target tracking.
+            if hasattr(w.canvas, "_set_selected_target"):
+                w.canvas._set_selected_target(None)
+            if hasattr(w.canvas, "scope_camera_lock_to_target"):
+                w.canvas.scope_camera_lock_to_target = False
+            if hasattr(w.canvas, "scope_reticle_lock_to_target"):
+                w.canvas.scope_reticle_lock_to_target = False
+            if hasattr(w.canvas, "scope_controller"):
+                w.canvas.scope_controller.end_drag()
+            if hasattr(w.canvas, "dragging"):
+                w.canvas.dragging = False
+
             ut_hour, day_of_year_utc = w.canvas._current_ut_context()
             sky = w.canvas._ra_dec_to_alt_az(
                 ra_deg, dec_deg, ut_hour, day_of_year_utc
             )
             if sky is None:
+                print("[ScopeGoto] abort: could not convert RA/Dec to Alt/Az")
                 return
+            before_center = getattr(w.canvas.scope_controller, "center", None)
+            print(
+                "[ScopeGoto] start "
+                f"ra={ra_deg:.6f} dec={dec_deg:.6f} "
+                f"sky=({float(sky[0]):.6f},{float(sky[1]):.6f}) "
+                f"before_center={before_center}"
+            )
             if not w.canvas.scope_mode_enabled():
                 self.activate()
-            w.canvas._scope_jump_to_sky(sky)
+            moved_ok = bool(w.canvas._scope_jump_to_sky(sky))
+            after_center = getattr(w.canvas.scope_controller, "center", None)
+            if (not moved_ok) or (after_center is None):
+                # Hard fallback: enforce center/camera directly so GoTo never
+                # remains in an indeterminate state.
+                alt = float(sky[0])
+                az = float(sky[1]) % 360.0
+                w.canvas.scope_controller.set_center((alt, az), confirmed=True)
+                w.canvas.azimuth_offset = az
+                w.canvas.elevation_angle = max(-90.0, min(90.0, alt))
+                w.canvas.update()
+                moved_ok = True
+                after_center = getattr(w.canvas.scope_controller, "center", None)
+                print("[ScopeGoto] fallback applied")
             w._set_scope_coord_inputs(ra_deg, dec_deg)
-        except Exception:
+            print(f"[ScopeGoto] end moved={bool(moved_ok)} after_center={after_center}")
+        except Exception as exc:
+            print(f"[ScopeGoto] goto_radec failed: {exc}")
             return
 
     def activate(self):

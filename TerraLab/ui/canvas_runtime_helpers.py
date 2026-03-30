@@ -154,10 +154,23 @@ def canvas_scope_hud_star_count(canvas):
     Count stars visible inside the scope aperture only.
     This is used for HUD display while scope mode is active.
     """
+    raw_count = int(self._visible_star_count_raw())
     if not self.scope_mode_enabled() or not hasattr(self, "scope_controller"):
-        return self._visible_star_count_raw()
+        return raw_count
     if self._scope_motion_active():
-        return self._visible_star_count_raw()
+        return raw_count
+
+    # Normal scope renderer path already filters stars to the scope aperture.
+    # Returning the visible count is O(1) and avoids expensive per-frame
+    # geometric point-in-path checks that can stall interaction.
+    vis = getattr(self, "visible_stars", None)
+    legacy_tuple_path = bool(
+        isinstance(vis, list) and vis and isinstance(vis[0], tuple)
+    )
+    if (not legacy_tuple_path) or raw_count <= 0:
+        return raw_count
+    if raw_count > 8000:
+        return raw_count
     ctrl = self.scope_controller
     if (not getattr(ctrl, "enabled", False)) or getattr(ctrl, "center", None) is None or getattr(ctrl, "awaiting_center_click", False):
         return self._visible_star_count_raw()
@@ -195,8 +208,7 @@ def canvas_scope_hud_star_count(canvas):
     except Exception:
         pass
     # Worker fallback: list of tuples (sx, sy, star_obj)
-    vis = getattr(self, "visible_stars", None)
-    if isinstance(vis, list) and vis and isinstance(vis[0], tuple):
+    if legacy_tuple_path:
         for item in vis:
             if len(item) < 2:
                 continue
@@ -281,9 +293,19 @@ def canvas_set_selected_target(canvas, target):
     self.lbl_info.move(self.width() - self.lbl_info.width() - 20, 20)
     self.lbl_info.show()
     self.lbl_info.raise_()
-    # New target selection restores camera lock unless user manually overrides with Ctrl+drag.
-    self.scope_camera_lock_to_target = True
-    self.scope_reticle_lock_to_target = True
+    # Respect manual scope override: if user has unlocked tracking in scope mode
+    # (free reticle/camera interaction), selecting an object should not re-enable
+    # locks implicitly and steal control back.
+    keep_manual_scope_unlock = bool(
+        self.scope_mode_enabled()
+        and (
+            (not bool(getattr(self, "scope_camera_lock_to_target", True)))
+            or (not bool(getattr(self, "scope_reticle_lock_to_target", True)))
+        )
+    )
+    if not keep_manual_scope_unlock:
+        self.scope_camera_lock_to_target = True
+        self.scope_reticle_lock_to_target = True
     self._update_selection_pulse_timer()
 
 def canvas_scope_hud_extra_lines(canvas, ut_hour: float, day_of_year_utc: int):
@@ -485,19 +507,18 @@ def canvas_paintEvent(canvas, event):
         # 1. Background (Sky Gradient)
         self.draw_background(painter, eff_sun_alt, eff_sun_az, wrapped_az, dimming=eclipse_dimming)
         # 2. Light Pollution & Ambient Glows (Drawn BEFORE stars to avoid occlusion)
-        if (not fast_interaction) and scene_stage_rank >= 3 and hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
+        if (not fast_interaction) and hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
             self.draw_light_domes(painter, self.horizon_overlay.profile, eff_sun_alt, eclipse_dimming)
         # === WEATHER SYSTEM ===
         # IMPORTANT: forecast/cache keys are indexed in UTC slots.
         # We keep ephemerides untouched and only map weather indexing to UTC
         # so manual/local timeline changes match cached forecast rows.
-        if scene_stage_rank >= 3:
-            now_weather = time.monotonic()
-            last_weather = float(getattr(self, "_last_weather_update_mono", 0.0))
-            if (not fast_interaction) or (now_weather - last_weather >= 0.20):
-                self.weather.update_weather(day_of_year_utc, ut_hour, year=dt_utc.year)
-                self.weather.update_thunder()
-                self._last_weather_update_mono = now_weather
+        now_weather = time.monotonic()
+        last_weather = float(getattr(self, "_last_weather_update_mono", 0.0))
+        if (not fast_interaction) or (now_weather - last_weather >= 0.20):
+            self.weather.update_weather(day_of_year_utc, ut_hour, year=dt_utc.year)
+            self.weather.update_thunder()
+            self._last_weather_update_mono = now_weather
         # 3. Trails
         checked = self._parent_checkbox_checked("chk_trails", default=False)
         if checked and eff_sun_alt < -6.0:
@@ -541,11 +562,24 @@ def canvas_paintEvent(canvas, event):
         else:
              sun_mag_limit = float(vm_state.scope_limit_mag)
         eclipse_bonus = (1.0 - eclipse_dimming) * 14.0
-        auto_bortle = bool(getattr(self.parent_widget, "is_auto_bortle", True))
+        auto_bortle = bool(
+            getattr(self.parent_widget, "is_auto_bortle", True)
+        )
+        light_pollution_enabled = bool(
+            getattr(self.parent_widget, "light_pollution_enabled", True)
+        )
         if auto_bortle:
-            bortle_class = max(1.0, min(9.0, float(getattr(self.parent_widget, "auto_bortle_estimate", 1))))
+            # Si LP està OFF en mode automàtic, forcem Bortle 1.
+            raw_bortle_class = (
+                float(getattr(self.parent_widget, "auto_bortle_estimate", 1))
+                if light_pollution_enabled
+                else 1.0
+            )
         else:
-            bortle_class = max(1.0, min(9.0, 1.0 + (7.6 - float(self.parent_widget.magnitude_limit)) / 0.5))
+            raw_bortle_class = (
+                1.0 + (7.6 - float(self.parent_widget.magnitude_limit)) / 0.5
+            )
+        bortle_class = max(1.0, min(9.0, float(raw_bortle_class)))
         render_state = {
             "scope_enabled": bool(self.scope_mode_enabled()),
             "auto_bortle": auto_bortle,
@@ -576,7 +610,7 @@ def canvas_paintEvent(canvas, event):
                     R_proj = min(self.width(), self.height()) / 2.0 * self.zoom_level
                     ppd = R_proj / 90.0
                     m_rad_deg = md.get('rad_deg', 0.25)
-                    mr_px = m_rad_deg * ppd * 10.0
+                    mr_px = m_rad_deg * ppd
                     moon_mask = (pt_m[0], pt_m[1], mr_px)
         # 4. Stars & Celestial Objects
         show_stars_layer = self._parent_checkbox_checked("chk_enable_sky", default=True)
@@ -584,45 +618,50 @@ def canvas_paintEvent(canvas, event):
         if scene_stage_rank >= 1 and (show_stars_layer or show_milkyway_layer):
             self.draw_stars(painter, ut_hour, eff_sun_alt, eff_sun_az, visibility_factor=vis_factor, moon_mask=moon_mask, mag_limit=final_mag_limit, eff_lat=eff_lat, day_of_year=day_for_astro)
         self.visible_sky_objects = []
-        if scene_stage_rank >= 2 and SKYFIELD_AVAILABLE and hasattr(self.parent_widget, 'eph'):
+        if SKYFIELD_AVAILABLE and hasattr(self.parent_widget, 'eph'):
              self.draw_skyfield_objects(painter, ut_hour, day_for_astro, ambient_light=ambient_light, mag_limit=final_mag_limit)
         # Constellations are part of sky content, so they must be occluded by terrain.
-        if scene_stage_rank >= 2:
-            scope_motion = self._scope_motion_active()
-            if not (self.scope_mode_enabled() and scope_motion):
-                self.constellation_controller.draw(
-                    painter,
-                    self.project_universal_stereo,
-                    lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
-                )
-            scope_data_state = str(getattr(self.parent_widget, "_scope_data_state", "ready_deep") or "ready_deep")
-            # Keep deep-sky overlays visible in normal mode even if background scope loading is active.
-            # Performance guardrails are only needed while scope mode is driving heavy updates.
-            scope_loading_heavy = (
-                scope_data_state in {"loading_deep", "error_deep"}
-                or bool(getattr(self.parent_widget, "_scope_catalog_loading", False))
-                or bool(getattr(self.parent_widget, "_scope_preload_in_progress", False))
+        scope_motion = self._scope_motion_active()
+        if not (self.scope_mode_enabled() and scope_motion):
+            self.constellation_controller.draw(
+                painter,
+                self.project_universal_stereo,
+                lambda ra, dec: self._ra_dec_to_alt_az(ra, dec, ut_hour, day_of_year_utc),
             )
-            ngc_heavy_load = bool(self.scope_mode_enabled() and (scope_motion or scope_loading_heavy))
-            if self._parent_checkbox_checked("chk_deep_space", default=False) and (not ngc_heavy_load):
-                self.draw_ngc_overlay(painter, ut_hour, day_of_year_utc)
-            else:
-                self.visible_ngc_objects = []
+        scope_data_state = str(getattr(self.parent_widget, "_scope_data_state", "ready_deep") or "ready_deep")
+        # Keep deep-sky overlays visible in normal mode even if background scope loading is active.
+        # Performance guardrails are only needed while scope mode is driving heavy updates.
+        scope_loading_heavy = (
+            scope_data_state in {"loading_deep", "error_deep"}
+            or bool(getattr(self.parent_widget, "_scope_catalog_loading", False))
+            or bool(getattr(self.parent_widget, "_scope_preload_in_progress", False))
+        )
+        ngc_heavy_load = bool(self.scope_mode_enabled() and (scope_motion or scope_loading_heavy))
+        # Deep-sky catalog should not render in daytime.
+        # Keep it for night conditions only (sun below civil twilight).
+        deep_space_night = float(eff_sun_alt) <= -6.0
+        if (
+            self._parent_checkbox_checked("chk_deep_space", default=False)
+            and (not ngc_heavy_load)
+            and deep_space_night
+        ):
+            self.draw_ngc_overlay(painter, ut_hour, day_of_year_utc)
+        else:
+            self.visible_ngc_objects = []
         # Weather cloud layer goes above stars/sun/moon so overcast can occlude them.
         # Horizon/topography will still be painted after this and remain in front.
         w_sun_alt = eff_sun_alt
         base_fov = 100.0
         current_fov = base_fov / self.zoom_level
-        if scene_stage_rank >= 3:
-            self.weather.draw(
-                painter,
-                w_sun_alt,
-                self.azimuth_offset,
-                self.elevation_angle,
-                current_fov,
-                eclipse_dimming=eclipse_dimming,
-                project_fn=self.project_universal_stereo,
-            )
+        self.weather.draw(
+            painter,
+            w_sun_alt,
+            self.azimuth_offset,
+            self.elevation_angle,
+            current_fov,
+            eclipse_dimming=eclipse_dimming,
+            project_fn=self.project_universal_stereo,
+        )
         # 5. Horizon / Topography (Drawn on top to mask everything behind mountains)
         show_horizon = True
         if hasattr(self.parent_widget, 'chk_enable_horizon'):
@@ -630,11 +669,20 @@ def canvas_paintEvent(canvas, event):
         use_detailed_topo = True
         if hasattr(self.parent_widget, 'chk_enable_village'):
             use_detailed_topo = self._parent_checkbox_checked("chk_enable_village", default=True)
-        if scene_stage_rank >= 3 and show_horizon:
+        if show_horizon:
             force_flat = not use_detailed_topo
             dome_callback = None
             is_auto_bortle = getattr(self.parent_widget, 'is_auto_bortle', getattr(self, 'is_auto_bortle', True))
-            if (not fast_interaction) and is_auto_bortle and hasattr(self, 'horizon_overlay') and hasattr(self.horizon_overlay, 'profile'):
+            light_pollution_enabled = bool(
+                getattr(self.parent_widget, "light_pollution_enabled", True)
+            )
+            if (
+                (not fast_interaction)
+                and is_auto_bortle
+                and light_pollution_enabled
+                and hasattr(self, 'horizon_overlay')
+                and hasattr(self.horizon_overlay, 'profile')
+            ):
                 tw_factor = 1.0
                 if eff_sun_alt >= 0: tw_factor = 0.0
                 elif eff_sun_alt > -18.0: tw_factor = (0 - eff_sun_alt) / 18.0
@@ -652,7 +700,13 @@ def canvas_paintEvent(canvas, event):
             )
             if hasattr(self, '_dome_count') and self._dome_count > 0:
                 current_time = __import__('time').time()
-                if current_time - getattr(self, '_last_dome_log_time', 0) > 2.0:
+                debug_raw = str(
+                    __import__("os").environ.get("TERRALAB_DOME_DEBUG", "0")
+                ).strip().lower()
+                if (
+                    debug_raw not in {"0", "false", "off", "no"}
+                    and current_time - getattr(self, '_last_dome_log_time', 0) > 2.0
+                ):
                     print(f"[AstroCanvas] City Domes Draw Call: {self._dome_count} centers found.")
                     self._last_dome_log_time = current_time
         # Weather already rendered once (above celestial objects, below terrain).

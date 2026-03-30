@@ -5,11 +5,16 @@ import sys
 import tempfile
 import threading
 import time
+from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QObject, QMetaObject, Qt, pyqtSignal, pyqtSlot
 
-from TerraLab.common.utils import getTraduction
+from TerraLab.common.utils import (
+    getTraduction,
+    get_config_value,
+    set_config_value,
+)
 from TerraLab.terrain.engine import HorizonProfile, generate_bands
 
 
@@ -28,6 +33,7 @@ class HorizonWorker(QObject):
     progress_state = pyqtSignal(object)
     progress_message = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
+    bortle_estimate_ready = pyqtSignal(int, float, float, int)
 
     def __init__(self, tiles_dir=None, parent=None):
         super().__init__(parent)
@@ -45,6 +51,54 @@ class HorizonWorker(QObject):
         self._current_process = None
         self._current_job_id = None
         self._current_temp_dir = None
+        self._initialize_after_reload_queued = False
+        self._initialize_running = False
+        self._last_reload_pending_log_ts = 0.0
+        self._bortle_win313_safe_mode = bool(
+            get_config_value("performance.safe_bortle_win313", True)
+        )
+        self._bortle_win313_safe_mode_logged = False
+        self._provider_source_path = ""
+
+    @staticmethod
+    def _paths_equivalent(path_a: object, path_b: object) -> bool:
+        try:
+            a = Path(str(path_a or "")).expanduser().resolve()
+            b = Path(str(path_b or "")).expanduser().resolve()
+            return str(a).lower() == str(b).lower()
+        except Exception:
+            return str(path_a or "").strip().lower() == str(path_b or "").strip().lower()
+
+    def _build_light_sampler(self):
+        try:
+            from TerraLab.config import ConfigManager
+            from TerraLab.terrain.light_pollution_sampler import (
+                LightPollutionSampler,
+            )
+
+            config = ConfigManager()
+            lp_enabled = bool(config.get("light_pollution_enabled", True))
+            lp_path = ""
+            if lp_enabled:
+                lp_path = config.get("dvnl_path", "")
+                if not lp_path or not os.path.exists(lp_path):
+                    base_dir = os.path.dirname(os.path.dirname(__file__))
+                    local_default = os.path.join(
+                        base_dir,
+                        "data",
+                        "light_pollution",
+                        "C_DVNL 2022.tif",
+                    )
+                    if os.path.exists(local_default):
+                        lp_path = local_default
+            return LightPollutionSampler(
+                lp_path if lp_path and os.path.exists(lp_path) else None
+            )
+        except Exception as exc:
+            print(
+                f"[HorizonWorker] Warning: Light pollution sampler unavailable: {exc}"
+            )
+            return None
 
     def set_observer_offset(self, offset: float):
         """Defineix observer offset a la instancia de HorizonWorker.
@@ -99,19 +153,158 @@ class HorizonWorker(QObject):
         """
         self.needs_reload = True
         self.tiles_dir = None
+        # Safety: avoid hot re-initialize races on Windows/Python 3.13.
+        if not (os.name == "nt" and sys.version_info >= (3, 13)):
+            self._queue_initialize_after_reload()
+
+    def _queue_initialize_after_reload(self) -> None:
+        """Encola una reinicialitzacio del worker al seu propi thread."""
+        if bool(self._initialize_after_reload_queued):
+            return
+        self._initialize_after_reload_queued = True
+        # PyQt5 returns `None` here even when the queued invocation is valid.
+        # Avoid interpreting the return value as a boolean success flag.
+        QMetaObject.invokeMethod(
+            self,
+            "_run_initialize_after_reload",
+            Qt.QueuedConnection,
+        )
+
+    @pyqtSlot()
+    def _run_initialize_after_reload(self) -> None:
+        """Executa `initialize()` diferit per tancar un `needs_reload` pendent."""
+        self._initialize_after_reload_queued = False
+        if bool(self._initialize_running):
+            return
+        if (not bool(self.needs_reload)) and bool(self.is_initialized):
+            return
+        self.initialize()
+
+    @staticmethod
+    def _path_has_dem_data(candidate_path: str) -> bool:
+        """Retorna si el path indicat conte dades DEM utilitzables."""
+        candidate_text = str(candidate_path or "").strip()
+        if not candidate_text:
+            return False
+        candidate = Path(candidate_text)
+        if not candidate.exists():
+            return False
+        allowed_suffixes = {".tif", ".tiff", ".asc", ".txt", ".npy"}
+        if candidate.is_file():
+            return candidate.suffix.lower() in allowed_suffixes
+        if not candidate.is_dir():
+            return False
+        for pattern in ("*.tif", "*.tiff", "*.asc", "*.txt", "*.npy"):
+            try:
+                if any(candidate.glob(pattern)):
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _dem_path_candidates(self) -> list[str]:
+        """Construeix candidats de ruta DEM per ordre de prioritat."""
+        candidates: list[str] = []
+
+        def append_candidate(value: object) -> None:
+            path_text = str(value or "").strip()
+            if not path_text:
+                return
+            if path_text not in candidates:
+                candidates.append(path_text)
+
+        append_candidate(self.tiles_dir)
+
+        configured_raster_path = ""
+        try:
+            from TerraLab.config import ConfigManager
+
+            configured_raster_path = str(
+                ConfigManager().get_raster_path() or ""
+            ).strip()
+        except Exception:
+            configured_raster_path = ""
+        append_candidate(configured_raster_path)
+
+        append_candidate(get_config_value("assets.elevation_dem.path", ""))
+
+        try:
+            from TerraLab.common.app_paths import ensure_runtime_layout
+
+            runtime_paths = ensure_runtime_layout()
+            append_candidate(runtime_paths.get("data_elevation"))
+        except Exception:
+            pass
+
+        project_root = Path(__file__).resolve().parents[1]
+        append_candidate(project_root / "data" / "elevation")
+        append_candidate(project_root.parent / "data" / "dem")
+
+        return candidates
 
     def _resolve_tiles_dir(self):
-        if self.tiles_dir and os.path.exists(self.tiles_dir):
+        """Resol la ruta DEM activa, amb autodeteccio quan el config es buit."""
+        found_existing_path = None
+        for candidate_path in self._dem_path_candidates():
+            if not os.path.exists(candidate_path):
+                continue
+            if found_existing_path is None:
+                found_existing_path = candidate_path
+            if not self._path_has_dem_data(candidate_path):
+                continue
+            self.tiles_dir = candidate_path
+            try:
+                configured_value = str(get_config_value("raster_path", "") or "")
+            except Exception:
+                configured_value = ""
+            if str(configured_value).strip() != str(candidate_path).strip():
+                try:
+                    set_config_value("raster_path", str(candidate_path))
+                    print(
+                        "[HorizonWorker] raster_path auto-configured "
+                        f"to '{candidate_path}'"
+                    )
+                except Exception as exc:
+                    print(
+                        "[HorizonWorker] Warning persisting raster_path "
+                        f"('{candidate_path}'): {exc}"
+                    )
             return self.tiles_dir
-        from TerraLab.config import ConfigManager
-
-        self.tiles_dir = ConfigManager().get_raster_path()
+        # Keep a concrete existing path for diagnostics even if no DEM payload was detected.
+        self.tiles_dir = found_existing_path
         return self.tiles_dir
 
     @pyqtSlot()
     def initialize(self):
         """Lazy initialization of light-weight DEM access for quick UI queries."""
+        if bool(self._initialize_running):
+            return
+        self._initialize_running = True
         if self.needs_reload:
+            resolved_tiles_dir = self._resolve_tiles_dir()
+            same_dem_source = bool(
+                self.provider is not None
+                and bool(self.is_initialized)
+                and self._paths_equivalent(
+                    resolved_tiles_dir, self._provider_source_path
+                )
+            )
+            # On Win+Py3.13, avoid rebuilding provider/pyproj pipeline unless DEM source changed.
+            if (
+                same_dem_source
+                and os.name == "nt"
+                and sys.version_info >= (3, 13)
+            ):
+                if self.light_sampler and hasattr(self.light_sampler, "close"):
+                    try:
+                        self.light_sampler.close()
+                    except Exception:
+                        pass
+                self.light_sampler = self._build_light_sampler()
+                self.needs_reload = False
+                self._initialize_running = False
+                return
+
             if self.provider and hasattr(self.provider, "close"):
                 try:
                     self.provider.close()
@@ -128,6 +321,7 @@ class HorizonWorker(QObject):
             self.needs_reload = False
 
         if self.is_initialized:
+            self._initialize_running = False
             return
 
         tiles_dir = self._resolve_tiles_dir()
@@ -135,6 +329,7 @@ class HorizonWorker(QObject):
             self.error_occurred.emit(
                 f"Tiles directory not configured or found: {tiles_dir}"
             )
+            self._initialize_running = False
             return
 
         try:
@@ -147,35 +342,8 @@ class HorizonWorker(QObject):
             self.provider = create_raster_provider(
                 tiles_dir, progress_callback=index_callback
             )
-            try:
-                from TerraLab.config import ConfigManager
-                from TerraLab.terrain.light_pollution_sampler import (
-                    LightPollutionSampler,
-                )
-
-                config = ConfigManager()
-                lp_enabled = bool(config.get("light_pollution_enabled", True))
-                lp_path = ""
-                if lp_enabled:
-                    lp_path = config.get("dvnl_path", "")
-                    if not lp_path or not os.path.exists(lp_path):
-                        base_dir = os.path.dirname(os.path.dirname(__file__))
-                        local_default = os.path.join(
-                            base_dir,
-                            "data",
-                            "light_pollution",
-                            "C_DVNL 2022.tif",
-                        )
-                        if os.path.exists(local_default):
-                            lp_path = local_default
-                self.light_sampler = LightPollutionSampler(
-                    lp_path if lp_path and os.path.exists(lp_path) else None
-                )
-            except Exception as exc:
-                print(
-                    f"[HorizonWorker] Warning: Light pollution sampler unavailable: {exc}"
-                )
-                self.light_sampler = None
+            self._provider_source_path = str(tiles_dir or "")
+            self.light_sampler = self._build_light_sampler()
 
             self.is_initialized = True
         except Exception as exc:
@@ -183,6 +351,7 @@ class HorizonWorker(QObject):
         finally:
             self._store_progress(None)
             self.progress_message.emit("")
+            self._initialize_running = False
 
     def get_bare_elevation(self, lat: float, lon: float) -> Optional[float]:
         """Obte bare elevation de la instancia de HorizonWorker.
@@ -232,6 +401,84 @@ class HorizonWorker(QObject):
             return 21.0
         sqm, _ = self.light_sampler.estimate_zenith_sqm(lat, lon)
         return sqm
+
+    @pyqtSlot(float, float, int)
+    def request_bortle_estimate(
+        self, lat: float, lon: float, request_id: int = 0
+    ) -> None:
+        """Calcula Bortle al thread del worker i publica el resultat.
+
+        Parametres:
+        - lat (float): Latitud de consulta.
+        - lon (float): Longitud de consulta.
+        - request_id (int): Identificador de peticio per descartar respostes antigues.
+
+        Retorna:
+        - None.
+        """
+        latitude_deg = 0.0
+        longitude_deg = 0.0
+        try:
+            latitude_deg = float(lat)
+            longitude_deg = float(lon)
+            auto_bortle_fallback = int(
+                max(
+                    1,
+                    min(
+                        9,
+                        int(get_config_value("auto_bortle_estimate", 4) or 4),
+                    ),
+                )
+            )
+
+            # IMPORTANT: no forcem initialize() des d'aqui.
+            # Aquesta ruta es crida amb molta frequencia i, a Windows/Python 3.13,
+            # hem vist crashes natius en pyproj durant Transformer.from_crs.
+            # El cicle de vida de initialize() queda restringit al bootstrap/reload.
+            if bool(self.needs_reload):
+                now_mono = float(time.monotonic())
+                if (now_mono - float(self._last_reload_pending_log_ts)) >= 2.0:
+                    print(
+                        "[HorizonWorker] Bortle request served with fallback "
+                        "while reload is pending."
+                    )
+                    self._last_reload_pending_log_ts = now_mono
+
+            use_safe_bortle_fallback = bool(
+                self._bortle_win313_safe_mode
+                and os.name == "nt"
+                and sys.version_info >= (3, 13)
+            )
+            if (
+                use_safe_bortle_fallback
+                and not bool(self._bortle_win313_safe_mode_logged)
+            ):
+                print(
+                    "[HorizonWorker] Safe Bortle mode active on Windows/Python>=3.13: "
+                    "using fallback estimate to avoid pyproj native crashes."
+                )
+                self._bortle_win313_safe_mode_logged = True
+
+            if (
+                use_safe_bortle_fallback
+                or not bool(get_config_value("light_pollution_enabled", True))
+            ):
+                bortle_value = auto_bortle_fallback
+            elif bool(self.is_initialized) and (self.light_sampler is not None):
+                bortle_value = int(
+                    self.get_bortle_estimate(latitude_deg, longitude_deg)
+                )
+            else:
+                bortle_value = auto_bortle_fallback
+        except Exception as exc:
+            print(f"[HorizonWorker] request_bortle_estimate error: {exc}")
+            bortle_value = 4
+        self.bortle_estimate_ready.emit(
+            int(request_id),
+            float(latitude_deg),
+            float(longitude_deg),
+            int(max(1, min(9, bortle_value))),
+        )
 
     def abort_current_job(self) -> None:
         """Executa el metode abort_current_job de la classe HorizonWorker.
@@ -365,6 +612,10 @@ class HorizonWorker(QObject):
             if not isinstance(job, dict):
                 raise TypeError("Horizon bake job must be a dict")
 
+            # Apply pending reload at a controlled point (before launching a new bake).
+            if bool(self.needs_reload):
+                self.initialize()
+
             tiles_dir = self._resolve_tiles_dir()
             if not tiles_dir or not os.path.exists(tiles_dir):
                 self.error_occurred.emit(
@@ -383,6 +634,12 @@ class HorizonWorker(QObject):
             base_dir, cmd = self._build_subprocess_command(
                 job, output_path, preview_path
             )
+            print(
+                "[HorizonWorker] Launching bake subprocess "
+                f"job={job['job_id']} "
+                f"cwd={base_dir} "
+                f"tiles={job['tiles_dir']}"
+            )
 
             self.abort_current_job()
             self._cleanup_temp_dir(self._current_temp_dir)
@@ -399,6 +656,8 @@ class HorizonWorker(QObject):
             }
             self._emit_progress_state(initial_state)
 
+            subprocess_env = os.environ.copy()
+            subprocess_env.setdefault("PYTHONUNBUFFERED", "1")
             proc = subprocess.Popen(
                 cmd,
                 cwd=base_dir,
@@ -408,6 +667,7 @@ class HorizonWorker(QObject):
                 encoding="utf-8",
                 errors="replace",
                 bufsize=1,
+                env=subprocess_env,
             )
             with self._process_lock:
                 self._current_process = proc
@@ -422,6 +682,8 @@ class HorizonWorker(QObject):
             active_job_id = str(job["job_id"])
             band_defs = generate_bands(max(1, int(job["bands"])))
             final_emitted = False
+            received_events = 0
+            received_progress_events = 0
 
             assert proc.stdout is not None
             for raw_line in iter(proc.stdout.readline, ""):
@@ -432,6 +694,15 @@ class HorizonWorker(QObject):
                     continue
 
                 event_type = str(event.get("type", ""))
+                received_events += 1
+                if event_type == "progress":
+                    received_progress_events += 1
+
+                if received_events <= 3:
+                    print(
+                        "[HorizonWorker] Event "
+                        f"job={active_job_id} idx={received_events} type={event_type}"
+                    )
                 if event_type == "progress":
                     state = {
                         "job_id": active_job_id,
@@ -476,6 +747,18 @@ class HorizonWorker(QObject):
 
             return_code = proc.wait()
             stderr_thread.join(timeout=0.2)
+            if received_events == 0:
+                print(
+                    "[HorizonWorker] Warning: subprocess exited without JSON events "
+                    f"job={active_job_id} rc={return_code}"
+                )
+            else:
+                print(
+                    "[HorizonWorker] Subprocess finished "
+                    f"job={active_job_id} rc={return_code} "
+                    f"events={received_events} progress_events={received_progress_events} "
+                    f"final_emitted={final_emitted}"
+                )
             if return_code != 0 and not final_emitted:
                 raise RuntimeError(
                     f"Horizon bake subprocess failed with exit code {return_code}"
