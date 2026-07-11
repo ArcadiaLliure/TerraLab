@@ -347,8 +347,6 @@ class MinkaHouse:
                         d_az = lx  # degrees
                         d_alt = ly  # degrees
 
-                        # Depth (Z) implies parallax x-shift?
-                        # Parallax handled by 3D rotation in logical space?
                         # Standard stereographic maps lat/lon. "Depth" is just radius.
                         # We just map flat on the surface for now, ignore true depth Z except for draw order.
                         # Or we treat Z as modifier to Az/Alt?
@@ -1150,28 +1148,7 @@ class VillageOverlay(QObject):
 
         painter.setRenderHint(QPainter.Antialiasing)
 
-        # === PARALLAX for village objects ===
-        # We now use the profile, so objects are "baked" into a specific band.
-        # But for parallax, we should ideally use the parallax factor OF THAT BAND.
-        # Since we don't store the band ID on the object easily right now,
-        # let's assume a generic parallax for "village layer" or derive it?
-        # Actually, simpler: Objects at different distances should move differently.
-        # But for now, we'll keep it at 1.0 to ensure zero drift relative to Stars/Compass.
-        parallax_objects = (
-            1.0  # 1.0 = Perfectly aligned with coordinate system.
-        )
-
-        def make_parallax_projection(base_proj_fn, parallax_factor):
-            def parallax_proj(alt, az):
-                parallax_offset = (parallax_factor - 1.0) * current_azimuth
-                adjusted_az = az + parallax_offset
-                return base_proj_fn(alt, adjusted_az)
-
-            return parallax_proj
-
-        proj_objects = make_parallax_projection(
-            projection_fn, parallax_objects
-        )
+        proj_objects = projection_fn
 
         # 3. Objects (Lanterns -> Houses -> Trees)
         all_objects = []

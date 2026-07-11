@@ -765,20 +765,26 @@ def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
         )
         if (not bool(force_now)) and (not scope_enabled):
             return
-        center_tile_id = _scope_pick_central_tile_id(self, coordinator)
-        if not center_tile_id:
+        focus_tile_id, visible_tile_ids = _scope_pick_scope_region_request(
+            self, coordinator
+        )
+        if not focus_tile_id:
             return
         if (
             (not bool(force_now))
             and str(getattr(self, "_scope_last_tile_request", "") or "")
-            == str(center_tile_id)
+            == str(focus_tile_id)
         ):
             return
-        self._scope_last_tile_request = str(center_tile_id)
-        print(f"[AstroWidget] Scope tile request: {center_tile_id}")
-        coordinator.load_deep_tile(center_tile_id)
-        coordinator.preload_adjacent_tiles(center_tile_id)
-        coordinator.build_scope_index(center_tile_id)
+        self._scope_last_tile_request = str(focus_tile_id)
+        print(
+            "[AstroWidget] Scope tile request: "
+            f"{focus_tile_id} visible_tiles={len(visible_tile_ids)}"
+        )
+        coordinator.request_scope_region(
+            focus_tile_id,
+            priority_tile_ids=visible_tile_ids,
+        )
         return
     if getattr(self, "_scope_catalog_loading", False):
         return
@@ -1075,20 +1081,20 @@ def _scope_apply_coordinator_scope_index(widget, payload) -> None:
             pass
 
 
-def _scope_pick_central_tile_id(widget, coordinator) -> str:
-    """Resol la tesela central segons centre scope en RA/Dec."""
+def _scope_pick_scope_region_request(widget, coordinator) -> tuple[str, tuple[str, ...]]:
+    """Resol tesela focus i teseles visibles segons el camp real del scope."""
     _bind_impl_globals()
     self = widget
     canvas = getattr(self, "canvas", None)
     if canvas is None:
-        return ""
+        return "", tuple()
     if not bool(getattr(canvas, "scope_mode_enabled", lambda: False)()):
-        return ""
+        return "", tuple()
 
     scope_ctrl = getattr(canvas, "scope_controller", None)
     center = getattr(scope_ctrl, "center", None)
     if center is None:
-        return ""
+        return "", tuple()
 
     try:
         import math
@@ -1101,7 +1107,7 @@ def _scope_pick_central_tile_id(widget, coordinator) -> str:
             int(day_of_year_utc),
         )
         if ra_dec is None:
-            return ""
+            return "", tuple()
         ra_center = float(ra_dec[0])
         dec_center = float(ra_dec[1])
         try:
@@ -1110,27 +1116,30 @@ def _scope_pick_central_tile_id(widget, coordinator) -> str:
         except Exception:
             radius = 5.0
         radius = float(max(2.0, min(45.0, radius)))
-        tiles = coordinator.manifest().get_tiles_for_region(
+        manifest = coordinator.manifest()
+        tiles = manifest.get_tiles_for_region(
             ra_center=ra_center,
             dec_center=dec_center,
             radius_deg=radius,
         )
         if not tiles:
-            return ""
+            return "", tuple()
 
-        def _tile_distance_sq(tile):
-            tile_ra = (
-                0.5 * (float(tile.ra_min) + float(tile.ra_max))
-            ) % 360.0
-            delta_ra = abs(((tile_ra - ra_center + 180.0) % 360.0) - 180.0)
-            tile_dec = 0.5 * (float(tile.dec_min) + float(tile.dec_max))
-            delta_dec = float(tile_dec - dec_center)
-            return float(delta_ra * delta_ra + delta_dec * delta_dec)
-
-        best_tile = min(tiles, key=_tile_distance_sq)
-        return str(getattr(best_tile, "tile_id", "") or "")
+        primary_tile = manifest.get_primary_tile_for_region(
+            ra_center=ra_center,
+            dec_center=dec_center,
+            radius_deg=radius,
+        )
+        if primary_tile is None:
+            return "", tuple()
+        visible_tile_ids = tuple(
+            str(getattr(tile, "tile_id", "") or "")
+            for tile in tiles
+            if str(getattr(tile, "tile_id", "") or "")
+        )
+        return str(getattr(primary_tile, "tile_id", "") or ""), visible_tile_ids
     except Exception:
-        return ""
+        return "", tuple()
 
 
 def widget_ensure_scope_spatial_index_warmup(widget):

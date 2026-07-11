@@ -180,21 +180,6 @@ class AssetManager:
                     "reason": "ok_tile_manifest",
                     "path": str(p_tile_manifest),
                 }
-            packaged_dir = (
-                Path(__file__).resolve().parents[1] / "data" / "stars"
-            )
-            packaged_candidates = (
-                packaged_dir / "stars_catalog.zst",
-                packaged_dir / "stars_catalog.npz",
-                packaged_dir / "stars_catalog.npy",
-            )
-            for candidate in packaged_candidates:
-                if candidate.exists():
-                    return {
-                        "ready": True,
-                        "reason": "packaged_catalog",
-                        "path": str(candidate),
-                    }
             return {
                 "ready": False,
                 "reason": "missing_catalog",

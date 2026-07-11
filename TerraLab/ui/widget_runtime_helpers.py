@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from PyQt5.QtCore import QDate, QPointF, Qt
 from PyQt5.QtWidgets import QApplication, QCalendarWidget, QDialog, QVBoxLayout
 
+from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 from TerraLab.common.utils import (
     get_config_value,
     getTraduction,
@@ -551,10 +552,16 @@ def run_smoke_scenes(widget):
 
 
 def load_catalog(widget):
-    local_dir = os.path.dirname(os.path.abspath(__file__))
-    stars_dir = os.path.normpath(
-        os.path.join(local_dir, "..", "data", "stars")
-    )
+    stars_dir = str(getattr(widget, "_stars_catalog_dir", "") or "").strip()
+    if not stars_dir:
+        try:
+            runtime_layout = getattr(widget, "runtime_layout", {}) or {}
+            stars_dir = str(runtime_layout.get("data_gaia", "") or "").strip()
+        except Exception:
+            stars_dir = ""
+    if not stars_dir:
+        stars_dir = str(runtime_data_dir_for("gaia"))
+    stars_dir = os.path.normpath(os.path.expanduser(stars_dir))
 
     widget.celestial_objects = []
     if np is not None:

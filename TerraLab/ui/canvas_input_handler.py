@@ -791,6 +791,13 @@ class CanvasInputHandler:
         steps = degrees / 15.0
 
         if c.scope_mode_enabled():
+            # Mark scope as manually fixed/interacted so deep catalog is unlocked.
+            try:
+                if hasattr(c, "scope_controller"):
+                    c.scope_controller.user_center_fixed_once = True
+            except Exception:
+                pass
+            
             if event.modifiers() & Qt.ControlModifier:
                 c._scope_wheel_zoom(steps)
             else:

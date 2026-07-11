@@ -113,7 +113,6 @@ from TerraLab.ui.widget_runtime_helpers import (
 )
 from TerraLab.widgets.spherical_math import (
     altaz_to_ra_dec,
-    apply_parallax_equatorial,
     calculate_sun_times as spherical_calculate_sun_times,
     get_sun_alt_az as spherical_get_sun_alt_az,
     gmst_deg as spherical_gmst_deg,
@@ -1488,14 +1487,6 @@ class AstroCanvas(QWidget):
         return ra, dec, r
     def get_topocentric_position(self, ra_geo, dec_geo, dist_km, obs_lat, obs_lon, jd):
         return AstroEngine.get_topocentric_position(ra_geo, dec_geo, dist_km, obs_lat, obs_lon, jd)
-    def apply_parallax(self, ra, dec, dist_km, lat, lst):
-        return apply_parallax_equatorial(
-            float(ra),
-            float(dec),
-            float(dist_km),
-            float(lat),
-            float(lst),
-        )
     def get_moon_projection(self, hour):
         return render_get_moon_projection(
             hour,

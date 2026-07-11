@@ -104,6 +104,9 @@ class RasterProvider(abc.ABC):
         """
         return CRS_TERRAIN_INTERNAL
 
+    def get_nominal_resolution_m(self) -> Optional[float]:
+        return None
+
     def transform_coordinates(
         self, lat: float, lon: float
     ) -> Tuple[float, float]:
@@ -191,6 +194,23 @@ class AscRasterProvider(RasterProvider):
         self.cache = TileCache(capacity=500)
         self.sampler = DemSampler(self.index, self.cache)
         return True
+
+    def get_nominal_resolution_m(self) -> Optional[float]:
+        if not self.index or not getattr(self.index, "tiles", None):
+            return None
+
+        cell_sizes = []
+        for tile in self.index.tiles:
+            header = tile.get("header", {})
+            cell_size = header.get("CELLSIZE")
+            try:
+                cell_size = float(cell_size)
+            except (TypeError, ValueError):
+                continue
+            if cell_size > 0:
+                cell_sizes.append(cell_size)
+
+        return min(cell_sizes) if cell_sizes else None
 
     def prepare_region(
         self,
@@ -355,6 +375,25 @@ class TiffRasterWindowProvider(RasterProvider):
         if hasattr(self, "dest_crs_str") and self.dest_crs_str:
             return self.dest_crs_str
         return super().get_native_crs()
+
+    def get_nominal_resolution_m(self) -> Optional[float]:
+        if not self.dataset:
+            return None
+        try:
+            res_x, res_y = self.dataset.res
+            res_x = abs(float(res_x))
+            res_y = abs(float(res_y))
+        except Exception:
+            return None
+        if self.is_geo:
+            lat_for_scale = float(getattr(self, "native_cy", 0.0) or 0.0)
+            meters_x = res_x * 111320.0 * math.cos(math.radians(lat_for_scale))
+            meters_y = res_y * 111320.0
+            candidates = [abs(meters_x), abs(meters_y)]
+        else:
+            candidates = [res_x, res_y]
+        candidates = [value for value in candidates if value > 0]
+        return min(candidates) if candidates else None
 
     # The base implementation converts user lat/lon (EPSG:4326) into the terrain
     # internal CRS (EPSG:25831). HorizonBaker operates in that CRS.

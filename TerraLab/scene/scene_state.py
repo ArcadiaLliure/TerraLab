@@ -141,7 +141,7 @@ def build_star_scene_state(
             )
         ),
         "scope_allow_sync_index_build": bool(
-            get_config_value("performance.scope_allow_sync_index_build", False)
+            get_config_value("performance.scope_allow_sync_index_build", True)
         ),
         "scope_pending_prefilter_cap_interaction": int(
             max(
@@ -149,7 +149,7 @@ def build_star_scene_state(
                 int(
                     get_config_value(
                         "performance.scope_pending_prefilter_cap_interaction",
-                        40_000,
+                        800_000,
                     )
                 ),
             )
@@ -160,7 +160,7 @@ def build_star_scene_state(
                 int(
                     get_config_value(
                         "performance.scope_pending_prefilter_cap_static",
-                        70_000,
+                        1_200_000,
                     )
                 ),
             )
@@ -171,7 +171,7 @@ def build_star_scene_state(
                 int(
                     get_config_value(
                         "performance.scope_pre_altaz_max_candidates_pending",
-                        60_000,
+                        400_000,
                     )
                 ),
             )
@@ -182,7 +182,7 @@ def build_star_scene_state(
                 int(
                     get_config_value(
                         "performance.scope_pre_altaz_max_candidates_interaction",
-                        120_000,
+                        800_000,
                     )
                 ),
             )
@@ -193,7 +193,7 @@ def build_star_scene_state(
                 int(
                     get_config_value(
                         "performance.scope_pre_altaz_max_candidates_static",
-                        220_000,
+                        1_500_000,
                     )
                 ),
             )

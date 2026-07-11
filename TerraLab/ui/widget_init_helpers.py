@@ -310,7 +310,10 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     # 3. Post-UI initialization â€” ASYNC (non-blocking)
     self.show_satellites = False
     self.satellites = []
-    self._stars_catalog_dir = str(Path(self.runtime_layout.get("data_gaia", get_base_dir())))
+    _gaia_catalog_dir = self.runtime_layout.get(
+        "data_gaia", Path(get_base_dir()) / "data" / "gaia"
+    )
+    self._stars_catalog_dir = str(Path(_gaia_catalog_dir).expanduser())
     self._scope_catalog_loading = False
     self._scope_catalog_loaded_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
     self._catalog_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)

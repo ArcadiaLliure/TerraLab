@@ -128,6 +128,42 @@ def _create_provider(tiles_dir: str, progress_callback=None):
     )
 
 
+def _resolve_raycast_step_m(provider) -> float:
+    default_step_m = 50.0
+    fine_dem_step_m = 20.0
+    fine_dem_threshold_m = 6.0
+
+    resolution_m = None
+    try:
+        getter = getattr(provider, "get_nominal_resolution_m", None)
+        if callable(getter):
+            resolution_m = getter()
+    except Exception:
+        resolution_m = None
+
+    try:
+        resolution_m = float(resolution_m)
+    except (TypeError, ValueError):
+        resolution_m = None
+
+    if resolution_m is not None and resolution_m > 0:
+        if resolution_m <= fine_dem_threshold_m:
+            print(
+                "[HorizonBakeProcess] DEM resolution "
+                f"{resolution_m:.2f}m -> raycast step {fine_dem_step_m:.1f}m",
+                file=sys.stderr,
+                flush=True,
+            )
+            return fine_dem_step_m
+        print(
+            "[HorizonBakeProcess] DEM resolution "
+            f"{resolution_m:.2f}m -> raycast step {default_step_m:.1f}m",
+            file=sys.stderr,
+            flush=True,
+        )
+    return default_step_m
+
+
 def _circular_distance_deg(a: float, b: float) -> float:
     diff = abs(float(a) - float(b)) % 360.0
     return min(diff, 360.0 - diff)
@@ -376,7 +412,7 @@ def main():
                 obs_x=x_utm,
                 obs_y=y_utm,
                 obs_h_ground=float(ground_h) + float(args.observer_offset),
-                step_m=50.0,
+                step_m=_resolve_raycast_step_m(provider),
                 d_max=vis_radius,
                 delta_az_deg=0.5,
                 band_defs=band_defs,

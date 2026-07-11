@@ -353,9 +353,10 @@ def widget_reload_star_catalog_async(widget):
             old_thread.finished.connect(old_thread.deleteLater)
     except Exception:
         pass
-    self._stars_catalog_dir = str(
-        Path(self.runtime_layout.get("data_gaia", get_base_dir()))
+    _gaia_catalog_dir = self.runtime_layout.get(
+        "data_gaia", Path(get_base_dir()) / "data" / "gaia"
     )
+    self._stars_catalog_dir = str(Path(_gaia_catalog_dir).expanduser())
     self._scope_preload_started = False
     self._scope_preload_in_progress = False
     self._scope_preload_ready = False

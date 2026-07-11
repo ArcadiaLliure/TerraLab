@@ -14,7 +14,6 @@ from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QRa
 
 from TerraLab.common.utils import getTraduction
 from TerraLab.widgets.sky_legacy_components import AstroEngine
-from TerraLab.widgets.spherical_math import apply_parallax_equatorial
 
 try:
     from skyfield.api import wgs84
@@ -624,18 +623,10 @@ def get_moon_projection_impl(canvas, hour):
     jd_utc = canvas.julian_day(dt_utc)
     lst = canvas.lst_deg(jd_utc, canvas.parent_widget.longitude)
 
-    moon_ra_topo, moon_dec_topo = apply_parallax_equatorial(
-        moon_ra,
-        moon_dec,
-        m_dist,
-        canvas.parent_widget.latitude,
-        lst,
-    )
-
-    ha = lst - moon_ra_topo
+    ha = lst - moon_ra
     ha_rad = math.radians(ha)
     lat_rad = math.radians(canvas.parent_widget.latitude)
-    dec_rad = math.radians(moon_dec_topo)
+    dec_rad = math.radians(moon_dec)
     sin_dec = math.sin(dec_rad)
     cos_dec = math.cos(dec_rad)
     sin_lat = math.sin(lat_rad)

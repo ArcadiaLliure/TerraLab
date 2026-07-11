@@ -751,12 +751,19 @@ class StarsRenderer:
         ):
             return self._scope_grid_indices, self._scope_grid_offsets
 
-        self._reset_scope_spatial_index()
-        if self._scope_index_pending_key == key:
-            return None, None
-        if not bool(allow_sync_build):
+        can_sync = bool(allow_sync_build)
+        if can_sync:
+            try:
+                if int(len(ra_all)) > 1_500_000: can_sync = False
+            except: can_sync = False
+
+        if not can_sync:
+            if self._scope_index_pending_key == key: return None, None
             self._scope_index_pending_key = key
             return None, None
+
+        self._reset_scope_spatial_index()
+        if self._scope_index_pending_key == key: self._scope_index_pending_key = None
 
         sorted_indices, offsets = build_scope_spatial_index_payload(
             ra_all,

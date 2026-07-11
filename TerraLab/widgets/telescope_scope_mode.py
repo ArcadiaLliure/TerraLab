@@ -1,4 +1,4 @@
-﻿import math
+import math
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -175,6 +175,7 @@ class TelescopeScopeController:
         # Direct follow: reticle center tracks mouse position in sky coordinates.
         self.center = self._normalized_center(sky_now)
         self.awaiting_center_click = False
+        self.user_center_fixed_once = True
         return True
 
     def end_drag(self) -> None:
@@ -187,6 +188,7 @@ class TelescopeScopeController:
             self.center = (0.0, 0.0)
         alt, az = self.center
         self.center = self._normalized_center((alt + d_alt_deg, az + d_az_deg))
+        self.user_center_fixed_once = True
 
     def draw(
         self,

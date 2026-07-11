@@ -1,4 +1,4 @@
-"""Runtime access for packaged stars dataset (ZST/ECSV/NPY/JSON -> NPY in APPDATA)."""
+"""Runtime stars dataset access from `%APPDATA%/TerraLab/data/gaia`."""
 
 from __future__ import annotations
 
@@ -37,6 +37,8 @@ ZST_NAME = "stars_catalog.zst"
 JSON_FALLBACK_NAME = "gaia_stars.json"
 SOURCE_LOG_NAME = "stars_dataset_source.log"
 META_NAME = "stars_dataset_meta.json"
+TILE_MANIFEST_NAME = "tile_manifest.json"
+TILE_ALL_NAME = "tile_all.npz"
 
 REQUIRED_COLS = ("ra", "dec", "phot_g_mean_mag")
 OPTIONAL_COLS = ("bp_rp", "pmra", "pmdec", "parallax", "source_id")
@@ -66,34 +68,48 @@ def _runtime_meta_path() -> Path:
     return _runtime_data_dir() / META_NAME
 
 
-def _packaged_source_log_path() -> Path:
-    return _packaged_stars_dir() / SOURCE_LOG_NAME
+def _runtime_tile_manifest_path() -> Path:
+    return _runtime_data_dir() / TILE_MANIFEST_NAME
+
+
+def _runtime_tile_all_path() -> Path:
+    return _runtime_data_dir() / TILE_ALL_NAME
+
+
+def _runtime_general_tile_npz_path() -> Path | None:
+    manifest_path = _runtime_tile_manifest_path()
+    if not manifest_path.exists() or (not manifest_path.is_file()):
+        return None
+    try:
+        with manifest_path.open("r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    general_tile = payload.get("general_tile")
+    if not isinstance(general_tile, dict):
+        return None
+    file_name = str(general_tile.get("file", "") or "").strip()
+    if not file_name:
+        return None
+    candidate = _runtime_data_dir() / file_name
+    if candidate.exists() and candidate.is_file():
+        return candidate
+    return None
 
 
 def _source_log(message: str) -> None:
     line = f"[{datetime.now().isoformat(timespec='seconds')}] {message}"
     print(f"[stars_dataset] {message}")
-    paths = (_runtime_source_log_path(), _packaged_source_log_path())
-    for p in paths:
-        try:
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with p.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-        except Exception:
-            # Never break dataset loading because of telemetry logging.
-            pass
-
-
-def _packaged_stars_dir() -> Path:
-    return Path(__file__).resolve().parent / "stars"
-
-
-def _packaged_zst_path() -> Path:
-    return _packaged_stars_dir() / ZST_NAME
-
-
-def _packaged_npz_path() -> Path:
-    return _packaged_stars_dir() / NPZ_NAME
+    p = _runtime_source_log_path()
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except Exception:
+        # Never break dataset loading because of telemetry logging.
+        pass
 
 
 def _read_runtime_meta(meta_path: Path) -> Dict[str, object]:
@@ -700,7 +716,7 @@ def ensure_stars_dataset() -> str:
     runtime_npz_path = _runtime_npz_path()
     runtime_zst_path = _runtime_zst_path()
     meta_path = _runtime_meta_path()
-    stars_dir = _packaged_stars_dir()
+    stars_dir = _runtime_data_dir()
 
     def _persist_npy(
         arrays: Dict[str, np.ndarray], source: str, source_path: str
@@ -760,50 +776,30 @@ def ensure_stars_dataset() -> str:
                 f"source=runtime_zst failed path='{runtime_zst_path}' error='{exc}'"
             )
 
-    packaged_npy = stars_dir / NPY_NAME
-    if packaged_npy.exists() and packaged_npy.is_file():
+    general_tile_npz = _runtime_general_tile_npz_path()
+    if general_tile_npz is not None:
         try:
-            raw = _read_structured_npy(packaged_npy)
-            if raw is not None:
-                arrays = _normalize_arrays(raw)
-                return _persist_npy(arrays, "packaged_npy", str(packaged_npy))
-        except Exception as exc:
-            _source_log(
-                f"source=packaged_npy failed path='{packaged_npy}' error='{exc}'"
-            )
-
-    packaged_npz = _packaged_npz_path()
-    if packaged_npz.exists() and packaged_npz.is_file():
-        try:
-            arrays = _runtime_npz_to_arrays(packaged_npz)
+            arrays = _runtime_npz_to_arrays(general_tile_npz)
             return _persist_npy(
-                arrays, "packaged_npz_migrated", str(packaged_npz)
+                arrays, "runtime_general_tile_npz", str(general_tile_npz)
             )
         except Exception as exc:
             _source_log(
-                f"source=packaged_npz_migrated failed path='{packaged_npz}' error='{exc}'"
+                "source=runtime_general_tile_npz failed "
+                f"path='{general_tile_npz}' error='{exc}'"
             )
 
-    zst_path = _packaged_zst_path()
-    if zst_path.exists() and zst_path.is_file():
-        tmp_unpack = runtime_npy_path.with_suffix(".packaged_zst.unpack.tmp")
+    tile_all_npz = _runtime_tile_all_path()
+    if tile_all_npz.exists() and tile_all_npz.is_file():
         try:
-            _decompress_zst_to_file(zst_path, tmp_unpack)
-            raw = _read_structured_npy(tmp_unpack)
-            if raw is not None:
-                arrays = _normalize_arrays(raw)
-            else:
-                arrays = _runtime_npz_to_arrays(tmp_unpack)
-            out = _persist_npy(arrays, "packaged_zst", str(zst_path))
-            _remove_file_if_exists(tmp_unpack)
-            return out
-        except Exception as exc:
-            _remove_file_if_exists(tmp_unpack)
-            _source_log(
-                f"source=packaged_zst failed path='{zst_path}' error='{exc}'"
+            arrays = _runtime_npz_to_arrays(tile_all_npz)
+            return _persist_npy(
+                arrays, "runtime_tile_all_npz", str(tile_all_npz)
             )
-    else:
-        _source_log(f"source=packaged_zst miss file not found '{zst_path}'")
+        except Exception as exc:
+            _source_log(
+                f"source=runtime_tile_all_npz failed path='{tile_all_npz}' error='{exc}'"
+            )
 
     if _build_from_npy_sources(stars_dir, runtime_npy_path):
         _write_runtime_meta(
@@ -841,7 +837,8 @@ def ensure_stars_dataset() -> str:
     )
     raise FileNotFoundError(
         "No stars dataset source found. Expected one of: "
-        f"{NPY_NAME}, {ZST_NAME}, gaia_cache_*.npy, *.ecsv, {JSON_FALLBACK_NAME} "
+        f"{NPY_NAME}, {NPZ_NAME}, {ZST_NAME}, {TILE_ALL_NAME}, "
+        f"{TILE_MANIFEST_NAME} (general_tile), gaia_cache_*.npy, *.ecsv, {JSON_FALLBACK_NAME} "
         f"in '{stars_dir}'."
     )
 
