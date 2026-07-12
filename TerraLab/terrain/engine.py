@@ -151,6 +151,7 @@ class HorizonProfile:
         None  # Distances of max light source per azimuth
     )
     resolved_mask: Optional[np.ndarray] = None
+    terrain_mesh: Optional[Dict] = None
 
     def get_band_points(self, band_id: str):
         """Return list of (az_deg, elevation_deg) for a given band."""
@@ -161,6 +162,23 @@ class HorizonProfile:
                     ang_rad = b["angles"][i]
                     if ang_rad <= -np.pi / 2:
                         # No valid data for this azimuth — use -10.0 deg (hidden)
+                        pts.append((float(az), -10.0))
+                    else:
+                        pts.append((float(az), float(np.rad2deg(ang_rad))))
+                return pts
+        return []
+
+    def get_band_surface_points(self, band_id: str):
+        """Return far-edge surface points for a band when available."""
+        for b in self.bands:
+            if b["id"] == band_id:
+                angles = b.get("surface_angles")
+                if angles is None:
+                    return []
+                pts = []
+                for i, az in enumerate(self.azimuths):
+                    ang_rad = angles[i]
+                    if ang_rad <= -np.pi / 2:
                         pts.append((float(az), -10.0))
                     else:
                         pts.append((float(az), float(np.rad2deg(ang_rad))))
@@ -181,11 +199,38 @@ class HorizonProfile:
             data["resolved_mask"] = np.asarray(
                 self.resolved_mask, dtype=np.uint8
             )
+        if self.terrain_mesh:
+            mesh = self.terrain_mesh
+            data["terrain_mesh_present"] = np.asarray(1, dtype=np.uint8)
+            data["terrain_mesh_version"] = np.asarray(
+                int(mesh.get("version", 1)), dtype=np.uint8
+            )
+            for key in (
+                "azimuths",
+                "distances",
+                "altitudes",
+                "elevations",
+                "normal_x",
+                "normal_y",
+                "normal_z",
+                "valid",
+                "visible",
+            ):
+                if key in mesh:
+                    data[f"terrain_mesh_{key}"] = np.asarray(mesh[key])
         for i, b in enumerate(self.bands):
             data[f"band_{i}_id"] = b["id"]
             data[f"band_{i}_angles"] = b["angles"]
             data[f"band_{i}_dists"] = b["dists"]
             data[f"band_{i}_heights"] = b["heights"]
+            if "surface_angles" in b:
+                data[f"band_{i}_surface_angles"] = b["surface_angles"]
+                data[f"band_{i}_surface_dists"] = b.get(
+                    "surface_dists", np.zeros_like(b["dists"])
+                )
+                data[f"band_{i}_surface_heights"] = b.get(
+                    "surface_heights", np.zeros_like(b["heights"])
+                )
         np.savez_compressed(path, **data)
 
     @staticmethod
@@ -196,14 +241,23 @@ class HorizonProfile:
             n_bands = int(np.asarray(d["n_bands"]).item())
             bands = []
             for i in range(n_bands):
-                bands.append(
-                    {
-                        "id": str(d[f"band_{i}_id"]),
-                        "angles": np.asarray(d[f"band_{i}_angles"]).copy(),
-                        "dists": np.asarray(d[f"band_{i}_dists"]).copy(),
-                        "heights": np.asarray(d[f"band_{i}_heights"]).copy(),
-                    }
-                )
+                band = {
+                    "id": str(d[f"band_{i}_id"]),
+                    "angles": np.asarray(d[f"band_{i}_angles"]).copy(),
+                    "dists": np.asarray(d[f"band_{i}_dists"]).copy(),
+                    "heights": np.asarray(d[f"band_{i}_heights"]).copy(),
+                }
+                if f"band_{i}_surface_angles" in d:
+                    band["surface_angles"] = np.asarray(
+                        d[f"band_{i}_surface_angles"]
+                    ).copy()
+                    band["surface_dists"] = np.asarray(
+                        d[f"band_{i}_surface_dists"]
+                    ).copy()
+                    band["surface_heights"] = np.asarray(
+                        d[f"band_{i}_surface_heights"]
+                    ).copy()
+                bands.append(band)
 
             if "light_domes" in d:
                 light_domes = np.asarray(d["light_domes"]).copy()
@@ -221,6 +275,65 @@ class HorizonProfile:
                 resolved_mask = np.asarray(
                     d["resolved_mask"], dtype=np.uint8
                 ).astype(bool)
+
+            terrain_mesh = None
+            if (
+                "terrain_mesh_present" in d
+                and "terrain_mesh_azimuths" in d
+                and "terrain_mesh_distances" in d
+                and "terrain_mesh_altitudes" in d
+            ):
+                mesh_version = (
+                    int(np.asarray(d["terrain_mesh_version"]).item())
+                    if "terrain_mesh_version" in d
+                    else 1
+                )
+                terrain_mesh = {
+                    "version": mesh_version,
+                    "azimuths": np.asarray(d["terrain_mesh_azimuths"]).copy(),
+                    "distances": np.asarray(
+                        d["terrain_mesh_distances"]
+                    ).copy(),
+                    "altitudes": np.asarray(
+                        d["terrain_mesh_altitudes"]
+                    ).copy(),
+                    "elevations": np.asarray(
+                        d["terrain_mesh_elevations"]
+                        if "terrain_mesh_elevations" in d
+                        else np.array([])
+                    ).copy(),
+                    "normal_x": np.asarray(
+                        d["terrain_mesh_normal_x"]
+                        if "terrain_mesh_normal_x" in d
+                        else np.array([])
+                    ).copy(),
+                    "normal_y": np.asarray(
+                        d["terrain_mesh_normal_y"]
+                        if "terrain_mesh_normal_y" in d
+                        else np.array([])
+                    ).copy(),
+                    "normal_z": np.asarray(
+                        d["terrain_mesh_normal_z"]
+                        if "terrain_mesh_normal_z" in d
+                        else np.array([])
+                    ).copy(),
+                    "valid": np.asarray(
+                        d["terrain_mesh_valid"]
+                        if "terrain_mesh_valid" in d
+                        else np.array([]),
+                        dtype=np.uint8,
+                    )
+                    .astype(bool)
+                    .copy(),
+                    "visible": np.asarray(
+                        d["terrain_mesh_visible"]
+                        if "terrain_mesh_visible" in d
+                        else np.array([]),
+                        dtype=np.uint8,
+                    )
+                    .astype(bool)
+                    .copy(),
+                }
 
             observer_lat = (
                 float(np.asarray(d["observer_lat"]).item())
@@ -241,6 +354,7 @@ class HorizonProfile:
             light_domes=light_domes,
             light_peak_distances=light_peak_distances,
             resolved_mask=resolved_mask,
+            terrain_mesh=terrain_mesh,
         )
 
 
@@ -780,7 +894,9 @@ class HorizonBaker:
             return d + step_m
         if d < 15_000:
             return d + step_m * 2.0
-        return d + step_m * 4.0
+        if d < 50_000:
+            return d + step_m * 4.0
+        return d + step_m * 8.0
 
     @staticmethod
     def _build_band_buffers(n_az: int, band_defs: List[Dict]) -> List[Dict]:
@@ -794,6 +910,9 @@ class HorizonBaker:
                     "angles": np.full(n_az, -np.inf),
                     "dists": np.zeros(n_az),
                     "heights": np.zeros(n_az),
+                    "surface_angles": np.full(n_az, -np.inf),
+                    "surface_dists": np.zeros(n_az),
+                    "surface_heights": np.zeros(n_az),
                 }
             )
         return bands
@@ -876,6 +995,9 @@ class HorizonBaker:
                 and bands[band_idx]["min"] <= d < bands[band_idx]["max"]
             ):
                 b = bands[band_idx]
+                b["surface_angles"][az_index] = ang
+                b["surface_dists"][az_index] = d
+                b["surface_heights"][az_index] = h_terr
                 if ang > b["angles"][az_index]:
                     b["angles"][az_index] = ang
                     b["dists"][az_index] = d
@@ -912,6 +1034,180 @@ class HorizonBaker:
             )
         except Exception:
             return 0.0
+
+    def _provider_nominal_resolution_m(self) -> float:
+        resolution = None
+        getter = getattr(self.provider, "get_nominal_resolution_m", None)
+        if callable(getter):
+            try:
+                resolution = float(getter())
+            except Exception:
+                resolution = None
+        if resolution is None or not np.isfinite(resolution) or resolution <= 0:
+            resolution = 30.0
+        return float(resolution)
+
+    def _normal_sample_step_m(self) -> float:
+        resolution = self._provider_nominal_resolution_m()
+        return float(max(10.0, min(120.0, resolution * 2.0)))
+
+    def _sample_normal(
+        self, x: float, y: float, center_h: float, step_m: float
+    ) -> Tuple[float, float, float]:
+        h_e = self.provider.get_elevation(x + step_m, y)
+        h_w = self.provider.get_elevation(x - step_m, y)
+        h_n = self.provider.get_elevation(x, y + step_m)
+        h_s = self.provider.get_elevation(x, y - step_m)
+
+        if h_e is None:
+            h_e = center_h
+        if h_w is None:
+            h_w = center_h
+        if h_n is None:
+            h_n = center_h
+        if h_s is None:
+            h_s = center_h
+
+        dzdx = (float(h_e) - float(h_w)) / (2.0 * step_m)
+        dzdy = (float(h_n) - float(h_s)) / (2.0 * step_m)
+        nx = -dzdx
+        ny = -dzdy
+        nz = 1.0
+        norm = math.sqrt(nx * nx + ny * ny + nz * nz)
+        if norm <= 0.0 or not np.isfinite(norm):
+            return 0.0, 0.0, 1.0
+        return nx / norm, ny / norm, nz / norm
+
+    @staticmethod
+    def _mesh_distance_rings(
+        d_max: float, resolution_m: Optional[float] = None
+    ) -> np.ndarray:
+        visual_max = max(250.0, min(float(d_max), 80_000.0))
+        resolution = (
+            float(resolution_m)
+            if resolution_m is not None
+            and np.isfinite(resolution_m)
+            and resolution_m > 0
+            else 30.0
+        )
+        near_step = max(5.0, min(20.0, resolution * 2.0))
+        mid_step = max(40.0, min(80.0, resolution * 8.0))
+        far_step = max(150.0, min(350.0, resolution * 24.0))
+        haze_step = max(500.0, min(1200.0, resolution * 90.0))
+
+        segments = [
+            np.arange(40.0, min(1_000.0, visual_max) + near_step, near_step),
+        ]
+        if visual_max > 1_000.0:
+            segments.append(
+                np.arange(1_000.0, min(5_000.0, visual_max) + mid_step, mid_step)
+            )
+        if visual_max > 5_000.0:
+            segments.append(
+                np.arange(5_000.0, min(20_000.0, visual_max) + far_step, far_step)
+            )
+        if visual_max > 20_000.0:
+            segments.append(
+                np.arange(20_000.0, visual_max + haze_step, haze_step)
+            )
+
+        rings = np.unique(np.round(np.concatenate(segments)).astype(np.float32))
+        rings = rings[rings <= visual_max]
+        return rings[rings > 0]
+
+    @staticmethod
+    def _compute_mesh_visibility(
+        altitudes: np.ndarray,
+        valid: np.ndarray,
+        margin_deg: float = 0.02,
+    ) -> np.ndarray:
+        visible = np.zeros_like(valid, dtype=bool)
+        if altitudes.shape != valid.shape or altitudes.ndim != 2:
+            return visible
+
+        for az_idx in range(altitudes.shape[1]):
+            max_alt = -np.inf
+            for d_idx in range(altitudes.shape[0]):
+                if not valid[d_idx, az_idx]:
+                    continue
+                alt = float(altitudes[d_idx, az_idx])
+                if not np.isfinite(alt):
+                    continue
+                if alt >= max_alt - float(margin_deg):
+                    visible[d_idx, az_idx] = True
+                if alt > max_alt:
+                    max_alt = alt
+        return visible
+
+    def build_view_mesh(
+        self,
+        obs_x: float,
+        obs_y: float,
+        obs_h_ground: float,
+        *,
+        d_max: float,
+        delta_az_deg: float = 1.0,
+    ) -> Dict:
+        h_eye_abs = float(obs_h_ground) + float(self.eye_height)
+        resolution_m = self._provider_nominal_resolution_m()
+        distances = self._mesh_distance_rings(d_max, resolution_m)
+        azimuths = np.arange(0.0, 360.0, delta_az_deg, dtype=np.float32)
+        n_d = len(distances)
+        n_az = len(azimuths)
+
+        altitudes = np.full((n_d, n_az), -90.0, dtype=np.float32)
+        elevations = np.zeros((n_d, n_az), dtype=np.float32)
+        normal_x = np.zeros((n_d, n_az), dtype=np.float32)
+        normal_y = np.zeros((n_d, n_az), dtype=np.float32)
+        normal_z = np.ones((n_d, n_az), dtype=np.float32)
+        valid = np.zeros((n_d, n_az), dtype=bool)
+
+        az_rads = np.deg2rad(azimuths.astype(np.float64))
+        sin_az = np.sin(az_rads)
+        cos_az = np.cos(az_rads)
+
+        for d_idx, d in enumerate(distances.astype(np.float64)):
+            drop = (d * d) / (2.0 * self.R)
+            for az_idx in range(n_az):
+                x = obs_x + d * sin_az[az_idx]
+                y = obs_y + d * cos_az[az_idx]
+                h_terr = self.provider.get_elevation(x, y)
+                if h_terr is None:
+                    continue
+
+                h_terr = float(h_terr)
+                h_visual = h_terr - drop - h_eye_abs
+                altitudes[d_idx, az_idx] = float(
+                    math.degrees(math.atan2(h_visual, d))
+                )
+                elevations[d_idx, az_idx] = h_terr
+                valid[d_idx, az_idx] = True
+
+        visible = self._compute_mesh_visibility(altitudes, valid)
+        normal_step_m = self._normal_sample_step_m()
+        visible_indices = np.argwhere(visible & valid)
+        for d_idx, az_idx in visible_indices:
+            d = float(distances[d_idx])
+            x = obs_x + d * sin_az[az_idx]
+            y = obs_y + d * cos_az[az_idx]
+            h_terr = float(elevations[d_idx, az_idx])
+            nx, ny, nz = self._sample_normal(x, y, h_terr, normal_step_m)
+            normal_x[d_idx, az_idx] = nx
+            normal_y[d_idx, az_idx] = ny
+            normal_z[d_idx, az_idx] = nz
+
+        return {
+            "version": 2,
+            "azimuths": azimuths,
+            "distances": distances.astype(np.float32),
+            "altitudes": altitudes,
+            "elevations": elevations,
+            "normal_x": normal_x,
+            "normal_y": normal_y,
+            "normal_z": normal_z,
+            "valid": valid,
+            "visible": visible,
+        }
 
     def _raycast_chunk(self, args):
         """Process a chunk of azimuths for parallel execution."""
@@ -1170,6 +1466,9 @@ class HorizonBaker:
                     "angles": np.full(n_az, -np.inf),
                     "dists": np.zeros(n_az),
                     "heights": np.zeros(n_az),
+                    "surface_angles": np.full(n_az, -np.inf),
+                    "surface_dists": np.zeros(n_az),
+                    "surface_heights": np.zeros(n_az),
                 }
             )
 
@@ -1275,6 +1574,9 @@ class HorizonBaker:
                         and bands[band_idx]["min"] <= d < bands[band_idx]["max"]
                     ):
                         b = bands[band_idx]
+                        b["surface_angles"][i] = ang
+                        b["surface_dists"][i] = d
+                        b["surface_heights"][i] = h_terr
                         if ang > b["angles"][i]:
                             b["angles"][i] = ang
                             b["dists"][i] = d

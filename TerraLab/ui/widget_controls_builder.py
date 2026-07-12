@@ -958,6 +958,18 @@ def build_deferred_controls_ui(widget):
     self.chk_enable_village.toggled.connect(self.canvas.update)
     self.chk_enable_village.toggled.connect(self.on_topography_toggled)
     v_earth.addWidget(self.chk_enable_village)
+    self.chk_terrain_shading = QCheckBox("Relleu suau")
+    self.chk_terrain_shading.setStyleSheet(
+        "font-style: normal; font-weight: normal;"
+    )
+    self.chk_terrain_shading.setChecked(
+        self._load_visibility_state("ombres_terreny", True)
+    )
+    self.chk_terrain_shading.toggled.connect(self.canvas.update)
+    self.chk_terrain_shading.toggled.connect(
+        lambda c: self._persist_visibility_state("ombres_terreny", c)
+    )
+    v_earth.addWidget(self.chk_terrain_shading)
     h_lay = QHBoxLayout()
     l_lay = QLabel("Nombre\nde capes")
     l_lay.setStyleSheet(

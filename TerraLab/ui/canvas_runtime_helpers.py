@@ -669,6 +669,11 @@ def canvas_paintEvent(canvas, event):
         use_detailed_topo = True
         if hasattr(self.parent_widget, 'chk_enable_village'):
             use_detailed_topo = self._parent_checkbox_checked("chk_enable_village", default=True)
+        terrain_shading_enabled = True
+        if hasattr(self.parent_widget, "chk_terrain_shading"):
+            terrain_shading_enabled = self._parent_checkbox_checked(
+                "chk_terrain_shading", default=True
+            )
         if show_horizon:
             force_flat = not use_detailed_topo
             dome_callback = None
@@ -696,7 +701,11 @@ def canvas_paintEvent(canvas, event):
                 self.elevation_angle, ut_hour,
                 draw_flat_line=force_flat,
                 projection_fn_numpy=self.project_universal_stereo_numpy,
-                draw_domes_callback=dome_callback
+                draw_domes_callback=dome_callback,
+                sun_alt=eff_sun_alt,
+                sun_az=eff_sun_az,
+                terrain_shading_enabled=terrain_shading_enabled,
+                sky_color_fn=self.sky_color_phys,
             )
             if hasattr(self, '_dome_count') and self._dome_count > 0:
                 current_time = __import__('time').time()

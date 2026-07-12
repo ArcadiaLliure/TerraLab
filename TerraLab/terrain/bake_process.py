@@ -130,7 +130,6 @@ def _create_provider(tiles_dir: str, progress_callback=None):
 
 def _resolve_raycast_step_m(provider) -> float:
     default_step_m = 50.0
-    fine_dem_step_m = 20.0
     fine_dem_threshold_m = 6.0
 
     resolution_m = None
@@ -148,16 +147,17 @@ def _resolve_raycast_step_m(provider) -> float:
 
     if resolution_m is not None and resolution_m > 0:
         if resolution_m <= fine_dem_threshold_m:
+            step_m = max(5.0, float(resolution_m))
             print(
                 "[HorizonBakeProcess] DEM resolution "
-                f"{resolution_m:.2f}m -> raycast step {fine_dem_step_m:.1f}m",
+                f"{resolution_m:.2f}m -> raycast base step {step_m:.1f}m",
                 file=sys.stderr,
                 flush=True,
             )
-            return fine_dem_step_m
+            return step_m
         print(
             "[HorizonBakeProcess] DEM resolution "
-            f"{resolution_m:.2f}m -> raycast step {default_step_m:.1f}m",
+            f"{resolution_m:.2f}m -> raycast base step {default_step_m:.1f}m",
             file=sys.stderr,
             flush=True,
         )
@@ -442,6 +442,22 @@ def main():
             _emit_event(
                 "progress",
                 job_id=job_id,
+                phase="terrain_mesh",
+                percent=98.7,
+                current=len(azimuths),
+                total=len(azimuths),
+            )
+            terrain_mesh = baker.build_view_mesh(
+                obs_x=x_utm,
+                obs_y=y_utm,
+                obs_h_ground=float(ground_h) + float(args.observer_offset),
+                d_max=vis_radius,
+                delta_az_deg=0.5,
+            )
+
+            _emit_event(
+                "progress",
+                job_id=job_id,
                 phase="save",
                 percent=99.0,
                 current=len(azimuths),
@@ -455,6 +471,7 @@ def main():
                 light_domes=light_domes,
                 light_peak_distances=light_peak_distances,
                 resolved_mask=np.asarray(resolved_mask, dtype=bool),
+                terrain_mesh=terrain_mesh,
             )
             _atomic_save_profile(final_profile, output_path)
 

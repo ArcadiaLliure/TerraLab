@@ -42,15 +42,15 @@ except ImportError:
 #
 _PALETTE_STOPS = [
     # t=0.0  Deepest Haze (farthest)
-    ((60, 70, 90), (170, 185, 205)),
+    ((70, 82, 100), (178, 194, 210)),
     # t=0.25 Mid Haze
-    ((48, 58, 78), (145, 160, 180)),
+    ((58, 70, 88), (152, 172, 186)),
     # t=0.50 Mid-range Green-Blue transition
-    ((32, 42, 62), (105, 120, 135)),
+    ((44, 58, 70), (116, 138, 132)),
     # t=0.75 Near hills
-    ((14, 22, 44), (75, 90, 75)),
+    ((28, 42, 48), (82, 108, 86)),
     # t=1.0  Immediate Foreground (nearest)
-    ((5, 12, 28), (55, 70, 55)),
+    ((18, 32, 34), (62, 86, 64)),
 ]
 
 
@@ -118,7 +118,7 @@ LAYER_DEFS = generate_layer_defs(
 
 # Ground fill (solid color below the nearest horizon line)
 GROUND_NIGHT = QColor(5, 10, 25)
-GROUND_DAY = QColor(55, 70, 55)  # Matches closest band (Dark Forest Green)
+GROUND_DAY = QColor(64, 82, 64)  # Matches closest band (muted terrain green)
 
 
 def _lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
@@ -128,6 +128,73 @@ def _lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
     b = c1.blue() + (c2.blue() - c1.blue()) * t
     a = c1.alpha() + (c2.alpha() - c1.alpha()) * t
     return QColor(int(r), int(g), int(b), int(a))
+
+
+def _with_alpha(color: QColor, alpha: int) -> QColor:
+    result = QColor(color)
+    result.setAlpha(max(0, min(255, int(alpha))))
+    return result
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, float(value)))
+
+
+def _smoothstep(edge0: float, edge1: float, value: float) -> float:
+    if edge0 == edge1:
+        return 1.0 if value >= edge1 else 0.0
+    t = _clamp01((float(value) - edge0) / (edge1 - edge0))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _lerp_piecewise(value: float, stops) -> float:
+    if not stops:
+        return 0.0
+    if value <= stops[0][0]:
+        return float(stops[0][1])
+    for (x0, y0), (x1, y1) in zip(stops, stops[1:]):
+        if value <= x1:
+            t = _smoothstep(x0, x1, value)
+            return float(y0 + (y1 - y0) * t)
+    return float(stops[-1][1])
+
+
+def _distance_haze_factor(distance_m: float) -> float:
+    return _clamp01(
+        _lerp_piecewise(
+            max(0.0, float(distance_m or 0.0)),
+            (
+                (0.0, 0.00),
+                (5_000.0, 0.05),
+                (15_000.0, 0.24),
+                (40_000.0, 0.46),
+                (80_000.0, 0.66),
+                (150_000.0, 0.78),
+            ),
+        )
+    )
+
+
+def _solar_shading_strength(sun_alt: float) -> float:
+    alt = float(sun_alt if sun_alt is not None else -90.0)
+    twilight_side_light = 0.34 * _smoothstep(-12.0, 0.0, alt)
+    daylight = 0.66 * _smoothstep(0.0, 22.0, alt)
+    return _clamp01(twilight_side_light + daylight)
+
+
+def _shade_color(color: QColor, factor: float, sky_color: QColor | None = None) -> QColor:
+    factor = max(0.55, min(1.35, float(factor)))
+    if factor < 1.0:
+        result = QColor(
+            int(color.red() * factor),
+            int(color.green() * factor),
+            int(color.blue() * factor),
+            color.alpha(),
+        )
+        return result
+
+    target = sky_color if sky_color is not None else QColor(255, 255, 255)
+    return _lerp_color(color, target, min(0.32, (factor - 1.0) * 1.35))
 
 
 def _calc_t_night(ut_hour: float) -> float:
@@ -182,13 +249,19 @@ class _BandPoints:
         # Parsegem min/max de l'ID (ex: "far_25k_38k")
         self.band_min, self.band_max = _parse_band_max_from_id(band_id)
         self.points, self.valid_mask = self._build(
-            profile, band_id, vert_exaggeration
+            profile.get_band_points(band_id), profile, vert_exaggeration
+        )
+        surface_raw = []
+        surface_getter = getattr(profile, "get_band_surface_points", None)
+        if callable(surface_getter):
+            surface_raw = surface_getter(band_id)
+        self.surface_points, self.surface_valid_mask = self._build(
+            surface_raw, profile, vert_exaggeration
         )
 
     # ── private ──
 
-    def _build(self, profile, band_id, vert_exag):
-        raw = profile.get_band_points(band_id)
+    def _build(self, raw, profile, vert_exag):
         if not raw:
             return (None, None), None
 
@@ -247,6 +320,8 @@ class HorizonOverlay(QObject):
         )  # list of (_BandPoints, night_col, day_col)
         self.profile = None  # Store reference to the current profile
         self._loaded = False
+        self._max_terrain_surface_quads = 4500
+        self._last_surface2d_quads = 0
 
         if not HORIZON_ENGINE_AVAILABLE:
             print(
@@ -304,16 +379,6 @@ class HorizonOverlay(QObject):
 
         effective_defs = layer_defs if layer_defs is not None else LAYER_DEFS
 
-        # Llavor de soroll baseada en la posició de l'observador per
-        # garantir coherència visual entre frames sense flickering.
-        import math as _m
-
-        self._noise_seed = (
-            _m.sin(profile.observer_lat * 127.1)
-            * _m.cos(profile.observer_lon * 311.7)
-            * 99.0
-        )
-
         now_mono = float(time.monotonic())
         last_log = float(getattr(self, "_last_set_profile_log_mono", 0.0))
         if (now_mono - last_log) >= 2.0:
@@ -364,6 +429,10 @@ class HorizonOverlay(QObject):
         draw_flat_line: bool = False,
         projection_fn_numpy=None,
         draw_domes_callback=None,
+        sun_alt: float | None = None,
+        sun_az: float | None = None,
+        terrain_shading_enabled: bool = True,
+        sky_color_fn=None,
     ):
         """
         Main entry: draw all terrain layers.
@@ -405,52 +474,6 @@ class HorizonOverlay(QObject):
         culling_margin = 10.0
         az_min = current_azimuth - (fov_deg / 2.0) - culling_margin
         az_max = current_azimuth + (fov_deg / 2.0) + culling_margin
-
-        # ── Precomputa soroll orgànic per a les bandes de primer pla ──────────────
-        # Les bandes properes (< NEAR_NOISE_MAX_M) poden tenir siluetes massa planes
-        # perquè el pas del baker (50m) o la resolució del DEM no captura microterreny.
-        # Injectem harmònics sinusoïdals multi-escala per trencar la línia recta.
-        # L'amplitud s'esvaeix linealment fins a zero a NEAR_NOISE_MAX_M.
-        #
-        # ⚠ Les unitats de h_raw són en graus_elevació × vert_exaggeration.
-        # El soroll TAMBÉ ha d'estar en les mateixes unitats per ser visible!
-
-        NEAR_NOISE_MAX_M = (
-            500.0  # metres — bandes més llunyanes no reben soroll
-        )
-        NEAR_NOISE_AMP_DEG = (
-            3.0  # amplitud màxima de variació en graus d'elevació
-        )
-        _NOISE_SEED = getattr(self, "_noise_seed", 0.0)
-
-        def _organic_noise(az_arr, band_max_m, seed, vert_exag):
-            """
-            Retorna delta en les mateixes unitats que h_raw (graus × vert_exag).
-
-            IMPORTANT: Les freqüències HAN de ser nombres enters perquè el soroll
-            sigui periòdic a 360°. Amb freqüència n enter:
-              sin(2π × n × (az+360°) + s) = sin(2π × n × az + s)
-            garantint continuïtat perfecta al seam 0°/360° (Nord).
-            Freqüències no enteres com 1.7 o 4.3 creen un tall visible al Nord.
-            """
-            if band_max_m >= NEAR_NOISE_MAX_M:
-                return None  # Cap soroll per a bandes llunyanes
-            # factor d'amplitud: 1.0 a 0m, 0.0 a NEAR_NOISE_MAX_M
-            frac = 1.0 - (band_max_m / NEAR_NOISE_MAX_M)
-            # amp en les mateixes unitats que h_raw
-            amp = NEAR_NOISE_AMP_DEG * frac * vert_exag
-            az_rad = np.deg2rad(az_arr)
-            s = seed
-            # Freqüències ENTERES → periodicitat garantida a 0/360°
-            # 1 cicle → forma gran de cresteria
-            # 3 cicles → detall mig (puigs i valls)
-            # 7 cicles → detall fi (roques, irregularitats)
-            noise = (
-                amp * 0.55 * np.sin(az_rad * 1 + s)
-                + amp * 0.30 * np.sin(az_rad * 3 + s * 1.7)
-                + amp * 0.15 * np.sin(az_rad * 7 + s * 3.1)
-            )
-            return noise
 
         # ── Pre-process Domes (Darrere cap a davant) ─────────────────────────
         pending_domes = []
@@ -515,32 +538,51 @@ class HorizonOverlay(QObject):
                 )
 
         # ── Dibuix de cada banda de darrera cap a davant ─────────────────────────
-        for band_pts, night_c, day_c in self._layers:
-            # First: Draw any domes that are behind or within this band (further than band_min)
-            while (
-                pending_domes and pending_domes[0]["dist"] >= band_pts.band_min
-            ):
+        sky_ref = self._reference_sky_color(
+            sky_color_fn, sun_alt, sun_az, current_azimuth, t_night
+        )
+        terrain_mesh = getattr(self.profile, "terrain_mesh", None)
+        has_terrain_mesh = bool(terrain_mesh)
+        has_surface2d = self._has_terrain_surface_2d(terrain_mesh)
+
+        if has_surface2d and self._layers:
+            self._draw_profile_horizon_cap(
+                painter,
+                projection_fn,
+                height,
+                px_per_alt_deg,
+                current_azimuth,
+                az_min,
+                az_max,
+                t_night,
+                sky_ref,
+                projection_fn_numpy=projection_fn_numpy,
+                fill_to_bottom=True,
+                draw_ridge=False,
+            )
+
+        if has_surface2d:
+            while pending_domes:
                 d_info = pending_domes.pop(0)
                 draw_domes_callback(painter, d_info["idx"], d_info["dist"])
+        else:
+            terrain_layers = self._terrain_polygon_layers(has_terrain_mesh)
+            for band_pts, night_c, day_c in terrain_layers:
+                # First: Draw any domes that are behind or within this band (further than band_min)
+                while (
+                    pending_domes and pending_domes[0]["dist"] >= band_pts.band_min
+                ):
+                    d_info = pending_domes.pop(0)
+                    draw_domes_callback(painter, d_info["idx"], d_info["dist"])
 
-            color = _lerp_color(day_c, night_c, t_night)
-            # Injectar soroll orgànic si la banda és dins la zona de primer pla
-            band_max_m = getattr(band_pts, "band_max", NEAR_NOISE_MAX_M)
-            noise = (
-                _organic_noise(
-                    band_pts.points[0],
-                    band_max_m,
-                    _NOISE_SEED,
-                    self.vert_exaggeration,
+                base_color = _lerp_color(day_c, night_c, t_night)
+                color = self._apply_atmospheric_perspective(
+                    base_color, sky_ref, band_pts, t_night
                 )
-                if band_pts.points[0] is not None
-                else None
-            )
-            if noise is not None:
-                # Aplica el soroll temporalment sense modificar les dades originals
-                az_raw, h_raw = band_pts.points
-                noisy_pts = (az_raw, h_raw + noise)
-                band_pts.points = noisy_pts
+                ridge_color, shadow_color = self._band_edge_colors(
+                    color, t_night, band_pts
+                )
+                surface_color = self._band_surface_color(color, t_night, band_pts)
                 self._draw_band_linear(
                     painter,
                     band_pts,
@@ -553,24 +595,13 @@ class HorizonOverlay(QObject):
                     az_min,
                     az_max,
                     projection_fn_numpy,
-                )
-                band_pts.points = (
-                    az_raw,
-                    h_raw,
-                )  # restaura els punts originals
-            else:
-                self._draw_band_linear(
-                    painter,
-                    band_pts,
-                    color,
-                    projection_fn,
-                    width,
-                    height,
-                    px_per_alt_deg,
-                    current_azimuth,
-                    az_min,
-                    az_max,
-                    projection_fn_numpy,
+                    ridge_color=ridge_color,
+                    shadow_color=shadow_color,
+                    surface_color=surface_color,
+                    sun_alt=sun_alt,
+                    sun_az=sun_az,
+                    terrain_shading_enabled=terrain_shading_enabled,
+                    sky_color=sky_ref,
                 )
 
         # ── Farciment del terra amb gradient de perspectiva ───────────────────────
@@ -580,7 +611,7 @@ class HorizonOverlay(QObject):
         profile_is_partial = profile_resolved is not None and not bool(
             np.all(profile_resolved)
         )
-        if self._layers and not profile_is_partial:
+        if self._layers and (has_terrain_mesh or not profile_is_partial):
             ground_c = _lerp_color(GROUND_DAY, GROUND_NIGHT, t_night)
             nearest = self._layers[-1]
             self._draw_ground_linear(
@@ -596,9 +627,818 @@ class HorizonOverlay(QObject):
                 az_max,
                 overlap_px=1.0,
                 projection_fn_numpy=projection_fn_numpy,
+                ridge_color=self._band_edge_colors(
+                    ground_c, t_night, nearest[0]
+                )[0],
+            )
+
+        if has_surface2d:
+            self._draw_terrain_surface_2d(
+                painter,
+                terrain_mesh,
+                projection_fn,
+                width,
+                height,
+                px_per_alt_deg,
+                current_azimuth,
+                az_min,
+                az_max,
+                t_night,
+                sky_ref,
+                sun_alt,
+                sun_az,
+                terrain_shading_enabled,
+                projection_fn_numpy=projection_fn_numpy,
+            )
+        elif has_terrain_mesh and not self._layers:
+            self._draw_terrain_mesh(
+                painter,
+                terrain_mesh,
+                projection_fn,
+                height,
+                px_per_alt_deg,
+                current_azimuth,
+                az_min,
+                az_max,
+                t_night,
+                sky_ref,
+                sun_alt,
+                sun_az,
+                terrain_shading_enabled,
+                projection_fn_numpy=projection_fn_numpy,
+            )
+        if has_terrain_mesh and self._layers:
+            self._draw_profile_horizon_cap(
+                painter,
+                projection_fn,
+                height,
+                px_per_alt_deg,
+                current_azimuth,
+                az_min,
+                az_max,
+                t_night,
+                sky_ref,
+                projection_fn_numpy=projection_fn_numpy,
+                fill_to_bottom=False,
+                draw_ridge=True,
             )
 
     # ── private rendering ──
+
+    def _reference_sky_color(
+        self, sky_color_fn, sun_alt, sun_az, current_azimuth, t_night
+    ):
+        if callable(sky_color_fn) and sun_alt is not None and sun_az is not None:
+            try:
+                color = sky_color_fn(
+                    0.0,
+                    float(current_azimuth) % 360.0,
+                    float(sun_alt),
+                    float(sun_az),
+                )
+                if isinstance(color, QColor):
+                    return color
+            except Exception:
+                pass
+        return _lerp_color(QColor(170, 195, 215), QColor(5, 5, 12), t_night)
+
+    def _terrain_polygon_layers(self, has_terrain_mesh: bool):
+        if not has_terrain_mesh or len(self._layers) <= 16:
+            return self._layers
+
+        target_layers = 12
+        indices = np.linspace(0, len(self._layers) - 1, target_layers)
+        indices = np.unique(np.rint(indices).astype(np.int32))
+        if indices[-1] != len(self._layers) - 1:
+            indices = np.append(indices, len(self._layers) - 1)
+        return [self._layers[int(i)] for i in indices]
+
+    def _has_terrain_surface_2d(self, mesh) -> bool:
+        if not mesh:
+            return False
+        try:
+            version = int(np.asarray(mesh.get("version", 1)).item())
+            altitudes = np.asarray(mesh.get("altitudes"), dtype=np.float32)
+            visible = np.asarray(mesh.get("visible"), dtype=bool)
+            valid = np.asarray(mesh.get("valid"), dtype=bool)
+            azimuths = np.asarray(mesh.get("azimuths"), dtype=np.float32)
+            distances = np.asarray(mesh.get("distances"), dtype=np.float32)
+        except Exception:
+            return False
+        return (
+            version >= 2
+            and altitudes.ndim == 2
+            and altitudes.shape == visible.shape
+            and altitudes.shape == valid.shape
+            and distances.size == altitudes.shape[0]
+            and azimuths.size == altitudes.shape[1]
+            and bool(np.any(visible & valid))
+        )
+
+    def _apply_atmospheric_perspective(
+        self, base_color: QColor, sky_color: QColor, band_pts, t_night: float
+    ) -> QColor:
+        band_max_m = float(getattr(band_pts, "band_max", 0.0) or 0.0)
+        haze = _distance_haze_factor(band_max_m)
+        haze *= 1.0 - 0.22 * _clamp01(t_night)
+        return _lerp_color(base_color, sky_color, haze)
+
+    def _terrain_shade_values(
+        self, az_arr, h_arr, sun_alt, sun_az, band_pts
+    ) -> np.ndarray:
+        del h_arr
+        if sun_alt is None or sun_az is None:
+            return np.ones_like(az_arr, dtype=np.float32)
+
+        strength = _solar_shading_strength(float(sun_alt))
+        if strength <= 0.001 or len(az_arr) < 2:
+            return np.ones_like(az_arr, dtype=np.float32)
+
+        band_max_m = float(getattr(band_pts, "band_max", 0.0) or 0.0)
+        distance_contrast = 1.0 - 0.78 * _distance_haze_factor(band_max_m)
+        strength *= max(0.18, distance_contrast)
+
+        az = np.asarray(az_arr, dtype=np.float32)
+        delta = np.deg2rad(((float(sun_az) - az + 180.0) % 360.0) - 180.0)
+        broad_facing = np.cos(delta)
+
+        shade = 1.0 + strength * 0.10 * broad_facing
+        return np.clip(shade, 0.91, 1.08).astype(np.float32)
+
+    def _sun_vector_enu(self, sun_alt, sun_az):
+        if sun_alt is None or sun_az is None:
+            return None
+        alt_rad = math.radians(float(sun_alt))
+        az_rad = math.radians(float(sun_az))
+        cos_alt = math.cos(alt_rad)
+        return np.array(
+            [
+                math.sin(az_rad) * cos_alt,
+                math.cos(az_rad) * cos_alt,
+                math.sin(alt_rad),
+            ],
+            dtype=np.float32,
+        )
+
+    def _mesh_quad_color(
+        self,
+        distance_m,
+        nx,
+        ny,
+        nz,
+        t_night,
+        sky_color,
+        sun_vec,
+        sun_alt,
+        terrain_shading_enabled=True,
+    ):
+        haze = _distance_haze_factor(distance_m)
+        palette_t = _clamp01(1.0 - haze)
+        night_c, day_c = _palette_color(palette_t)
+        base = _lerp_color(day_c, night_c, t_night)
+
+        normal = np.array([nx, ny, nz], dtype=np.float32)
+        norm = float(np.linalg.norm(normal))
+        if norm <= 0.0 or not np.isfinite(norm):
+            normal = np.array([0.0, 0.0, 1.0], dtype=np.float32)
+        else:
+            normal /= norm
+
+        direct_strength = (
+            _solar_shading_strength(
+                float(sun_alt) if sun_alt is not None else -90.0
+            )
+            if terrain_shading_enabled
+            else 0.0
+        )
+        if sun_vec is not None and direct_strength > 0.001:
+            lambert = max(0.0, float(np.dot(normal, sun_vec)))
+            shade = 0.78 + 0.28 * lambert * direct_strength
+        else:
+            shade = 0.88
+
+        shade = max(0.72, min(1.12, shade * (1.0 - 0.08 * haze)))
+        shaded = _shade_color(base, shade, sky_color)
+        haze_mix = haze * (1.0 - 0.20 * _clamp01(t_night))
+        return _lerp_color(shaded, sky_color, haze_mix)
+
+    def _project_mesh_column(
+        self,
+        projection_fn,
+        projection_fn_numpy,
+        az_value,
+        altitudes,
+        height,
+        px_alt,
+    ):
+        if projection_fn_numpy:
+            az_arr = np.full_like(altitudes, float(az_value), dtype=np.float32)
+            sx, sy_base = projection_fn_numpy(np.zeros_like(az_arr), az_arr)
+            sy = sy_base + 2.0 - (altitudes * px_alt)
+            return np.asarray(sx, dtype=np.float32), np.asarray(sy, dtype=np.float32)
+
+        sx = []
+        sy = []
+        for alt in altitudes:
+            anchor = projection_fn(0.0, float(az_value))
+            if anchor:
+                sx.append(anchor[0])
+                sy.append(anchor[1] + 2.0 - float(alt) * px_alt)
+            else:
+                sx.append(np.nan)
+                sy.append(height * 2)
+        return np.asarray(sx, dtype=np.float32), np.asarray(sy, dtype=np.float32)
+
+    def _profile_horizon_lookup(self):
+        if not self._layers:
+            return None
+        az_ref = None
+        max_h = None
+        for band_pts, _night_c, _day_c in self._layers:
+            az_raw, h_raw = band_pts.points
+            if az_raw is None:
+                continue
+            valid = getattr(band_pts, "valid_mask", None)
+            if valid is None:
+                valid = np.ones_like(az_raw, dtype=bool)
+            az = np.asarray(az_raw, dtype=np.float32)
+            h = np.asarray(h_raw, dtype=np.float32)
+            valid = np.asarray(valid, dtype=bool)
+            if az_ref is None:
+                az_ref = az
+                max_h = np.full_like(az_ref, -np.inf, dtype=np.float32)
+            if len(az) != len(az_ref) or not np.allclose(az, az_ref):
+                h = np.interp(az_ref, az, h, left=-np.inf, right=-np.inf)
+                valid = np.isfinite(h)
+            max_h = np.maximum(
+                max_h,
+                np.where(valid & np.isfinite(h), h, -np.inf).astype(
+                    np.float32
+                ),
+            )
+        if az_ref is None or max_h is None:
+            return None
+        valid = np.isfinite(max_h) & (max_h > -80.0)
+        if not np.any(valid):
+            return None
+        return az_ref[valid], max_h[valid]
+
+    @staticmethod
+    def _quad_area_px(points) -> float:
+        area = 0.0
+        for i, p0 in enumerate(points):
+            p1 = points[(i + 1) % len(points)]
+            area += float(p0.x()) * float(p1.y())
+            area -= float(p1.x()) * float(p0.y())
+        return abs(area) * 0.5
+
+    def _draw_terrain_surface_2d(
+        self,
+        painter,
+        mesh,
+        projection_fn,
+        width,
+        height,
+        px_alt,
+        cur_az,
+        az_min,
+        az_max,
+        t_night,
+        sky_color,
+        sun_alt,
+        sun_az,
+        terrain_shading_enabled=True,
+        projection_fn_numpy=None,
+    ):
+        self._last_surface2d_quads = 0
+        try:
+            az_raw = np.asarray(mesh.get("azimuths"), dtype=np.float32)
+            distances = np.asarray(mesh.get("distances"), dtype=np.float32)
+            altitudes = np.asarray(mesh.get("altitudes"), dtype=np.float32)
+            valid = np.asarray(mesh.get("valid"), dtype=bool)
+            visible = np.asarray(mesh.get("visible"), dtype=bool)
+            normal_x = np.asarray(mesh.get("normal_x"), dtype=np.float32)
+            normal_y = np.asarray(mesh.get("normal_y"), dtype=np.float32)
+            normal_z = np.asarray(mesh.get("normal_z"), dtype=np.float32)
+        except Exception:
+            return
+
+        if (
+            az_raw.size < 2
+            or distances.size < 2
+            or altitudes.shape != valid.shape
+            or altitudes.shape != visible.shape
+            or altitudes.shape != (distances.size, az_raw.size)
+        ):
+            return
+        if normal_x.shape != altitudes.shape:
+            normal_x = np.zeros_like(altitudes, dtype=np.float32)
+            normal_y = np.zeros_like(altitudes, dtype=np.float32)
+            normal_z = np.ones_like(altitudes, dtype=np.float32)
+
+        az_closed = np.concatenate([az_raw, [az_raw[0] + 360.0]]).astype(
+            np.float32
+        )
+        alt_closed = np.concatenate([altitudes, altitudes[:, :1]], axis=1)
+        valid_closed = np.concatenate([valid, valid[:, :1]], axis=1)
+        visible_closed = np.concatenate([visible, visible[:, :1]], axis=1)
+        nx_closed = np.concatenate([normal_x, normal_x[:, :1]], axis=1)
+        ny_closed = np.concatenate([normal_y, normal_y[:, :1]], axis=1)
+        nz_closed = np.concatenate([normal_z, normal_z[:, :1]], axis=1)
+
+        az_diffs = np.diff(az_raw.astype(np.float32))
+        az_diffs = az_diffs[np.isfinite(az_diffs) & (az_diffs > 0)]
+        az_step_deg = float(np.median(az_diffs)) if az_diffs.size else 1.0
+        base_col_stride = max(1, int(round(0.8 / max(0.1, az_step_deg))))
+        visible_rows = max(1, int(distances.size))
+        approx_cols = max(
+            1, int(math.ceil((az_max - az_min) / max(az_step_deg, 0.1)))
+        )
+        approx_cells = int((approx_cols / base_col_stride) * visible_rows)
+        stride_boost = max(
+            1,
+            int(
+                math.ceil(
+                    math.sqrt(
+                        max(1.0, approx_cells)
+                        / float(self._max_terrain_surface_quads)
+                    )
+                )
+            ),
+        )
+        col_stride = base_col_stride * stride_boost
+        d_stride = stride_boost
+
+        sun_vec = self._sun_vector_enu(sun_alt, sun_az)
+        base_offset = round((cur_az - 180) / 360.0) * 360
+        offsets = [base_offset - 360, base_offset, base_offset + 360]
+
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(Qt.NoPen)
+        drawn = 0
+        for offset in offsets:
+            if drawn >= self._max_terrain_surface_quads:
+                break
+            final_az = az_closed + offset
+            left_cols = np.arange(
+                0, len(az_closed) - 1, col_stride, dtype=np.int32
+            )
+            right_cols = np.minimum(
+                left_cols + col_stride, len(az_closed) - 1
+            )
+            visible_mask = (
+                (final_az[left_cols] <= az_max)
+                & (final_az[right_cols] >= az_min)
+            )
+            visible_pairs = list(
+                zip(left_cols[visible_mask], right_cols[visible_mask])
+            )
+            if not visible_pairs:
+                continue
+
+            needed_cols = set()
+            for left_col, right_col in visible_pairs:
+                needed_cols.add(int(left_col))
+                needed_cols.add(int(right_col))
+
+            sx_cols = {}
+            sy_cols = {}
+            for col in sorted(needed_cols):
+                sx, sy = self._project_mesh_column(
+                    projection_fn,
+                    projection_fn_numpy,
+                    float(final_az[col]),
+                    alt_closed[:, col],
+                    height,
+                    px_alt,
+                )
+                sx_cols[col] = sx
+                sy_cols[col] = sy
+
+            ordered_cols = np.asarray(sorted(needed_cols), dtype=np.int32)
+            y_limits = np.full(
+                ordered_cols.shape, float(height) * 2.0, dtype=np.float32
+            )
+            for d_idx in range(0, len(distances), d_stride):
+                if drawn >= self._max_terrain_surface_quads:
+                    break
+                quad_distance = float(distances[d_idx])
+                row_sx = np.asarray(
+                    [sx_cols[int(col)][d_idx] for col in ordered_cols],
+                    dtype=np.float32,
+                )
+                row_sy = np.asarray(
+                    [sy_cols[int(col)][d_idx] for col in ordered_cols],
+                    dtype=np.float32,
+                )
+                row_valid = np.asarray(
+                    [valid_closed[d_idx, int(col)] for col in ordered_cols],
+                    dtype=bool,
+                )
+                finite = np.isfinite(row_sx) & np.isfinite(row_sy)
+                row_valid &= finite
+                if np.count_nonzero(row_valid) < 2:
+                    continue
+
+                top_y = np.minimum(row_sy, y_limits)
+                improves = top_y < (y_limits - 0.25)
+                if not np.any(row_valid & improves):
+                    continue
+
+                edge_mask = np.diff(
+                    np.pad(
+                        row_valid.astype(np.int8),
+                        (1, 1),
+                        constant_values=0,
+                    )
+                )
+                starts = np.where(edge_mask == 1)[0]
+                stops = np.where(edge_mask == -1)[0]
+
+                for start, stop in zip(starts, stops):
+                    if drawn >= self._max_terrain_surface_quads:
+                        break
+                    if stop - start < 2:
+                        continue
+                    if not np.any(improves[start:stop]):
+                        continue
+
+                    seg_x = row_sx[start:stop]
+                    seg_top = top_y[start:stop]
+                    seg_bottom = y_limits[start:stop] + 0.5
+                    if len(seg_x) < 2:
+                        continue
+
+                    points = [
+                        QPointF(float(x), float(y))
+                        for x, y in zip(seg_x, seg_top)
+                    ]
+                    points.extend(
+                        QPointF(float(x), float(y))
+                        for x, y in zip(seg_x[::-1], seg_bottom[::-1])
+                    )
+                    if not all(
+                        np.isfinite(p.x()) and np.isfinite(p.y())
+                        for p in points
+                    ):
+                        continue
+
+                    xs = [float(p.x()) for p in points]
+                    ys = [float(p.y()) for p in points]
+                    if max(xs) < -64.0 or min(xs) > float(width) + 64.0:
+                        continue
+                    if max(ys) < -64.0 or min(ys) > float(height) + 64.0:
+                        continue
+                    if self._quad_area_px(points) < 0.35:
+                        continue
+
+                    seg_cols = ordered_cols[start:stop]
+                    nx = float(
+                        np.mean(
+                            nx_closed[d_idx, seg_cols]
+                        )
+                    )
+                    ny = float(
+                        np.mean(
+                            ny_closed[d_idx, seg_cols]
+                        )
+                    )
+                    nz = float(
+                        np.mean(
+                            nz_closed[d_idx, seg_cols]
+                        )
+                    )
+                    color = self._mesh_quad_color(
+                        quad_distance,
+                        nx,
+                        ny,
+                        nz,
+                        t_night,
+                        sky_color,
+                        sun_vec,
+                        sun_alt,
+                        terrain_shading_enabled=terrain_shading_enabled,
+                    )
+                    haze = _distance_haze_factor(quad_distance)
+                    calm_night, calm_day = _palette_color(
+                        _clamp01(0.62 + 0.18 * (1.0 - haze))
+                    )
+                    calm_base = _lerp_color(calm_day, calm_night, t_night)
+                    calm_base = _lerp_color(
+                        calm_base, sky_color, 0.08 + 0.18 * haze
+                    )
+                    color = _lerp_color(calm_base, color, 0.32)
+                    alpha = int(30 + 42 * (1.0 - haze))
+                    alpha = int(alpha * (1.0 - 0.30 * _clamp01(t_night)))
+                    color.setAlpha(max(22, min(72, alpha)))
+                    painter.setBrush(QBrush(color))
+                    painter.drawPolygon(QPolygonF(points))
+                    drawn += 1
+                    y_limits[start:stop] = top_y[start:stop]
+
+        self._last_surface2d_quads = drawn
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+    def _draw_terrain_mesh(
+        self,
+        painter,
+        mesh,
+        projection_fn,
+        height,
+        px_alt,
+        cur_az,
+        az_min,
+        az_max,
+        t_night,
+        sky_color,
+        sun_alt,
+        sun_az,
+        terrain_shading_enabled=True,
+        projection_fn_numpy=None,
+    ):
+        try:
+            az_raw = np.asarray(mesh.get("azimuths"), dtype=np.float32)
+            distances = np.asarray(mesh.get("distances"), dtype=np.float32)
+            altitudes = np.asarray(mesh.get("altitudes"), dtype=np.float32)
+            valid = np.asarray(mesh.get("valid"), dtype=bool)
+            normal_x = np.asarray(mesh.get("normal_x"), dtype=np.float32)
+            normal_y = np.asarray(mesh.get("normal_y"), dtype=np.float32)
+            normal_z = np.asarray(mesh.get("normal_z"), dtype=np.float32)
+        except Exception:
+            return
+
+        if (
+            az_raw.size < 2
+            or distances.size < 2
+            or altitudes.shape != valid.shape
+            or altitudes.shape != (distances.size, az_raw.size)
+        ):
+            return
+        if normal_x.shape != altitudes.shape:
+            normal_x = np.zeros_like(altitudes, dtype=np.float32)
+            normal_y = np.zeros_like(altitudes, dtype=np.float32)
+            normal_z = np.ones_like(altitudes, dtype=np.float32)
+
+        az_closed = np.concatenate([az_raw, [az_raw[0] + 360.0]]).astype(
+            np.float32
+        )
+        alt_closed = np.concatenate([altitudes, altitudes[:, :1]], axis=1)
+        valid_closed = np.concatenate([valid, valid[:, :1]], axis=1)
+        nx_closed = np.concatenate([normal_x, normal_x[:, :1]], axis=1)
+        ny_closed = np.concatenate([normal_y, normal_y[:, :1]], axis=1)
+        nz_closed = np.concatenate([normal_z, normal_z[:, :1]], axis=1)
+
+        sun_vec = self._sun_vector_enu(sun_alt, sun_az)
+        base_offset = round((cur_az - 180) / 360.0) * 360
+        offsets = [base_offset - 360, base_offset, base_offset + 360]
+
+        az_diffs = np.diff(az_raw.astype(np.float32))
+        az_diffs = az_diffs[np.isfinite(az_diffs) & (az_diffs > 0)]
+        az_step_deg = float(np.median(az_diffs)) if az_diffs.size else 1.0
+        col_stride = max(1, int(round(2.0 / max(0.1, az_step_deg))))
+
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        painter.setPen(Qt.NoPen)
+        for offset in offsets:
+            final_az = az_closed + offset
+            left_cols = np.arange(
+                0, len(az_closed) - 1, col_stride, dtype=np.int32
+            )
+            right_cols = np.minimum(
+                left_cols + col_stride, len(az_closed) - 1
+            )
+            visible_mask = (
+                (final_az[left_cols] <= az_max)
+                & (final_az[right_cols] >= az_min)
+            )
+            visible_pairs = list(
+                zip(left_cols[visible_mask], right_cols[visible_mask])
+            )
+            if not visible_pairs:
+                continue
+
+            sx_cols = {}
+            sy_cols = {}
+            needed_cols = set()
+            for left_col, right_col in visible_pairs:
+                needed_cols.add(int(left_col))
+                needed_cols.add(int(right_col))
+            for col in sorted(needed_cols):
+                sx, sy = self._project_mesh_column(
+                    projection_fn,
+                    projection_fn_numpy,
+                    float(final_az[col]),
+                    alt_closed[:, col],
+                    height,
+                    px_alt,
+                )
+                sx_cols[col] = sx
+                sy_cols[col] = sy
+
+            for d_idx in range(len(distances) - 2, -1, -1):
+                quad_distance = float(
+                    0.5 * (distances[d_idx] + distances[d_idx + 1])
+                )
+                for col, right_col in visible_pairs:
+                    if not (
+                        valid_closed[d_idx, col]
+                        and valid_closed[d_idx, right_col]
+                        and valid_closed[d_idx + 1, col]
+                        and valid_closed[d_idx + 1, right_col]
+                    ):
+                        continue
+
+                    y_left_far = float(sy_cols[col][d_idx + 1])
+                    y_right_far = float(sy_cols[right_col][d_idx + 1])
+                    y_right_near = float(sy_cols[right_col][d_idx])
+                    y_left_near = float(sy_cols[col][d_idx])
+
+                    points = [
+                        QPointF(
+                            float(sx_cols[col][d_idx + 1]),
+                            y_left_far,
+                        ),
+                        QPointF(
+                            float(sx_cols[right_col][d_idx + 1]),
+                            y_right_far,
+                        ),
+                        QPointF(
+                            float(sx_cols[right_col][d_idx]),
+                            y_right_near,
+                        ),
+                        QPointF(
+                            float(sx_cols[col][d_idx]),
+                            y_left_near,
+                        ),
+                    ]
+                    if not all(
+                        np.isfinite(p.x()) and np.isfinite(p.y())
+                        for p in points
+                    ):
+                        continue
+
+                    nx = float(
+                        np.mean(
+                            [
+                                nx_closed[d_idx, col],
+                                nx_closed[d_idx, right_col],
+                                nx_closed[d_idx + 1, col],
+                                nx_closed[d_idx + 1, right_col],
+                            ]
+                        )
+                    )
+                    ny = float(
+                        np.mean(
+                            [
+                                ny_closed[d_idx, col],
+                                ny_closed[d_idx, right_col],
+                                ny_closed[d_idx + 1, col],
+                                ny_closed[d_idx + 1, right_col],
+                            ]
+                        )
+                    )
+                    nz = float(
+                        np.mean(
+                            [
+                                nz_closed[d_idx, col],
+                                nz_closed[d_idx, right_col],
+                                nz_closed[d_idx + 1, col],
+                                nz_closed[d_idx + 1, right_col],
+                            ]
+                        )
+                    )
+                    color = self._mesh_quad_color(
+                        quad_distance,
+                        nx,
+                        ny,
+                        nz,
+                        t_night,
+                        sky_color,
+                        sun_vec,
+                        sun_alt,
+                        terrain_shading_enabled=terrain_shading_enabled,
+                    )
+                    painter.setBrush(QBrush(color))
+                    painter.drawPolygon(QPolygonF(points))
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+    def _draw_profile_horizon_cap(
+        self,
+        painter,
+        projection_fn,
+        height,
+        px_alt,
+        cur_az,
+        az_min,
+        az_max,
+        t_night,
+        sky_color,
+        projection_fn_numpy=None,
+        fill_to_bottom=True,
+        draw_ridge=True,
+    ):
+        lookup = self._profile_horizon_lookup()
+        if lookup is None:
+            return
+        az_raw, h_raw = lookup
+        if az_raw.size < 2:
+            return
+
+        base_offset = round((cur_az - 180) / 360.0) * 360
+        offsets = [base_offset - 360, base_offset, base_offset + 360]
+
+        all_sx = []
+        all_sy = []
+        for offset in offsets:
+            final_az = az_raw + offset
+            mask = (final_az >= az_min) & (final_az <= az_max)
+            if not np.any(mask):
+                continue
+
+            culled_az = final_az[mask]
+            culled_h = h_raw[mask]
+            if projection_fn_numpy:
+                sx, sy_base = projection_fn_numpy(
+                    np.zeros_like(culled_az), culled_az
+                )
+                sy = sy_base + 2.0 - (culled_h * px_alt)
+            else:
+                sx = []
+                sy = []
+                for az_value, height_value in zip(culled_az, culled_h):
+                    anchor = projection_fn(0.0, float(az_value))
+                    if anchor:
+                        sx.append(anchor[0])
+                        sy.append(anchor[1] + 2.0 - height_value * px_alt)
+                    else:
+                        sx.append(np.nan)
+                        sy.append(height * 2.0)
+                sx = np.asarray(sx, dtype=np.float32)
+                sy = np.asarray(sy, dtype=np.float32)
+
+            finite_mask = np.isfinite(sx) & np.isfinite(sy)
+            if not np.any(finite_mask):
+                continue
+            edge_mask = np.diff(
+                np.pad(finite_mask.astype(np.int8), (1, 1), constant_values=0)
+            )
+            starts = np.where(edge_mask == 1)[0]
+            stops = np.where(edge_mask == -1)[0]
+            for start, stop in zip(starts, stops):
+                seg_sx = np.asarray(sx[start:stop], dtype=np.float32)
+                seg_sy = np.asarray(sy[start:stop], dtype=np.float32)
+                if len(seg_sx) >= 2:
+                    all_sx.append(seg_sx)
+                    all_sy.append(seg_sy)
+
+        if not all_sx:
+            return
+
+        cap_night, cap_day = _palette_color(0.56)
+        cap_base = _lerp_color(cap_day, cap_night, t_night)
+        cap_fill = _lerp_color(cap_base, sky_color, 0.18)
+        if fill_to_bottom:
+            self._fill_strip_downward_numpy(
+                painter, all_sx, all_sy, cap_fill, height * 2.0, solid=True
+            )
+
+        if draw_ridge:
+            ridge = _with_alpha(QColor(cap_fill).lighter(105), 58)
+            shadow = _with_alpha(QColor(cap_fill).darker(110), 36)
+            self._stroke_ridge_lines_numpy(
+                painter, all_sx, all_sy, shadow, width=0.9, y_offset=0.9
+            )
+            self._stroke_ridge_lines_numpy(
+                painter, all_sx, all_sy, ridge, width=0.65
+            )
+
+    def _band_edge_colors(self, fill_color, t_night, band_pts):
+        band_max_m = float(getattr(band_pts, "band_max", 0.0) or 0.0)
+        distance_factor = 1.0 - _distance_haze_factor(band_max_m)
+        ridge_alpha = 9 + int(16 * distance_factor)
+        shadow_alpha = 12 + int(20 * distance_factor)
+
+        if t_night >= 0.45:
+            ridge = QColor(fill_color).lighter(108)
+            shadow = QColor(fill_color).darker(106)
+            ridge_alpha += int(5 * t_night)
+            shadow_alpha += int(5 * t_night)
+        else:
+            ridge = QColor(fill_color).darker(108)
+            shadow = QColor(fill_color).lighter(104)
+
+        return _with_alpha(ridge, ridge_alpha), _with_alpha(shadow, shadow_alpha)
+
+    def _band_surface_color(self, fill_color, t_night, band_pts):
+        band_max_m = float(getattr(band_pts, "band_max", 0.0) or 0.0)
+        distance_factor = 1.0 - _distance_haze_factor(band_max_m)
+        alpha = 7 + int(14 * distance_factor)
+        if t_night >= 0.45:
+            color = QColor(fill_color).lighter(106)
+            alpha += int(5 * t_night)
+        else:
+            color = QColor(fill_color).darker(108)
+        return _with_alpha(color, alpha)
 
     def _draw_band_linear(
         self,
@@ -613,6 +1453,13 @@ class HorizonOverlay(QObject):
         az_min,
         az_max,
         proj_fn_numpy=None,
+        ridge_color=None,
+        shadow_color=None,
+        surface_color=None,
+        sun_alt=None,
+        sun_az=None,
+        terrain_shading_enabled=True,
+        sky_color=None,
     ):
         """
         Draw one filled silhouette band using the shared sky projection.
@@ -631,6 +1478,8 @@ class HorizonOverlay(QObject):
 
         all_sx = []
         all_sy = []
+        all_az = []
+        all_h = []
 
         for offset in offsets:
             final_az = az_raw + offset
@@ -679,14 +1528,258 @@ class HorizonOverlay(QObject):
             for start, stop in zip(starts, stops):
                 seg_sx = sx[start:stop]
                 seg_sy = sy[start:stop]
+                seg_az = culled_az[start:stop]
+                seg_h = culled_h[start:stop]
+                if len(seg_sx) >= 2:
+                    all_sx.append(seg_sx)
+                    all_sy.append(seg_sy)
+                    all_az.append(seg_az)
+                    all_h.append(seg_h)
+
+        if all_sx:
+            if terrain_shading_enabled:
+                self._fill_shaded_strip_downward_numpy(
+                    painter,
+                    all_sx,
+                    all_sy,
+                    all_az,
+                    all_h,
+                    color,
+                    h * 2,
+                    sun_alt,
+                    sun_az,
+                    band_pts,
+                    sky_color,
+                )
+            else:
+                self._fill_strip_downward_numpy(
+                    painter, all_sx, all_sy, color, h * 2, solid=True
+                )
+            if shadow_color is not None:
+                self._stroke_ridge_lines_numpy(
+                    painter,
+                    all_sx,
+                    all_sy,
+                    shadow_color,
+                    width=1.2,
+                    y_offset=1.15,
+                )
+            if ridge_color is not None:
+                self._stroke_ridge_lines_numpy(
+                    painter, all_sx, all_sy, ridge_color, width=0.8
+                )
+                self._draw_edge_texture_numpy(
+                    painter, all_sx, all_sy, all_az, ridge_color, band_pts
+                )
+            if surface_color is not None:
+                self._draw_band_surface_linear(
+                    painter,
+                    band_pts,
+                    proj_fn,
+                    h,
+                    px_alt,
+                    cur_az,
+                    az_min,
+                    az_max,
+                    proj_fn_numpy,
+                    surface_color,
+                )
+
+    def _draw_band_surface_linear(
+        self,
+        painter,
+        band_pts,
+        proj_fn,
+        h,
+        px_alt,
+        cur_az,
+        az_min,
+        az_max,
+        proj_fn_numpy,
+        color,
+    ):
+        az_raw, h_raw = getattr(band_pts, "surface_points", (None, None))
+        if az_raw is None:
+            return
+        valid_raw = getattr(band_pts, "surface_valid_mask", None)
+        if valid_raw is None:
+            valid_raw = np.ones_like(az_raw, dtype=bool)
+
+        base_offset = round((cur_az - 180) / 360.0) * 360
+        offsets = [base_offset - 360, base_offset, base_offset + 360]
+        all_sx = []
+        all_sy = []
+
+        for offset in offsets:
+            final_az = az_raw + offset
+            mask = (final_az >= az_min) & (final_az <= az_max)
+            if not np.any(mask):
+                continue
+
+            culled_az = final_az[mask]
+            culled_h = h_raw[mask]
+            culled_valid = np.asarray(valid_raw[mask], dtype=bool)
+            if not np.any(culled_valid):
+                continue
+
+            if proj_fn_numpy:
+                sx, sy_base = proj_fn_numpy(
+                    np.zeros_like(culled_az), culled_az
+                )
+                sy = sy_base + 2.0 - (culled_h * px_alt)
+            else:
+                sx = []
+                sy = []
+                for az_value, height_value in zip(culled_az, culled_h):
+                    anchor = proj_fn(0, az_value)
+                    if anchor:
+                        sx.append(anchor[0])
+                        sy.append(anchor[1] + 2.0 - height_value * px_alt)
+                    else:
+                        sx.append(np.nan)
+                        sy.append(h * 2)
+                sx = np.array(sx)
+                sy = np.array(sy)
+
+            finite_mask = np.isfinite(sx) & np.isfinite(sy) & culled_valid
+            if not np.any(finite_mask):
+                continue
+            edge_mask = np.diff(
+                np.pad(finite_mask.astype(np.int8), (1, 1), constant_values=0)
+            )
+            starts = np.where(edge_mask == 1)[0]
+            stops = np.where(edge_mask == -1)[0]
+            for start, stop in zip(starts, stops):
+                seg_sx = sx[start:stop]
+                seg_sy = sy[start:stop]
                 if len(seg_sx) >= 2:
                     all_sx.append(seg_sx)
                     all_sy.append(seg_sy)
 
         if all_sx:
-            self._fill_strip_downward_numpy(
-                painter, all_sx, all_sy, color, h * 2
+            self._stroke_ridge_lines_numpy(
+                painter, all_sx, all_sy, color, width=0.9
             )
+
+    def _fill_shaded_strip_downward_numpy(
+        self,
+        painter,
+        list_sx,
+        list_sy,
+        list_az,
+        list_h,
+        base_color,
+        bottom_y,
+        sun_alt,
+        sun_az,
+        band_pts,
+        sky_color,
+    ):
+        for sx_arr, sy_arr, az_arr, h_arr in zip(
+            list_sx, list_sy, list_az, list_h
+        ):
+            valid = np.isfinite(sx_arr) & np.isfinite(sy_arr)
+            if not np.any(valid):
+                continue
+
+            f_sx = np.asarray(sx_arr[valid], dtype=np.float32)
+            f_sy = np.asarray(sy_arr[valid], dtype=np.float32)
+            f_az = np.asarray(az_arr[valid], dtype=np.float32)
+            f_h = np.asarray(h_arr[valid], dtype=np.float32)
+            if len(f_sx) < 2:
+                continue
+
+            self._fill_strip_downward_numpy(
+                painter, [f_sx], [f_sy], base_color, bottom_y, solid=True
+            )
+
+            shade_values = self._terrain_shade_values(
+                f_az, f_h, sun_alt, sun_az, band_pts
+            )
+            if np.nanmax(np.abs(shade_values - 1.0)) < 0.006:
+                continue
+
+            min_x = float(np.nanmin(f_sx))
+            max_x = float(np.nanmax(f_sx))
+            if max_x - min_x < 1.0:
+                continue
+
+            path = QPainterPath()
+            path.moveTo(float(f_sx[0]), float(f_sy[0]))
+            for x, y in zip(f_sx[1:], f_sy[1:]):
+                path.lineTo(float(x), float(y))
+            path.lineTo(float(f_sx[-1]), float(bottom_y))
+            path.lineTo(float(f_sx[0]), float(bottom_y))
+            path.closeSubpath()
+
+            gradient = QLinearGradient(min_x, 0.0, max_x, 0.0)
+            stop_count = min(18, len(f_sx))
+            stop_indices = np.linspace(0, len(f_sx) - 1, stop_count).astype(int)
+            stops = []
+            for idx in stop_indices:
+                pos = _clamp01((float(f_sx[idx]) - min_x) / (max_x - min_x))
+                stops.append((pos, float(shade_values[idx])))
+            stops.sort(key=lambda item: item[0])
+
+            last_pos = -1.0
+            for pos, shade in stops:
+                if pos <= last_pos + 0.001:
+                    continue
+                color = _shade_color(base_color, shade, sky_color)
+                color.setAlpha(255)
+                gradient.setColorAt(pos, color)
+                last_pos = pos
+            if last_pos < 1.0:
+                color = _shade_color(
+                    base_color, float(shade_values[-1]), sky_color
+                )
+                color.setAlpha(255)
+                gradient.setColorAt(1.0, color)
+
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(gradient))
+            painter.drawPath(path)
+
+    def _draw_edge_texture_numpy(
+        self, painter, list_sx, list_sy, list_az, color, band_pts
+    ):
+        band_max_m = float(getattr(band_pts, "band_max", 0.0) or 0.0)
+        distance_factor = 1.0 - _distance_haze_factor(band_max_m)
+        if distance_factor <= 0.18:
+            return
+
+        texture_color = QColor(color)
+        texture_color.setAlpha(min(color.alpha(), 5 + int(10 * distance_factor)))
+        if texture_color.alpha() <= 0:
+            return
+
+        pen = QPen(texture_color)
+        pen.setWidthF(0.55)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        for sx_arr, sy_arr, az_arr in zip(list_sx, list_sy, list_az):
+            valid = np.isfinite(sx_arr) & np.isfinite(sy_arr)
+            if not np.any(valid):
+                continue
+            f_sx = np.asarray(sx_arr[valid], dtype=np.float32)
+            f_sy = np.asarray(sy_arr[valid], dtype=np.float32)
+            f_az = np.asarray(az_arr[valid], dtype=np.float32)
+            if len(f_sx) < 2:
+                continue
+
+            step = max(2, int(math.ceil(len(f_sx) / 110.0)))
+            for i in range(0, len(f_sx), step):
+                seed = float(f_az[i]) * 12.9898 + band_max_m * 0.001
+                noise = math.sin(seed) * 43758.5453
+                noise -= math.floor(noise)
+                if noise < 0.52:
+                    continue
+                length = 0.6 + 2.0 * noise * distance_factor
+                x = float(f_sx[i])
+                y = float(f_sy[i]) + 0.55
+                painter.drawLine(QPointF(x, y), QPointF(x, y + length))
 
     def _draw_ground_linear(
         self,
@@ -702,6 +1795,7 @@ class HorizonOverlay(QObject):
         az_max,
         overlap_px=0.0,
         projection_fn_numpy=None,
+        ridge_color=None,
     ):
         """
         Draw ground fill using the same projection logic as bands.
@@ -753,6 +1847,38 @@ class HorizonOverlay(QObject):
             self._fill_strip_downward_numpy(
                 painter, all_sx, all_sy, color, h * 2, solid=True
             )
+            if ridge_color is not None:
+                self._stroke_ridge_lines_numpy(
+                    painter, all_sx, all_sy, ridge_color, width=0.65
+                )
+
+    def _stroke_ridge_lines_numpy(
+        self, painter, list_sx, list_sy, color, width=1.0, y_offset=0.0
+    ):
+        pen = QPen(color)
+        pen.setWidthF(float(width))
+        pen.setCosmetic(True)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+
+        for sx_arr, sy_arr in zip(list_sx, list_sy):
+            if len(sx_arr) < 2:
+                continue
+
+            valid = np.isfinite(sx_arr) & np.isfinite(sy_arr)
+            if not np.any(valid):
+                continue
+
+            f_sx = sx_arr[valid]
+            f_sy = sy_arr[valid] + float(y_offset)
+            if len(f_sx) < 2:
+                continue
+
+            path = QPainterPath()
+            path.moveTo(float(f_sx[0]), float(f_sy[0]))
+            for x, y in zip(f_sx[1:], f_sy[1:]):
+                path.lineTo(float(x), float(y))
+            painter.drawPath(path)
 
     def _fill_strip_downward_numpy(
         self, painter, list_sx, list_sy, color, bottom_y, solid=False
