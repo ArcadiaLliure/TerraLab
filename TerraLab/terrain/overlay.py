@@ -26,7 +26,11 @@ from PyQt5.QtGui import (
 )
 
 try:
-    from TerraLab.terrain.engine import HorizonProfile, load_profile
+    from TerraLab.terrain.engine import (
+        HorizonProfile,
+        compute_polar_mesh_normals,
+        load_profile,
+    )
 
     HORIZON_ENGINE_AVAILABLE = True
 except ImportError:
@@ -119,6 +123,9 @@ LAYER_DEFS = generate_layer_defs(
 # Ground fill (solid color below the nearest horizon line)
 GROUND_NIGHT = QColor(5, 10, 25)
 GROUND_DAY = QColor(64, 82, 64)  # Matches closest band (muted terrain green)
+ATMOSPHERIC_HAZE_NIGHT = QColor(36, 48, 68)
+ATMOSPHERIC_HAZE_DAY = QColor(138, 166, 184)
+EARTH_RADIUS_M = 6_371_000.0
 
 
 def _lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
@@ -138,6 +145,15 @@ def _with_alpha(color: QColor, alpha: int) -> QColor:
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
+
+
+def _atmospheric_haze_color(sky_color: QColor, t_night: float) -> QColor:
+    haze_blue = _lerp_color(
+        ATMOSPHERIC_HAZE_DAY,
+        ATMOSPHERIC_HAZE_NIGHT,
+        _clamp01(t_night),
+    )
+    return _lerp_color(haze_blue, sky_color, 0.22 + 0.18 * _clamp01(t_night))
 
 
 def _smoothstep(edge0: float, edge1: float, value: float) -> float:
@@ -175,11 +191,40 @@ def _distance_haze_factor(distance_m: float) -> float:
     )
 
 
+def _distance_haze_factors(distance_m) -> np.ndarray:
+    distance = np.maximum(0.0, np.asarray(distance_m, dtype=np.float32))
+    stops = (
+        (0.0, 0.00),
+        (5_000.0, 0.05),
+        (15_000.0, 0.24),
+        (40_000.0, 0.46),
+        (80_000.0, 0.66),
+        (150_000.0, 0.78),
+    )
+    result = np.full(distance.shape, stops[-1][1], dtype=np.float32)
+    result = np.where(distance <= stops[0][0], stops[0][1], result)
+    for (x0, y0), (x1, y1) in zip(stops, stops[1:]):
+        mask = (distance > x0) & (distance <= x1)
+        t = np.clip((distance - x0) / max(x1 - x0, 1e-6), 0.0, 1.0)
+        t = t * t * (3.0 - 2.0 * t)
+        result = np.where(mask, y0 + (y1 - y0) * t, result)
+    return np.clip(result, 0.0, 1.0).astype(np.float32)
+
+
 def _solar_shading_strength(sun_alt: float) -> float:
     alt = float(sun_alt if sun_alt is not None else -90.0)
     twilight_side_light = 0.34 * _smoothstep(-12.0, 0.0, alt)
     daylight = 0.66 * _smoothstep(0.0, 22.0, alt)
     return _clamp01(twilight_side_light + daylight)
+
+
+def _terrain_direct_strength(sun_alt: float) -> float:
+    alt = float(sun_alt if sun_alt is not None else -90.0)
+    if alt <= -6.0:
+        return 0.0
+    twilight = 0.10 * _smoothstep(-6.0, 0.0, alt)
+    daylight = 0.90 * _smoothstep(0.0, 22.0, alt)
+    return _clamp01(twilight + daylight)
 
 
 def _shade_color(color: QColor, factor: float, sky_color: QColor | None = None) -> QColor:
@@ -311,10 +356,12 @@ class HorizonOverlay(QObject):
         horizon_profile_path=None,
         vert_exaggeration=1.0,
         allow_procedural_fallback=True,
+        terrain_surface_opaque=True,
     ):
         super().__init__(parent)
         self.vert_exaggeration = vert_exaggeration
         self.allow_procedural_fallback = bool(allow_procedural_fallback)
+        self.terrain_surface_opaque = bool(terrain_surface_opaque)
         self._layers = (
             []
         )  # list of (_BandPoints, night_col, day_col)
@@ -322,6 +369,10 @@ class HorizonOverlay(QObject):
         self._loaded = False
         self._max_terrain_surface_quads = 4500
         self._last_surface2d_quads = 0
+        self._terrain_shadow_cache_key = None
+        self._terrain_shadow_cache = None
+        self._terrain_normal_cache_key = None
+        self._terrain_normal_cache = None
 
         if not HORIZON_ENGINE_AVAILABLE:
             print(
@@ -365,6 +416,10 @@ class HorizonOverlay(QObject):
 
     # ── public API ──
 
+    def set_terrain_surface_opaque(self, enabled: bool) -> None:
+        self.terrain_surface_opaque = bool(enabled)
+        self.request_update.emit()
+
     def set_profile(self, profile, layer_defs=None):
         """Update the overlay with a new HorizonProfile object (e.g. from background worker).
 
@@ -376,6 +431,10 @@ class HorizonOverlay(QObject):
         if profile is None:
             return
         self.profile = profile
+        self._terrain_shadow_cache_key = None
+        self._terrain_shadow_cache = None
+        self._terrain_normal_cache_key = None
+        self._terrain_normal_cache = None
 
         effective_defs = layer_defs if layer_defs is not None else LAYER_DEFS
 
@@ -410,6 +469,10 @@ class HorizonOverlay(QObject):
         - None.
         """
         self.profile = None
+        self._terrain_shadow_cache_key = None
+        self._terrain_shadow_cache = None
+        self._terrain_normal_cache_key = None
+        self._terrain_normal_cache = None
         self._layers.clear()
         self._loaded = False
         if self.allow_procedural_fallback:
@@ -600,7 +663,9 @@ class HorizonOverlay(QObject):
                     surface_color=surface_color,
                     sun_alt=sun_alt,
                     sun_az=sun_az,
-                    terrain_shading_enabled=terrain_shading_enabled,
+                    terrain_shading_enabled=(
+                        terrain_shading_enabled and has_terrain_mesh
+                    ),
                     sky_color=sky_ref,
                 )
 
@@ -741,7 +806,8 @@ class HorizonOverlay(QObject):
         band_max_m = float(getattr(band_pts, "band_max", 0.0) or 0.0)
         haze = _distance_haze_factor(band_max_m)
         haze *= 1.0 - 0.22 * _clamp01(t_night)
-        return _lerp_color(base_color, sky_color, haze)
+        haze_color = _atmospheric_haze_color(sky_color, t_night)
+        return _lerp_color(base_color, haze_color, haze)
 
     def _terrain_shade_values(
         self, az_arr, h_arr, sun_alt, sun_az, band_pts
@@ -780,6 +846,327 @@ class HorizonOverlay(QObject):
             dtype=np.float32,
         )
 
+    @staticmethod
+    def _sample_polar_elevations(
+        elevations,
+        valid,
+        distances,
+        azimuths,
+        sample_x,
+        sample_y,
+    ):
+        sample_x = np.asarray(sample_x, dtype=np.float32)
+        sample_y = np.asarray(sample_y, dtype=np.float32)
+        sample_distance = np.hypot(sample_x, sample_y).astype(np.float32)
+        sample_azimuth = (
+            np.degrees(np.arctan2(sample_x, sample_y)) % 360.0
+        ).astype(np.float32)
+
+        distance_hi = np.searchsorted(
+            distances, sample_distance, side="right"
+        )
+        inside = (distance_hi > 0) & (distance_hi < len(distances))
+        distance_hi = np.clip(distance_hi, 1, len(distances) - 1)
+        distance_lo = distance_hi - 1
+        distance_span = np.maximum(
+            distances[distance_hi] - distances[distance_lo], 1e-6
+        )
+        distance_t = np.clip(
+            (sample_distance - distances[distance_lo]) / distance_span,
+            0.0,
+            1.0,
+        )
+
+        az_diffs = np.diff(azimuths.astype(np.float32))
+        az_diffs = az_diffs[np.isfinite(az_diffs) & (az_diffs > 0.0)]
+        az_step = float(np.median(az_diffs)) if az_diffs.size else 360.0
+        az_position = ((sample_azimuth - float(azimuths[0])) % 360.0) / max(
+            az_step, 1e-6
+        )
+        az_lo_float = np.floor(az_position)
+        az_t = (az_position - az_lo_float).astype(np.float32)
+        az_lo = az_lo_float.astype(np.int32) % len(azimuths)
+        az_hi = (az_lo + 1) % len(azimuths)
+
+        w00 = (1.0 - distance_t) * (1.0 - az_t)
+        w01 = (1.0 - distance_t) * az_t
+        w10 = distance_t * (1.0 - az_t)
+        w11 = distance_t * az_t
+        samples = (
+            (distance_lo, az_lo, w00),
+            (distance_lo, az_hi, w01),
+            (distance_hi, az_lo, w10),
+            (distance_hi, az_hi, w11),
+        )
+
+        weighted_height = np.zeros(sample_distance.shape, dtype=np.float32)
+        weight_sum = np.zeros(sample_distance.shape, dtype=np.float32)
+        for distance_idx, azimuth_idx, weight in samples:
+            corner_valid = valid[distance_idx, azimuth_idx]
+            corner_weight = np.where(corner_valid, weight, 0.0).astype(
+                np.float32
+            )
+            weighted_height += (
+                elevations[distance_idx, azimuth_idx] * corner_weight
+            )
+            weight_sum += corner_weight
+
+        sampled = np.divide(
+            weighted_height,
+            np.maximum(weight_sum, 1e-6),
+            out=np.zeros_like(weighted_height),
+            where=weight_sum > 1e-6,
+        )
+        sampled_valid = inside & (weight_sum >= 0.50)
+        return sampled, sample_distance, sampled_valid
+
+    def _terrain_surface_normals(
+        self, mesh, elevations, valid, distances, azimuths
+    ):
+        cache_key = (id(mesh), elevations.shape)
+        if (
+            cache_key == self._terrain_normal_cache_key
+            and self._terrain_normal_cache is not None
+        ):
+            return self._terrain_normal_cache
+
+        normals = compute_polar_mesh_normals(
+            elevations, valid, distances, azimuths
+        )
+        self._terrain_normal_cache_key = cache_key
+        self._terrain_normal_cache = normals
+        return normals
+
+    def _terrain_sun_visibility(
+        self,
+        mesh,
+        elevations,
+        valid,
+        visible,
+        distances,
+        azimuths,
+        sun_alt,
+        sun_az,
+        terrain_shading_enabled=True,
+    ):
+        shape = elevations.shape
+        if (
+            not terrain_shading_enabled
+            or sun_alt is None
+            or sun_az is None
+            or float(sun_alt) <= -0.5
+        ):
+            return np.ones(shape, dtype=np.float32)
+
+        cache_key = (
+            id(mesh),
+            shape,
+            round(float(sun_alt) * 4.0) / 4.0,
+            round(float(sun_az) * 4.0) / 4.0,
+        )
+        if (
+            cache_key == self._terrain_shadow_cache_key
+            and self._terrain_shadow_cache is not None
+            and self._terrain_shadow_cache.shape == shape
+        ):
+            return self._terrain_shadow_cache
+
+        result = np.ones(shape, dtype=np.float32)
+        active = valid & visible & np.isfinite(elevations)
+        active_rows, active_cols = np.nonzero(active)
+        if active_rows.size == 0:
+            self._terrain_shadow_cache_key = cache_key
+            self._terrain_shadow_cache = result
+            return result
+
+        target_distance = distances[active_rows].astype(np.float32)
+        target_azimuth = np.deg2rad(
+            azimuths[active_cols].astype(np.float32)
+        )
+        target_x = target_distance * np.sin(target_azimuth)
+        target_y = target_distance * np.cos(target_azimuth)
+        target_z = elevations[active_rows, active_cols].astype(np.float32)
+        target_z -= (target_distance * target_distance) / (
+            2.0 * EARTH_RADIUS_M
+        )
+
+        sun_az_rad = math.radians(float(sun_az))
+        sun_dx = math.sin(sun_az_rad)
+        sun_dy = math.cos(sun_az_rad)
+        sun_slope = math.tan(math.radians(max(0.15, float(sun_alt))))
+
+        near_steps = np.diff(distances[: min(len(distances), 32)])
+        near_steps = near_steps[np.isfinite(near_steps) & (near_steps > 0.0)]
+        ray_start = max(
+            20.0,
+            min(80.0, float(np.median(near_steps)) * 2.0)
+            if near_steps.size
+            else 40.0,
+        )
+        ray_limit = max(ray_start * 2.0, float(distances[-1]) * 1.35)
+        ray_offsets = np.geomspace(ray_start, ray_limit, 38).astype(
+            np.float32
+        )
+        max_clearance = np.full(active_rows.shape, -np.inf, dtype=np.float32)
+
+        for ray_offset in ray_offsets:
+            sample_x = target_x + ray_offset * sun_dx
+            sample_y = target_y + ray_offset * sun_dy
+            sampled_elevation, sample_distance, sampled_valid = (
+                self._sample_polar_elevations(
+                    elevations,
+                    valid,
+                    distances,
+                    azimuths,
+                    sample_x,
+                    sample_y,
+                )
+            )
+            sampled_z = sampled_elevation - (
+                sample_distance * sample_distance
+            ) / (2.0 * EARTH_RADIUS_M)
+            ray_z = target_z + ray_offset * sun_slope
+            self_bias = 2.0 + ray_offset * 0.00015
+            clearance = sampled_z - ray_z - self_bias
+            max_clearance = np.where(
+                sampled_valid,
+                np.maximum(max_clearance, clearance),
+                max_clearance,
+            )
+
+        penumbra = np.clip((max_clearance + 2.0) / 14.0, 0.0, 1.0)
+        penumbra = penumbra * penumbra * (3.0 - 2.0 * penumbra)
+        result[active_rows, active_cols] = 1.0 - penumbra.astype(np.float32)
+        result = self._smooth_light_grid(
+            result, active, min_value=0.0, max_value=1.0
+        )
+        result = np.where(active, np.clip(result, 0.0, 1.0), 1.0).astype(
+            np.float32
+        )
+
+        self._terrain_shadow_cache_key = cache_key
+        self._terrain_shadow_cache = result
+        return result
+
+    def _terrain_light_factor(
+        self,
+        normal_x,
+        normal_y,
+        normal_z,
+        distance_m,
+        sun_vec,
+        sun_alt,
+        terrain_shading_enabled=True,
+        sun_visibility=None,
+    ):
+        nx, ny, nz = np.broadcast_arrays(
+            np.asarray(normal_x, dtype=np.float32),
+            np.asarray(normal_y, dtype=np.float32),
+            np.asarray(normal_z, dtype=np.float32),
+        )
+        if (
+            not terrain_shading_enabled
+            or sun_vec is None
+            or not np.all(np.isfinite(sun_vec))
+        ):
+            return np.ones(nx.shape, dtype=np.float32)
+
+        direct_strength = _terrain_direct_strength(
+            float(sun_alt) if sun_alt is not None else -90.0
+        )
+        if direct_strength <= 0.001:
+            return np.ones(nx.shape, dtype=np.float32)
+
+        norm = np.sqrt(nx * nx + ny * ny + nz * nz)
+        safe = np.isfinite(norm) & (norm > 1e-6)
+        nx = np.where(safe, nx / np.where(safe, norm, 1.0), 0.0)
+        ny = np.where(safe, ny / np.where(safe, norm, 1.0), 0.0)
+        nz = np.where(safe, nz / np.where(safe, norm, 1.0), 1.0)
+
+        sun_vec = np.asarray(sun_vec, dtype=np.float32)
+        lambert = np.clip(
+            nx * sun_vec[0] + ny * sun_vec[1] + nz * sun_vec[2],
+            0.0,
+            1.0,
+        )
+        if sun_visibility is not None:
+            direct_visibility = np.broadcast_to(
+                np.asarray(sun_visibility, dtype=np.float32), nx.shape
+            )
+            lambert *= np.clip(direct_visibility, 0.0, 1.0)
+        raw = 0.84 + 0.26 * lambert
+
+        haze = np.broadcast_to(_distance_haze_factors(distance_m), nx.shape)
+        distance_contrast = np.clip(1.0 - 0.72 * haze, 0.30, 1.0)
+        factor = 1.0 + (raw - 1.0) * direct_strength * distance_contrast
+        return np.clip(factor, 0.84, 1.10).astype(np.float32)
+
+    @staticmethod
+    def _smooth_light_grid(
+        light_grid, valid_mask, min_value=0.84, max_value=1.10
+    ):
+        values = np.asarray(light_grid, dtype=np.float32)
+        valid = np.asarray(valid_mask, dtype=bool)
+        if values.ndim != 2 or valid.shape != values.shape:
+            return values
+
+        source = np.where(valid, values, 1.0).astype(np.float32)
+        weights = valid.astype(np.float32)
+        source_pad = np.pad(source, ((1, 1), (1, 1)), mode="edge")
+        weight_pad = np.pad(weights, ((1, 1), (1, 1)), mode="edge")
+        kernel = (
+            (1.0, 2.0, 1.0),
+            (2.0, 4.0, 2.0),
+            (1.0, 2.0, 1.0),
+        )
+
+        acc = np.zeros_like(source, dtype=np.float32)
+        weight_sum = np.zeros_like(source, dtype=np.float32)
+        for row in range(3):
+            for col in range(3):
+                weight = kernel[row][col]
+                sample_weight = weight_pad[
+                    row : row + values.shape[0], col : col + values.shape[1]
+                ] * weight
+                acc += (
+                    source_pad[
+                        row : row + values.shape[0],
+                        col : col + values.shape[1],
+                    ]
+                    * sample_weight
+                )
+                weight_sum += sample_weight
+
+        smoothed = np.divide(
+            acc,
+            np.maximum(weight_sum, 1e-6),
+            out=np.ones_like(values, dtype=np.float32),
+            where=weight_sum > 1e-6,
+        )
+        return np.where(
+            valid,
+            np.clip(smoothed, float(min_value), float(max_value)),
+            values,
+        ).astype(np.float32)
+
+    def _apply_terrain_light(
+        self, color: QColor, light_factor: float, sky_color: QColor, t_night: float
+    ) -> QColor:
+        factor = max(0.84, min(1.10, float(light_factor)))
+        if factor < 1.0:
+            shadow_day = QColor(30, 50, 46)
+            shadow_night = QColor(9, 13, 22)
+            shadow = _lerp_color(shadow_day, shadow_night, _clamp01(t_night))
+            amount = min(0.24, ((1.0 - factor) / 0.16) * 0.24)
+            return _lerp_color(color, shadow, amount)
+        if factor > 1.0:
+            warm_day = QColor(184, 176, 138)
+            warm_night = _atmospheric_haze_color(sky_color, t_night)
+            highlight = _lerp_color(warm_day, warm_night, _clamp01(t_night))
+            amount = min(0.16, ((factor - 1.0) / 0.10) * 0.16)
+            return _lerp_color(color, highlight, amount)
+        return color
+
     def _mesh_quad_color(
         self,
         distance_m,
@@ -791,36 +1178,143 @@ class HorizonOverlay(QObject):
         sun_vec,
         sun_alt,
         terrain_shading_enabled=True,
+        light_factor=None,
     ):
         haze = _distance_haze_factor(distance_m)
         palette_t = _clamp01(1.0 - haze)
         night_c, day_c = _palette_color(palette_t)
         base = _lerp_color(day_c, night_c, t_night)
 
-        normal = np.array([nx, ny, nz], dtype=np.float32)
-        norm = float(np.linalg.norm(normal))
-        if norm <= 0.0 or not np.isfinite(norm):
-            normal = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        else:
-            normal /= norm
-
-        direct_strength = (
-            _solar_shading_strength(
-                float(sun_alt) if sun_alt is not None else -90.0
+        if light_factor is None:
+            light_factor = float(
+                np.asarray(
+                    self._terrain_light_factor(
+                        nx,
+                        ny,
+                        nz,
+                        distance_m,
+                        sun_vec,
+                        sun_alt,
+                        terrain_shading_enabled=terrain_shading_enabled,
+                    )
+                )
             )
-            if terrain_shading_enabled
-            else 0.0
-        )
-        if sun_vec is not None and direct_strength > 0.001:
-            lambert = max(0.0, float(np.dot(normal, sun_vec)))
-            shade = 0.78 + 0.28 * lambert * direct_strength
-        else:
-            shade = 0.88
 
-        shade = max(0.72, min(1.12, shade * (1.0 - 0.08 * haze)))
-        shaded = _shade_color(base, shade, sky_color)
+        shaded = self._apply_terrain_light(base, light_factor, sky_color, t_night)
         haze_mix = haze * (1.0 - 0.20 * _clamp01(t_night))
-        return _lerp_color(shaded, sky_color, haze_mix)
+        haze_color = _atmospheric_haze_color(sky_color, t_night)
+        return _lerp_color(shaded, haze_color, haze_mix)
+
+    def _terrain_surface_color(
+        self,
+        distance_m,
+        light_factor,
+        t_night,
+        sky_color,
+        sun_vec,
+        sun_alt,
+        terrain_shading_enabled,
+    ):
+        color = self._mesh_quad_color(
+            distance_m,
+            0.0,
+            0.0,
+            1.0,
+            t_night,
+            sky_color,
+            sun_vec,
+            sun_alt,
+            terrain_shading_enabled=terrain_shading_enabled,
+            light_factor=light_factor,
+        )
+        haze = _distance_haze_factor(distance_m)
+        calm_night, calm_day = _palette_color(
+            _clamp01(0.62 + 0.18 * (1.0 - haze))
+        )
+        calm_base = _lerp_color(calm_day, calm_night, t_night)
+        haze_color = _atmospheric_haze_color(sky_color, t_night)
+        calm_base = _lerp_color(calm_base, haze_color, 0.08 + 0.22 * haze)
+        color = _lerp_color(calm_base, color, 0.70)
+        alpha = int(82 + 58 * (1.0 - haze))
+        alpha = int(alpha * (1.0 - 0.30 * _clamp01(t_night)))
+        if self.terrain_surface_opaque:
+            color.setAlpha(255)
+        else:
+            color.setAlpha(max(68, min(140, alpha)))
+        return color
+
+    def _terrain_span_brush(
+        self,
+        seg_x,
+        segment_shade,
+        distance_m,
+        t_night,
+        sky_color,
+        sun_vec,
+        sun_alt,
+        terrain_shading_enabled,
+    ):
+        finite = np.isfinite(seg_x) & np.isfinite(segment_shade)
+        if np.count_nonzero(finite) < 2:
+            finite_shade = np.asarray(segment_shade)[
+                np.isfinite(segment_shade)
+            ]
+            light_factor = (
+                float(np.mean(finite_shade)) if finite_shade.size else 1.0
+            )
+            return QBrush(
+                self._terrain_surface_color(
+                    distance_m,
+                    light_factor,
+                    t_night,
+                    sky_color,
+                    sun_vec,
+                    sun_alt,
+                    terrain_shading_enabled,
+                )
+            )
+
+        x_values = np.asarray(seg_x[finite], dtype=np.float32)
+        shade_values = np.asarray(segment_shade[finite], dtype=np.float32)
+        x_min = float(np.min(x_values))
+        x_max = float(np.max(x_values))
+        if x_max - x_min < 1.0 or np.ptp(shade_values) < 0.006:
+            light_factor = float(np.mean(shade_values))
+            return QBrush(
+                self._terrain_surface_color(
+                    distance_m,
+                    light_factor,
+                    t_night,
+                    sky_color,
+                    sun_vec,
+                    sun_alt,
+                    terrain_shading_enabled,
+                )
+            )
+
+        gradient = QLinearGradient(x_min, 0.0, x_max, 0.0)
+        stop_count = min(18, len(x_values))
+        stop_indices = np.unique(
+            np.linspace(0, len(x_values) - 1, stop_count).astype(np.int32)
+        )
+        stops = []
+        for index in stop_indices:
+            position = _clamp01(
+                (float(x_values[index]) - x_min) / (x_max - x_min)
+            )
+            color = self._terrain_surface_color(
+                distance_m,
+                float(shade_values[index]),
+                t_night,
+                sky_color,
+                sun_vec,
+                sun_alt,
+                terrain_shading_enabled,
+            )
+            stops.append((position, color))
+        for position, color in sorted(stops, key=lambda item: item[0]):
+            gradient.setColorAt(position, color)
+        return QBrush(gradient)
 
     def _project_mesh_column(
         self,
@@ -915,6 +1409,7 @@ class HorizonOverlay(QObject):
             az_raw = np.asarray(mesh.get("azimuths"), dtype=np.float32)
             distances = np.asarray(mesh.get("distances"), dtype=np.float32)
             altitudes = np.asarray(mesh.get("altitudes"), dtype=np.float32)
+            elevations = np.asarray(mesh.get("elevations"), dtype=np.float32)
             valid = np.asarray(mesh.get("valid"), dtype=bool)
             visible = np.asarray(mesh.get("visible"), dtype=bool)
             normal_x = np.asarray(mesh.get("normal_x"), dtype=np.float32)
@@ -931,20 +1426,37 @@ class HorizonOverlay(QObject):
             or altitudes.shape != (distances.size, az_raw.size)
         ):
             return
-        if normal_x.shape != altitudes.shape:
-            normal_x = np.zeros_like(altitudes, dtype=np.float32)
-            normal_y = np.zeros_like(altitudes, dtype=np.float32)
-            normal_z = np.ones_like(altitudes, dtype=np.float32)
+        if elevations.shape != altitudes.shape:
+            elevations = np.zeros_like(altitudes, dtype=np.float32)
+        computed_nx, computed_ny, computed_nz = self._terrain_surface_normals(
+            mesh, elevations, valid, distances, az_raw
+        )
+        if (
+            normal_x.shape == altitudes.shape
+            and normal_y.shape == altitudes.shape
+            and normal_z.shape == altitudes.shape
+        ):
+            saved_norm = np.sqrt(
+                normal_x * normal_x
+                + normal_y * normal_y
+                + normal_z * normal_z
+            )
+            use_saved = visible & np.isfinite(saved_norm) & (saved_norm > 1e-5)
+            normal_x = np.where(use_saved, normal_x, computed_nx)
+            normal_y = np.where(use_saved, normal_y, computed_ny)
+            normal_z = np.where(use_saved, normal_z, computed_nz)
+        else:
+            normal_x, normal_y, normal_z = (
+                computed_nx,
+                computed_ny,
+                computed_nz,
+            )
 
         az_closed = np.concatenate([az_raw, [az_raw[0] + 360.0]]).astype(
             np.float32
         )
         alt_closed = np.concatenate([altitudes, altitudes[:, :1]], axis=1)
         valid_closed = np.concatenate([valid, valid[:, :1]], axis=1)
-        visible_closed = np.concatenate([visible, visible[:, :1]], axis=1)
-        nx_closed = np.concatenate([normal_x, normal_x[:, :1]], axis=1)
-        ny_closed = np.concatenate([normal_y, normal_y[:, :1]], axis=1)
-        nz_closed = np.concatenate([normal_z, normal_z[:, :1]], axis=1)
 
         az_diffs = np.diff(az_raw.astype(np.float32))
         az_diffs = az_diffs[np.isfinite(az_diffs) & (az_diffs > 0)]
@@ -970,6 +1482,29 @@ class HorizonOverlay(QObject):
         d_stride = stride_boost
 
         sun_vec = self._sun_vector_enu(sun_alt, sun_az)
+        sun_visibility = self._terrain_sun_visibility(
+            mesh,
+            elevations,
+            valid,
+            visible,
+            distances,
+            az_raw,
+            sun_alt,
+            sun_az,
+            terrain_shading_enabled=terrain_shading_enabled,
+        )
+        shade_grid = self._terrain_light_factor(
+            normal_x,
+            normal_y,
+            normal_z,
+            distances[:, None],
+            sun_vec,
+            sun_alt,
+            terrain_shading_enabled=terrain_shading_enabled,
+            sun_visibility=sun_visibility,
+        )
+        shade_grid = self._smooth_light_grid(shade_grid, valid & visible)
+        shade_closed = np.concatenate([shade_grid, shade_grid[:, :1]], axis=1)
         base_offset = round((cur_az - 180) / 360.0) * 360
         offsets = [base_offset - 360, base_offset, base_offset + 360]
 
@@ -1093,45 +1628,18 @@ class HorizonOverlay(QObject):
                         continue
 
                     seg_cols = ordered_cols[start:stop]
-                    nx = float(
-                        np.mean(
-                            nx_closed[d_idx, seg_cols]
-                        )
-                    )
-                    ny = float(
-                        np.mean(
-                            ny_closed[d_idx, seg_cols]
-                        )
-                    )
-                    nz = float(
-                        np.mean(
-                            nz_closed[d_idx, seg_cols]
-                        )
-                    )
-                    color = self._mesh_quad_color(
+                    segment_shade = shade_closed[d_idx, seg_cols]
+                    brush = self._terrain_span_brush(
+                        seg_x,
+                        segment_shade,
                         quad_distance,
-                        nx,
-                        ny,
-                        nz,
                         t_night,
                         sky_color,
                         sun_vec,
                         sun_alt,
-                        terrain_shading_enabled=terrain_shading_enabled,
+                        terrain_shading_enabled,
                     )
-                    haze = _distance_haze_factor(quad_distance)
-                    calm_night, calm_day = _palette_color(
-                        _clamp01(0.62 + 0.18 * (1.0 - haze))
-                    )
-                    calm_base = _lerp_color(calm_day, calm_night, t_night)
-                    calm_base = _lerp_color(
-                        calm_base, sky_color, 0.08 + 0.18 * haze
-                    )
-                    color = _lerp_color(calm_base, color, 0.32)
-                    alpha = int(30 + 42 * (1.0 - haze))
-                    alpha = int(alpha * (1.0 - 0.30 * _clamp01(t_night)))
-                    color.setAlpha(max(22, min(72, alpha)))
-                    painter.setBrush(QBrush(color))
+                    painter.setBrush(brush)
                     painter.drawPolygon(QPolygonF(points))
                     drawn += 1
                     y_limits[start:stop] = top_y[start:stop]
@@ -1396,7 +1904,9 @@ class HorizonOverlay(QObject):
 
         cap_night, cap_day = _palette_color(0.56)
         cap_base = _lerp_color(cap_day, cap_night, t_night)
-        cap_fill = _lerp_color(cap_base, sky_color, 0.18)
+        cap_fill = _lerp_color(
+            cap_base, _atmospheric_haze_color(sky_color, t_night), 0.16
+        )
         if fill_to_bottom:
             self._fill_strip_downward_numpy(
                 painter, all_sx, all_sy, cap_fill, height * 2.0, solid=True

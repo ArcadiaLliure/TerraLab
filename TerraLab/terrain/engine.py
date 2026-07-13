@@ -28,6 +28,83 @@ from TerraLab.terrain.providers import (
 R_EARTH = 6_371_000.0
 
 
+def compute_polar_mesh_normals(
+    elevations: np.ndarray,
+    valid: np.ndarray,
+    distances: np.ndarray,
+    azimuths: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    elevations = np.asarray(elevations, dtype=np.float32)
+    valid = np.asarray(valid, dtype=bool)
+    distances = np.asarray(distances, dtype=np.float32)
+    azimuths = np.asarray(azimuths, dtype=np.float32)
+    if (
+        elevations.ndim != 2
+        or elevations.shape != valid.shape
+        or elevations.shape != (distances.size, azimuths.size)
+        or distances.size < 2
+        or azimuths.size < 2
+    ):
+        shape = elevations.shape
+        return (
+            np.zeros(shape, dtype=np.float32),
+            np.zeros(shape, dtype=np.float32),
+            np.ones(shape, dtype=np.float32),
+        )
+
+    center = np.where(valid, elevations, 0.0).astype(np.float32)
+    previous_rows = np.maximum(np.arange(distances.size) - 1, 0)
+    next_rows = np.minimum(np.arange(distances.size) + 1, distances.size - 1)
+    previous_height = elevations[previous_rows, :]
+    next_height = elevations[next_rows, :]
+    previous_valid = valid[previous_rows, :]
+    next_valid = valid[next_rows, :]
+    previous_height = np.where(previous_valid, previous_height, center)
+    next_height = np.where(next_valid, next_height, center)
+    radial_span = np.maximum(
+        distances[next_rows] - distances[previous_rows], 1e-3
+    )[:, None]
+    dz_radial = (next_height - previous_height) / radial_span
+
+    left_height = np.roll(elevations, 1, axis=1)
+    right_height = np.roll(elevations, -1, axis=1)
+    left_valid = np.roll(valid, 1, axis=1)
+    right_valid = np.roll(valid, -1, axis=1)
+    left_height = np.where(left_valid, left_height, center)
+    right_height = np.where(right_valid, right_height, center)
+    az_diffs = np.diff(azimuths)
+    az_diffs = az_diffs[np.isfinite(az_diffs) & (az_diffs > 0.0)]
+    az_step_rad = math.radians(
+        float(np.median(az_diffs)) if az_diffs.size else 360.0
+    )
+    tangential_span = np.maximum(
+        2.0 * distances[:, None] * az_step_rad, 1e-3
+    )
+    dz_tangential = (right_height - left_height) / tangential_span
+
+    az_radians = np.deg2rad(azimuths)[None, :]
+    sin_azimuth = np.sin(az_radians)
+    cos_azimuth = np.cos(az_radians)
+    gradient_x = dz_radial * sin_azimuth + dz_tangential * cos_azimuth
+    gradient_y = dz_radial * cos_azimuth - dz_tangential * sin_azimuth
+
+    normal_x = -gradient_x
+    normal_y = -gradient_y
+    normal_z = np.ones_like(normal_x, dtype=np.float32)
+    norm = np.sqrt(
+        normal_x * normal_x + normal_y * normal_y + normal_z * normal_z
+    )
+    safe_norm = np.maximum(norm, 1e-6)
+    normal_x = np.where(valid, normal_x / safe_norm, 0.0)
+    normal_y = np.where(valid, normal_y / safe_norm, 0.0)
+    normal_z = np.where(valid, normal_z / safe_norm, 1.0)
+    return (
+        normal_x.astype(np.float32),
+        normal_y.astype(np.float32),
+        normal_z.astype(np.float32),
+    )
+
+
 def generate_bands(n: int = 20, max_dist_m: float = 150_000) -> list:
     """
     Genera N bandes d'horitzó amb distribució logarítmica per zones (piecewise bilog).
@@ -1184,17 +1261,23 @@ class HorizonBaker:
                 valid[d_idx, az_idx] = True
 
         visible = self._compute_mesh_visibility(altitudes, valid)
-        normal_step_m = self._normal_sample_step_m()
-        visible_indices = np.argwhere(visible & valid)
-        for d_idx, az_idx in visible_indices:
-            d = float(distances[d_idx])
-            x = obs_x + d * sin_az[az_idx]
-            y = obs_y + d * cos_az[az_idx]
-            h_terr = float(elevations[d_idx, az_idx])
-            nx, ny, nz = self._sample_normal(x, y, h_terr, normal_step_m)
-            normal_x[d_idx, az_idx] = nx
-            normal_y[d_idx, az_idx] = ny
-            normal_z[d_idx, az_idx] = nz
+        if n_az < 8 or float(delta_az_deg) >= 30.0:
+            normal_step_m = self._normal_sample_step_m()
+            for d_idx, az_idx in np.argwhere(valid):
+                d = float(distances[d_idx])
+                x = obs_x + d * sin_az[az_idx]
+                y = obs_y + d * cos_az[az_idx]
+                h_terr = float(elevations[d_idx, az_idx])
+                nx, ny, nz = self._sample_normal(
+                    x, y, h_terr, normal_step_m
+                )
+                normal_x[d_idx, az_idx] = nx
+                normal_y[d_idx, az_idx] = ny
+                normal_z[d_idx, az_idx] = nz
+        else:
+            normal_x, normal_y, normal_z = compute_polar_mesh_normals(
+                elevations, valid, distances, azimuths
+            )
 
         return {
             "version": 2,
