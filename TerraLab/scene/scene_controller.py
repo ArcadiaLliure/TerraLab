@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from TerraLab.light_pollution.modes import LP_MODE_AUTOMATIC
 from TerraLab.scene.camera import Camera
 from TerraLab.scene.render_state import RenderState
 
@@ -44,7 +45,7 @@ class SceneController:
     # Condicions
     bortle: int = 1
     mag_limit: float = 8.0
-    is_auto_bortle: bool = True
+    light_pollution_mode: str = LP_MODE_AUTOMATIC
     naked_eye_cap: float = 8.0
     pure_colors: bool = False
     spike_magnitude_threshold: float = 2.0
@@ -217,7 +218,7 @@ class SceneController:
             ephemeris_snapshot=snapshot_ephemeris,
             bortle=int(self.bortle),
             mag_limit=float(self.mag_limit),
-            is_auto_bortle=bool(self.is_auto_bortle),
+            light_pollution_mode=str(self.light_pollution_mode),
             naked_eye_cap=float(self.naked_eye_cap),
             sun_alt=float(sun_alt),
             sun_az=float(sun_az),

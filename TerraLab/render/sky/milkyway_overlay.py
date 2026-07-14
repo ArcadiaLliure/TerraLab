@@ -20,6 +20,11 @@ from PyQt5.QtGui import QImage, QPainter
 
 from TerraLab.common.app_paths import ensure_runtime_layout
 from TerraLab.common.utils import resource_path
+from TerraLab.light_pollution.modes import (
+    LP_MODE_AUTOMATIC,
+    mode_uses_bortle,
+    normalize_light_pollution_mode,
+)
 from TerraLab.scene.projection import local_sidereal_angle
 from TerraLab.util.math2d import clamp
 
@@ -58,9 +63,9 @@ class _OverlayConfig:
     dust_density_strength: float = 0.0
     dust_extinction_strength: float = 0.65
     auto_opacity: bool = True
-    is_auto_bortle: bool = True
+    light_pollution_mode: str = LP_MODE_AUTOMATIC
     bortle: float = 1.0
-    manual_mag_limit: float = 6.0
+    magnitude_limit: float = 6.0
     scope_enabled: bool = False
     scope_iso: float = 800.0
     scope_exposure_s: float = 15.0
@@ -394,15 +399,16 @@ class MilkyWayOverlay:
                 max(0.0, block.get("dust_extinction_strength", 0.65))
             ),
             auto_opacity=bool(block.get("auto_opacity", True)),
-            is_auto_bortle=bool(
+            light_pollution_mode=normalize_light_pollution_mode(
                 block.get(
-                    "is_auto_bortle", getattr(state, "is_auto_bortle", True)
+                    "light_pollution_mode",
+                    getattr(state, "light_pollution_mode", LP_MODE_AUTOMATIC),
                 )
             ),
             bortle=float(block.get("bortle", getattr(state, "bortle", 1.0))),
-            manual_mag_limit=float(
+            magnitude_limit=float(
                 block.get(
-                    "manual_mag_limit", getattr(state, "magnitude_limit", 6.0)
+                    "magnitude_limit", getattr(state, "magnitude_limit", 6.0)
                 )
             ),
             scope_enabled=bool(
@@ -430,15 +436,15 @@ class MilkyWayOverlay:
         if sun_alt >= -6.0:
             return 0.0, "daylight_or_civil_twilight"
 
-        if cfg.is_auto_bortle:
+        if mode_uses_bortle(cfg.light_pollution_mode):
             # En visual realista, la Via Làctia cau ràpid a partir de Bortle 3-4.
             base_opacity = (5.0 - float(cfg.bortle)) / 3.0
-            reason = "auto_bortle"
+            reason = "bortle"
         else:
-            # En mode manual, més magnitud límit implica cel més fosc i més detall galàctic.
+            # Mes magnitud limit implica cel mes fosc i mes detall galactic.
             # Aquesta corba corregeix la inversió anterior (estava al revés).
-            base_opacity = (float(cfg.manual_mag_limit) - 4.0) / 3.5
-            reason = "auto_mag_manual"
+            base_opacity = (float(cfg.magnitude_limit) - 4.0) / 3.5
+            reason = "magnitude"
         base_opacity = float(clamp(base_opacity, 0.0, 1.0))
 
         if sun_alt > -18.0:

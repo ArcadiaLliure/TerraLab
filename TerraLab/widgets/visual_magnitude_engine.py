@@ -19,9 +19,9 @@ class VisualMagnitudeInputs:
     eyepiece_focal_mm: float
     eye_pupil_mm: float
     atmospheric_loss_mag: float
-    auto_bortle: bool
+    light_pollution_mode: str
     bortle_class: float
-    manual_eye_limit_mag: float
+    magnitude_limit: float
     exposure_seconds: float
     iso: float
     instrument_profile: str = "telescope"
@@ -87,9 +87,9 @@ class VisualMagnitudeEngine:
         )
 
         eye_limit_mag = VisualPhotometryMath.eye_limit_mag(
-            auto_bortle=bool(inputs.auto_bortle),
+            light_pollution_mode=inputs.light_pollution_mode,
             bortle_class=float(inputs.bortle_class),
-            manual_eye_limit_mag=float(inputs.manual_eye_limit_mag),
+            magnitude_limit=float(inputs.magnitude_limit),
         )
         ntl_penalty_mag = max(0.0, 7.6 - eye_limit_mag)
         atmospheric_loss_mag = VisualPhotometryMath.atmospheric_loss_mag(

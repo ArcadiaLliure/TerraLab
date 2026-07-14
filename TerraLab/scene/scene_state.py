@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from TerraLab.common.utils import get_base_dir, get_config_value
+from TerraLab.light_pollution.modes import (
+    LP_MODE_AUTOMATIC,
+    LP_MODE_MAGNITUDE,
+    bortle_to_magnitude,
+    normalize_light_pollution_mode,
+    resolve_bortle_class,
+)
 from TerraLab.scene.camera import Camera
 from TerraLab.util.math2d import clamp
 from TerraLab.widgets.sky_legacy_components import (
@@ -48,7 +55,7 @@ class SceneState:
     spike_magnitude_threshold: float = 2.0
     scope_k_fallback: float = 0.2
     bortle: float = 1.0
-    is_auto_bortle: bool = False
+    light_pollution_mode: str = LP_MODE_AUTOMATIC
     scope_enabled: bool = False
     interaction_active: bool = False
     naked_eye_cap: float = 8.0
@@ -94,22 +101,27 @@ def build_star_scene_state(
 
     canvas._sync_camera_state()
     scope_enabled = bool(canvas.scope_mode_enabled())
-    is_auto_bortle = bool(getattr(pw, "is_auto_bortle", True))
+    light_pollution_mode = normalize_light_pollution_mode(
+        getattr(pw, "light_pollution_mode", LP_MODE_AUTOMATIC)
+    )
     light_pollution_enabled = bool(
         getattr(pw, "light_pollution_enabled", True)
     )
-    if is_auto_bortle:
-        raw_bortle_class = (
-            float(getattr(pw, "auto_bortle_estimate", 1.0))
-            if light_pollution_enabled
-            else 1.0
-        )
-    else:
-        manual_eye_limit_mag = float(
-            getattr(pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)
-        )
-        raw_bortle_class = 1.0 + (7.6 - manual_eye_limit_mag) / 0.5
-    effective_bortle_class = float(clamp(raw_bortle_class, 1.0, 9.0))
+    selected_magnitude_limit = float(
+        getattr(pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)
+    )
+    effective_bortle_class = resolve_bortle_class(
+        light_pollution_mode,
+        automatic_bortle=getattr(pw, "auto_bortle_estimate", 1.0),
+        bortle_value=getattr(pw, "bortle_value", 1.0),
+        magnitude_limit=selected_magnitude_limit,
+        light_pollution_enabled=light_pollution_enabled,
+    )
+    naked_eye_limit = (
+        selected_magnitude_limit
+        if light_pollution_mode == LP_MODE_MAGNITUDE
+        else bortle_to_magnitude(effective_bortle_class)
+    )
 
     extras = {
         "star_gamma": (
@@ -334,11 +346,9 @@ def build_star_scene_state(
         "lon_flip": bool(mw_lon_flip),
         "sample_scale": float(clamp(mw_sample_scale, 0.10, 1.0)),
         "auto_opacity": True,
-        "is_auto_bortle": bool(is_auto_bortle),
+        "light_pollution_mode": light_pollution_mode,
         "bortle": float(effective_bortle_class),
-        "manual_mag_limit": float(
-            getattr(pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)
-        ),
+        "magnitude_limit": selected_magnitude_limit,
         "light_pollution_enabled": bool(light_pollution_enabled),
         "scope_enabled": bool(scope_enabled),
         "scope_iso": float(max(1.0, float(getattr(pw, "scope_iso", 800.0)))),
@@ -597,7 +607,7 @@ def build_star_scene_state(
         ),
         scope_k_fallback=float(getattr(pw, "scope_k_fallback", 0.20)),
         bortle=float(effective_bortle_class),
-        is_auto_bortle=bool(is_auto_bortle),
+        light_pollution_mode=light_pollution_mode,
         scope_enabled=scope_enabled,
         interaction_active=bool(
             canvas._camera_interaction_active(
@@ -605,16 +615,7 @@ def build_star_scene_state(
             )
             or canvas._scope_motion_active()
         ),
-        naked_eye_cap=float(
-            min(
-                float(
-                    getattr(
-                        pw, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG
-                    )
-                ),
-                STAR_CATALOG_NAKED_EYE_MAX_MAG,
-            )
-        ),
+        naked_eye_cap=float(naked_eye_limit),
         scope_mask_fn=canvas._scope_contains_alt_az_mask,
         horizon_profile=getattr(
             getattr(canvas, "horizon_overlay", None), "profile", None

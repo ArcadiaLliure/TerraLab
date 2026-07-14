@@ -365,7 +365,7 @@ def build_deferred_controls_ui(widget):
     self.chk_pure_colors.toggled.connect(self.toggle_pure_colors)
     v_sld.addWidget(self.chk_pure_colors)
 
-    def make_sld(layout, label, r, val, cb, with_reset=False):
+    def make_sld(layout, label, r, val, cb, value_formatter=None):
         h = QHBoxLayout()
         h.setSpacing(4)
         l = QLabel(label)
@@ -384,27 +384,20 @@ def build_deferred_controls_ui(widget):
         l_max = QLabel(str(r[1]))
         l_max.setStyleSheet("font-size: 8px; color: #000;")
         h.addWidget(l_max)
-        l_curr = QLabel(f"[{val}]")
+        def format_value(value):
+            if value_formatter is None:
+                return str(value)
+            return str(value_formatter(value))
+
+        l_curr = QLabel(f"[{format_value(val)}]")
         l_curr.setStyleSheet("font-size: 9px; color: #000; min-width: 30px;")
         h.addWidget(l_curr)
         # Attach labels to slider for dynamic updates
         s._lbl_min = l_min
         s._lbl_max = l_max
         s._lbl_curr = l_curr
-        btn_res = None
-        if with_reset:
-            from PyQt5.QtWidgets import QToolButton
-
-            btn_res = QToolButton()
-            btn_res.setText("?")
-            btn_res.setStyleSheet(
-                "font-size: 14px; border: none; font-weight: bold; color: #333;"
-            )
-            btn_res.setCursor(Qt.PointingHandCursor)
-            h.addWidget(btn_res)
-
         def on_changed(new_val):
-            l_curr.setText(f"[{new_val}]")
+            l_curr.setText(f"[{format_value(new_val)}]")
             if cb:
                 cb(new_val)
 
@@ -414,12 +407,10 @@ def build_deferred_controls_ui(widget):
             s.blockSignals(True)
             s.setValue(new_val)
             s.blockSignals(False)
-            l_curr.setText(f"[{new_val}]")
+            l_curr.setText(f"[{format_value(new_val)}]")
 
         s.set_silent_value = set_silent_value
         layout.addLayout(h)
-        if with_reset:
-            return s, l, btn_res
         return s, l
 
     self.slider_size, _ = make_sld(
@@ -436,23 +427,26 @@ def build_deferred_controls_ui(widget):
         int(self.spike_magnitude_threshold * 10),
         self.update_spikes,
     )
-    # Unified Light Pollution / Magnitude Control
+    # Unified Light Pollution Control
     l_shared = QVBoxLayout()
     h_ctrl = QHBoxLayout()
     h_ctrl.setSpacing(5)
     from PyQt5.QtWidgets import QComboBox
 
     self.combo_lp_mode = QComboBox()
-    self.combo_lp_mode.addItems(
-        [
-            getTraduction("Astro.AutoMode", "Automatic"),
-            getTraduction("Astro.ManualMode", "Manual"),
-        ]
+    self.combo_lp_mode.addItem(
+        getTraduction("Astro.BortleLabel", "Bortle"), LP_MODE_BORTLE
+    )
+    self.combo_lp_mode.addItem(
+        getTraduction("Astro.MagnitudeLabel", "Magnitude"), LP_MODE_MAGNITUDE
+    )
+    self.combo_lp_mode.addItem(
+        getTraduction("Astro.AutoMode", "Automatic"), LP_MODE_AUTOMATIC
     )
     self.combo_lp_mode.setToolTip(
         getTraduction(
             "Astro.LPModeTooltip",
-            "Visibility mode: Automatic (satellite Bortle) / Manual (eye limiting magnitude)",
+            "Light pollution mode: Bortle, limiting magnitude, or automatic by location",
         )
     )
     self.combo_lp_mode.setStyleSheet(
@@ -460,24 +454,20 @@ def build_deferred_controls_ui(widget):
     )
     self.combo_lp_mode.currentIndexChanged.connect(self.on_lp_mode_changed)
     h_ctrl.addWidget(self.combo_lp_mode)
-    self.slider_light, self.lbl_light_text, self.btn_res_lp = make_sld(
+    self.slider_light, self.lbl_light_text = make_sld(
         h_ctrl,
         getTraduction("Astro.BortleLabel", "Bortle"),
         (1, 9),
-        1,
+        int(self.bortle_value),
         self.update_lp_slider,
-        with_reset=True,
+        value_formatter=self.format_light_pollution_slider_value,
     )
-    self.btn_res_lp.setToolTip(
-        getTraduction("Astro.ResetByLocation", "Reset by location")
-    )
-    self.btn_res_lp.clicked.connect(self.reset_lp_to_auto)
-    # Force an initial sync of Bortle if possible
     QTimer.singleShot(500, self.update_altitude_label)
     l_shared.addLayout(h_ctrl)
     v_sld.addLayout(l_shared)
     self.combo_lp_mode.blockSignals(True)
-    self.combo_lp_mode.setCurrentIndex(0 if self.is_auto_bortle else 1)
+    mode_index = self.combo_lp_mode.findData(self.light_pollution_mode)
+    self.combo_lp_mode.setCurrentIndex(max(0, mode_index))
     self.combo_lp_mode.blockSignals(False)
     self.on_lp_mode_changed(self.combo_lp_mode.currentIndex())
     self.ambient_light = 1.0

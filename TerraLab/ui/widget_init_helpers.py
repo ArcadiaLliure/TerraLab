@@ -65,13 +65,13 @@ def astro_canvas_init(obj, parent):
         use_remote_weather=bool(getattr(parent, "weather_use_remote_metno", True)),
         cache_enabled=bool(getattr(parent, "weather_cache_enabled", True)),
     )
-    # Horizon Overlay (terrain/mountains �?" independent from village)
+    # Horizon Overlay (terrain/mountains -- independent from village)
     self.horizon_overlay = HorizonOverlay(horizon_profile_path=None, allow_procedural_fallback=False)
     self.horizon_overlay.request_update.connect(self.update)
-    # Village Overlay (houses, trees, lanterns �?" on top of terrain)
+    # Village Overlay (houses, trees, lanterns -- on top of terrain)
     self.village = VillageOverlay()
     self.village.request_update.connect(self.update)
-    # HintOverlay �?" toast HUD contextual per a zoom, temps i ubicació
+    # HintOverlay -- toast HUD contextual per a zoom, temps i ubicacio
     from TerraLab.widgets.hint_overlay import HintOverlay as _HintOverlay
     self.hint_overlay = _HintOverlay(parent=self)
     # Threading for Stars
@@ -165,8 +165,11 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.latitude = float(get_config_value("observer_lat", 41.189795))
     self.longitude = float(get_config_value("observer_lon", 1.210058))
     self.observer_timezone = str(get_config_value("observer_timezone", "") or "").strip()
-    # Manual naked-eye limit used in manual LP mode.
-    self.magnitude_limit = float(get_config_value("manual_eye_limit_mag", 8.0))
+    # Catalog threshold used in magnitude mode.
+    legacy_magnitude_limit = get_config_value("manual_eye_limit_mag", 8.0)
+    self.magnitude_limit = float(
+        get_config_value("magnitude_limit", legacy_magnitude_limit)
+    )
     self.spike_magnitude_threshold = 3.2
     self.star_scale = 0.5
     self.auto_star_scale_multiplier = 1.0
@@ -189,8 +192,8 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.scope_k_fallback = float(get_config_value("scope_k_fallback", 0.20))
     self.milkyway_overlay_enabled = bool(get_config_value("milkyway_overlay_enabled", True))
     self.milkyway_overlay_blend_mode = str(get_config_value("milkyway_overlay_blend_mode", "add"))
-    # L'asset Gaia inclòs porta el nucli prop del centre horitzontal del PNG.
-    # Amb equirectangular clàssic (lon 0 a l'esquerra) cal un desplaçament de 180°.
+    # L'asset Gaia inclos porta el nucli prop del centre horitzontal del PNG.
+    # Amb equirectangular classic (lon 0 a l'esquerra) cal un desplacament de 180 deg.
     self.milkyway_overlay_ra_offset_deg = float(get_config_value("milkyway_overlay_ra_offset_deg", 180.0))
     self.milkyway_overlay_coord_frame = str(get_config_value("milkyway_overlay_coord_frame", "galactic"))
     self.milkyway_overlay_lat_flip = bool(get_config_value("milkyway_overlay_lat_flip", True))
@@ -223,7 +226,7 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
         and tex_name in ("milkyway_overlay.png", "via_negra.png")
         and _saved_ra_offset_is_zero
     ):
-        # Migració conservadora: els assets galàctics inclosos tenen lon 0 al centre del mapa.
+        # Migracio conservadora: els assets galactics inclosos tenen lon 0 al centre del mapa.
         self.milkyway_overlay_ra_offset_deg = 180.0
         set_config_value("milkyway_overlay_ra_offset_deg", 180.0)
     if str(self.milkyway_overlay_coord_frame).strip().lower().startswith("gal") and tex_name == "milkyway_overlay.png":
@@ -240,7 +243,7 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.dust_density_strength = float(get_config_value("dust_density_strength", 0.0))
     self.dust_extinction_strength = float(get_config_value("dust_extinction_strength", 0.65))
     if bool(self.dust_map_enabled) and float(self.dust_density_strength) <= 0.0 and float(self.dust_extinction_strength) <= 0.0:
-        # Preset conservador perquè Planck sigui visible quan està activat.
+        # Preset conservador perque Planck sigui visible quan esta activat.
         self.dust_extinction_strength = 0.65
         set_config_value("dust_extinction_strength", 0.65)
     self.scope_eye_pupil_dark_mm = 6.5
@@ -252,8 +255,16 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.manual_hour = 12.0
     self.pure_colors = False
     # Light Pollution state
-    self.is_auto_bortle = bool(get_config_value("is_auto_bortle", True))
+    configured_lp_mode = get_config_value("light_pollution_mode", None)
+    legacy_auto_mode = get_config_value("is_auto_bortle", None)
+    self.light_pollution_mode = normalize_light_pollution_mode(
+        configured_lp_mode,
+        legacy_auto=legacy_auto_mode,
+    )
     self.auto_bortle_estimate = int(get_config_value("auto_bortle_estimate", 1))
+    self.bortle_value = int(
+        get_config_value("bortle_value", self.auto_bortle_estimate)
+    )
     self.light_pollution_enabled = bool(get_config_value("light_pollution_enabled", True))
     now = datetime.now()
     self.manual_year = now.year
@@ -307,7 +318,7 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self._startup_placeholder_visible = True
     self._create_startup_placeholder()
     self._position_startup_placeholder()
-    # 3. Post-UI initialization â€” ASYNC (non-blocking)
+    # 3. Post-UI initialization -- ASYNC (non-blocking)
     self.show_satellites = False
     self.satellites = []
     _gaia_catalog_dir = self.runtime_layout.get(

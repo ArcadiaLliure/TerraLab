@@ -10,6 +10,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from TerraLab.light_pollution.modes import LP_MODE_AUTOMATIC
 from TerraLab.scene.camera import Camera
 
 
@@ -49,7 +50,7 @@ class RenderState:
     # Condicions
     bortle: int = 1
     mag_limit: float = 8.0
-    is_auto_bortle: bool = True
+    light_pollution_mode: str = LP_MODE_AUTOMATIC
     naked_eye_cap: float = 8.0
     sun_alt: float = -90.0
     sun_az: float = 0.0

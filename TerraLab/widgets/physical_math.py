@@ -1,5 +1,7 @@
 import math
 
+from TerraLab.light_pollution.modes import mode_uses_bortle
+
 
 class AtmosphericMath:
     """
@@ -204,16 +206,16 @@ class VisualPhotometryMath:
         return 7.6 - 0.5 * (bortle_class - 1.0)
 
     @staticmethod
-    def eye_limit_mag(auto_bortle, bortle_class, manual_eye_limit_mag):
+    def eye_limit_mag(light_pollution_mode, bortle_class, magnitude_limit):
         """
         Dona m_lim de base (ull nu).
 
-        - auto_bortle=True: usa conversio Bortle->NELM
-        - auto_bortle=False: usa valor manual de l'usuari
+        Bortle and automatic modes use Bortle-to-NELM. Magnitude mode uses the
+        catalog threshold selected by the user.
         """
-        if auto_bortle:
+        if mode_uses_bortle(light_pollution_mode):
             return VisualPhotometryMath.bortle_to_nelm_mag(float(bortle_class))
-        return float(manual_eye_limit_mag)
+        return float(magnitude_limit)
 
     @staticmethod
     def atmospheric_loss_mag(value):

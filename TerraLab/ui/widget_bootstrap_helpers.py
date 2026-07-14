@@ -192,32 +192,15 @@ def _on_horizon_profile_ready_from_worker(widget, payload):
     widget.on_horizon_profile_ready(payload)
 
 
-def _bootstrap_sync_auto_bortle(widget, retries_left: int = 10) -> None:
-    """
-    Try to sync auto Bortle once HorizonWorker initialization is ready.
-
-    This avoids requiring manual "reset LP" clicks after startup.
-    """
+def _queue_initial_automatic_light_pollution(widget) -> None:
+    """Queue the initial location estimate after worker initialization."""
     _bind_impl_globals()
-    if not bool(getattr(widget, "is_auto_bortle", True)):
+    if not is_automatic_mode(getattr(widget, "light_pollution_mode", None)):
         return
-    worker = getattr(widget, "horizon_worker", None)
-    if worker is None:
-        return
-    if bool(getattr(worker, "is_initialized", False)):
-        try:
-            widget.reset_lp_to_auto()
-        except Exception as exc:
-            print(f"[AstroWidget] Auto-Bortle startup sync error: {exc}")
-        return
-    if int(retries_left) <= 0:
-        return
-    QTimer.singleShot(
-        250,
-        lambda w=widget, r=int(retries_left) - 1: _bootstrap_sync_auto_bortle(
-            w, r
-        ),
-    )
+    try:
+        widget.recalculate_automatic_light_pollution()
+    except Exception as exc:
+        print(f"[AstroWidget] Auto-Bortle startup sync error: {exc}")
 
 
 def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
@@ -556,7 +539,9 @@ def widget_start_async_bootstrap(widget):
             self.horizon_worker, "initialize", Qt.QueuedConnection
         ),
     )
-    QTimer.singleShot(550, lambda w=self: _bootstrap_sync_auto_bortle(w, 12))
+    QTimer.singleShot(
+        550, lambda w=self: _queue_initial_automatic_light_pollution(w)
+    )
     QTimer.singleShot(900, trigger_bake)
 
 
@@ -710,6 +695,7 @@ def widget_on_catalog_ready(
         fallback_reason = ""
     self._stars_fallback_active = bool(fallback_active)
     self._stars_fallback_reason = str(fallback_reason or "")
+    self.refresh_light_pollution_catalog_range()
     self._refresh_scope_data_state(reason="catalog_ready")
     print(
         f"[AstroWidget] Star catalog ready (async): "
@@ -1023,6 +1009,7 @@ def _scope_apply_coordinator_payload(widget, payload, reason: str) -> None:
         float(getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
         float(max_loaded),
     )
+    self.refresh_light_pollution_catalog_range()
     try:
         self._scope_set_data_state(
             "ready_deep", reason=f"coordinator_{str(reason)}"
@@ -1367,6 +1354,7 @@ def widget_on_scope_extension_ready(
                     )
             except Exception:
                 pass
+            self.refresh_light_pollution_catalog_range()
             self._set_gaia_extension_status_label(
                 "Finalitzat", keep_seconds=20.0
             )
@@ -1413,6 +1401,7 @@ def widget_on_scope_extension_ready(
                     )
             except Exception:
                 pass
+            self.refresh_light_pollution_catalog_range()
             self._set_gaia_extension_status_label(
                 "Finalitzat", keep_seconds=20.0
             )

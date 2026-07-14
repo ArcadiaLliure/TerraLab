@@ -882,7 +882,6 @@ def _disc_visibility_floor_px(canvas) -> float:
 
 def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_light=1.0, mag_limit=None):
     if mag_limit is None: mag_limit = 6.0
-    bortle = getattr(canvas.parent_widget, 'auto_bortle_estimate', getattr(canvas, 'auto_bortle_estimate', 1))
     show_sun_moon = bool(
         canvas._parent_checkbox_checked("chk_sun_moon", default=True)
     )

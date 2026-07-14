@@ -6,6 +6,11 @@ import math
 
 from PyQt5.QtGui import QColor, QImage, QPainter, QPixmap
 
+from TerraLab.light_pollution.modes import (
+    LP_MODE_AUTOMATIC,
+    normalize_light_pollution_mode,
+    resolve_bortle_class,
+)
 from TerraLab.render.grid_renderer import GridRenderer
 from TerraLab.render.horizon_renderer import HorizonRenderer
 from TerraLab.render.overlays_renderer import OverlaysRenderer
@@ -317,28 +322,25 @@ def draw_background_impl(
     w, h = canvas.width(), canvas.height()
     zoom = round(canvas.zoom_level, 2)
     elev_q = round(canvas.elevation_angle, 1)
-    is_auto_bortle = getattr(
-        canvas.parent_widget,
-        "is_auto_bortle",
-        getattr(canvas, "is_auto_bortle", True),
+    light_pollution_mode = normalize_light_pollution_mode(
+        getattr(
+            canvas.parent_widget,
+            "light_pollution_mode",
+            LP_MODE_AUTOMATIC,
+        )
     )
     light_pollution_enabled = bool(
         getattr(canvas.parent_widget, "light_pollution_enabled", True)
     )
-    if is_auto_bortle:
-        raw_bortle = (
-            getattr(
-                canvas.parent_widget,
-                "auto_bortle_estimate",
-                getattr(canvas, "auto_bortle_estimate", 1),
-            )
-            if light_pollution_enabled
-            else 1.0
-        )
-    else:
-        # En mode manual, el cel de fons es manté sense glow Bortle.
-        raw_bortle = 1.0
-    bortle = max(1.0, min(9.0, float(raw_bortle)))
+    bortle = resolve_bortle_class(
+        light_pollution_mode,
+        automatic_bortle=getattr(
+            canvas.parent_widget, "auto_bortle_estimate", 1
+        ),
+        bortle_value=getattr(canvas.parent_widget, "bortle_value", 1),
+        magnitude_limit=getattr(canvas.parent_widget, "magnitude_limit", 8.0),
+        light_pollution_enabled=light_pollution_enabled,
+    )
     twilight_factor = 1.0
     if sun_alt >= 0:
         twilight_factor = 0.0

@@ -1,4 +1,4 @@
-# -*- coding: latin-1 -*-
+# -*- coding: utf-8 -*-
 import math
 import os
 import sys
@@ -41,6 +41,14 @@ from TerraLab.common.utils import (
     get_base_dir,
 )
 from TerraLab.common.app_paths import constellations_path
+from TerraLab.light_pollution.modes import (
+    LP_MODE_AUTOMATIC,
+    LP_MODE_BORTLE,
+    LP_MODE_MAGNITUDE,
+    is_automatic_mode,
+    normalize_light_pollution_mode,
+    resolve_bortle_class,
+)
 from TerraLab.data.assets_manager import AssetManager
 from TerraLab.ui.canvas_input_handler import CanvasInputHandler
 from TerraLab.ui.canvas_selection import CanvasSelection
@@ -1010,7 +1018,7 @@ class AstroCanvas(QWidget):
         return f"{h:02d}h {m:02d}m {s:02d}s"
     def _format_dec_deg(self, dec_deg: float) -> str:
         sign = "+" if dec_deg >= 0 else "-"
-        return f"{sign}{abs(float(dec_deg)):.3f}°"
+        return f"{sign}{abs(float(dec_deg)):.3f}Â°"
     def _scope_hud_extra_lines(self, ut_hour: float, day_of_year_utc: int):
         return canvas_scope_hud_extra_lines(self, ut_hour, day_of_year_utc)
     def _draw_selected_target_marker(self, painter: QPainter, ut_hour: float, day_of_year_utc: int):
@@ -1097,8 +1105,8 @@ class AstroCanvas(QWidget):
             self.parent_widget.sync_scope_focal_ui(new_focal)
         if hasattr(self, 'hint_overlay') and not self.scope_mode_enabled():
             fov_w, fov_h = self.scope_controller.current_fov()
-            fov_label = f"{fov_w:.2f}° x {fov_h:.2f}°"
-            txt = getTraduction("Scope.ZoomHint", "Scope {focal} mm  ·  FOV {fov}").format(
+            fov_label = f"{fov_w:.2f}Â° x {fov_h:.2f}Â°"
+            txt = getTraduction("Scope.ZoomHint", "Scope {focal} mm  Â·  FOV {fov}").format(
                 focal=f"{new_focal:.1f}",
                 fov=fov_label,
             )
@@ -1123,7 +1131,7 @@ class AstroCanvas(QWidget):
             if fov_deg < 179.0:
                 focal_rad = math.radians(fov_deg)
                 focal_eq = max(1, int(round(18.0 / math.tan(focal_rad / 2.0))))
-            txt = getTraduction("HUD.ZoomHint", "FOV {fov}°  ·  {focal}mm").format(
+            txt = getTraduction("HUD.ZoomHint", "FOV {fov}Â°  Â·  {focal}mm").format(
                 fov=f"{fov_deg:.1f}", focal=focal_eq
             )
             self.hint_overlay.show_hint(txt)
@@ -2269,9 +2277,6 @@ class AstronomicalWidget(CustomWidgetBase):
              self.canvas.village.set_profile(profile)
         # Refresh the UI altitude label now that the worker has safely initialized the DEM data
         self.update_altitude_label()
-        # Initial Bortle Sync if in Auto mode
-        if getattr(self, 'is_auto_bortle', True):
-            self.reset_lp_to_auto()
         self._set_scene_load_stage("scene_ready")
         self.canvas.update()
     def on_horizon_progress(self, msg):
@@ -2680,7 +2685,7 @@ class AstronomicalWidget(CustomWidgetBase):
             return max(1.0, focal_mm / f_number)
         return max(1.0, float(getattr(self, "scope_aperture_mm", 80.0)))
     def _persist_visual_magnitude_settings(self):
-        set_config_value("manual_eye_limit_mag", float(self.magnitude_limit))
+        set_config_value("magnitude_limit", float(self.magnitude_limit))
         set_config_value("scope_instrument_profile", str(self.scope_instrument_profile))
         set_config_value("scope_aperture_mm", float(self.scope_aperture_mm))
         set_config_value("scope_aperture_f_number", float(self.scope_aperture_f_number))
@@ -3153,26 +3158,113 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.update()
     def open_calendar(self):
         return widget_open_calendar(self)
-    def on_lp_mode_changed(self, index):
-        """index 0 = Automatic (Bortle), index 1 = Manual (Magnitud)."""
-        self.is_auto_bortle = (index == 0)
-        set_config_value("is_auto_bortle", bool(self.is_auto_bortle))
-        if self.is_auto_bortle:
-            self.lbl_light_text.setText(getTraduction("Astro.BortleLabel", "Bortle"))
-            self.slider_light.setRange(1, 9)
-            if hasattr(self.slider_light, '_lbl_min'):
-                self.slider_light._lbl_min.setText("1")
-                self.slider_light._lbl_max.setText("9")
-            auto_val = getattr(self.canvas, 'auto_bortle_estimate', 4)
-            self.slider_light.set_silent_value(int(auto_val))
-        else:
-            self.lbl_light_text.setText(getTraduction("Astro.MagnitudeLabel", "Magnitude"))
-            self.slider_light.setRange(-270, 100) # -27.0 to 10.0
-            if hasattr(self.slider_light, '_lbl_min'):
-                self.slider_light._lbl_min.setText("-27")
-                self.slider_light._lbl_max.setText("10")
-            self.slider_light.set_silent_value(int(self.magnitude_limit * 10))
+    def _catalog_magnitude_upper_bound(self):
+        try:
+            catalog_max = float(
+                getattr(self, "_catalog_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)
+            )
+        except Exception:
+            catalog_max = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
+        if not math.isfinite(catalog_max):
+            catalog_max = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
+        return max(-27.0, math.ceil(catalog_max * 10.0 - 1e-9) / 10.0)
+    def format_light_pollution_slider_value(self, value):
+        mode = normalize_light_pollution_mode(
+            getattr(self, "light_pollution_mode", LP_MODE_AUTOMATIC)
+        )
+        if mode == LP_MODE_MAGNITUDE:
+            return f"{float(value) / 10.0:.1f}"
+        return str(int(value))
+    def _configure_light_pollution_slider(
+        self, minimum, maximum, value, enabled, inverted=False
+    ):
+        slider = self.slider_light
+        slider.blockSignals(True)
+        slider.setRange(int(minimum), int(maximum))
+        slider.setValue(int(max(minimum, min(maximum, value))))
+        slider.setEnabled(bool(enabled))
+        slider.setInvertedAppearance(bool(inverted))
+        slider.blockSignals(False)
+        if hasattr(slider, "_lbl_min"):
+            left_value = maximum if inverted else minimum
+            right_value = minimum if inverted else maximum
+            slider._lbl_min.setText(self.format_light_pollution_slider_value(left_value))
+            slider._lbl_max.setText(self.format_light_pollution_slider_value(right_value))
+            slider._lbl_curr.setText(
+                f"[{self.format_light_pollution_slider_value(slider.value())}]"
+            )
+    def _sync_light_pollution_controls(self):
+        if not hasattr(self, "slider_light"):
+            return
+        mode = normalize_light_pollution_mode(self.light_pollution_mode)
+        if mode == LP_MODE_MAGNITUDE:
+            upper = self._catalog_magnitude_upper_bound()
+            self.magnitude_limit = max(-27.0, min(upper, float(self.magnitude_limit)))
+            self.lbl_light_text.setText(
+                getTraduction("Astro.MagnitudeLabel", "Magnitude")
+            )
+            self._configure_light_pollution_slider(
+                -270,
+                int(round(upper * 10.0)),
+                int(round(self.magnitude_limit * 10.0)),
+                True,
+                False,
+            )
+            self.slider_light.setToolTip("")
+            return
+        self.lbl_light_text.setText(getTraduction("Astro.BortleLabel", "Bortle"))
+        displayed_bortle = (
+            self.auto_bortle_estimate
+            if mode == LP_MODE_AUTOMATIC
+            else self.bortle_value
+        )
+        self._configure_light_pollution_slider(
+            1,
+            9,
+            int(displayed_bortle),
+            mode != LP_MODE_AUTOMATIC,
+            True,
+        )
+        self.slider_light.setToolTip(
+            getTraduction(
+                "Astro.AutomaticLockedTooltip",
+                "Calculated automatically from the current location",
+            )
+            if mode == LP_MODE_AUTOMATIC
+            else ""
+        )
+    def refresh_light_pollution_catalog_range(self):
+        if not hasattr(self, "slider_light"):
+            return
+        if normalize_light_pollution_mode(self.light_pollution_mode) != LP_MODE_MAGNITUDE:
+            return
+        previous = float(self.magnitude_limit)
+        self._sync_light_pollution_controls()
+        if float(self.magnitude_limit) != previous:
+            set_config_value("magnitude_limit", float(self.magnitude_limit))
+            self._apply_light_pollution_graphics()
+    def _apply_light_pollution_graphics(self):
+        effective_bortle = resolve_bortle_class(
+            self.light_pollution_mode,
+            automatic_bortle=self.auto_bortle_estimate,
+            bortle_value=self.bortle_value,
+            magnitude_limit=self.magnitude_limit,
+            light_pollution_enabled=self.light_pollution_enabled,
+        )
+        if hasattr(self.canvas, "weather"):
+            self.canvas.weather.set_bortle(effective_bortle)
         self.canvas.update()
+    def on_lp_mode_changed(self, index):
+        """Apply one of the three explicit light-pollution modes."""
+        selected_mode = self.combo_lp_mode.itemData(int(index))
+        self.light_pollution_mode = normalize_light_pollution_mode(selected_mode)
+        set_config_value("light_pollution_mode", self.light_pollution_mode)
+        self._sync_light_pollution_controls()
+        if self.light_pollution_mode == LP_MODE_MAGNITUDE:
+            set_config_value("magnitude_limit", float(self.magnitude_limit))
+        self._apply_light_pollution_graphics()
+        if is_automatic_mode(self.light_pollution_mode):
+            self.recalculate_automatic_light_pollution()
     def on_stars_toggled(self, checked):
         checked = bool(checked)
         if checked and (not self._ensure_asset_before_enable(self.chk_enable_sky, checked, "gaia_catalog")):
@@ -3221,17 +3313,9 @@ class AstronomicalWidget(CustomWidgetBase):
                     0,
                     lambda: QMetaObject.invokeMethod(self.horizon_worker, "initialize", Qt.QueuedConnection),
                 )
-        if checked:
-            if bool(getattr(self, "is_auto_bortle", True)):
-                QTimer.singleShot(80, self.reset_lp_to_auto)
-        else:
-            # Amb LP desactivada, el comportament esperat és equivalent a Bortle 1.
-            self.auto_bortle_estimate = 1
-            self.canvas.auto_bortle_estimate = 1
-            set_config_value("auto_bortle_estimate", 1)
-            if hasattr(self, "slider_light") and bool(getattr(self, "is_auto_bortle", True)):
-                self.slider_light.set_silent_value(1)
-        self.canvas.update()
+        if checked and is_automatic_mode(self.light_pollution_mode):
+            QTimer.singleShot(80, self.recalculate_automatic_light_pollution)
+        self._apply_light_pollution_graphics()
     def on_milkyway_toggled(self, checked):
         checked = bool(checked)
         if checked and (not self._ensure_asset_before_enable(self.chk_enable_milkyway, checked, "milkyway_texture")):
@@ -3352,8 +3436,10 @@ class AstronomicalWidget(CustomWidgetBase):
         return None
     def _ensure_copernicus_credentials_prompt(self):
         return widget_ensure_copernicus_credentials_prompt(self)
-    def _request_auto_bortle_estimate(self) -> bool:
-        """Demana una estimacio Bortle al HorizonWorker de forma asincrona."""
+    def _request_automatic_bortle_estimate(self) -> bool:
+        """Request a location estimate asynchronously."""
+        if not is_automatic_mode(self.light_pollution_mode):
+            return False
         worker = getattr(self, "horizon_worker", None)
         if worker is None or not hasattr(self, "request_horizon_bortle"):
             return False
@@ -3366,45 +3452,45 @@ class AstronomicalWidget(CustomWidgetBase):
             int(request_id),
         )
         return True
-    def _apply_auto_bortle_estimate(self, bortle_value: int) -> None:
-        """Aplica una classe Bortle validada al model visual i a la UI."""
+    def _apply_automatic_bortle_estimate(self, bortle_value: int) -> None:
+        """Apply a validated estimate without changing the selected mode."""
+        if not is_automatic_mode(self.light_pollution_mode):
+            return
         valor_bortle = int(max(1, min(9, int(bortle_value))))
-        print(f"[AstroWidget] Resetting LP to auto-estimated Bortle: {valor_bortle}")
-        self.combo_lp_mode.setCurrentIndex(0)
-        self.slider_light.set_silent_value(valor_bortle)
+        print(f"[AstroWidget] Applied auto-estimated Bortle: {valor_bortle}")
         self.auto_bortle_estimate = valor_bortle
-        self.canvas.auto_bortle_estimate = valor_bortle
         set_config_value("auto_bortle_estimate", int(valor_bortle))
-        if hasattr(self.canvas, 'weather'):
-            self.canvas.weather.set_bortle(valor_bortle)
-        self.canvas.update()
+        self._sync_light_pollution_controls()
+        self._apply_light_pollution_graphics()
     def on_horizon_bortle_estimate(self, request_id: int, lat: float, lon: float, bortle_value: int) -> None:
-        """Rep l'estimacio Bortle del worker i descarta respostes antigues."""
+        """Discard stale estimates and apply only the active location."""
         pending_request_id = int(getattr(self, "_auto_bortle_pending_request_id", 0))
-        if pending_request_id and int(request_id) != pending_request_id:
+        if not pending_request_id or int(request_id) != pending_request_id:
             return
         self._auto_bortle_pending_request_id = 0
-        self._apply_auto_bortle_estimate(int(bortle_value))
-    def reset_lp_to_auto(self):
-        """Demana l'estimacio Bortle actual al worker (no bloquejant)."""
-        self._request_auto_bortle_estimate()
+        if not is_automatic_mode(self.light_pollution_mode):
+            return
+        if (
+            abs(float(lat) - float(self.latitude)) > 1e-7
+            or abs(float(lon) - float(self.longitude)) > 1e-7
+        ):
+            return
+        self._apply_automatic_bortle_estimate(int(bortle_value))
+    def recalculate_automatic_light_pollution(self):
+        """Recalculate the locked automatic mode for the current location."""
+        self._request_automatic_bortle_estimate()
     def update_lp_slider(self, val):
-        if self.is_auto_bortle:
-            self.auto_bortle_estimate = val
-            self.canvas.auto_bortle_estimate = val
-            set_config_value("auto_bortle_estimate", int(val))
-            if hasattr(self.canvas, 'weather'):
-                self.canvas.weather.set_bortle(val)
+        mode = normalize_light_pollution_mode(self.light_pollution_mode)
+        if mode == LP_MODE_AUTOMATIC:
+            self._sync_light_pollution_controls()
+            return
+        if mode == LP_MODE_BORTLE:
+            self.bortle_value = int(max(1, min(9, int(val))))
+            set_config_value("bortle_value", int(self.bortle_value))
         else:
-            # Manual mode: Sliders acts as Magnitude Filter
             self.magnitude_limit = val / 10.0
-            set_config_value("manual_eye_limit_mag", float(self.magnitude_limit))
-        self.canvas.update()
-    def update_magnitude(self, val):
-        # Mag slider 10-200 -> 1.0-20.0
-        self.magnitude_limit = val / 10.0
-        set_config_value("manual_eye_limit_mag", float(self.magnitude_limit))
-        self.canvas.update()
+            set_config_value("magnitude_limit", float(self.magnitude_limit))
+        self._apply_light_pollution_graphics()
     def build_search_index(self):
         return build_search_index_for_widget(self)
     def _attach_search_completer(self, names):

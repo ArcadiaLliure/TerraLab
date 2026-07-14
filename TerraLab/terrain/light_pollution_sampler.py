@@ -83,12 +83,33 @@ class LightPollutionSampler:
         self._tr_terrain_to_src = None
         self._terrain_crs_for_transform = self.terrain_crs
 
-        dbg_raw = str(os.getenv("TERRALAB_CRS_DEBUG", "")).strip().lower()
-        self._debug_enabled = dbg_raw in {"1", "true", "yes", "on"}
+        debug_values = (
+            os.getenv("TERRALAB_LP_DEBUG", ""),
+            os.getenv("TERRALAB_CRS_DEBUG", ""),
+        )
+        self._debug_enabled = any(
+            str(value).strip().lower() in {"1", "true", "yes", "on"}
+            for value in debug_values
+        )
 
     def _debug(self, message: str) -> None:
         if self._debug_enabled:
             print(f"[LPSampler:CRS] {message}")
+
+    def _trace_estimate_result(
+        self,
+        lat: float,
+        lon: float,
+        result: Tuple[float, int],
+        source: str,
+    ) -> Tuple[float, int]:
+        sqm, bortle = float(result[0]), int(result[1])
+        print(
+            "[LPSampler:Estimate] "
+            f"source={source} lat={float(lat):.6f} lon={float(lon):.6f} "
+            f"sqm={sqm:.3f} bortle={bortle}"
+        )
+        return sqm, bortle
 
     @staticmethod
     def _default_sqm_bortle() -> Tuple[float, int]:
@@ -426,7 +447,12 @@ class LightPollutionSampler:
             - Returns default `(21.0, 4)` on controlled errors.
         """
         if not self.raster_path or not os.path.exists(self.raster_path):
-            return self._default_sqm_bortle()
+            return self._trace_estimate_result(
+                lat,
+                lon,
+                self._default_sqm_bortle(),
+                "fallback_missing_raster",
+            )
 
         try:
             with self._lock:
@@ -444,12 +470,17 @@ class LightPollutionSampler:
                     )
                     b = self._cached_bounds
                     if b[0] <= x_src <= b[2] and b[1] <= y_src <= b[3]:
-                        return self._process_array_to_sqm(
-                            arr=self._cached_data,
-                            trans_win=self._cached_transform,
-                            x_src=x_src,
-                            y_src=y_src,
-                            is_geographic=bool(self._is_geographic),
+                        return self._trace_estimate_result(
+                            lat,
+                            lon,
+                            self._process_array_to_sqm(
+                                arr=self._cached_data,
+                                trans_win=self._cached_transform,
+                                x_src=x_src,
+                                y_src=y_src,
+                                is_geographic=bool(self._is_geographic),
+                            ),
+                            "cache",
                         )
 
             with RASTERIO_LOCK:
@@ -471,16 +502,26 @@ class LightPollutionSampler:
                     )
                     with self._lock:
                         self._update_context_locked(context)
-                    return self._process_array_to_sqm(
-                        arr=arr,
-                        trans_win=trans_win,
-                        x_src=x_src,
-                        y_src=y_src,
-                        is_geographic=bool(context["is_geographic"]),
+                    return self._trace_estimate_result(
+                        lat,
+                        lon,
+                        self._process_array_to_sqm(
+                            arr=arr,
+                            trans_win=trans_win,
+                            x_src=x_src,
+                            y_src=y_src,
+                            is_geographic=bool(context["is_geographic"]),
+                        ),
+                        "raster",
                     )
         except Exception as e:
             print(f"[LPSampler] estimate_zenith_sqm error: {e}")
-            return self._default_sqm_bortle()
+            return self._trace_estimate_result(
+                lat,
+                lon,
+                self._default_sqm_bortle(),
+                "fallback_error",
+            )
 
     def _process_array_to_sqm(
         self,

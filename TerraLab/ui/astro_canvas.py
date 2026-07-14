@@ -13,6 +13,11 @@ from TerraLab.common.deprecation_registry import (
     emit_deprecation_warning,
     register_deprecated_method,
 )
+from TerraLab.light_pollution.modes import (
+    LP_MODE_AUTOMATIC,
+    normalize_light_pollution_mode,
+    resolve_bortle_class,
+)
 from TerraLab.scene.render_context import RenderContext
 from TerraLab.scene.scene_state import build_star_scene_state
 from TerraLab.ui.sky_widget_impl import AstroCanvas as LegacyAstroCanvas
@@ -266,7 +271,7 @@ class AstroCanvas(LegacyAstroCanvas):
             getattr(widget_pare, "manual_hour", scene_controller.manual_hour)
         )
         # `mag_limit` arriba des de `draw_stars(...)` ja precomputat pel model
-        # visual (sol/twilight/eclipse + Bortle/manual). Aquest és el valor que
+        # visual (sol/twilight/eclipse + active light-pollution mode). Aquest és el valor que
         # ha d'arribar al renderer per evitar perdre el filtratge durant
         # descàrrega incremental o fallback temporal.
         mag_limit_render = None
@@ -283,27 +288,27 @@ class AstroCanvas(LegacyAstroCanvas):
             except Exception:
                 mag_limit_render = float(scene_controller.mag_limit)
         scene_controller.mag_limit = float(mag_limit_render)
-        scene_controller.is_auto_bortle = bool(
-            getattr(widget_pare, "is_auto_bortle", True)
+        scene_controller.light_pollution_mode = normalize_light_pollution_mode(
+            getattr(widget_pare, "light_pollution_mode", LP_MODE_AUTOMATIC)
         )
         light_pollution_enabled = bool(
             getattr(widget_pare, "light_pollution_enabled", True)
         )
-        manual_eye_limit = float(
+        selected_magnitude_limit = float(
             getattr(widget_pare, "magnitude_limit", scene_controller.mag_limit)
         )
-        if scene_controller.is_auto_bortle:
-            raw_bortle_class = (
-                float(getattr(widget_pare, "auto_bortle_estimate", 1))
-                if light_pollution_enabled
-                else 1.0
-            )
-        else:
-            raw_bortle_class = (
-                1.0 + (7.6 - float(manual_eye_limit)) / 0.5
-            )
         scene_controller.bortle = int(
-            round(max(1.0, min(9.0, float(raw_bortle_class))))
+            round(
+                resolve_bortle_class(
+                    scene_controller.light_pollution_mode,
+                    automatic_bortle=getattr(
+                        widget_pare, "auto_bortle_estimate", 1
+                    ),
+                    bortle_value=getattr(widget_pare, "bortle_value", 1),
+                    magnitude_limit=selected_magnitude_limit,
+                    light_pollution_enabled=light_pollution_enabled,
+                )
+            )
         )
         scene_controller.naked_eye_cap = float(
             getattr(estat_legacy, "naked_eye_cap", scene_controller.naked_eye_cap)

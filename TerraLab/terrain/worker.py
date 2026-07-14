@@ -18,6 +18,9 @@ from TerraLab.common.utils import (
 from TerraLab.terrain.engine import HorizonProfile, generate_bands
 
 
+_LP_RESULT_PREFIX = "TERRALAB_LP_RESULT="
+
+
 class HorizonWorker(QObject):
     """
     Background coordinator for DEM helpers and subprocess-based horizon bakes.
@@ -54,10 +57,10 @@ class HorizonWorker(QObject):
         self._initialize_after_reload_queued = False
         self._initialize_running = False
         self._last_reload_pending_log_ts = 0.0
-        self._bortle_win313_safe_mode = bool(
-            get_config_value("performance.safe_bortle_win313", True)
+        self._use_isolated_lp_sampler = bool(
+            os.name == "nt" and sys.version_info >= (3, 13)
         )
-        self._bortle_win313_safe_mode_logged = False
+        self._isolated_lp_sampler_logged = False
         self._provider_source_path = ""
 
     @staticmethod
@@ -372,6 +375,82 @@ class HorizonWorker(QObject):
             print(f"[HorizonWorker] get_bare_elevation error: {exc}")
             return None
 
+    def _estimate_light_pollution_isolated(
+        self, lat: float, lon: float
+    ) -> tuple[float, int]:
+        raster_path = str(
+            getattr(self.light_sampler, "raster_path", "") or ""
+        ).strip()
+        if not raster_path or not os.path.isfile(raster_path):
+            return 21.0, 4
+
+        project_root = Path(__file__).resolve().parents[2]
+        command = [
+            sys.executable,
+            "-m",
+            "TerraLab.terrain.light_pollution_query",
+            "--raster",
+            raster_path,
+            "--lat",
+            f"{float(lat):.12f}",
+            "--lon",
+            f"{float(lon):.12f}",
+        ]
+        completed = subprocess.run(
+            command,
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30.0,
+            check=False,
+            env=os.environ.copy(),
+        )
+
+        result_payload = None
+        for raw_line in str(completed.stdout or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if line.startswith(_LP_RESULT_PREFIX):
+                result_payload = json.loads(line[len(_LP_RESULT_PREFIX) :])
+            else:
+                print(line)
+
+        stderr_text = str(completed.stderr or "").strip()
+        if completed.returncode != 0:
+            detail = stderr_text or f"exit code {completed.returncode}"
+            raise RuntimeError(f"isolated light-pollution query failed: {detail}")
+        if result_payload is None:
+            detail = stderr_text or "missing structured result"
+            raise RuntimeError(f"isolated light-pollution query failed: {detail}")
+
+        sqm = float(result_payload["sqm"])
+        bortle = int(max(1, min(9, int(result_payload["bortle"]))))
+        return sqm, bortle
+
+    def get_light_pollution_estimate(
+        self, lat: float, lon: float
+    ) -> tuple[float, int]:
+        if not self.is_initialized or not self.light_sampler:
+            return 21.0, 4
+
+        if self._use_isolated_lp_sampler:
+            if not self._isolated_lp_sampler_logged:
+                print(
+                    "[HorizonWorker] Windows/Python>=3.13 detected: "
+                    "using isolated light-pollution sampler."
+                )
+                self._isolated_lp_sampler_logged = True
+            try:
+                return self._estimate_light_pollution_isolated(lat, lon)
+            except Exception as exc:
+                print(f"[HorizonWorker] Isolated Bortle estimate error: {exc}")
+                return 21.0, 4
+
+        return self.light_sampler.estimate_zenith_sqm(lat, lon)
+
     def get_bortle_estimate(self, lat: float, lon: float) -> int:
         """Obte bortle estimate de la instancia de HorizonWorker.
 
@@ -382,9 +461,7 @@ class HorizonWorker(QObject):
         Retorna:
         - int: Valor retornat pel metode.
         """
-        if not self.is_initialized or not self.light_sampler:
-            return 4
-        sqm, bortle = self.light_sampler.estimate_zenith_sqm(lat, lon)
+        _, bortle = self.get_light_pollution_estimate(lat, lon)
         return bortle
 
     def get_sqm_estimate(self, lat: float, lon: float) -> float:
@@ -397,9 +474,7 @@ class HorizonWorker(QObject):
         Retorna:
         - float: Valor retornat pel metode.
         """
-        if not self.is_initialized or not self.light_sampler:
-            return 21.0
-        sqm, _ = self.light_sampler.estimate_zenith_sqm(lat, lon)
+        sqm, _ = self.get_light_pollution_estimate(lat, lon)
         return sqm
 
     @pyqtSlot(float, float, int)
@@ -431,10 +506,6 @@ class HorizonWorker(QObject):
                 )
             )
 
-            # IMPORTANT: no forcem initialize() des d'aqui.
-            # Aquesta ruta es crida amb molta frequencia i, a Windows/Python 3.13,
-            # hem vist crashes natius en pyproj durant Transformer.from_crs.
-            # El cicle de vida de initialize() queda restringit al bootstrap/reload.
             if bool(self.needs_reload):
                 now_mono = float(time.monotonic())
                 if (now_mono - float(self._last_reload_pending_log_ts)) >= 2.0:
@@ -444,29 +515,12 @@ class HorizonWorker(QObject):
                     )
                     self._last_reload_pending_log_ts = now_mono
 
-            use_safe_bortle_fallback = bool(
-                self._bortle_win313_safe_mode
-                and os.name == "nt"
-                and sys.version_info >= (3, 13)
-            )
-            if (
-                use_safe_bortle_fallback
-                and not bool(self._bortle_win313_safe_mode_logged)
-            ):
-                print(
-                    "[HorizonWorker] Safe Bortle mode active on Windows/Python>=3.13: "
-                    "using fallback estimate to avoid pyproj native crashes."
-                )
-                self._bortle_win313_safe_mode_logged = True
-
-            if (
-                use_safe_bortle_fallback
-                or not bool(get_config_value("light_pollution_enabled", True))
-            ):
+            if not bool(get_config_value("light_pollution_enabled", True)):
                 bortle_value = auto_bortle_fallback
             elif bool(self.is_initialized) and (self.light_sampler is not None):
-                bortle_value = int(
-                    self.get_bortle_estimate(latitude_deg, longitude_deg)
+                _, bortle_value = self.get_light_pollution_estimate(
+                    latitude_deg,
+                    longitude_deg,
                 )
             else:
                 bortle_value = auto_bortle_fallback

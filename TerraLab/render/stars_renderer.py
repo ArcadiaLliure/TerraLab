@@ -23,6 +23,11 @@ try:
 except Exception:  # pragma: no cover
     np = None
 
+from TerraLab.light_pollution.modes import (
+    LP_MODE_AUTOMATIC,
+    normalize_light_pollution_mode,
+    resolve_bortle_class,
+)
 from TerraLab.scene.projection import (
     project_universal_stereo_numpy,
     radec_to_altaz_numpy,
@@ -209,30 +214,25 @@ def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
             target_alt_deg=canvas.elevation_angle,
             sun_alt_deg=-18.0,
         )
-        auto_bortle = bool(getattr(pw, "is_auto_bortle", True))
+        light_pollution_mode = normalize_light_pollution_mode(
+            getattr(pw, "light_pollution_mode", LP_MODE_AUTOMATIC)
+        )
         light_pollution_enabled = bool(
             getattr(pw, "light_pollution_enabled", True)
         )
-        if auto_bortle:
-            bortle_class = max(
-                1.0,
-                min(
-                    9.0,
-                    float(getattr(pw, "auto_bortle_estimate", 1))
-                    if light_pollution_enabled
-                    else 1.0,
-                ),
-            )
-        else:
-            bortle_class = max(
-                1.0, min(9.0, 1.0 + (7.6 - float(pw.magnitude_limit)) / 0.5)
-            )
+        bortle_class = resolve_bortle_class(
+            light_pollution_mode,
+            automatic_bortle=getattr(pw, "auto_bortle_estimate", 1),
+            bortle_value=getattr(pw, "bortle_value", 1),
+            magnitude_limit=pw.magnitude_limit,
+            light_pollution_enabled=light_pollution_enabled,
+        )
         trail_state = {
             "scope_enabled": bool(canvas.scope_mode_enabled()),
-            "auto_bortle": auto_bortle,
+            "light_pollution_mode": light_pollution_mode,
             "bortle": bortle_class,
             "scope_mlim": float(vm_trail.scope_limit_mag),
-            "manual_mlim": float(pw.magnitude_limit),
+            "magnitude_limit": float(pw.magnitude_limit),
         }
         update_star_rendering_params(trail_state)
         trail_mag_limit = float(
@@ -1099,7 +1099,7 @@ class StarsRenderer:
         else:
             # `state.magnitude_limit` already arrives precomputed from the scene layer:
             # it includes the active sky brightness model (sun/twilight/eclipse) and the
-            # general Bortle/manual render limit. Reapplying a Bortle penalty here would
+            # general active-mode render limit. Reapplying a Bortle penalty here would
             # darken the sky twice and make naked-eye constellations disappear incorrectly.
             limiting_mag = base + spike_bias
 

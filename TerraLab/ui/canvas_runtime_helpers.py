@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from TerraLab.light_pollution.modes import (
+    LP_MODE_AUTOMATIC,
+    is_automatic_mode,
+    normalize_light_pollution_mode,
+    resolve_bortle_class,
+)
+
 def canvas_update_skyfield_cache(canvas, ut_hour, day_of_year):
     from TerraLab.ui import sky_widget_impl as _impl
     globals().update(_impl.__dict__)
@@ -562,30 +569,31 @@ def canvas_paintEvent(canvas, event):
         else:
              sun_mag_limit = float(vm_state.scope_limit_mag)
         eclipse_bonus = (1.0 - eclipse_dimming) * 14.0
-        auto_bortle = bool(
-            getattr(self.parent_widget, "is_auto_bortle", True)
+        light_pollution_mode = normalize_light_pollution_mode(
+            getattr(
+                self.parent_widget,
+                "light_pollution_mode",
+                LP_MODE_AUTOMATIC,
+            )
         )
         light_pollution_enabled = bool(
             getattr(self.parent_widget, "light_pollution_enabled", True)
         )
-        if auto_bortle:
-            # Si LP està OFF en mode automàtic, forcem Bortle 1.
-            raw_bortle_class = (
-                float(getattr(self.parent_widget, "auto_bortle_estimate", 1))
-                if light_pollution_enabled
-                else 1.0
-            )
-        else:
-            raw_bortle_class = (
-                1.0 + (7.6 - float(self.parent_widget.magnitude_limit)) / 0.5
-            )
-        bortle_class = max(1.0, min(9.0, float(raw_bortle_class)))
+        bortle_class = resolve_bortle_class(
+            light_pollution_mode,
+            automatic_bortle=getattr(
+                self.parent_widget, "auto_bortle_estimate", 1
+            ),
+            bortle_value=getattr(self.parent_widget, "bortle_value", 1),
+            magnitude_limit=self.parent_widget.magnitude_limit,
+            light_pollution_enabled=light_pollution_enabled,
+        )
         render_state = {
             "scope_enabled": bool(self.scope_mode_enabled()),
-            "auto_bortle": auto_bortle,
+            "light_pollution_mode": light_pollution_mode,
             "bortle": bortle_class,
             "scope_mlim": float(vm_state.scope_limit_mag),
-            "manual_mlim": float(self.parent_widget.magnitude_limit),
+            "magnitude_limit": float(self.parent_widget.magnitude_limit),
         }
         update_star_rendering_params(render_state)
         view_mag_limit = float(render_state.get("render_mag_limit", vm_state.scope_limit_mag))
@@ -677,13 +685,19 @@ def canvas_paintEvent(canvas, event):
         if show_horizon:
             force_flat = not use_detailed_topo
             dome_callback = None
-            is_auto_bortle = getattr(self.parent_widget, 'is_auto_bortle', getattr(self, 'is_auto_bortle', True))
+            light_pollution_mode = normalize_light_pollution_mode(
+                getattr(
+                    self.parent_widget,
+                    "light_pollution_mode",
+                    LP_MODE_AUTOMATIC,
+                )
+            )
             light_pollution_enabled = bool(
                 getattr(self.parent_widget, "light_pollution_enabled", True)
             )
             if (
                 (not fast_interaction)
-                and is_auto_bortle
+                and is_automatic_mode(light_pollution_mode)
                 and light_pollution_enabled
                 and hasattr(self, 'horizon_overlay')
                 and hasattr(self.horizon_overlay, 'profile')

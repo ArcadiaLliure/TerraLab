@@ -5,6 +5,7 @@ import zipfile
 from datetime import datetime
 
 from TerraLab.common.utils import get_config_value
+from TerraLab.light_pollution.modes import mode_uses_bortle
 from TerraLab.widgets.physical_math import (
     AtmosphericMath,
     InstrumentOpticsMath,
@@ -523,29 +524,29 @@ def on_resize(state):
 
 def update_star_rendering_params(state):
     scope_enabled = bool(state.get("scope_enabled", False))
-    auto_bortle = bool(state.get("auto_bortle", True))
+    light_pollution_mode = state.get("light_pollution_mode")
     bortle = max(1.0, min(9.0, float(state.get("bortle", 1.0))))
     scope_mlim = float(state.get("scope_mlim", 6.0))
-    manual_mlim = float(state.get("manual_mlim", 6.0))
+    magnitude_limit = float(state.get("magnitude_limit", 6.0))
     render_compensation_mag = float(
         state.get(
             "render_compensation_mag", DEFAULT_RENDER_MLIM_COMPENSATION_MAG
         )
     )
 
-    if auto_bortle:
+    if mode_uses_bortle(light_pollution_mode):
         general_mlim, physical_nelm = _compute_general_render_mlim_mag(
             bortle_class=bortle,
             render_compensation_mag=render_compensation_mag,
         )
     else:
-        general_mlim = manual_mlim
-        physical_nelm = manual_mlim
+        general_mlim = magnitude_limit
+        physical_nelm = magnitude_limit
 
-    general_mlim = max(-12.0, min(9.0, general_mlim))
+    general_mlim = max(-27.0, min(30.0, general_mlim))
     state["general_mlim_physical"] = float(physical_nelm)
     state["general_mlim_compensation_mag"] = float(
-        render_compensation_mag if auto_bortle else 0.0
+        render_compensation_mag if mode_uses_bortle(light_pollution_mode) else 0.0
     )
     state["general_mlim_compensation_description"] = (
         RENDER_MLIM_COMPENSATION_DESCRIPTION

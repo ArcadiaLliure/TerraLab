@@ -24,6 +24,11 @@ from TerraLab.common.deprecation_registry import (
     register_deprecated_method,
 )
 from TerraLab.data.star_data_coordinator import StarDataCoordinator
+from TerraLab.light_pollution.modes import (
+    LP_MODE_AUTOMATIC,
+    normalize_light_pollution_mode,
+    resolve_bortle_class,
+)
 from TerraLab.scene.scene_controller import SceneController
 from TerraLab.terrain.terrain_coordinator import TerrainCoordinator
 from TerraLab.ui.sky_widget_impl import AstronomicalWidget as LegacyAstronomicalWidget
@@ -60,6 +65,9 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
             elevation_angle=float(getattr(getattr(self, "canvas", None), "elevation_angle", 40.0)),
             zoom_level=float(getattr(getattr(self, "canvas", None), "zoom_level", 1.0)),
             vertical_offset_ratio=float(getattr(getattr(self, "canvas", None), "vertical_offset_ratio", 0.3)),
+            light_pollution_mode=normalize_light_pollution_mode(
+                getattr(self, "light_pollution_mode", LP_MODE_AUTOMATIC)
+            ),
         )
 
         self.star_data_coordinator = None
@@ -372,24 +380,28 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
             self.scene_controller.manual_hour = float(getattr(self, "manual_hour", self.scene_controller.manual_hour))
             self.scene_controller.use_real_time = bool(getattr(self, "use_real_time", self.scene_controller.use_real_time))
             self.scene_controller.mag_limit = float(getattr(self, "magnitude_limit", self.scene_controller.mag_limit))
-            self.scene_controller.is_auto_bortle = bool(
-                getattr(self, "is_auto_bortle", self.scene_controller.is_auto_bortle)
+            self.scene_controller.light_pollution_mode = normalize_light_pollution_mode(
+                getattr(
+                    self,
+                    "light_pollution_mode",
+                    self.scene_controller.light_pollution_mode,
+                )
             )
             light_pollution_enabled = bool(
                 getattr(self, "light_pollution_enabled", True)
             )
-            if self.scene_controller.is_auto_bortle:
-                raw_bortle_class = (
-                    float(getattr(self, "auto_bortle_estimate", 1))
-                    if light_pollution_enabled
-                    else 1.0
-                )
-            else:
-                raw_bortle_class = (
-                    1.0 + (7.6 - float(self.scene_controller.mag_limit)) / 0.5
-                )
             self.scene_controller.bortle = int(
-                round(max(1.0, min(9.0, float(raw_bortle_class))))
+                round(
+                    resolve_bortle_class(
+                        self.scene_controller.light_pollution_mode,
+                        automatic_bortle=getattr(self, "auto_bortle_estimate", 1),
+                        bortle_value=getattr(self, "bortle_value", 1),
+                        magnitude_limit=getattr(
+                            self, "magnitude_limit", self.scene_controller.mag_limit
+                        ),
+                        light_pollution_enabled=light_pollution_enabled,
+                    )
+                )
             )
 
             canvas = getattr(self, "canvas", None)
@@ -566,6 +578,7 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
                 self._catalog_max_mag = float(np.nanmax(self.np_mag))
             except Exception:
                 self._catalog_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
+        self.refresh_light_pollution_catalog_range()
         self._catalog_mag_sorted = True
         self._catalog_loaded_subset_only = False
         self._stars_fallback_active = False

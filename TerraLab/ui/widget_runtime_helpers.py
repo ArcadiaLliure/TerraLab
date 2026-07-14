@@ -15,6 +15,10 @@ from TerraLab.common.utils import (
     getTraduction,
     set_config_value,
 )
+from TerraLab.light_pollution.modes import (
+    is_automatic_mode,
+    resolve_bortle_class,
+)
 from TerraLab.widgets.sky_legacy_components import (
     STAR_CATALOG_NAKED_EYE_MAX_MAG,
     _bp_rp_to_rgb_arrays,
@@ -33,27 +37,16 @@ except Exception:  # pragma: no cover
 
 
 def _resolve_effective_bortle_class(widget) -> float:
-    """Calcula la classe Bortle efectiva segons mode i estat de contaminació lumínica.
-
-    Si la contaminació lumínica està desactivada i el mode és automàtic,
-    forcem Bortle 1 per eliminar el glow artificial del cel.
-    """
-    is_auto_bortle = bool(getattr(widget, "is_auto_bortle", True))
-    light_pollution_enabled = bool(
-        getattr(widget, "light_pollution_enabled", True)
+    """Resolve the graphical Bortle-equivalent value for the active mode."""
+    return resolve_bortle_class(
+        getattr(widget, "light_pollution_mode", None),
+        automatic_bortle=getattr(widget, "auto_bortle_estimate", 1.0),
+        bortle_value=getattr(widget, "bortle_value", 1.0),
+        magnitude_limit=getattr(
+            widget, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG
+        ),
+        light_pollution_enabled=getattr(widget, "light_pollution_enabled", True),
     )
-
-    if is_auto_bortle:
-        if not light_pollution_enabled:
-            return 1.0
-        raw_bortle = float(getattr(widget, "auto_bortle_estimate", 1.0))
-    else:
-        manual_eye_limit_mag = float(
-            getattr(widget, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG)
-        )
-        raw_bortle = 1.0 + (7.6 - manual_eye_limit_mag) / 0.5
-
-    return max(1.0, min(9.0, float(raw_bortle)))
 
 
 def recompute_visual_magnitude_model(
@@ -141,9 +134,9 @@ def recompute_visual_magnitude_model(
         eyepiece_focal_mm=eyepiece_mm,
         eye_pupil_mm=widget._estimate_eye_pupil_mm(float(sun_alt_deg)),
         atmospheric_loss_mag=float(atmo_loss),
-        auto_bortle=bool(widget.is_auto_bortle),
+        light_pollution_mode=str(widget.light_pollution_mode),
         bortle_class=bortle_class,
-        manual_eye_limit_mag=float(widget.magnitude_limit),
+        magnitude_limit=float(widget.magnitude_limit),
         exposure_seconds=float(widget.scope_exposure_s),
         iso=float(widget.scope_iso),
         instrument_profile=instrument_profile,
@@ -232,9 +225,9 @@ def request_relocation(widget):
             )
             widget._last_dem_elevation = bare
             widget.update_altitude_label()
-        if bool(getattr(widget, "is_auto_bortle", True)):
+        if is_automatic_mode(getattr(widget, "light_pollution_mode", None)):
             try:
-                widget.reset_lp_to_auto()
+                widget.recalculate_automatic_light_pollution()
             except Exception:
                 pass
 
