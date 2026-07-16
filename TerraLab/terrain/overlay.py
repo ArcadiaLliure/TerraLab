@@ -12,6 +12,7 @@ import math
 import os
 import random
 import time
+from dataclasses import dataclass
 
 import numpy as np
 from PyQt5.QtCore import QObject, QPointF, Qt, pyqtSignal
@@ -25,6 +26,12 @@ from PyQt5.QtGui import (
     QPolygonF,
 )
 
+from TerraLab.common.performance import (
+    ByteLRU,
+    DEFAULT_PERFORMANCE_BUDGET,
+    PERFORMANCE_FLAGS,
+)
+
 try:
     from TerraLab.terrain.engine import (
         HorizonProfile,
@@ -35,6 +42,42 @@ try:
     HORIZON_ENGINE_AVAILABLE = True
 except ImportError:
     HORIZON_ENGINE_AVAILABLE = False
+
+
+@dataclass(frozen=True)
+class _TerrainRenderAsset:
+    """Immutable, camera-independent arrays prepared outside paint work."""
+
+    mesh_id: int
+    azimuths: np.ndarray
+    azimuths_closed: np.ndarray
+    distances: np.ndarray
+    altitudes: np.ndarray
+    altitudes_closed: np.ndarray
+    elevations: np.ndarray
+    valid: np.ndarray
+    valid_closed: np.ndarray
+    visible: np.ndarray
+    normal_x: np.ndarray
+    normal_y: np.ndarray
+    normal_z: np.ndarray
+
+    def __post_init__(self) -> None:
+        for name in (
+            "azimuths",
+            "azimuths_closed",
+            "distances",
+            "altitudes",
+            "altitudes_closed",
+            "elevations",
+            "valid",
+            "valid_closed",
+            "visible",
+            "normal_x",
+            "normal_y",
+            "normal_z",
+        ):
+            np.asarray(getattr(self, name)).setflags(write=False)
 
 
 # ─── Layer definitions ───────────────────────────────────────────
@@ -373,6 +416,10 @@ class HorizonOverlay(QObject):
         self._terrain_shadow_cache = None
         self._terrain_normal_cache_key = None
         self._terrain_normal_cache = None
+        self._terrain_render_asset = None
+        self._terrain_shade_cache = ByteLRU(
+            max(16 * 1024**2, DEFAULT_PERFORMANCE_BUDGET.transient_bytes // 4)
+        )
 
         if not HORIZON_ENGINE_AVAILABLE:
             print(
@@ -391,6 +438,11 @@ class HorizonOverlay(QObject):
             try:
                 profile = load_profile(horizon_profile_path)
                 if profile is not None:
+                    self.profile = profile
+                    if PERFORMANCE_FLAGS.relief_cached:
+                        self._terrain_render_asset = self._prepare_terrain_render_asset(
+                            getattr(profile, "terrain_mesh", None)
+                        )
                     print(
                         f"[HorizonOverlay] Profile loaded. Processing layers..."
                     )
@@ -435,6 +487,12 @@ class HorizonOverlay(QObject):
         self._terrain_shadow_cache = None
         self._terrain_normal_cache_key = None
         self._terrain_normal_cache = None
+        self._terrain_render_asset = (
+            self._prepare_terrain_render_asset(getattr(profile, "terrain_mesh", None))
+            if PERFORMANCE_FLAGS.relief_cached
+            else None
+        )
+        self._terrain_shade_cache.clear()
 
         effective_defs = layer_defs if layer_defs is not None else LAYER_DEFS
 
@@ -473,6 +531,8 @@ class HorizonOverlay(QObject):
         self._terrain_shadow_cache = None
         self._terrain_normal_cache_key = None
         self._terrain_normal_cache = None
+        self._terrain_render_asset = None
+        self._terrain_shade_cache.clear()
         self._layers.clear()
         self._loaded = False
         if self.allow_procedural_fallback:
@@ -919,6 +979,62 @@ class HorizonOverlay(QObject):
         )
         sampled_valid = inside & (weight_sum >= 0.50)
         return sampled, sample_distance, sampled_valid
+
+    def _prepare_terrain_render_asset(self, mesh):
+        if not isinstance(mesh, dict):
+            return None
+        try:
+            azimuths = np.asarray(mesh.get("azimuths"), dtype=np.float32)
+            distances = np.asarray(mesh.get("distances"), dtype=np.float32)
+            altitudes = np.asarray(mesh.get("altitudes"), dtype=np.float32)
+            elevations = np.asarray(mesh.get("elevations"), dtype=np.float32)
+            valid = np.asarray(mesh.get("valid"), dtype=bool)
+            visible = np.asarray(mesh.get("visible"), dtype=bool)
+        except Exception:
+            return None
+        shape = (distances.size, azimuths.size)
+        if azimuths.size < 2 or distances.size < 2 or altitudes.shape != shape:
+            return None
+        if elevations.shape != shape:
+            elevations = np.zeros(shape, dtype=np.float32)
+        if valid.shape != shape:
+            valid = np.isfinite(altitudes)
+        if visible.shape != shape:
+            visible = valid.copy()
+        computed = compute_polar_mesh_normals(
+            elevations, valid, distances, azimuths
+        )
+        saved = tuple(
+            np.asarray(mesh.get(name), dtype=np.float32)
+            for name in ("normal_x", "normal_y", "normal_z")
+        )
+        if all(item.shape == shape for item in saved):
+            saved_norm = np.sqrt(saved[0] ** 2 + saved[1] ** 2 + saved[2] ** 2)
+            use_saved = visible & np.isfinite(saved_norm) & (saved_norm > 1e-5)
+            normals = tuple(
+                np.where(use_saved, saved[index], computed[index]).astype(np.float32)
+                for index in range(3)
+            )
+        else:
+            normals = tuple(np.asarray(item, dtype=np.float32) for item in computed)
+        azimuths_closed = np.concatenate(
+            [azimuths, [azimuths[0] + 360.0]]
+        ).astype(np.float32)
+        return _TerrainRenderAsset(
+            mesh_id=id(mesh),
+            azimuths=azimuths,
+            azimuths_closed=azimuths_closed,
+            distances=distances,
+            altitudes=altitudes,
+            altitudes_closed=np.concatenate([altitudes, altitudes[:, :1]], axis=1),
+            elevations=elevations,
+            valid=valid,
+            valid_closed=np.concatenate([valid, valid[:, :1]], axis=1),
+            visible=visible,
+            normal_x=normals[0],
+            normal_y=normals[1],
+            normal_z=normals[2],
+        )
 
     def _terrain_surface_normals(
         self, mesh, elevations, valid, distances, azimuths
@@ -1405,58 +1521,25 @@ class HorizonOverlay(QObject):
         projection_fn_numpy=None,
     ):
         self._last_surface2d_quads = 0
-        try:
-            az_raw = np.asarray(mesh.get("azimuths"), dtype=np.float32)
-            distances = np.asarray(mesh.get("distances"), dtype=np.float32)
-            altitudes = np.asarray(mesh.get("altitudes"), dtype=np.float32)
-            elevations = np.asarray(mesh.get("elevations"), dtype=np.float32)
-            valid = np.asarray(mesh.get("valid"), dtype=bool)
-            visible = np.asarray(mesh.get("visible"), dtype=bool)
-            normal_x = np.asarray(mesh.get("normal_x"), dtype=np.float32)
-            normal_y = np.asarray(mesh.get("normal_y"), dtype=np.float32)
-            normal_z = np.asarray(mesh.get("normal_z"), dtype=np.float32)
-        except Exception:
+        asset = self._terrain_render_asset
+        if asset is None or asset.mesh_id != id(mesh):
+            asset = self._prepare_terrain_render_asset(mesh)
+            if PERFORMANCE_FLAGS.relief_cached:
+                self._terrain_render_asset = asset
+        if asset is None:
             return
-
-        if (
-            az_raw.size < 2
-            or distances.size < 2
-            or altitudes.shape != valid.shape
-            or altitudes.shape != visible.shape
-            or altitudes.shape != (distances.size, az_raw.size)
-        ):
-            return
-        if elevations.shape != altitudes.shape:
-            elevations = np.zeros_like(altitudes, dtype=np.float32)
-        computed_nx, computed_ny, computed_nz = self._terrain_surface_normals(
-            mesh, elevations, valid, distances, az_raw
-        )
-        if (
-            normal_x.shape == altitudes.shape
-            and normal_y.shape == altitudes.shape
-            and normal_z.shape == altitudes.shape
-        ):
-            saved_norm = np.sqrt(
-                normal_x * normal_x
-                + normal_y * normal_y
-                + normal_z * normal_z
-            )
-            use_saved = visible & np.isfinite(saved_norm) & (saved_norm > 1e-5)
-            normal_x = np.where(use_saved, normal_x, computed_nx)
-            normal_y = np.where(use_saved, normal_y, computed_ny)
-            normal_z = np.where(use_saved, normal_z, computed_nz)
-        else:
-            normal_x, normal_y, normal_z = (
-                computed_nx,
-                computed_ny,
-                computed_nz,
-            )
-
-        az_closed = np.concatenate([az_raw, [az_raw[0] + 360.0]]).astype(
-            np.float32
-        )
-        alt_closed = np.concatenate([altitudes, altitudes[:, :1]], axis=1)
-        valid_closed = np.concatenate([valid, valid[:, :1]], axis=1)
+        az_raw = asset.azimuths
+        distances = asset.distances
+        altitudes = asset.altitudes
+        elevations = asset.elevations
+        valid = asset.valid
+        visible = asset.visible
+        normal_x = asset.normal_x
+        normal_y = asset.normal_y
+        normal_z = asset.normal_z
+        az_closed = asset.azimuths_closed
+        alt_closed = asset.altitudes_closed
+        valid_closed = asset.valid_closed
 
         az_diffs = np.diff(az_raw.astype(np.float32))
         az_diffs = az_diffs[np.isfinite(az_diffs) & (az_diffs > 0)]
@@ -1482,28 +1565,44 @@ class HorizonOverlay(QObject):
         d_stride = stride_boost
 
         sun_vec = self._sun_vector_enu(sun_alt, sun_az)
-        sun_visibility = self._terrain_sun_visibility(
-            mesh,
-            elevations,
-            valid,
-            visible,
-            distances,
-            az_raw,
-            sun_alt,
-            sun_az,
-            terrain_shading_enabled=terrain_shading_enabled,
+        shade_key = (
+            asset.mesh_id,
+            bool(terrain_shading_enabled),
+            None if sun_alt is None else round(float(sun_alt) * 4.0) / 4.0,
+            None if sun_az is None else round(float(sun_az) * 4.0) / 4.0,
         )
-        shade_grid = self._terrain_light_factor(
-            normal_x,
-            normal_y,
-            normal_z,
-            distances[:, None],
-            sun_vec,
-            sun_alt,
-            terrain_shading_enabled=terrain_shading_enabled,
-            sun_visibility=sun_visibility,
+        shade_grid = (
+            self._terrain_shade_cache.get(shade_key)
+            if PERFORMANCE_FLAGS.relief_cached
+            else None
         )
-        shade_grid = self._smooth_light_grid(shade_grid, valid & visible)
+        if shade_grid is None:
+            sun_visibility = self._terrain_sun_visibility(
+                mesh,
+                elevations,
+                valid,
+                visible,
+                distances,
+                az_raw,
+                sun_alt,
+                sun_az,
+                terrain_shading_enabled=terrain_shading_enabled,
+            )
+            shade_grid = self._terrain_light_factor(
+                normal_x,
+                normal_y,
+                normal_z,
+                distances[:, None],
+                sun_vec,
+                sun_alt,
+                terrain_shading_enabled=terrain_shading_enabled,
+                sun_visibility=sun_visibility,
+            )
+            shade_grid = self._smooth_light_grid(shade_grid, valid & visible)
+            if PERFORMANCE_FLAGS.relief_cached:
+                self._terrain_shade_cache.put(
+                    shade_key, shade_grid, int(shade_grid.nbytes)
+                )
         shade_closed = np.concatenate([shade_grid, shade_grid[:, :1]], axis=1)
         base_offset = round((cur_az - 180) / 360.0) * 360
         offsets = [base_offset - 360, base_offset, base_offset + 360]
@@ -1538,19 +1637,38 @@ class HorizonOverlay(QObject):
 
             sx_cols = {}
             sy_cols = {}
-            for col in sorted(needed_cols):
-                sx, sy = self._project_mesh_column(
-                    projection_fn,
-                    projection_fn_numpy,
-                    float(final_az[col]),
-                    alt_closed[:, col],
-                    height,
-                    px_alt,
-                )
-                sx_cols[col] = sx
-                sy_cols[col] = sy
-
             ordered_cols = np.asarray(sorted(needed_cols), dtype=np.int32)
+            if projection_fn_numpy and ordered_cols.size:
+                projected_azimuths = final_az[ordered_cols].astype(np.float32)
+                anchor_x, anchor_y = projection_fn_numpy(
+                    np.zeros(projected_azimuths.shape, dtype=np.float32),
+                    projected_azimuths,
+                )
+                anchor_x = np.asarray(anchor_x, dtype=np.float32)
+                anchor_y = np.asarray(anchor_y, dtype=np.float32)
+                projected_y = (
+                    anchor_y[None, :]
+                    + 2.0
+                    - alt_closed[:, ordered_cols] * float(px_alt)
+                )
+                for position, col in enumerate(ordered_cols):
+                    sx_cols[int(col)] = np.full(
+                        distances.shape, anchor_x[position], dtype=np.float32
+                    )
+                    sy_cols[int(col)] = projected_y[:, position]
+            else:
+                for col in ordered_cols:
+                    sx, sy = self._project_mesh_column(
+                        projection_fn,
+                        projection_fn_numpy,
+                        float(final_az[col]),
+                        alt_closed[:, col],
+                        height,
+                        px_alt,
+                    )
+                    sx_cols[int(col)] = sx
+                    sy_cols[int(col)] = sy
+
             y_limits = np.full(
                 ordered_cols.shape, float(height) * 2.0, dtype=np.float32
             )

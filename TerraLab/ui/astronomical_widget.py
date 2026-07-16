@@ -23,6 +23,7 @@ from TerraLab.common.deprecation_registry import (
     emit_deprecation_warning,
     register_deprecated_method,
 )
+from TerraLab.common.performance import PERFORMANCE_FLAGS
 from TerraLab.data.star_data_coordinator import StarDataCoordinator
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
@@ -457,18 +458,37 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
                     if ra_dec is not None:
                         ra_center, dec_center = float(ra_dec[0]), float(ra_dec[1])
                         radius = float(max(self.scene_controller.scope_fov_deg))
-                        central_tile = self.star_data_coordinator.manifest().get_primary_tile_for_region(
-                            ra_center=ra_center,
-                            dec_center=dec_center,
-                            radius_deg=radius,
-                        )
-                        if central_tile is not None:
-                            central_tile_id = str(central_tile.tile_id)
-                            if central_tile_id != self._last_scope_tile_request:
-                                self._last_scope_tile_request = central_tile_id
-                                self.star_data_coordinator.load_deep_tile(central_tile_id)
-                                self.star_data_coordinator.preload_adjacent_tiles(central_tile_id)
-                                self.star_data_coordinator.build_scope_index(central_tile_id)
+                        if PERFORMANCE_FLAGS.gaia_out_of_core and hasattr(
+                            self.star_data_coordinator, "request_cone_region"
+                        ):
+                            query_bucket = max(0.01, radius / 20.0)
+                            signature = (
+                                round(ra_center / query_bucket),
+                                round(dec_center / query_bucket),
+                                round(radius, 3),
+                                22.0,
+                            )
+                            if signature != self._last_scope_tile_request:
+                                self._last_scope_tile_request = signature
+                                self.star_data_coordinator.request_cone_region(
+                                    ra_center,
+                                    dec_center,
+                                    radius,
+                                    22.0,
+                                )
+                        else:
+                            central_tile = self.star_data_coordinator.manifest().get_primary_tile_for_region(
+                                ra_center=ra_center,
+                                dec_center=dec_center,
+                                radius_deg=radius,
+                            )
+                            if central_tile is not None:
+                                central_tile_id = str(central_tile.tile_id)
+                                if central_tile_id != self._last_scope_tile_request:
+                                    self._last_scope_tile_request = central_tile_id
+                                    self.star_data_coordinator.load_deep_tile(central_tile_id)
+                                    self.star_data_coordinator.preload_adjacent_tiles(central_tile_id)
+                                    self.star_data_coordinator.build_scope_index(central_tile_id)
         except Exception:
             pass
         return super().update_loop()

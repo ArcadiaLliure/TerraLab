@@ -10,14 +10,17 @@ curvature correction.
 import glob
 import math
 import os
+import threading
 from pathlib import Path
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 
+from TerraLab.common.perf_events import append_perf_event
+from TerraLab.common.performance import DEFAULT_PERFORMANCE_BUDGET, PERFORMANCE_FLAGS
 from TerraLab.terrain.providers import (
     CRS_GEOGRAPHIC,
     CRS_TERRAIN_INTERNAL,
@@ -457,9 +460,12 @@ class TileIndex:
 
     def _build_index(self, callback=None):
         files = []
-        for pat in self.patterns:
-            search_path = os.path.join(self.tiles_dir, pat)
-            files.extend(glob.glob(search_path))
+        if os.path.isfile(self.tiles_dir):
+            files = [self.tiles_dir]
+        else:
+            for pat in self.patterns:
+                search_path = os.path.join(self.tiles_dir, pat)
+                files.extend(glob.glob(search_path))
 
         print(
             f"[HorizonEngine] Indexing {len(files)} tiles from {self.tiles_dir} ({self.patterns})..."
@@ -490,6 +496,8 @@ class TileIndex:
                                 "bbox": bbox,
                             }
                         )
+                    else:
+                        continue
                 else:
                     header = self._read_header(fpath)
                     bbox = self._compute_bbox(header)
@@ -646,16 +654,57 @@ class TileIndex:
 class TileCache:
     """LRU cache for loaded DEM grids, with .npy binary caching on disk. Thread-safe."""
 
-    def __init__(self, capacity: int = 16):
-        import threading
-
+    def __init__(self, capacity: int = 16, max_bytes: int | None = None):
         self.capacity = capacity
+        self.max_bytes = max(
+            0,
+            int(
+                DEFAULT_PERFORMANCE_BUDGET.dem_bytes
+                if max_bytes is None
+                else max_bytes
+            ),
+        )
         self.cache: OrderedDict = OrderedDict()
+        self._cache_sizes: dict[str, int] = {}
+        self._cache_bytes = 0
         self._lock = threading.Lock()
+        # Different tiles can be read in parallel.  Bounded striped locks keep
+        # same-path materialisation exclusive without a lock object per tile.
         self._tile_io_lock = threading.Lock()
+        self._tile_io_locks = tuple(threading.Lock() for _ in range(64))
         self._packaged_cache_root = (
             Path(__file__).resolve().parents[1] / "data" / "terrain_cache"
         )
+
+    @property
+    def resident_bytes(self) -> int:
+        with self._lock:
+            return int(self._cache_bytes)
+
+    def _io_lock_for(self, path: str) -> "threading.Lock":
+        normalized = os.path.normcase(os.path.abspath(path))
+        return self._tile_io_locks[hash(normalized) % len(self._tile_io_locks)]
+
+    def _store(self, path: str, value: tuple[np.ndarray, Dict]) -> None:
+        size = int(value[0].nbytes)
+        with self._lock:
+            old = self.cache.pop(path, None)
+            if old is not None:
+                self._cache_bytes -= self._cache_sizes.pop(path, 0)
+            if self.max_bytes <= 0 or size > self.max_bytes:
+                return
+            self.cache[path] = value
+            self._cache_sizes[path] = size
+            self._cache_bytes += size
+            while self.cache and self._cache_bytes > self.max_bytes:
+                old_path, _old_value = self.cache.popitem(last=False)
+                self._cache_bytes -= self._cache_sizes.pop(old_path, 0)
+
+    def clear(self) -> None:
+        with self._lock:
+            self.cache.clear()
+            self._cache_sizes.clear()
+            self._cache_bytes = 0
 
     def load(
         self, tile_info: Dict
@@ -695,7 +744,7 @@ class TileCache:
 
         if candidate_npy:
             try:
-                with self._tile_io_lock:
+                with self._io_lock_for(candidate_npy):
                     # Stability-first on Windows/Python 3.13:
                     # avoid memmap-backed arrays loaded from worker threads.
                     data = np.load(
@@ -705,10 +754,7 @@ class TileCache:
                     )
                     # Ensure independent in-memory buffer (no file-backed view).
                     data = np.asarray(data, dtype=np.float32)
-                with self._lock:
-                    self.cache[path] = (data, header)
-                    if len(self.cache) > self.capacity:
-                        self.cache.popitem(last=False)
+                self._store(path, (data, header))
                 # print(f"[HorizonEngine] Loaded cached npy: {os.path.basename(candidate_npy)}")
                 return data, header
             except Exception as e:
@@ -752,7 +798,7 @@ class TileCache:
                 f"[HorizonEngine] Parsing with Pandas: {os.path.basename(path)}..."
             )
             try:
-                with self._tile_io_lock:
+                with self._io_lock_for(path):
                     import pandas as pd
 
                     df = pd.read_csv(
@@ -787,7 +833,7 @@ class TileCache:
 
             # Save binary cache to original location if possible
             try:
-                with self._tile_io_lock:
+                with self._io_lock_for(output_npy):
                     temp_output_npy = f"{output_npy}.tmp.npy"
                     np.save(temp_output_npy, data)
                     os.replace(temp_output_npy, output_npy)
@@ -795,10 +841,7 @@ class TileCache:
             except:
                 pass
 
-            with self._lock:
-                self.cache[path] = (data, header)
-                if len(self.cache) > self.capacity:
-                    self.cache.popitem(last=False)
+            self._store(path, (data, header))
 
             return data, header
 
@@ -946,6 +989,37 @@ class DemSampler:
 # ─────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class PolarElevationField:
+    """Bounded polar samples shared by horizon and relief mesh."""
+
+    azimuths: np.ndarray
+    distances: np.ndarray
+    elevations: np.ndarray
+    valid: np.ndarray
+    observer_x: float
+    observer_y: float
+    observer_ground: float
+    d_max: float
+    delta_az_deg: float
+
+    def __post_init__(self) -> None:
+        azimuths = np.asarray(self.azimuths, dtype=np.float32)
+        distances = np.asarray(self.distances, dtype=np.float32)
+        elevations = np.asarray(self.elevations, dtype=np.float32)
+        valid = np.asarray(self.valid, dtype=bool)
+        if elevations.shape != (distances.size, azimuths.size):
+            raise ValueError("Polar elevation dimensions are inconsistent")
+        if valid.shape != elevations.shape:
+            raise ValueError("Polar validity mask is inconsistent")
+        for array in (azimuths, distances, elevations, valid):
+            array.setflags(write=False)
+        object.__setattr__(self, "azimuths", azimuths)
+        object.__setattr__(self, "distances", distances)
+        object.__setattr__(self, "elevations", elevations)
+        object.__setattr__(self, "valid", valid)
+
+
 class HorizonBaker:
     """
     Raycasts from observer position to compute horizon elevation angles.
@@ -959,6 +1033,26 @@ class HorizonBaker:
         self.R = R
         self._ray_miss_exit_threshold = 8
         self._ray_iteration_guard = 1_000_000
+        self._vector_azimuth_batch = 64
+        self._last_polar_field: PolarElevationField | None = None
+
+    def _raster_io_metrics(self) -> dict[str, int]:
+        """Collect cumulative block-cache counters without coupling to a provider."""
+
+        pending = [self.provider]
+        seen: set[int] = set()
+        metrics = {"bytes_read": 0, "cache_hits": 0, "cache_misses": 0}
+        while pending:
+            item = pending.pop()
+            if id(item) in seen:
+                continue
+            seen.add(id(item))
+            pending.extend(getattr(item, "providers", ()) or ())
+            datasets = getattr(item, "_datasets", ()) or ()
+            pending.extend(datasets)
+            for name in metrics:
+                metrics[name] += int(getattr(item, name, 0) or 0)
+        return metrics
 
     @staticmethod
     def _next_step_distance(
@@ -974,6 +1068,213 @@ class HorizonBaker:
         if d < 50_000:
             return d + step_m * 4.0
         return d + step_m * 8.0
+
+    @classmethod
+    def _adaptive_distances(cls, step_m: float, d_max: float) -> np.ndarray:
+        """Materialize the exact legacy distance progression once per bake."""
+
+        distances = []
+        distance = 0.5
+        guard = 0
+        while distance < float(d_max):
+            distances.append(float(distance))
+            guard += 1
+            if guard > 1_000_000:
+                raise RuntimeError("Ray distance iteration guard reached")
+            next_distance = cls._next_step_distance(distance, float(step_m))
+            if not np.isfinite(next_distance) or next_distance <= distance:
+                raise ValueError("Ray distance sequence does not progress")
+            distance = float(next_distance)
+        return np.asarray(distances, dtype=np.float64)
+
+    def _supports_batch_sampling(self) -> bool:
+        """Return true only for providers overriding the scalar compatibility loop."""
+
+        if not PERFORMANCE_FLAGS.raycast_vectorized:
+            return False
+        for provider_type in type(self.provider).__mro__:
+            if provider_type.__name__ == "RasterProvider":
+                return False
+            namespace = getattr(provider_type, "__dict__", {})
+            if "sample_elevation" in namespace or "sample_elevations" in namespace:
+                return True
+        return False
+
+    def _sample_provider_batch(
+        self, x: np.ndarray, y: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        sampler = getattr(self.provider, "sample_elevation", None)
+        if callable(sampler):
+            batch = sampler(x, y)
+        else:
+            sampler = getattr(self.provider, "sample_elevations", None)
+            if not callable(sampler):
+                raise TypeError("Provider has no batch elevation method")
+            try:
+                batch = sampler(x, y, input_crs=CRS_TERRAIN_INTERNAL)
+            except TypeError:
+                batch = sampler(x, y)
+        if hasattr(batch, "values") and hasattr(batch, "valid"):
+            raw_values = batch.values
+            raw_valid = batch.valid
+        else:
+            raw_values, raw_valid = batch[:2]
+        values = np.asarray(raw_values, dtype=np.float32)
+        valid = np.asarray(raw_valid, dtype=bool)
+        if values.shape != x.shape or valid.shape != x.shape:
+            raise ValueError("Provider batch result shape mismatch")
+        valid &= np.isfinite(values)
+        return values, valid
+
+    def _sample_azimuth_chunk_vectorized(
+        self,
+        *,
+        az_indices: np.ndarray,
+        obs_x: float,
+        obs_y: float,
+        h_eye_abs: float,
+        ray_distances: np.ndarray,
+        sample_distances: np.ndarray,
+        ray_distance_indices: np.ndarray,
+        band_defs: List[Dict],
+        sin_az: np.ndarray,
+        cos_az: np.ndarray,
+        light_sampler=None,
+    ) -> dict:
+        """Sample and reduce one <=64-azimuth matrix without Python point loops."""
+
+        az_indices = np.asarray(az_indices, dtype=np.int32)
+        local_sin = np.asarray(sin_az[az_indices], dtype=np.float64)[:, None]
+        local_cos = np.asarray(cos_az[az_indices], dtype=np.float64)[:, None]
+        distances_2d = np.asarray(sample_distances, dtype=np.float64)[None, :]
+        x_all = float(obs_x) + local_sin * distances_2d
+        y_all = float(obs_y) + local_cos * distances_2d
+        elevations_all, valid_all = self._sample_provider_batch(x_all, y_all)
+
+        elevations = elevations_all[:, ray_distance_indices]
+        valid = valid_all[:, ray_distance_indices]
+        threshold = int(self._ray_miss_exit_threshold)
+        if valid.shape[1] >= threshold:
+            windows = np.lib.stride_tricks.sliding_window_view(
+                ~valid, threshold, axis=1
+            )
+            miss_runs = np.all(windows, axis=-1)
+            has_exit = np.any(miss_runs, axis=1)
+            first_start = np.argmax(miss_runs, axis=1)
+            # The legacy loop breaks while handling the eighth miss.  No valid
+            # point at or after that position may affect a reduction.
+            stop = np.where(
+                has_exit, first_start + threshold - 1, valid.shape[1]
+            )
+            before_exit = np.arange(valid.shape[1])[None, :] < stop[:, None]
+            effective_valid = valid & before_exit
+        else:
+            effective_valid = valid
+
+        ray_d = np.asarray(ray_distances, dtype=np.float64)
+        drop = (ray_d * ray_d) / (2.0 * float(self.R))
+        angles = np.arctan2(
+            elevations.astype(np.float64) - drop[None, :] - float(h_eye_abs),
+            ray_d[None, :],
+        )
+        angles = np.where(effective_valid, angles, -np.inf)
+
+        assignment = np.full(ray_d.shape, -1, dtype=np.int16)
+        band_index = 0
+        for distance_index, distance in enumerate(ray_d):
+            while (
+                band_index + 1 < len(band_defs)
+                and distance >= float(band_defs[band_index]["max"])
+            ):
+                band_index += 1
+            if (
+                0 <= band_index < len(band_defs)
+                and float(band_defs[band_index]["min"])
+                <= distance
+                < float(band_defs[band_index]["max"])
+            ):
+                assignment[distance_index] = band_index
+
+        band_results = []
+        distance_positions = np.arange(ray_d.size, dtype=np.int32)[None, :]
+        for index, _definition in enumerate(band_defs):
+            in_band = effective_valid & (assignment[None, :] == index)
+            has_value = np.any(in_band, axis=1)
+            band_angles = np.where(in_band, angles, -np.inf)
+            best_index = np.argmax(band_angles, axis=1)
+            best_angle = np.where(
+                has_value,
+                band_angles[np.arange(len(az_indices)), best_index],
+                -np.inf,
+            )
+            last_index = np.max(
+                np.where(in_band, distance_positions, -1), axis=1
+            )
+            safe_last = np.maximum(last_index, 0)
+            band_results.append(
+                {
+                    "angles": best_angle,
+                    "dists": np.where(has_value, ray_d[best_index], 0.0),
+                    "heights": np.where(
+                        has_value,
+                        elevations[np.arange(len(az_indices)), best_index],
+                        0.0,
+                    ),
+                    "surface_angles": np.where(
+                        has_value,
+                        angles[np.arange(len(az_indices)), safe_last],
+                        -np.inf,
+                    ),
+                    "surface_dists": np.where(
+                        has_value, ray_d[safe_last], 0.0
+                    ),
+                    "surface_heights": np.where(
+                        has_value,
+                        elevations[np.arange(len(az_indices)), safe_last],
+                        0.0,
+                    ),
+                }
+            )
+
+        light_domes = np.zeros(len(az_indices), dtype=np.float32)
+        light_peak_distances = np.zeros(len(az_indices), dtype=np.float32)
+        max_radiance = np.zeros(len(az_indices), dtype=np.float32)
+        if light_sampler is not None:
+            prefix_max = np.maximum.accumulate(angles, axis=1)
+            x_ray = x_all[:, ray_distance_indices]
+            y_ray = y_all[:, ray_distance_indices]
+            for local_index in range(len(az_indices)):
+                last_light_distance = 0.0
+                for distance_index in np.flatnonzero(effective_valid[local_index]):
+                    distance = float(ray_d[distance_index])
+                    if distance - last_light_distance < 2000.0:
+                        continue
+                    last_light_distance = distance
+                    radiance = self._sample_light_radiance(
+                        light_sampler,
+                        float(x_ray[local_index, distance_index]),
+                        float(y_ray[local_index, distance_index]),
+                    )
+                    if radiance <= 0.1:
+                        continue
+                    angle = float(angles[local_index, distance_index])
+                    if angle <= float(prefix_max[local_index, distance_index]) - 0.17:
+                        continue
+                    distance_multiplier = 1.0 / max(1.0, distance / 1000.0)
+                    light_domes[local_index] += float(
+                        radiance * distance_multiplier * 20.0
+                    )
+                    if radiance > max_radiance[local_index]:
+                        max_radiance[local_index] = float(radiance)
+                        light_peak_distances[local_index] = distance
+
+        return {
+            "elevations": elevations_all,
+            "valid": valid_all,
+            "bands": band_results,
+            "light_domes": light_domes,
+            "light_peak_distances": light_peak_distances,
+        }
 
     @staticmethod
     def _build_band_buffers(n_az: int, band_defs: List[Dict]) -> List[Dict]:
@@ -1198,23 +1499,17 @@ class HorizonBaker:
         valid: np.ndarray,
         margin_deg: float = 0.02,
     ) -> np.ndarray:
+        altitudes = np.asarray(altitudes)
+        valid = np.asarray(valid, dtype=bool)
         visible = np.zeros_like(valid, dtype=bool)
         if altitudes.shape != valid.shape or altitudes.ndim != 2:
             return visible
-
-        for az_idx in range(altitudes.shape[1]):
-            max_alt = -np.inf
-            for d_idx in range(altitudes.shape[0]):
-                if not valid[d_idx, az_idx]:
-                    continue
-                alt = float(altitudes[d_idx, az_idx])
-                if not np.isfinite(alt):
-                    continue
-                if alt >= max_alt - float(margin_deg):
-                    visible[d_idx, az_idx] = True
-                if alt > max_alt:
-                    max_alt = alt
-        return visible
+        finite_valid = valid & np.isfinite(altitudes)
+        candidates = np.where(finite_valid, altitudes, -np.inf)
+        running_max = np.maximum.accumulate(candidates, axis=0)
+        return finite_valid & (
+            altitudes >= running_max - float(margin_deg)
+        )
 
     def build_view_mesh(
         self,
@@ -1243,22 +1538,65 @@ class HorizonBaker:
         sin_az = np.sin(az_rads)
         cos_az = np.cos(az_rads)
 
-        for d_idx, d in enumerate(distances.astype(np.float64)):
-            drop = (d * d) / (2.0 * self.R)
-            for az_idx in range(n_az):
-                x = obs_x + d * sin_az[az_idx]
-                y = obs_y + d * cos_az[az_idx]
-                h_terr = self.provider.get_elevation(x, y)
-                if h_terr is None:
-                    continue
+        reused_field = False
+        field = self._last_polar_field
+        if (
+            field is not None
+            and math.isclose(field.observer_x, float(obs_x), abs_tol=1e-6)
+            and math.isclose(field.observer_y, float(obs_y), abs_tol=1e-6)
+            and math.isclose(field.observer_ground, float(obs_h_ground), abs_tol=1e-6)
+            and math.isclose(field.delta_az_deg, float(delta_az_deg), abs_tol=1e-9)
+            and field.azimuths.shape == azimuths.shape
+            and np.array_equal(field.azimuths, azimuths)
+        ):
+            distance_indices = np.searchsorted(field.distances, distances)
+            in_bounds = distance_indices < field.distances.size
+            if bool(np.all(in_bounds)) and np.array_equal(
+                field.distances[distance_indices], distances
+            ):
+                elevations[:] = field.elevations[distance_indices, :]
+                valid[:] = field.valid[distance_indices, :]
+                reused_field = True
 
-                h_terr = float(h_terr)
-                h_visual = h_terr - drop - h_eye_abs
-                altitudes[d_idx, az_idx] = float(
-                    math.degrees(math.atan2(h_visual, d))
-                )
-                elevations[d_idx, az_idx] = h_terr
-                valid[d_idx, az_idx] = True
+        if not reused_field and self._supports_batch_sampling():
+            # Keep each provider request below the shared million-sample cap.
+            azimuth_batch = max(
+                1,
+                min(
+                    64,
+                    int(self._vector_azimuth_batch),
+                    DEFAULT_PERFORMANCE_BUDGET.batch_rows(40)
+                    // max(1, int(n_d)),
+                ),
+            )
+            distance_values = distances.astype(np.float64)
+            for start in range(0, n_az, azimuth_batch):
+                stop = min(n_az, start + azimuth_batch)
+                x = float(obs_x) + sin_az[start:stop, None] * distance_values[None, :]
+                y = float(obs_y) + cos_az[start:stop, None] * distance_values[None, :]
+                sampled, sampled_valid = self._sample_provider_batch(x, y)
+                elevations[:, start:stop] = sampled.T
+                valid[:, start:stop] = sampled_valid.T
+        elif not reused_field:
+            for d_idx, d in enumerate(distances.astype(np.float64)):
+                for az_idx in range(n_az):
+                    x = obs_x + d * sin_az[az_idx]
+                    y = obs_y + d * cos_az[az_idx]
+                    h_terr = self.provider.get_elevation(x, y)
+                    if h_terr is None:
+                        continue
+                    elevations[d_idx, az_idx] = float(h_terr)
+                    valid[d_idx, az_idx] = True
+
+        distance64 = distances.astype(np.float64)[:, None]
+        drop = (distance64 * distance64) / (2.0 * self.R)
+        computed_altitudes = np.degrees(
+            np.arctan2(
+                elevations.astype(np.float64) - drop - float(h_eye_abs),
+                distance64,
+            )
+        ).astype(np.float32)
+        altitudes[:] = np.where(valid, computed_altitudes, -90.0)
 
         visible = self._compute_mesh_visibility(altitudes, valid)
         if n_az < 8 or float(delta_az_deg) >= 30.0:
@@ -1364,6 +1702,176 @@ class HorizonBaker:
 
         return az_indices, chunk_angles, chunk_dists, chunk_heights
 
+    def _bake_progressive_vectorized(
+        self,
+        *,
+        obs_x: float,
+        obs_y: float,
+        obs_h_ground: float,
+        h_eye_abs: float,
+        step_m: float,
+        d_max: float,
+        delta_az_deg: float,
+        azimuths: np.ndarray,
+        ordered_indices: List[int],
+        band_defs: List[Dict],
+        bands: List[Dict],
+        sin_az: np.ndarray,
+        cos_az: np.ndarray,
+        light_domes: np.ndarray,
+        light_peak_distances: np.ndarray,
+        resolved_mask: np.ndarray,
+        progress_callback=None,
+        preview_callback=None,
+        preview_every: int = 24,
+        light_sampler=None,
+        abort_check=None,
+    ) -> Tuple[np.ndarray, List[Dict], np.ndarray, np.ndarray, np.ndarray]:
+        import time
+
+        ray_distances = self._adaptive_distances(step_m, d_max)
+        mesh_distances = self._mesh_distance_rings(
+            d_max, self._provider_nominal_resolution_m()
+        ).astype(np.float64)
+        sample_distances = np.unique(
+            np.concatenate((ray_distances, mesh_distances))
+        )
+        ray_distance_indices = np.searchsorted(sample_distances, ray_distances)
+        if not np.array_equal(sample_distances[ray_distance_indices], ray_distances):
+            raise RuntimeError("Ray distances were not preserved in polar union")
+
+        field_elevations = np.zeros(
+            (sample_distances.size, azimuths.size), dtype=np.float32
+        )
+        field_valid = np.zeros(field_elevations.shape, dtype=bool)
+        io_before = self._raster_io_metrics()
+        t0 = time.time()
+        last_preview_t = t0
+        completed = 0
+        rows_per_batch = DEFAULT_PERFORMANCE_BUDGET.batch_rows(40)
+        batch_size = max(
+            1,
+            min(
+                64,
+                int(self._vector_azimuth_batch),
+                rows_per_batch // max(1, int(sample_distances.size)),
+            ),
+        )
+        if preview_callback is not None:
+            batch_size = min(batch_size, max(1, int(preview_every)))
+
+        for chunk_start in range(0, len(ordered_indices), batch_size):
+            if abort_check and abort_check():
+                raise InterruptedError("Bake aborted")
+            chunk_indices = np.asarray(
+                ordered_indices[chunk_start : chunk_start + batch_size],
+                dtype=np.int32,
+            )
+            result = self._sample_azimuth_chunk_vectorized(
+                az_indices=chunk_indices,
+                obs_x=obs_x,
+                obs_y=obs_y,
+                h_eye_abs=h_eye_abs,
+                ray_distances=ray_distances,
+                sample_distances=sample_distances,
+                ray_distance_indices=ray_distance_indices,
+                band_defs=band_defs,
+                sin_az=sin_az,
+                cos_az=cos_az,
+                light_sampler=light_sampler,
+            )
+            field_elevations[:, chunk_indices] = np.asarray(
+                result["elevations"], dtype=np.float32
+            ).T
+            field_valid[:, chunk_indices] = np.asarray(
+                result["valid"], dtype=bool
+            ).T
+
+            # Commit in the requested priority order so previews never expose
+            # unresolved azimuth values from the remainder of a matrix batch.
+            for local_index, azimuth_index in enumerate(chunk_indices):
+                if abort_check and abort_check():
+                    raise InterruptedError("Bake aborted")
+                for band_index, band_result in enumerate(result["bands"]):
+                    target = bands[band_index]
+                    for key in (
+                        "angles",
+                        "dists",
+                        "heights",
+                        "surface_angles",
+                        "surface_dists",
+                        "surface_heights",
+                    ):
+                        target[key][azimuth_index] = band_result[key][local_index]
+                light_domes[azimuth_index] = result["light_domes"][local_index]
+                light_peak_distances[azimuth_index] = result[
+                    "light_peak_distances"
+                ][local_index]
+                resolved_mask[azimuth_index] = True
+                completed += 1
+                progress_pct = (completed / len(azimuths)) * 100.0
+                if progress_callback:
+                    progress_callback(
+                        progress_pct, f"Azimuth {completed}/{len(azimuths)}"
+                    )
+                if preview_callback:
+                    now = time.time()
+                    enough_samples = completed >= preview_every and (
+                        completed % max(1, preview_every) == 0
+                    )
+                    enough_time = (now - last_preview_t) >= 0.35
+                    if completed == len(azimuths) or enough_samples or enough_time:
+                        preview_callback(
+                            completed,
+                            len(azimuths),
+                            azimuths,
+                            bands,
+                            light_domes,
+                            light_peak_distances,
+                            resolved_mask,
+                        )
+                        last_preview_t = now
+
+        self._last_polar_field = PolarElevationField(
+            azimuths=azimuths,
+            distances=sample_distances.astype(np.float32),
+            elevations=field_elevations,
+            valid=field_valid,
+            observer_x=float(obs_x),
+            observer_y=float(obs_y),
+            observer_ground=float(obs_h_ground),
+            d_max=float(d_max),
+            delta_az_deg=float(delta_az_deg),
+        )
+        print(
+            "[HorizonEngine] Vectorized progressive bake complete in "
+            f"{time.time() - t0:.2f}s."
+        )
+        elapsed = time.time() - t0
+        io_after = self._raster_io_metrics()
+        append_perf_event(
+            "terrain.raycast",
+            backend="vectorized",
+            elapsed_s=round(float(elapsed), 6),
+            azimuths=int(azimuths.size),
+            ray_distances=int(ray_distances.size),
+            polar_distances=int(sample_distances.size),
+            samples=int(azimuths.size * sample_distances.size),
+            valid_samples=int(np.count_nonzero(field_valid)),
+            step_m=float(step_m),
+            d_max_m=float(d_max),
+            bytes_read=int(io_after["bytes_read"] - io_before["bytes_read"]),
+            cache_hits=int(io_after["cache_hits"] - io_before["cache_hits"]),
+            cache_misses=int(io_after["cache_misses"] - io_before["cache_misses"]),
+        )
+        return (
+            azimuths,
+            bands,
+            light_domes,
+            light_peak_distances,
+            resolved_mask,
+        )
+
     def bake_progressive(
         self,
         obs_x: float,
@@ -1435,6 +1943,30 @@ class HorizonBaker:
         print(
             f"[HorizonEngine] Progressive bake {n_az} azimuths, max_dist={d_max / 1000:.0f}km..."
         )
+        if self._supports_batch_sampling():
+            return self._bake_progressive_vectorized(
+                obs_x=obs_x,
+                obs_y=obs_y,
+                obs_h_ground=float(obs_h_ground),
+                h_eye_abs=float(h_eye_abs),
+                step_m=step_m,
+                d_max=d_max,
+                delta_az_deg=delta_az_deg,
+                azimuths=azimuths,
+                ordered_indices=ordered_indices,
+                band_defs=band_defs,
+                bands=bands,
+                sin_az=sin_az,
+                cos_az=cos_az,
+                light_domes=light_domes,
+                light_peak_distances=light_peak_distances,
+                resolved_mask=resolved_mask,
+                progress_callback=progress_callback,
+                preview_callback=preview_callback,
+                preview_every=preview_every,
+                light_sampler=light_sampler,
+                abort_check=abort_check,
+            )
         t0 = time.time()
         last_preview_t = t0
         completed = 0
@@ -1516,6 +2048,24 @@ class HorizonBaker:
         Returns (azimuths, bands) where bands is a list of dicts
         each containing 'id', 'angles', 'dists', 'heights' arrays.
         """
+        azimuths, bands, light_domes, light_peak_distances, _resolved = (
+            self.bake_progressive(
+                obs_x=obs_x,
+                obs_y=obs_y,
+                obs_h_ground=obs_h_ground,
+                step_m=step_m,
+                d_max=d_max,
+                delta_az_deg=delta_az_deg,
+                band_defs=band_defs,
+                progress_callback=progress_callback,
+                light_sampler=light_sampler,
+                abort_check=abort_check,
+            )
+        )
+        return azimuths, bands, light_domes, light_peak_distances
+
+        # Retained temporarily as a reference implementation for parity
+        # profiling; normal execution returns through bake_progressive above.
         import time
 
         if obs_h_ground is None:

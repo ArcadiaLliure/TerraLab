@@ -42,7 +42,8 @@ except Exception:  # pragma: no cover
 
 ProgressFn = Callable[[float, str], None]
 DEFAULT_NSIDE = 512
-DEFAULT_CHUNK_ROWS = 2_000_000
+DEFAULT_CHUNK_ROWS = 1_000_000
+MAX_CHUNK_BYTES = 128 * 1024**2
 
 
 def _human_bytes(size_bytes: int) -> str:
@@ -244,6 +245,137 @@ def _write_reordered_catalog(
     tmp_out.replace(output_npy)
 
 
+def _count_healpix_pixels_streaming(
+    catalog: np.ndarray,
+    nside: int,
+    chunk_rows: int,
+    progress_callback: Optional[ProgressFn] = None,
+) -> np.ndarray:
+    """First pass: bounded pixel histogram, never a row-sized key array."""
+
+    npixels = 12 * int(nside) * int(nside)
+    counts = np.zeros(npixels, dtype=np.int64)
+    total = int(len(catalog))
+    for chunk_index, start in enumerate(range(0, total, chunk_rows), start=1):
+        stop = min(total, start + chunk_rows)
+        pixels = _ang_to_pix(
+            nside,
+            np.asarray(catalog["ra"][start:stop], dtype=np.float64),
+            np.asarray(catalog["dec"][start:stop], dtype=np.float64),
+        )
+        counts += np.bincount(pixels, minlength=npixels).astype(np.int64, copy=False)
+        if chunk_index == 1 or stop == total or chunk_index % 5 == 0:
+            _emit_progress(
+                6.0 + 24.0 * (float(stop) / total),
+                f"Counting HEALPix cells {stop:,}/{total:,}",
+                callback=progress_callback,
+            )
+    return counts
+
+
+def _scatter_catalog_by_pixel(
+    catalog: np.ndarray,
+    counts: np.ndarray,
+    nside: int,
+    output_tmp: Path,
+    chunk_rows: int,
+    progress_callback: Optional[ProgressFn] = None,
+) -> tuple[np.memmap, np.ndarray]:
+    """Second pass: counting-sort scatter with only chunk-sized argsorts."""
+
+    starts = np.zeros(counts.size, dtype=np.int64)
+    if counts.size > 1:
+        np.cumsum(counts[:-1], dtype=np.int64, out=starts[1:])
+    cursors = starts.copy()
+    output_tmp.parent.mkdir(parents=True, exist_ok=True)
+    output_tmp.unlink(missing_ok=True)
+    output = np.lib.format.open_memmap(
+        output_tmp, mode="w+", dtype=catalog.dtype, shape=(len(catalog),)
+    )
+    total = int(len(catalog))
+    for chunk_index, start in enumerate(range(0, total, chunk_rows), start=1):
+        stop = min(total, start + chunk_rows)
+        chunk = catalog[start:stop]
+        pixels = _ang_to_pix(
+            nside,
+            np.asarray(chunk["ra"], dtype=np.float64),
+            np.asarray(chunk["dec"], dtype=np.float64),
+        )
+        order = np.argsort(pixels, kind="stable")
+        pixels_sorted = pixels[order]
+        unique_pixels, first, local_counts = np.unique(
+            pixels_sorted, return_index=True, return_counts=True
+        )
+        group_start_for_row = np.repeat(first, local_counts)
+        local_rank = np.arange(len(chunk), dtype=np.int64) - group_start_for_row
+        targets = cursors[pixels_sorted] + local_rank
+        output[targets] = chunk[order]
+        cursors[unique_pixels] += local_counts
+        if chunk_index == 1 or stop == total or chunk_index % 3 == 0:
+            _emit_progress(
+                32.0 + 30.0 * (float(stop) / total),
+                f"Scattering catalogue {stop:,}/{total:,}",
+                callback=progress_callback,
+            )
+    output.flush()
+    return output, starts
+
+
+def _sort_pixel_ranges_v2(
+    output: np.memmap,
+    counts: np.ndarray,
+    starts: np.ndarray,
+    chunk_rows: int,
+    progress_callback: Optional[ProgressFn] = None,
+) -> None:
+    """Sort bounded groups of whole pixels by (pixel, magnitude, source_id)."""
+
+    names = set(output.dtype.names or ())
+    mag_name = "phot_g_mean_mag" if "phot_g_mean_mag" in names else "mag"
+    if mag_name not in names:
+        raise ValueError("Catalogue requires phot_g_mean_mag or mag for v2")
+    id_name = "source_id" if "source_id" in names else None
+    populated = np.flatnonzero(counts)
+    if populated.size == 0:
+        return
+    total_rows = int(len(output))
+    group_start = 0
+    processed = 0
+    max_rows = max(1, int(chunk_rows))
+    while group_start < populated.size:
+        group_stop = group_start
+        rows = 0
+        while group_stop < populated.size:
+            next_rows = int(counts[populated[group_stop]])
+            if rows and rows + next_rows > max_rows:
+                break
+            rows += next_rows
+            group_stop += 1
+        pixels = populated[group_start:group_stop]
+        start = int(starts[pixels[0]])
+        stop = int(starts[pixels[-1]] + counts[pixels[-1]])
+        chunk = np.array(output[start:stop], copy=True)
+        pixel_keys = np.repeat(pixels.astype(np.uint32), counts[pixels])
+        source_ids = (
+            np.asarray(chunk[id_name], dtype=np.int64)
+            if id_name is not None
+            else np.zeros(len(chunk), dtype=np.int64)
+        )
+        order = np.lexsort(
+            (source_ids, np.asarray(chunk[mag_name], dtype=np.float32), pixel_keys)
+        )
+        output[start:stop] = chunk[order]
+        processed += len(chunk)
+        group_start = group_stop
+        if group_start == populated.size or processed == len(chunk) or processed % (max_rows * 5) < len(chunk):
+            _emit_progress(
+                64.0 + 30.0 * (float(processed) / total_rows),
+                f"Sorting v2 pixel ranges {processed:,}/{total_rows:,}",
+                callback=progress_callback,
+            )
+    output.flush()
+
+
 def build_healpy_catalog_index(
     input_npy: str | Path,
     output_npy: str | Path | None = None,
@@ -283,6 +415,13 @@ def build_healpy_catalog_index(
     )
     catalog = np.load(input_path, mmap_mode="r", allow_pickle=False)
     _validate_inputs(catalog, int(nside), int(chunk_rows))
+    # Sorting/scattering holds keys, order arrays and a structured row copy.
+    # Account for that working set as well as the explicit one-million cap.
+    bounded_chunk_rows = min(
+        1_000_000,
+        int(chunk_rows),
+        max(1, MAX_CHUNK_BYTES // max(1, int(catalog.dtype.itemsize) * 2 + 24)),
+    )
     total_rows = int(len(catalog))
     _emit_progress(
         2.0,
@@ -290,52 +429,48 @@ def build_healpy_catalog_index(
         callback=progress_callback,
     )
 
-    pixels = _compute_healpix_pixels(
+    counts_full = _count_healpix_pixels_streaming(
         catalog,
         int(nside),
-        int(chunk_rows),
+        bounded_chunk_rows,
         progress_callback=progress_callback,
     )
+    tmp_out = out_npy.with_suffix(out_npy.suffix + ".tmp")
+    output = None
+    try:
+        output, starts_full = _scatter_catalog_by_pixel(
+            catalog,
+            counts_full,
+            int(nside),
+            tmp_out,
+            bounded_chunk_rows,
+            progress_callback=progress_callback,
+        )
+        _sort_pixel_ranges_v2(
+            output,
+            counts_full,
+            starts_full,
+            bounded_chunk_rows,
+            progress_callback=progress_callback,
+        )
+        del output
+        output = None
+        out_npy.parent.mkdir(parents=True, exist_ok=True)
+        tmp_out.replace(out_npy)
+    except Exception:
+        if output is not None:
+            del output
+        tmp_out.unlink(missing_ok=True)
+        raise
 
-    t_sort = time.perf_counter()
+    pixels_unics = np.flatnonzero(counts_full).astype(np.uint32)
+    inicis = starts_full[pixels_unics].astype(np.int64, copy=False)
+    comptes = counts_full[pixels_unics].astype(np.int64, copy=False)
     _emit_progress(
-        38.0, "Stable sorting by HEALPix pixel...", callback=progress_callback
-    )
-    order = np.argsort(pixels, kind="stable")
-    _emit_progress(
-        55.0,
-        f"Stable sort done in {time.perf_counter() - t_sort:.2f}s",
+        95.0,
+        f"V2 index ready: {len(pixels_unics):,} populated pixels",
         callback=progress_callback,
     )
-
-    _emit_progress(
-        57.0, "Building sparse pixel index...", callback=progress_callback
-    )
-    pixels_sorted = pixels[order]
-    pixels_unics, inicis, comptes = np.unique(
-        pixels_sorted,
-        return_index=True,
-        return_counts=True,
-    )
-    pixels_unics = np.asarray(pixels_unics, dtype=np.uint32)
-    inicis = np.asarray(inicis, dtype=np.int64)
-    comptes = np.asarray(comptes, dtype=np.int64)
-    _emit_progress(
-        64.0,
-        f"Index ready: {len(pixels_unics):,} populated pixels",
-        callback=progress_callback,
-    )
-    del pixels_sorted
-    del pixels
-
-    _write_reordered_catalog(
-        catalog,
-        order,
-        out_npy,
-        int(chunk_rows),
-        progress_callback=progress_callback,
-    )
-    del order
 
     _emit_progress(
         96.0, f"Writing index: {out_idx}", callback=progress_callback
@@ -351,6 +486,8 @@ def build_healpy_catalog_index(
             inicis=inicis,
             comptes=comptes,
             nside=np.asarray([int(nside)], dtype=np.int32),
+            format_version=np.asarray([2], dtype=np.int16),
+            sorted_by=np.asarray("healpix,phot_g_mean_mag,source_id"),
         )
     tmp_idx.replace(out_idx)
 

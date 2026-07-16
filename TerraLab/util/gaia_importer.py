@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import csv
 import io
+import multiprocessing as mp
+import queue
 import shutil
 import tempfile
+import traceback
 from pathlib import Path
 from typing import Callable, Dict, Iterable, Iterator, List, Optional
 
@@ -379,7 +382,7 @@ def build_gaia_catalog_from_tables(
     write_zst: bool = False,
     build_healpy_index: bool = False,
     healpy_nside: int = 512,
-    healpy_chunk_rows: int = 2_000_000,
+    healpy_chunk_rows: int = 1_000_000,
     progress_callback: Optional[ProgressFn] = None,
 ) -> Dict[str, object]:
     paths = [Path(p) for p in input_paths if str(p).strip()]
@@ -575,3 +578,85 @@ def build_gaia_catalog_from_tables(
         ),
         "zst_written": bool(zst_written),
     }
+
+
+def _gaia_import_process_entry(options: dict, events) -> None:
+    """Spawn-safe entry point; only serializable values cross the boundary."""
+
+    def _emit_progress(percent: float, message: str) -> None:
+        events.put(("progress", float(percent), str(message)))
+
+    try:
+        summary = build_gaia_catalog_from_tables(
+            progress_callback=_emit_progress,
+            **options,
+        )
+    except BaseException:
+        events.put(("error", traceback.format_exc()))
+    else:
+        events.put(("result", summary))
+
+
+def build_gaia_catalog_spawned(
+    input_paths: Iterable[str],
+    output_dir: str,
+    *,
+    progress_callback: Optional[ProgressFn] = None,
+    cancel_check: Callable[[], bool] | None = None,
+    **options,
+) -> Dict[str, object]:
+    """Run catalogue import/index construction in one cancellable spawn process."""
+
+    process_options = {
+        "input_paths": [str(path) for path in input_paths],
+        "output_dir": str(output_dir),
+        **options,
+    }
+    context = mp.get_context("spawn")
+    events = context.Queue()
+    process = context.Process(
+        target=_gaia_import_process_entry,
+        args=(process_options, events),
+        name="terralab-gaia-import",
+    )
+    process.start()
+    result: Dict[str, object] | None = None
+    error: str | None = None
+    try:
+        while process.is_alive() or result is None:
+            if cancel_check is not None and bool(cancel_check()):
+                process.terminate()
+                process.join(timeout=5.0)
+                raise InterruptedError("Gaia import cancelled")
+            try:
+                event = events.get(timeout=0.10)
+            except queue.Empty:
+                if not process.is_alive():
+                    break
+                continue
+            kind = event[0]
+            if kind == "progress":
+                _progress(progress_callback, float(event[1]), str(event[2]))
+            elif kind == "result":
+                result = dict(event[1])
+                break
+            elif kind == "error":
+                error = str(event[1])
+                break
+        process.join(timeout=5.0)
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5.0)
+        if error:
+            raise RuntimeError(f"Gaia import subprocess failed:\n{error}")
+        if result is None:
+            raise RuntimeError(
+                f"Gaia import subprocess exited without a result (code={process.exitcode})"
+            )
+        return result
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5.0)
+        events.close()
+        events.join_thread()

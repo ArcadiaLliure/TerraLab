@@ -1,18 +1,134 @@
 import abc
+import hashlib
 import math
 import os
 import threading
 import sys
-from typing import Dict, List, Optional, Tuple
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 from pyproj import Transformer
 
 from TerraLab.common.locks import RASTERIO_LOCK
+from TerraLab.common.performance import DEFAULT_PERFORMANCE_BUDGET, PERFORMANCE_FLAGS
+from TerraLab.terrain.crs import (
+    DEFAULT_TRANSFORM_SERVICE,
+    CoordinateTransformService,
+    normalize_crs,
+)
 
 CRS_GEOGRAPHIC = "EPSG:4326"
 CRS_TERRAIN_INTERNAL = "EPSG:25831"
 PYPROJ_TRANSFORMER_LOCK = threading.Lock()
+
+
+@dataclass(frozen=True)
+class ElevationBatch:
+    """Vector elevation result aligned with the broadcast input shape."""
+
+    values: np.ndarray
+    valid: np.ndarray
+    source_indices: np.ndarray | None = None
+
+    def __post_init__(self) -> None:
+        values = np.asarray(self.values, dtype=np.float32)
+        valid = np.asarray(self.valid, dtype=bool)
+        if values.shape != valid.shape:
+            raise ValueError("Elevation values and validity masks must match")
+        source_indices = self.source_indices
+        if source_indices is None:
+            source_indices = np.full(valid.shape, -1, dtype=np.int16)
+        else:
+            source_indices = np.asarray(source_indices, dtype=np.int16)
+            if source_indices.shape != valid.shape:
+                raise ValueError("Elevation source indices must match values")
+        object.__setattr__(self, "values", values)
+        object.__setattr__(self, "valid", valid)
+        object.__setattr__(self, "source_indices", source_indices)
+
+
+@dataclass(frozen=True)
+class RasterMetadata:
+    native_crs: str
+    bounds: tuple[float, float, float, float] | None
+    resolution_m: float | None
+    nodata: tuple[float | None, ...] = ()
+    driver: str = ""
+    band_count: int = 1
+    paths: tuple[str, ...] = ()
+    extra: Mapping[str, Any] = field(default_factory=dict)
+
+
+def _source_value(source: Any, *names: str, default: Any = None) -> Any:
+    """Return the first populated attribute/key among compatible source names."""
+
+    for name in names:
+        if isinstance(source, Mapping):
+            value = source.get(name, None)
+        else:
+            value = getattr(source, name, None)
+        if value is not None:
+            return value
+    return default
+
+
+def _source_enabled(source: Any) -> bool:
+    return bool(_source_value(source, "enabled", default=True))
+
+
+def _source_identifier(source: Any) -> str:
+    return str(_source_value(source, "id", default="") or "")
+
+
+def _source_declared_crs(source: Any) -> str | None:
+    value = _source_value(source, "crs", default=None)
+    return str(value) if value not in (None, "") else None
+
+
+def _source_paths(source: Any) -> list[str]:
+    value = _source_value(source, "path", default=source)
+    if isinstance(value, (str, os.PathLike)):
+        return [str(Path(value).expanduser().resolve(strict=False))]
+    if isinstance(value, Sequence):
+        return [str(Path(item).expanduser().resolve(strict=False)) for item in value]
+    return []
+
+
+def _as_source_sequence(sources: Any) -> list[Any]:
+    if isinstance(sources, (str, os.PathLike, Mapping)):
+        return [sources]
+    if isinstance(sources, Sequence):
+        return list(sources)
+    return [sources]
+
+
+def _path_fingerprint(
+    paths: Sequence[str], *, namespace: str = "raster", configuration: Any = None
+) -> str:
+    digest = hashlib.blake2b(digest_size=20)
+    digest.update(str(namespace).encode("utf-8"))
+    digest.update(repr(configuration).encode("utf-8"))
+    for raw in sorted((str(item) for item in paths), key=str.casefold):
+        path = Path(raw)
+        candidates = [path]
+        if path.is_dir():
+            candidates = sorted(
+                (item for item in path.rglob("*") if item.is_file()),
+                key=lambda item: str(item).casefold(),
+            )
+        for item in candidates:
+            digest.update(str(item).encode("utf-8", errors="replace"))
+            try:
+                stat = item.stat()
+                digest.update(str(int(stat.st_size)).encode("ascii"))
+                digest.update(str(int(stat.st_mtime_ns)).encode("ascii"))
+            except OSError:
+                digest.update(b"missing")
+    return digest.hexdigest()
 
 
 def resolve_primary_dem_tiff_path(tiles_dir: str) -> Optional[str]:
@@ -41,11 +157,11 @@ def resolve_primary_dem_tiff_path(tiles_dir: str) -> Optional[str]:
         return None
     tifs = sorted(
         [
-            os.path.join(src, name)
-            for name in os.listdir(src)
-            if str(name).lower().endswith((".tif", ".tiff"))
+            str(path)
+            for path in Path(src).rglob("*")
+            if path.is_file() and path.suffix.lower() in {".tif", ".tiff"}
         ],
-        key=lambda path: os.path.basename(path).lower(),
+        key=str.casefold,
     )
     return tifs[0] if tifs else None
 
@@ -67,7 +183,10 @@ def create_raster_provider(tiles_dir: str, progress_callback=None):
     """
     tiff_path = resolve_primary_dem_tiff_path(tiles_dir)
     if tiff_path:
-        provider = TiffRasterWindowProvider(tiff_path)
+        if PERFORMANCE_FLAGS.raster_batch:
+            provider = TiffRasterWindowProvider(tiles_dir)
+        else:
+            provider = LegacyTiffRasterWindowProvider(tiff_path)
     else:
         provider = AscRasterProvider(tiles_dir)
     provider.initialize(progress_callback=progress_callback)
@@ -86,6 +205,37 @@ class RasterProvider(abc.ABC):
         Coordinates are expected to match the provider's internal CRS (usually UTM).
         """
         pass
+
+    def sample_elevation(self, x: Any, y: Any) -> ElevationBatch:
+        """Sample broadcast x/y arrays; legacy providers get a bounded fallback."""
+
+        x_arr, y_arr = np.broadcast_arrays(
+            np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
+        )
+        values = np.zeros(x_arr.shape, dtype=np.float32)
+        valid = np.zeros(x_arr.shape, dtype=bool)
+        flat_values = values.ravel()
+        flat_valid = valid.ravel()
+        for index, (x_value, y_value) in enumerate(
+            zip(x_arr.ravel(), y_arr.ravel())
+        ):
+            value = self.get_elevation(float(x_value), float(y_value))
+            if value is not None and np.isfinite(value):
+                flat_values[index] = float(value)
+                flat_valid[index] = True
+        return ElevationBatch(values, valid)
+
+    def sample_elevations(
+        self, x: Any, y: Any, *, input_crs: str | None = None
+    ) -> ElevationBatch:
+        """Compatibility alias used by typed geospatial providers."""
+
+        if input_crs not in (None, "", CRS_TERRAIN_INTERNAL):
+            transformer = DEFAULT_TRANSFORM_SERVICE
+            x, y = transformer.transform_xy(
+                x, y, input_crs, CRS_TERRAIN_INTERNAL
+            )
+        return self.sample_elevation(x, y)
 
     def prepare_region(
         self, cx: float, cy: float, radius: float, progress_callback=None
@@ -159,6 +309,319 @@ class RasterProvider(abc.ABC):
             return 0.0, 0.0
 
 
+class _GeoRasterDataset:
+    """One GDAL dataset sampled through native blocks with a byte-bounded LRU."""
+
+    def __init__(
+        self,
+        path: str,
+        *,
+        declared_crs: str | None = None,
+        transform_service: CoordinateTransformService | None = None,
+        block_cache_capacity: int = 64,
+        block_cache_bytes: int | None = None,
+    ) -> None:
+        self.path = str(Path(path).expanduser().resolve(strict=False))
+        self.declared_crs = declared_crs
+        self.transform_service = transform_service or DEFAULT_TRANSFORM_SERVICE
+        self.block_cache_capacity = max(1, int(block_cache_capacity))
+        self.block_cache_bytes = int(
+            block_cache_bytes
+            if block_cache_bytes is not None
+            else max(32 * 1024**2, DEFAULT_PERFORMANCE_BUDGET.dem_bytes // 8)
+        )
+        self.dataset = None
+        self._cache: OrderedDict[tuple, tuple[np.ndarray, np.ndarray, int, int]] = OrderedDict()
+        self._cache_bytes = 0
+        self._cache_lock = threading.RLock()
+        self._read_lock = threading.RLock()
+        self._thread_local = threading.local()
+        self._thread_handles: list[Any] = []
+        self._thread_handles_lock = threading.Lock()
+        self._io_workers = (
+            1 if os.name == "nt" else min(4, max(1, int(os.cpu_count() or 4) // 4))
+        )
+        self._prefetch_executor: ThreadPoolExecutor | None = None
+        self._prefetch_lock = threading.Lock()
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.bytes_read = 0
+
+    def open(self) -> bool:
+        import rasterio
+
+        if self.dataset is not None:
+            return True
+        with RASTERIO_LOCK:
+            self.dataset = rasterio.open(self.path)
+        dataset = self.dataset
+        raw_crs = self.declared_crs or (
+            dataset.crs.to_string() if dataset.crs is not None else CRS_GEOGRAPHIC
+        )
+        self.native_crs = normalize_crs(raw_crs)
+        self.transform = dataset.transform
+        self.inverse_transform = ~dataset.transform
+        self.width = int(dataset.width)
+        self.height = int(dataset.height)
+        self.count = int(dataset.count)
+        self.bounds = tuple(float(value) for value in dataset.bounds)
+        self.driver = str(dataset.driver or "")
+        self.nodatavals = tuple(dataset.nodatavals or (None,) * self.count)
+        self.dtypes = tuple(dataset.dtypes)
+        self.scales = tuple(float(value) for value in dataset.scales)
+        self.offsets = tuple(float(value) for value in dataset.offsets)
+        self.colorinterp = tuple(
+            str(getattr(value, "name", value)).lower() for value in dataset.colorinterp
+        )
+        self.resolution_m = self.transform_service.resolution_metres(
+            self.native_crs, self.transform, self.width, self.height
+        )
+        block_shapes = tuple(dataset.block_shapes or ())
+        self.block_height, self.block_width = (
+            tuple(int(value) for value in block_shapes[0])
+            if block_shapes
+            else (min(256, self.height), min(256, self.width))
+        )
+        self.metadata = RasterMetadata(
+            native_crs=self.native_crs,
+            bounds=self.bounds,
+            resolution_m=self.resolution_m,
+            nodata=self.nodatavals,
+            driver=self.driver,
+            band_count=self.count,
+            paths=(self.path,),
+            extra={
+                "width": self.width,
+                "height": self.height,
+                "block_width": self.block_width,
+                "block_height": self.block_height,
+            },
+        )
+        return True
+
+    def _reader(self):
+        """Use one Rasterio handle per worker except in conservative Windows mode."""
+
+        if os.name == "nt":
+            return self.dataset
+        reader = getattr(self._thread_local, "dataset", None)
+        if reader is None:
+            import rasterio
+
+            reader = rasterio.open(self.path)
+            self._thread_local.dataset = reader
+            with self._thread_handles_lock:
+                self._thread_handles.append(reader)
+        return reader
+
+    def _cache_get(self, key: tuple):
+        with self._cache_lock:
+            value = self._cache.get(key)
+            if value is None:
+                self.cache_misses += 1
+                return None
+            self.cache_hits += 1
+            self._cache.move_to_end(key)
+            return value
+
+    def _cache_put(self, key: tuple, value) -> None:
+        size = int(value[0].nbytes + value[1].nbytes)
+        with self._cache_lock:
+            previous = self._cache.pop(key, None)
+            if previous is not None:
+                self._cache_bytes -= int(previous[0].nbytes + previous[1].nbytes)
+            if size > self.block_cache_bytes:
+                return
+            self._cache[key] = value
+            self._cache_bytes += size
+            while self._cache and self._cache_bytes > self.block_cache_bytes:
+                _old_key, old = self._cache.popitem(last=False)
+                self._cache_bytes -= int(old[0].nbytes + old[1].nbytes)
+
+    def _read_block(self, block_row: int, block_col: int, bands: tuple[int, ...]):
+        key = (bands, int(block_row), int(block_col))
+        cached = self._cache_get(key)
+        if cached is not None:
+            return cached
+        from rasterio.windows import Window
+
+        row_off = int(block_row) * self.block_height
+        col_off = int(block_col) * self.block_width
+        height = min(self.block_height + 1, self.height - row_off)
+        width = min(self.block_width + 1, self.width - col_off)
+        window = Window(col_off, row_off, width, height)
+        reader = self._reader()
+        if reader is None:
+            raise RuntimeError("Raster dataset is closed")
+        # Rasterio/GDAL handles are not shared across worker threads.  Windows
+        # deliberately retains a single locked reader for driver stability.
+        lock = self._read_lock if os.name == "nt" else threading.Lock()
+        with lock:
+            data = np.asarray(reader.read(bands, window=window))
+            masks = np.asarray(reader.read_masks(bands, window=window)) > 0
+        valid = np.all(masks, axis=0)
+        for local_band, band in enumerate(bands):
+            nodata = self.nodatavals[band - 1]
+            if nodata is None:
+                valid &= np.isfinite(data[local_band])
+            elif isinstance(nodata, float) and math.isnan(nodata):
+                valid &= np.isfinite(data[local_band])
+            else:
+                valid &= data[local_band] != nodata
+        value = (data, valid, row_off, col_off)
+        self.bytes_read += int(data.nbytes + masks.nbytes)
+        self._cache_put(key, value)
+        return value
+
+    def sample_native(
+        self,
+        native_x: Any,
+        native_y: Any,
+        *,
+        bands: tuple[int, ...] = (1,),
+        interpolation: str = "bilinear",
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if self.dataset is None:
+            raise RuntimeError("Raster dataset is not initialized")
+        bands = tuple(int(value) for value in bands)
+        if not bands or min(bands) < 1 or max(bands) > self.count:
+            raise ValueError("Requested raster band is unavailable")
+        x_arr, y_arr = np.broadcast_arrays(
+            np.asarray(native_x, dtype=np.float64),
+            np.asarray(native_y, dtype=np.float64),
+        )
+        shape = x_arr.shape
+        flat_x = x_arr.ravel()
+        flat_y = y_arr.ravel()
+        inv = self.inverse_transform
+        col = inv.a * flat_x + inv.b * flat_y + inv.c - 0.5
+        row = inv.d * flat_x + inv.e * flat_y + inv.f - 0.5
+        output = np.zeros((len(bands), flat_x.size), dtype=np.float32)
+        valid = np.isfinite(col) & np.isfinite(row)
+        safe_col = np.where(valid, col, 0.0)
+        safe_row = np.where(valid, row, 0.0)
+
+        nearest = str(interpolation).lower() == "nearest"
+        if nearest:
+            col0 = np.floor(safe_col + 0.5).astype(np.int64, copy=False)
+            row0 = np.floor(safe_row + 0.5).astype(np.int64, copy=False)
+            valid &= (
+                (col0 >= 0) & (row0 >= 0) & (col0 < self.width) & (row0 < self.height)
+            )
+        else:
+            col0 = np.floor(safe_col).astype(np.int64, copy=False)
+            row0 = np.floor(safe_row).astype(np.int64, copy=False)
+            valid &= (
+                (col0 >= 0)
+                & (row0 >= 0)
+                & (col0 < self.width - 1)
+                & (row0 < self.height - 1)
+            )
+
+        candidate_indices = np.flatnonzero(valid)
+        if candidate_indices.size == 0:
+            return output.reshape((len(bands),) + shape), valid.reshape(shape)
+        block_row = row0[candidate_indices] // self.block_height
+        block_col = col0[candidate_indices] // self.block_width
+        block_key = block_row * max(1, math.ceil(self.width / self.block_width)) + block_col
+        order = np.argsort(block_key, kind="stable")
+        sorted_indices = candidate_indices[order]
+        sorted_keys = block_key[order]
+        starts = np.r_[0, np.flatnonzero(sorted_keys[1:] != sorted_keys[:-1]) + 1]
+        stops = np.r_[starts[1:], len(sorted_indices)]
+        groups = []
+        for start, stop in zip(starts, stops):
+            indices = sorted_indices[start:stop]
+            br = int(row0[indices[0]] // self.block_height)
+            bc = int(col0[indices[0]] // self.block_width)
+            groups.append((indices, br, bc))
+
+        def _apply_group(indices, block) -> None:
+            data, data_valid, row_off, col_off = block
+            local_row = row0[indices] - row_off
+            local_col = col0[indices] - col_off
+            if nearest:
+                point_valid = data_valid[local_row, local_col]
+                chosen = indices[point_valid]
+                if chosen.size:
+                    output[:, chosen] = data[:, local_row[point_valid], local_col[point_valid]]
+                valid[indices] &= point_valid
+                return
+            r1 = local_row + 1
+            c1 = local_col + 1
+            point_valid = (
+                data_valid[local_row, local_col]
+                & data_valid[local_row, c1]
+                & data_valid[r1, local_col]
+                & data_valid[r1, c1]
+            )
+            chosen = indices[point_valid]
+            if chosen.size:
+                lr = local_row[point_valid]
+                lc = local_col[point_valid]
+                rr = lr + 1
+                cc = lc + 1
+                dc = (col[chosen] - col0[chosen]).astype(np.float32)
+                dr = (row[chosen] - row0[chosen]).astype(np.float32)
+                v00 = data[:, lr, lc].astype(np.float32, copy=False)
+                v01 = data[:, lr, cc].astype(np.float32, copy=False)
+                v10 = data[:, rr, lc].astype(np.float32, copy=False)
+                v11 = data[:, rr, cc].astype(np.float32, copy=False)
+                top = v00 * (1.0 - dc) + v01 * dc
+                bottom = v10 * (1.0 - dc) + v11 * dc
+                output[:, chosen] = top * (1.0 - dr) + bottom * dr
+            valid[indices] &= point_valid
+
+        window_size = max(1, self._io_workers * 2)
+        executor = None
+        if self._io_workers > 1 and len(groups) > 1:
+            with self._prefetch_lock:
+                if self._prefetch_executor is None:
+                    self._prefetch_executor = ThreadPoolExecutor(
+                        max_workers=self._io_workers,
+                        thread_name_prefix="raster-prefetch",
+                    )
+                executor = self._prefetch_executor
+        for window_start in range(0, len(groups), window_size):
+            window = groups[window_start : window_start + window_size]
+            if executor is None:
+                blocks = [self._read_block(br, bc, bands) for _indices, br, bc in window]
+            else:
+                futures = [
+                    executor.submit(self._read_block, br, bc, bands)
+                    for _indices, br, bc in window
+                ]
+                blocks = [future.result() for future in futures]
+            for (indices, _br, _bc), block in zip(window, blocks):
+                _apply_group(indices, block)
+        return output.reshape((len(bands),) + shape), valid.reshape(shape)
+
+    def close(self) -> None:
+        with self._prefetch_lock:
+            executor = self._prefetch_executor
+            self._prefetch_executor = None
+        if executor is not None:
+            executor.shutdown(wait=True, cancel_futures=True)
+        with self._thread_handles_lock:
+            handles = tuple(self._thread_handles)
+            self._thread_handles.clear()
+        for handle in handles:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        if self.dataset is not None:
+            try:
+                with RASTERIO_LOCK:
+                    self.dataset.close()
+            except Exception:
+                pass
+        self.dataset = None
+        with self._cache_lock:
+            self._cache.clear()
+            self._cache_bytes = 0
+
+
 class AscRasterProvider(RasterProvider):
     """
     Legacy implementation: loads ESRI ASCII / NPY tiled directories dynamically
@@ -166,10 +629,14 @@ class AscRasterProvider(RasterProvider):
     """
 
     def __init__(self, tiles_dir: str):
-        self.tiles_dir = tiles_dir
+        self.tiles_dir = str(tiles_dir)
         self.index = None
         self.cache = None
         self.sampler = None
+        self.source_id = ""
+        self.internal_crs = CRS_TERRAIN_INTERNAL
+        self.native_crs = CRS_TERRAIN_INTERNAL
+        self.metadata: tuple[RasterMetadata, ...] = ()
 
     def initialize(self, progress_callback=None):
         # We must import inside or assure no circular dependency
@@ -193,6 +660,22 @@ class AscRasterProvider(RasterProvider):
         )
         self.cache = TileCache(capacity=500)
         self.sampler = DemSampler(self.index, self.cache)
+        metadata = []
+        for tile in getattr(self.index, "tiles", ()):
+            header = tile.get("header", {})
+            nodata = header.get("NODATA_VALUE")
+            metadata.append(
+                RasterMetadata(
+                    native_crs=self.native_crs,
+                    bounds=tuple(float(value) for value in tile.get("bbox", ())) or None,
+                    resolution_m=float(header.get("CELLSIZE", 5.0)),
+                    nodata=(float(nodata) if nodata is not None else None,),
+                    driver="NPY" if header.get("NPY") else "AAIGrid",
+                    band_count=1,
+                    paths=(str(tile.get("path", "")),),
+                )
+            )
+        self.metadata = tuple(metadata)
         return True
 
     def get_nominal_resolution_m(self) -> Optional[float]:
@@ -294,10 +777,125 @@ class AscRasterProvider(RasterProvider):
         """
         if not self.sampler:
             return None
-        return self.sampler.sample(x, y)
+        native_x, native_y = x, y
+        if self.native_crs != self.internal_crs:
+            native_x, native_y = DEFAULT_TRANSFORM_SERVICE.transform_xy(
+                x, y, self.internal_crs, self.native_crs
+            )
+        return self.sampler.sample(float(native_x), float(native_y))
+
+    def _sample_native_elevation(self, x: Any, y: Any) -> ElevationBatch:
+        if not self.index or not self.cache:
+            x_arr, _ = np.broadcast_arrays(np.asarray(x), np.asarray(y))
+            return ElevationBatch(
+                np.zeros(x_arr.shape, dtype=np.float32),
+                np.zeros(x_arr.shape, dtype=bool),
+            )
+        x_arr, y_arr = np.broadcast_arrays(
+            np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
+        )
+        shape = x_arr.shape
+        flat_x = x_arr.ravel()
+        flat_y = y_arr.ravel()
+        values = np.zeros(flat_x.size, dtype=np.float32)
+        valid = np.zeros(flat_x.size, dtype=bool)
+
+        # Tiles are evaluated in deterministic index order.  Each tile load is
+        # performed once and all covered points are interpolated in NumPy.
+        for tile in self.index.tiles:
+            xmin, ymin, xmax, ymax = tile["bbox"]
+            indices = np.flatnonzero(
+                (~valid)
+                & (flat_x >= xmin)
+                & (flat_x < xmax)
+                & (flat_y >= ymin)
+                & (flat_y < ymax)
+            )
+            if indices.size == 0:
+                continue
+            data, header = self.cache.load(tile)
+            if data is None or header is None:
+                continue
+            nrows, ncols = data.shape
+            if header.get("NPY"):
+                sx = (xmax - xmin) / max(1, ncols)
+                sy = (ymax - ymin) / max(1, nrows)
+                grid_x = (flat_x[indices] - xmin) / sx
+                grid_row = (ymax - flat_y[indices]) / sy
+            else:
+                cell_size = float(header.get("CELLSIZE", 5.0))
+                if "XLLCENTER" in header:
+                    x0 = float(header["XLLCENTER"])
+                    y0 = float(header["YLLCENTER"])
+                else:
+                    x0 = float(header.get("XLLCORNER", 0.0)) + cell_size / 2.0
+                    y0 = float(header.get("YLLCORNER", 0.0)) + cell_size / 2.0
+                grid_x = (flat_x[indices] - x0) / cell_size
+                row_bottom = (flat_y[indices] - y0) / cell_size
+                grid_row = (int(header.get("NROWS", nrows)) - 1) - row_bottom
+            c0 = np.clip(np.floor(grid_x).astype(np.int64), 0, ncols - 1)
+            r0 = np.clip(np.floor(grid_row).astype(np.int64), 0, nrows - 1)
+            c1 = np.minimum(c0 + 1, ncols - 1)
+            r1 = np.minimum(r0 + 1, nrows - 1)
+            dc = (grid_x - c0).astype(np.float32)
+            dr = (grid_row - r0).astype(np.float32)
+            v00 = data[r0, c0]
+            v01 = data[r0, c1]
+            v10 = data[r1, c0]
+            v11 = data[r1, c1]
+            nodata = header.get("NODATA_VALUE")
+            point_valid = (
+                np.isfinite(v00)
+                & np.isfinite(v01)
+                & np.isfinite(v10)
+                & np.isfinite(v11)
+            )
+            if nodata is not None:
+                point_valid &= (
+                    (v00 != nodata)
+                    & (v01 != nodata)
+                    & (v10 != nodata)
+                    & (v11 != nodata)
+                )
+            sampled = (
+                (v00 * (1.0 - dc) + v01 * dc) * (1.0 - dr)
+                + (v10 * (1.0 - dc) + v11 * dc) * dr
+            )
+            chosen = indices[point_valid]
+            values[chosen] = sampled[point_valid]
+            valid[chosen] = True
+        sources = np.where(valid, 0, -1).astype(np.int16)
+        return ElevationBatch(
+            values.reshape(shape), valid.reshape(shape), sources.reshape(shape)
+        )
+
+    def sample_elevation(self, x: Any, y: Any) -> ElevationBatch:
+        if self.native_crs != self.internal_crs:
+            x, y = DEFAULT_TRANSFORM_SERVICE.transform_xy(
+                x, y, self.internal_crs, self.native_crs
+            )
+        return self._sample_native_elevation(x, y)
+
+    def sample_elevations(
+        self, x: Any, y: Any, *, input_crs: str | None = None
+    ) -> ElevationBatch:
+        source_crs = normalize_crs(input_crs or self.internal_crs)
+        if source_crs != self.native_crs:
+            x, y = DEFAULT_TRANSFORM_SERVICE.transform_xy(
+                x, y, source_crs, self.native_crs
+            )
+        return self._sample_native_elevation(x, y)
+
+    def close(self) -> None:
+        if self.cache is not None:
+            try:
+                self.cache.clear()
+            except Exception:
+                pass
+        self.sampler = None
 
 
-class TiffRasterWindowProvider(RasterProvider):
+class LegacyTiffRasterWindowProvider(RasterProvider):
     """
     Implementation for large contiguous GeoTIFFs (like the 18GB European DEM).
     Keeps the dataset open and uses windowed reading to load a Region of Interest
@@ -555,3 +1153,352 @@ class TiffRasterWindowProvider(RasterProvider):
                 self.dataset.close()
             self.dataset = None
             self.cached_data = None
+
+
+# The out-of-core implementation intentionally replaces the legacy class name
+# below at module load time.  Keeping the old implementation above makes old
+# serialized references/import traces readable while no runtime path uses its
+# whole-ROI allocation strategy.
+class GeoTiffElevationProvider(RasterProvider):
+    """Out-of-core elevation mosaic backed by native GDAL block reads."""
+
+    GDAL_SUFFIXES = {".tif", ".tiff", ".vrt", ".img", ".jp2"}
+
+    def __init__(
+        self,
+        paths: str | os.PathLike | Sequence[str],
+        *,
+        source_id: str = "",
+        internal_crs: str = CRS_TERRAIN_INTERNAL,
+        declared_crs: str | None = None,
+        transform_service: CoordinateTransformService | None = None,
+        cache_bytes: int | None = None,
+    ) -> None:
+        raw_paths = [str(paths)] if isinstance(paths, (str, os.PathLike)) else list(paths)
+        discovered: list[str] = []
+        for raw in raw_paths:
+            path = Path(raw).expanduser().resolve(strict=False)
+            if path.is_file() and path.suffix.lower() in self.GDAL_SUFFIXES:
+                discovered.append(str(path))
+            elif path.is_dir():
+                discovered.extend(
+                    str(item)
+                    for item in path.rglob("*")
+                    if item.is_file() and item.suffix.lower() in self.GDAL_SUFFIXES
+                )
+        self.paths = sorted(set(discovered), key=str.casefold)
+        self.tiff_path = self.paths[0] if len(self.paths) == 1 else ""
+        self.source_id = str(source_id or "")
+        self.internal_crs = normalize_crs(internal_crs)
+        self.declared_crs = declared_crs
+        self.transform_service = transform_service or DEFAULT_TRANSFORM_SERVICE
+        self.cache_bytes = int(cache_bytes or DEFAULT_PERFORMANCE_BUDGET.dem_bytes)
+        self._datasets: list[_GeoRasterDataset] = []
+        self.metadata: tuple[RasterMetadata, ...] = ()
+        self.dataset = None
+        self.cached_data = None
+        self.cached_window = None
+
+    @property
+    def fingerprint(self) -> str:
+        return _path_fingerprint(
+            self.paths,
+            namespace="elevation",
+            configuration=(self.declared_crs, self.internal_crs),
+        )
+
+    def initialize(self, progress_callback=None):
+        if not self.paths:
+            raise FileNotFoundError(f"GeoTIFF not found: {self.tiff_path or 'GeoTIFF'}")
+        opened: list[_GeoRasterDataset] = []
+        per_dataset = max(16 * 1024**2, self.cache_bytes // max(1, len(self.paths)))
+        for index, path in enumerate(self.paths):
+            dataset = _GeoRasterDataset(
+                path,
+                declared_crs=self.declared_crs,
+                transform_service=self.transform_service,
+                block_cache_capacity=512,
+                block_cache_bytes=per_dataset,
+            )
+            try:
+                dataset.open()
+                opened.append(dataset)
+            except Exception:
+                dataset.close()
+                if len(self.paths) == 1:
+                    raise
+            if progress_callback:
+                progress_callback(
+                    ((index + 1) / max(1, len(self.paths))) * 100.0,
+                    f"Raster metadata {index + 1}/{len(self.paths)}",
+                )
+        if not opened:
+            raise RuntimeError("No readable elevation raster")
+        opened.sort(
+            key=lambda item: (
+                item.resolution_m if item.resolution_m is not None else math.inf,
+                item.path.casefold(),
+            )
+        )
+        self._datasets = opened
+        self.metadata = tuple(item.metadata for item in opened)
+        self.dataset = opened[0].dataset
+        return True
+
+    def get_native_crs(self) -> str:
+        return self.internal_crs
+
+    def get_nominal_resolution_m(self) -> Optional[float]:
+        values = [
+            float(item.resolution_m)
+            for item in self._datasets
+            if item.resolution_m is not None and float(item.resolution_m) > 0.0
+        ]
+        return min(values) if values else None
+
+    def _sample_dataset(
+        self,
+        dataset: _GeoRasterDataset,
+        x: np.ndarray,
+        y: np.ndarray,
+        indices: np.ndarray,
+        input_crs: str,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        native_x, native_y = self.transform_service.transform_xy(
+            x[indices], y[indices], input_crs, dataset.native_crs
+        )
+        native_x = np.asarray(native_x)
+        native_y = np.asarray(native_y)
+        left, bottom, right, top = dataset.bounds
+        covered = (
+            np.isfinite(native_x)
+            & np.isfinite(native_y)
+            & (native_x >= left)
+            & (native_x <= right)
+            & (native_y >= bottom)
+            & (native_y <= top)
+        )
+        if not np.any(covered):
+            return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float32)
+        covered_indices = indices[covered]
+        sampled, sampled_valid = dataset.sample_native(
+            native_x[covered],
+            native_y[covered],
+            bands=(1,),
+            interpolation="bilinear",
+        )
+        sampled_valid = np.asarray(sampled_valid, dtype=bool).ravel()
+        return covered_indices[sampled_valid], np.asarray(sampled[0]).ravel()[sampled_valid]
+
+    def sample_elevations(
+        self, x: Any, y: Any, *, input_crs: str | None = None
+    ) -> ElevationBatch:
+        x_arr, y_arr = np.broadcast_arrays(
+            np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
+        )
+        shape = x_arr.shape
+        flat_x = x_arr.ravel()
+        flat_y = y_arr.ravel()
+        values = np.zeros(flat_x.size, dtype=np.float32)
+        valid = np.zeros(flat_x.size, dtype=bool)
+        source_indices = np.full(flat_x.size, -1, dtype=np.int16)
+        crs = normalize_crs(input_crs or self.internal_crs)
+        for dataset_index, dataset in enumerate(self._datasets):
+            pending = np.flatnonzero(~valid & np.isfinite(flat_x) & np.isfinite(flat_y))
+            if pending.size == 0:
+                break
+            chosen, sampled = self._sample_dataset(dataset, flat_x, flat_y, pending, crs)
+            if chosen.size:
+                values[chosen] = sampled
+                valid[chosen] = True
+                source_indices[chosen] = int(min(dataset_index, np.iinfo(np.int16).max))
+        return ElevationBatch(
+            values.reshape(shape), valid.reshape(shape), source_indices.reshape(shape)
+        )
+
+    def sample_elevation(self, x: Any, y: Any) -> ElevationBatch:
+        return self.sample_elevations(x, y, input_crs=self.internal_crs)
+
+    def get_elevation(self, x: float, y: float) -> Optional[float]:
+        batch = self.sample_elevation(float(x), float(y))
+        return float(batch.values) if bool(batch.valid) else None
+
+    def prepare_region(
+        self,
+        cx: float,
+        cy: float,
+        radius: float,
+        progress_callback=None,
+        abort_check=None,
+    ):
+        """Warm only observer-adjacent blocks; the far ROI stays out-of-core."""
+
+        if not self._datasets:
+            return
+        warm_radius = min(
+            max(20.0, self.get_nominal_resolution_m() or 30.0) * 4.0,
+            500.0,
+        )
+        offsets = np.asarray(
+            [
+                (0.0, 0.0),
+                (-warm_radius, 0.0),
+                (warm_radius, 0.0),
+                (0.0, -warm_radius),
+                (0.0, warm_radius),
+                (-warm_radius, -warm_radius),
+                (warm_radius, -warm_radius),
+                (-warm_radius, warm_radius),
+                (warm_radius, warm_radius),
+            ],
+            dtype=np.float64,
+        )
+        if abort_check and abort_check():
+            raise InterruptedError("Raster warmup aborted")
+        self.sample_elevation(float(cx) + offsets[:, 0], float(cy) + offsets[:, 1])
+        if progress_callback:
+            progress_callback(100.0, "Raster metadata and near blocks ready")
+
+    def close(self):
+        for dataset in self._datasets:
+            dataset.close()
+        self._datasets.clear()
+        self.metadata = ()
+        self.dataset = None
+        self.cached_data = None
+
+
+class TiffRasterWindowProvider(GeoTiffElevationProvider):
+    """Compatibility name for the former whole-ROI provider."""
+
+
+class ElevationProviderChain(RasterProvider):
+    """Ordered, nodata-aware fallback chain with per-point provenance."""
+
+    def __init__(self, providers: Sequence[RasterProvider], *, internal_crs: str = CRS_TERRAIN_INTERNAL):
+        self.providers = tuple(providers)
+        self.internal_crs = normalize_crs(internal_crs)
+
+    @property
+    def metadata(self) -> tuple[RasterMetadata, ...]:
+        return tuple(
+            item for provider in self.providers for item in getattr(provider, "metadata", ())
+        )
+
+    def get_nominal_resolution_m(self) -> Optional[float]:
+        values = []
+        for provider in self.providers:
+            value = provider.get_nominal_resolution_m()
+            if value is not None and np.isfinite(value) and value > 0:
+                values.append(float(value))
+        return min(values) if values else None
+
+    def sample_elevations(self, x: Any, y: Any, *, input_crs: str | None = None) -> ElevationBatch:
+        x_arr, y_arr = np.broadcast_arrays(
+            np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
+        )
+        values = np.zeros(x_arr.shape, dtype=np.float32)
+        valid = np.zeros(x_arr.shape, dtype=bool)
+        sources = np.full(x_arr.shape, -1, dtype=np.int16)
+        for provider_index, provider in enumerate(self.providers):
+            batch = provider.sample_elevations(x_arr, y_arr, input_crs=input_crs or self.internal_crs)
+            chosen = ~valid & batch.valid
+            values[chosen] = batch.values[chosen]
+            valid[chosen] = True
+            sources[chosen] = int(min(provider_index, np.iinfo(np.int16).max))
+            if bool(np.all(valid)):
+                break
+        return ElevationBatch(values, valid, sources)
+
+    def sample_elevation(self, x: Any, y: Any) -> ElevationBatch:
+        return self.sample_elevations(x, y, input_crs=self.internal_crs)
+
+    def get_elevation(self, x: float, y: float) -> Optional[float]:
+        for provider in self.providers:
+            value = provider.get_elevation(x, y)
+            if value is not None:
+                return value
+        return None
+
+    def prepare_region(self, cx, cy, radius, progress_callback=None, abort_check=None):
+        for provider in self.providers:
+            if abort_check and abort_check():
+                raise InterruptedError("Raster warmup aborted")
+            try:
+                provider.prepare_region(
+                    cx, cy, radius, progress_callback=progress_callback, abort_check=abort_check
+                )
+            except TypeError:
+                provider.prepare_region(cx, cy, radius, progress_callback)
+
+    def close(self) -> None:
+        for provider in self.providers:
+            close = getattr(provider, "close", None)
+            if callable(close):
+                close()
+
+
+def create_elevation_provider(
+    sources: Any,
+    *,
+    internal_crs: str = CRS_TERRAIN_INTERNAL,
+    progress_callback=None,
+) -> RasterProvider:
+    """Create typed elevation providers without loading full raster payloads."""
+
+    providers: list[RasterProvider] = []
+    for source in _as_source_sequence(sources):
+        if not _source_enabled(source):
+            continue
+        paths = _source_paths(source)
+        if not paths:
+            continue
+        source_id = _source_identifier(source)
+        declared_crs = _source_declared_crs(source)
+        has_gdal = any(
+            (
+                Path(path).is_file()
+                and Path(path).suffix.lower() in GeoTiffElevationProvider.GDAL_SUFFIXES
+            )
+            or (
+                Path(path).is_dir()
+                and any(
+                    item.is_file()
+                    and item.suffix.lower() in GeoTiffElevationProvider.GDAL_SUFFIXES
+                    for item in Path(path).rglob("*")
+                )
+            )
+            for path in paths
+        )
+        if has_gdal:
+            if PERFORMANCE_FLAGS.raster_batch:
+                provider = GeoTiffElevationProvider(
+                    paths,
+                    source_id=source_id,
+                    internal_crs=internal_crs,
+                    declared_crs=declared_crs,
+                )
+            else:
+                tiff_path = next(
+                    (
+                        resolve_primary_dem_tiff_path(path)
+                        for path in paths
+                        if resolve_primary_dem_tiff_path(path)
+                    ),
+                    None,
+                )
+                if tiff_path is None:
+                    continue
+                provider = LegacyTiffRasterWindowProvider(tiff_path)
+        else:
+            provider = AscRasterProvider(paths[0])
+            provider.source_id = source_id
+            provider.internal_crs = normalize_crs(internal_crs)
+            provider.native_crs = normalize_crs(declared_crs or internal_crs)
+        provider.initialize(progress_callback=progress_callback)
+        providers.append(provider)
+    if not providers:
+        raise FileNotFoundError("No enabled elevation source is readable")
+    if len(providers) == 1:
+        return providers[0]
+    return ElevationProviderChain(providers, internal_crs=internal_crs)
