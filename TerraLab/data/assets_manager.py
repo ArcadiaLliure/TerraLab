@@ -15,7 +15,8 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from TerraLab.common.app_paths import ensure_runtime_layout
 from TerraLab.common.utils import get_config_value, set_config_value
 from TerraLab.tools.convert_planck_dust import convert_planck_fits_to_cache
-from TerraLab.util.gaia_importer import build_gaia_catalog_from_tables
+from TerraLab.terrain.asc_cache_builder import materialize_asc_caches_spawned
+from TerraLab.util.gaia_importer import build_gaia_catalog_spawned
 from TerraLab.util.milkyway_importer import convert_milkyway_fits_to_png
 
 ProgressFn = Callable[[float, str], None]
@@ -584,9 +585,9 @@ class AssetManager:
             build_healpy_index = bool(opts.get("build_healpy_index", True))
             healpy_nside = int(opts.get("healpy_nside", 512) or 512)
             healpy_chunk_rows = int(
-                opts.get("healpy_chunk_rows", 2_000_000) or 2_000_000
+                opts.get("healpy_chunk_rows", 1_000_000) or 1_000_000
             )
-            summary = build_gaia_catalog_from_tables(
+            summary = build_gaia_catalog_spawned(
                 [str(p) for p in paths],
                 str(out_dir),
                 output_basename="stars_catalog",
@@ -709,6 +710,22 @@ class AssetManager:
                 )
             _progress(
                 progress_callback,
+                92.0,
+                "Materialitzant caches ASC fora del proces principal...",
+            )
+            asc_caches = materialize_asc_caches_spawned(
+                out_dir,
+                max_workers=4,
+                progress_callback=(
+                    lambda percent, message: _progress(
+                        progress_callback,
+                        92.0 + float(percent) * 0.04,
+                        message,
+                    )
+                ),
+            )
+            _progress(
+                progress_callback,
                 96.0,
                 "Detectant ubicacio de l'observador des del DEM...",
             )
@@ -719,6 +736,7 @@ class AssetManager:
                 "ok": True,
                 "stored_in": str(out_dir),
                 "files_processed": int(copied),
+                "asc_caches": int(len(asc_caches)),
                 "observer_auto": observer_auto,
             }
 

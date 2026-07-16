@@ -6,7 +6,7 @@ import math
 import random
 from dataclasses import dataclass
 
-from PyQt5.QtCore import QPointF, Qt
+from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import (
     QBrush,
     QColor,
@@ -14,6 +14,7 @@ from PyQt5.QtGui import (
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
     QPolygonF,
     QRadialGradient,
 )
@@ -516,6 +517,8 @@ class StarsRenderer:
         self._qcolor_cache = {}
         self._sprite_cache = {}
         self._bright_sprite_cache = {}
+        self._pixmap_cache = {}
+        self._frame_fragment_draw_calls = 0
 
         # Magnitude index cache (non-scope fast prefilter by mag<=pre_limit)
         self._mag_index_key = None
@@ -1274,10 +1277,61 @@ class StarsRenderer:
         self._bright_sprite_cache[key] = out
         return out
 
+    def _draw_sprite_batch(
+        self,
+        painter: QPainter,
+        sprite: QImage,
+        center: float,
+        sx_i,
+        sy_i,
+        indices,
+    ) -> None:
+        """Draw one style-run with a single Qt pixmap-fragment call per chunk."""
+
+        indices = np.asarray(indices, dtype=np.int32)
+        if indices.size == 0:
+            return
+        rounded_center = int(round(float(center)))
+        try:
+            cache_key = int(sprite.cacheKey())
+            pixmap = self._pixmap_cache.get(cache_key)
+            if pixmap is None or pixmap.isNull():
+                pixmap = QPixmap.fromImage(sprite)
+                self._pixmap_cache[cache_key] = pixmap
+            source = QRectF(0.0, 0.0, float(pixmap.width()), float(pixmap.height()))
+            half_width = float(pixmap.width()) * 0.5
+            half_height = float(pixmap.height()) * 0.5
+            for start in range(0, indices.size, 4096):
+                chunk = indices[start : start + 4096]
+                fragments = [
+                    QPainter.PixmapFragment.create(
+                        QPointF(
+                            float(int(sx_i[index] - rounded_center)) + half_width,
+                            float(int(sy_i[index] - rounded_center)) + half_height,
+                        ),
+                        source,
+                    )
+                    for index in chunk
+                ]
+                painter.drawPixmapFragments(fragments, pixmap)
+                self._frame_fragment_draw_calls += 1
+            return
+        except Exception:
+            # Compatibility fallback for unusual Qt paint engines.
+            pass
+        for index in indices:
+            painter.drawImage(
+                int(sx_i[index] - rounded_center),
+                int(sy_i[index] - rounded_center),
+                sprite,
+            )
+            self._frame_fragment_draw_calls += 1
+
     # -----------------------------
     # Main render
     # -----------------------------
     def render(self, ctx, state):
+        self._frame_fragment_draw_calls = 0
         if np is None:
             return self._empty_result()
         extras = (
@@ -1993,9 +2047,9 @@ class StarsRenderer:
             )
             r = 0.42 + 0.38 * (float(ab) / 255.0)
             sprite, center = self._cached_disc_sprite(col, r)
-            c = int(round(center))
-            for i in run_idx:
-                painter.drawImage(int(sx_i[i] - c), int(sy_i[i] - c), sprite)
+            self._draw_sprite_batch(
+                painter, sprite, center, sx_i, sy_i, run_idx
+            )
 
         # Mid stars: compact colored core, visible but clean.
         mid_span = max(0.2, medium_cut - bright_cut)
@@ -2003,18 +2057,24 @@ class StarsRenderer:
             np.clip((medium_cut - mag) / mid_span, 0.0, 1.0), dtype=np.float32
         )
         medium_r = np.asarray(0.85 + 0.95 * medium_rel, dtype=np.float32)
-        for key, run_idx in iter_style_runs(medium_idx, style_key):
-            bpb = int(key // 256)
-            ab = int(key % 256)
+        medium_radius_bin = np.asarray(
+            np.clip(np.rint(medium_r * 10.0), 0.0, 127.0), dtype=np.int32
+        )
+        medium_style_key = style_key * 128 + medium_radius_bin
+        for key, run_idx in iter_style_runs(medium_idx, medium_style_key):
+            radius_bin = int(key % 128)
+            base_key = int(key // 128)
+            bpb = int(base_key // 256)
+            ab = int(base_key % 256)
             col = self._cached_color(
                 (bpb / 10.0) - 0.5, ab, pure_colors=pure_colors
             )
-            for i in run_idx:
-                sprite, center = self._cached_disc_sprite(
-                    col, float(medium_r[i])
-                )
-                c = int(round(center))
-                painter.drawImage(int(sx_i[i] - c), int(sy_i[i] - c), sprite)
+            sprite, center = self._cached_disc_sprite(
+                col, float(radius_bin) / 10.0
+            )
+            self._draw_sprite_batch(
+                painter, sprite, center, sx_i, sy_i, run_idx
+            )
 
         # Bright stars: radius + halo (if not pure_colors / not interaction).
         bright_idx = np.where((halo_bin > 0) | bright_mask)[0]
@@ -2043,8 +2103,14 @@ class StarsRenderer:
                     halo_bin=hbin,
                     pure_colors=pure_colors,
                 )
-                c = int(round(center))
-                painter.drawImage(int(sx_i[i] - c), int(sy_i[i] - c), sprite)
+                self._draw_sprite_batch(
+                    painter,
+                    sprite,
+                    center,
+                    sx_i,
+                    sy_i,
+                    np.asarray([i], dtype=np.int32),
+                )
 
         painter.restore()
 
@@ -2079,6 +2145,9 @@ class StarsRenderer:
             diag.set_counter("medium_cut_mag", round(float(medium_cut), 3))
             diag.set_counter("weak_count", int(len(weak_idx)))
             diag.set_counter("medium_count", int(len(medium_idx)))
+            diag.set_counter(
+                "star_draw_calls", int(self._frame_fragment_draw_calls)
+            )
             diag.set_counter("scope_after_mag_mask", int(after_mag_cut))
             diag.set_counter("pure_colors", 1 if pure_colors else 0)
             diag.set_counter(

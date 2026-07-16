@@ -5,6 +5,7 @@ No pinta ni toca UI. Orquestra IO de cataleg i emet senyals Qt.
 
 from __future__ import annotations
 
+import os
 import threading
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +15,12 @@ from typing import Any
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal
 
+from TerraLab.common.performance import (
+    DEFAULT_PERFORMANCE_BUDGET,
+    GenerationController,
+    PERFORMANCE_FLAGS,
+)
+from TerraLab.data.star_catalog_store import create_star_catalog_store
 from TerraLab.data.tile_manifest import TileEntry, TileManifest
 from TerraLab.render.stars_renderer import build_scope_spatial_index_payload
 from TerraLab.widgets.sky_legacy_components import (
@@ -54,9 +61,11 @@ class StarDataCoordinator(QObject):
                 pass
         self._active_dataset: dict[str, Any] = _empty_dataset()
 
-        self._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="star-data")
-        self._preload_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="star-preload")
+        io_workers = min(4, max(1, int(os.cpu_count() or 4) // 4))
+        self._executor = ThreadPoolExecutor(max_workers=io_workers, thread_name_prefix="star-data")
+        self._preload_executor = ThreadPoolExecutor(max_workers=io_workers, thread_name_prefix="star-preload")
         self._index_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scope-index")
+        self._query_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="star-query")
         self._lock = threading.Lock()
         self._last_scope_index_signature: Any = None
         self._active_tiles_signature: tuple[str, ...] | None = None
@@ -69,14 +78,152 @@ class StarDataCoordinator(QObject):
         self._tile_priority_inflight: set[str] = set()
         self._tile_access_seq: int = 0
         self._tile_last_access: dict[str, int] = {}
-        # Manté cache de teseles profundes sense creixement infinit.
-        self._max_cached_deep_tiles: int = 48
+        self._max_cached_deep_bytes = int(DEFAULT_PERFORMANCE_BUDGET.stars_bytes)
+        self._tile_resident_bytes: dict[str, int] = {}
+        self._query_generations = GenerationController()
+        self._catalog_store = None
 
     def shutdown(self) -> None:
         """Tanca executors interns del coordinador."""
+        self._query_generations.cancel()
         self._executor.shutdown(wait=False, cancel_futures=True)
         self._preload_executor.shutdown(wait=False, cancel_futures=True)
         self._index_executor.shutdown(wait=False, cancel_futures=True)
+        # The active query observes its generation between chunks.  Join it
+        # before closing the mmap so a shutdown cannot race a worker read.
+        self._query_executor.shutdown(wait=True, cancel_futures=True)
+        if self._catalog_store is not None:
+            self._catalog_store.close()
+            self._catalog_store = None
+
+    def query_cone(
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        radius_deg: float,
+        mag_limit: float,
+        *,
+        max_batch_rows: int = 1_000_000,
+    ):
+        """Return a last-request-wins out-of-core query iterator."""
+
+        with self._lock:
+            if self._catalog_store is None:
+                self._catalog_store = create_star_catalog_store(
+                    self._catalog_dir,
+                    prefer_healpix=PERFORMANCE_FLAGS.gaia_out_of_core,
+                )
+            store = self._catalog_store
+            token = self._query_generations.next()
+        return store.query_cone(
+            ra_deg,
+            dec_deg,
+            radius_deg,
+            mag_limit,
+            max_batch_rows=max_batch_rows,
+            token=token,
+        )
+
+    def request_cone_region(
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        radius_deg: float,
+        mag_limit: float = 22.0,
+    ) -> None:
+        """Asynchronously publish an exact, cancellable out-of-core scope payload."""
+
+        token = self._query_generations.next()
+        self._query_executor.submit(
+            self._query_cone_worker,
+            float(ra_deg),
+            float(dec_deg),
+            float(radius_deg),
+            float(mag_limit),
+            token,
+        )
+
+    def _query_cone_worker(
+        self,
+        ra_deg: float,
+        dec_deg: float,
+        radius_deg: float,
+        mag_limit: float,
+        token,
+    ) -> None:
+        try:
+            with self._lock:
+                if self._catalog_store is None:
+                    self._catalog_store = create_star_catalog_store(
+                        self._catalog_dir,
+                        prefer_healpix=PERFORMANCE_FLAGS.gaia_out_of_core,
+                    )
+                store = self._catalog_store
+
+            queried: dict[str, np.ndarray] | None = None
+            for batch in store.query_cone(
+                ra_deg,
+                dec_deg,
+                radius_deg,
+                mag_limit,
+                max_batch_rows=1_000_000,
+                token=token,
+            ):
+                token.raise_if_cancelled()
+                normalized = _normalize_tile_arrays(
+                    {
+                        "ra": batch.ra,
+                        "dec": batch.dec,
+                        "mag": batch.mag,
+                        "bp_rp": batch.bp_rp,
+                        "source_id": batch.source_id,
+                    }
+                )
+                queried = (
+                    normalized
+                    if queried is None
+                    else _merge_two_sorted_tiles(queried, normalized)
+                )
+            token.raise_if_cancelled()
+
+            with self._lock:
+                selected: dict[str, dict[str, np.ndarray]] = {}
+                if self._base_tile_id in self._loaded_tiles:
+                    selected[self._base_tile_id] = self._loaded_tiles[self._base_tile_id]
+                if self._no_gaia_tile_id in self._loaded_tiles:
+                    selected[self._no_gaia_tile_id] = self._loaded_tiles[
+                        self._no_gaia_tile_id
+                    ]
+                if queried is not None and len(queried.get("mag", ())) > 0:
+                    selected["__out_of_core_cone__"] = queried
+                payload = _combine_tiles(
+                    base_tile_id=self._base_tile_id,
+                    loaded_tiles=selected,
+                    internal_tile_ids={self._no_gaia_tile_id},
+                )
+                payload["query_region"] = (
+                    ra_deg,
+                    dec_deg,
+                    radius_deg,
+                    mag_limit,
+                )
+                token.raise_if_cancelled()
+                self._active_dataset = payload
+                self._active_tiles_signature = (
+                    "cone",
+                    f"{ra_deg:.6f}",
+                    f"{dec_deg:.6f}",
+                    f"{radius_deg:.6f}",
+                    f"{mag_limit:.3f}",
+                )
+                self._last_scope_index_signature = None
+
+            self.extension_ready.emit(dict(payload))
+            self.build_scope_index("__out_of_core_cone__")
+        except InterruptedError:
+            return
+        except Exception as exc:
+            self.error_occurred.emit(f"Error consultant cataleg estel-lar: {exc}")
 
     def load_general_tile(self) -> None:
         """Inicia la carrega de la tesela general en background."""
@@ -270,6 +417,7 @@ class StarDataCoordinator(QObject):
                 self._tile_load_inflight.discard(tile.tile_id)
                 self._tile_priority_inflight.discard(tile.tile_id)
                 self._loaded_tiles[tile.tile_id] = arrays
+                self._tile_resident_bytes[tile.tile_id] = _payload_nbytes(arrays)
                 self._mark_tile_access_locked(tile.tile_id)
                 if is_general and self._no_gaia_supplement is not None:
                     was_already_present = (
@@ -279,6 +427,9 @@ class StarDataCoordinator(QObject):
                     # (<8) i queda actiu per a posteriors extensions profundes.
                     self._loaded_tiles[self._no_gaia_tile_id] = dict(
                         self._no_gaia_supplement
+                    )
+                    self._tile_resident_bytes[self._no_gaia_tile_id] = (
+                        _payload_nbytes(self._no_gaia_supplement)
                     )
                     if not was_already_present:
                         try:
@@ -440,8 +591,11 @@ class StarDataCoordinator(QObject):
             for tile_id in self._loaded_tiles.keys()
             if tile_id not in {self._base_tile_id, self._no_gaia_tile_id}
         ]
-        max_cached = int(max(8, int(self._max_cached_deep_tiles)))
-        if len(deep_tile_ids) <= max_cached:
+        resident = sum(
+            int(self._tile_resident_bytes.get(tile_id, 0))
+            for tile_id in self._loaded_tiles
+        )
+        if resident <= self._max_cached_deep_bytes:
             return
 
         protected_ids = set(self._scope_active_tile_ids)
@@ -454,14 +608,12 @@ class StarDataCoordinator(QObject):
         candidates.sort(
             key=lambda tid: int(self._tile_last_access.get(tid, 0))
         )
-        target_remove = len(deep_tile_ids) - max_cached
-        removed = 0
         for tile_id in candidates:
-            if removed >= target_remove:
+            if resident <= self._max_cached_deep_bytes:
                 break
             self._loaded_tiles.pop(tile_id, None)
             self._tile_last_access.pop(tile_id, None)
-            removed += 1
+            resident -= int(self._tile_resident_bytes.pop(tile_id, 0))
 
     def _normalize_priority_tile_ids(
         self, priority_tile_ids: Iterable[str] | None
@@ -517,6 +669,16 @@ class StarDataCoordinator(QObject):
         return entries
 
 
+def _payload_nbytes(payload: dict[str, Any]) -> int:
+    return int(
+        sum(
+            np.asarray(value).nbytes
+            for value in payload.values()
+            if isinstance(value, np.ndarray)
+        )
+    )
+
+
 def _empty_dataset() -> dict[str, Any]:
     """Crea l'estructura minima de dataset actiu."""
     return {
@@ -570,12 +732,19 @@ def _normalize_tile_arrays(payload: dict[str, np.ndarray]) -> dict[str, np.ndarr
     bp_rp = bp_rp[:row_count]
     source_id = source_id[:row_count]
 
-    order = np.argsort(mag, kind="mergesort")
-    ra = np.asarray(ra[order], dtype=np.float32)
-    dec = np.asarray(dec[order], dtype=np.float32)
-    mag = np.asarray(mag[order], dtype=np.float32)
-    bp_rp = np.asarray(bp_rp[order], dtype=np.float32)
-    source_id = np.asarray(source_id[order], dtype=np.int64)
+    if mag.size > 1 and bool(np.any(mag[1:] < mag[:-1])):
+        order = np.argsort(mag, kind="mergesort")
+        ra = np.asarray(ra[order], dtype=np.float32)
+        dec = np.asarray(dec[order], dtype=np.float32)
+        mag = np.asarray(mag[order], dtype=np.float32)
+        bp_rp = np.asarray(bp_rp[order], dtype=np.float32)
+        source_id = np.asarray(source_id[order], dtype=np.int64)
+    else:
+        ra = np.asarray(ra, dtype=np.float32)
+        dec = np.asarray(dec, dtype=np.float32)
+        mag = np.asarray(mag, dtype=np.float32)
+        bp_rp = np.asarray(bp_rp, dtype=np.float32)
+        source_id = np.asarray(source_id, dtype=np.int64)
 
     r, g, b = _bp_rp_to_rgb_arrays(bp_rp)
 
@@ -589,6 +758,36 @@ def _normalize_tile_arrays(payload: dict[str, np.ndarray]) -> dict[str, np.ndarr
         "b": np.asarray(b, dtype=np.float32),
         "source_id": source_id,
     }
+
+
+def _merge_two_sorted_tiles(
+    left: dict[str, np.ndarray], right: dict[str, np.ndarray]
+) -> dict[str, np.ndarray]:
+    """Linear vector merge by magnitude; avoids a global argsort per update."""
+
+    left_mag = np.asarray(left.get("mag", ()), dtype=np.float32)
+    right_mag = np.asarray(right.get("mag", ()), dtype=np.float32)
+    if left_mag.size == 0:
+        return {key: np.asarray(value) for key, value in right.items()}
+    if right_mag.size == 0:
+        return {key: np.asarray(value) for key, value in left.items()}
+    right_positions = (
+        np.searchsorted(left_mag, right_mag, side="right")
+        + np.arange(right_mag.size, dtype=np.int64)
+    )
+    is_right = np.zeros(left_mag.size + right_mag.size, dtype=bool)
+    is_right[right_positions] = True
+    left_positions = np.flatnonzero(~is_right)
+    result: dict[str, np.ndarray] = {}
+    for key in ("ra", "dec", "mag", "bp_rp", "r", "g", "b", "source_id"):
+        dtype = np.int64 if key == "source_id" else np.float32
+        left_values = np.asarray(left.get(key, ()), dtype=dtype)
+        right_values = np.asarray(right.get(key, ()), dtype=dtype)
+        merged = np.empty(left_mag.size + right_mag.size, dtype=dtype)
+        merged[left_positions] = left_values
+        merged[right_positions] = right_values
+        result[key] = merged
+    return result
 
 
 def _combine_tiles(
@@ -613,73 +812,27 @@ def _combine_tiles(
         )
     )
 
-    merged: dict[str, list[np.ndarray]] = {
-        "ra": [],
-        "dec": [],
-        "mag": [],
-        "bp_rp": [],
-        "r": [],
-        "g": [],
-        "b": [],
-        "source_id": [],
-    }
-
+    result: dict[str, Any] | None = None
     for tile_id in ordered_ids:
         tile = loaded_tiles.get(tile_id)
         if not tile:
             continue
+        normalized: dict[str, np.ndarray] = {}
+        row_count = int(len(np.asarray(tile.get("mag", ()))) )
         for key in ("ra", "dec", "mag", "bp_rp", "r", "g", "b"):
-            merged[key].append(
-                np.asarray(
-                    tile.get(key, np.empty(0, dtype=np.float32)),
-                    dtype=np.float32,
-                )
+            normalized[key] = np.asarray(
+                tile.get(key, np.empty(row_count, dtype=np.float32)),
+                dtype=np.float32,
             )
-        merged["source_id"].append(
-            np.asarray(
-                tile.get(
-                    "source_id",
-                    np.full(
-                        int(
-                            len(
-                                np.asarray(
-                                    tile.get(
-                                        "mag", np.empty(0, dtype=np.float32)
-                                    ),
-                                    dtype=np.float32,
-                                )
-                            )
-                        ),
-                        -1,
-                        dtype=np.int64,
-                    ),
-                ),
-                dtype=np.int64,
-            )
+        normalized["source_id"] = np.asarray(
+            tile.get("source_id", np.full(row_count, -1, dtype=np.int64)),
+            dtype=np.int64,
         )
+        result = normalized if result is None else _merge_two_sorted_tiles(result, normalized)
 
-    result: dict[str, Any] = {}
-    for key in ("ra", "dec", "mag", "bp_rp", "r", "g", "b"):
-        chunks = merged.get(key, [])
-        result[key] = (
-            np.concatenate(chunks)
-            if chunks
-            else np.empty(0, dtype=np.float32)
-        )
-    source_id_chunks = merged.get("source_id", [])
-    result["source_id"] = (
-        np.concatenate(source_id_chunks)
-        if source_id_chunks
-        else np.empty(0, dtype=np.int64)
-    )
-
-    if len(result["mag"]) > 0:
-        order = np.argsort(result["mag"], kind="mergesort")
-        for key in ("ra", "dec", "mag", "bp_rp", "r", "g", "b"):
-            result[key] = np.asarray(result[key][order], dtype=np.float32)
-        result["source_id"] = np.asarray(
-            result["source_id"][order], dtype=np.int64
-        )
+    if result is None:
+        result = _empty_dataset()
+    elif len(result["mag"]) > 0:
         _deduplicate_positive_source_ids_in_place(result)
 
     result["loaded_tile_ids"] = frozenset(
@@ -701,15 +854,14 @@ def _deduplicate_positive_source_ids_in_place(
         return
 
     keep_mask = np.ones(source_id.shape[0], dtype=bool)
-    seen_source_ids: set[int] = set()
-    for index, raw_source_id in enumerate(source_id):
-        source_id_value = int(raw_source_id)
-        if source_id_value <= 0:
-            continue
-        if source_id_value in seen_source_ids:
-            keep_mask[index] = False
-            continue
-        seen_source_ids.add(source_id_value)
+    positive_positions = np.flatnonzero(source_id > 0)
+    if positive_positions.size:
+        _unique, first = np.unique(
+            source_id[positive_positions], return_index=True
+        )
+        positive_keep = np.zeros(positive_positions.size, dtype=bool)
+        positive_keep[first] = True
+        keep_mask[positive_positions] = positive_keep
 
     if bool(np.all(keep_mask)):
         return

@@ -78,7 +78,7 @@ def main() -> int:
     parser.add_argument(
         "--healpy-chunk-rows",
         type=int,
-        default=2_000_000,
+        default=1_000_000,
         help="Rows per HEALPix build chunk",
     )
     args = parser.parse_args()

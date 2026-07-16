@@ -931,7 +931,7 @@ def main() -> int:
     parser.add_argument(
         "--max-batch-rows",
         type=int,
-        default=2_000_000,
+        default=1_000_000,
         help="Split batches when estimated rows exceed this threshold.",
     )
     parser.add_argument(
@@ -1044,7 +1044,7 @@ def main() -> int:
     parser.add_argument(
         "--healpy-chunk-rows",
         type=int,
-        default=2_000_000,
+        default=1_000_000,
         help="Rows per HEALPix build chunk",
     )
     parser.add_argument(
