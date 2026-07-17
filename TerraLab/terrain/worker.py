@@ -603,6 +603,8 @@ class HorizonWorker(QObject):
             str(float(job.get("view_fov_deg", 90.0))),
             "--view-elevation",
             str(float(job.get("view_elevation", 0.0))),
+            "--range-settings-json",
+            json.dumps(job.get("range_settings", {}), sort_keys=True),
         ]
         return base_dir, cmd
 
@@ -734,7 +736,7 @@ class HorizonWorker(QObject):
             stderr_thread.start()
 
             active_job_id = str(job["job_id"])
-            band_defs = generate_bands(max(1, int(job["bands"])))
+            band_defs = None
             final_emitted = False
             received_events = 0
             received_progress_events = 0
@@ -767,6 +769,9 @@ class HorizonWorker(QObject):
                     }
                     self._emit_progress_state(state)
                 elif event_type == "preview":
+                    resolved_radius_m = float(event["resolved_radius_m"])
+                    if band_defs is None:
+                        band_defs = generate_bands(max(1, int(job["bands"])), max_dist_m=resolved_radius_m)
                     snapshot_path = str(event.get("snapshot_path", "") or "")
                     if not snapshot_path or not os.path.exists(snapshot_path):
                         continue
@@ -784,6 +789,9 @@ class HorizonWorker(QObject):
                     except Exception as exc:
                         print(f"[HorizonWorker] Preview load failed: {exc}")
                 elif event_type == "done":
+                    resolved_radius_m = float(event["resolved_radius_m"])
+                    if band_defs is None:
+                        band_defs = generate_bands(max(1, int(job["bands"])), max_dist_m=resolved_radius_m)
                     profile_path = str(event.get("profile_path", "") or "")
                     if not profile_path or not os.path.exists(profile_path):
                         raise RuntimeError(

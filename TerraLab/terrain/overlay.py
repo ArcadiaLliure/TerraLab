@@ -159,7 +159,16 @@ def generate_layer_defs(bands: list) -> list:
 LAYER_DEFS = generate_layer_defs(
     __import__(
         "TerraLab.terrain.engine", fromlist=["generate_bands"]
-    ).generate_bands(20)
+    ).generate_bands(
+        20,
+        max_dist_m=__import__(
+            "TerraLab.terrain.visibility_range", fromlist=["resolve_visibility_range"]
+        ).resolve_visibility_range(
+            __import__(
+                "TerraLab.terrain.visibility_range", fromlist=["TerrainRangeSettings"]
+            ).TerrainRangeSettings(), 0.0
+        ).resolved_radius_m,
+    )
 )
 
 

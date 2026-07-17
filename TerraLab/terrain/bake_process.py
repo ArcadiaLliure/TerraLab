@@ -226,6 +226,7 @@ def _save_preview_snapshot(
     light_domes,
     light_peak_distances,
     resolved_mask,
+    resolved_radius_m: float,
 ) -> None:
     profile = HorizonProfile(
         azimuths=azimuths,
@@ -235,6 +236,7 @@ def _save_preview_snapshot(
         light_domes=light_domes,
         light_peak_distances=light_peak_distances,
         resolved_mask=resolved_mask,
+        resolved_radius_m=float(resolved_radius_m),
     )
     _atomic_save_profile(profile, path)
 
@@ -264,6 +266,7 @@ def main():
     parser.add_argument("--view-azimuth", type=float, default=180.0)
     parser.add_argument("--view-fov-deg", type=float, default=90.0)
     parser.add_argument("--view-elevation", type=float, default=0.0)
+    parser.add_argument("--range-settings-json", required=True)
     args = parser.parse_args()
 
     job_id = str(args.job_id)
@@ -307,12 +310,39 @@ def main():
             )
             baker = HorizonBaker(provider)
             x_utm, y_utm = provider.transform_coordinates(args.lat, args.lon)
-            vis_radius = 150000.0
+            from TerraLab.terrain.visibility_range import EARTH_RADIUS_M, TerrainRangeSettings, resolve_visibility_range
+            settings = TerrainRangeSettings.from_mapping(json.loads(args.range_settings_json))
+            baker.R = EARTH_RADIUS_M * (
+                settings.effective_earth_radius_factor
+                if settings.atmospheric_refraction_enabled else 1.0
+            )
+            try:
+                ground_h = provider.get_elevation(x_utm, y_utm)
+            except Exception:
+                ground_h = None
+            if ground_h is None:
+                ground_h = 200.0
+            range_result = resolve_visibility_range(
+                settings, float(ground_h) + float(args.observer_offset) + float(baker.eye_height)
+            )
+            vis_radius = float(range_result.resolved_radius_m)
+            # Providers sample missing tiles lazily during raycasting. Preloading only
+            # the configurable near field avoids materialising a 530 km disk at full DEM resolution.
+            preload_radius = min(vis_radius, settings.immediate_preload_radius_km * 1000.0)
+            print(
+                "[HorizonBakeProcess] Visibility range "
+                f"mode={settings.mode} observer_elevation_m={range_result.observer_elevation_m:.1f} "
+                f"calculated_radius_km={range_result.calculated_radius_m / 1000.0:.1f} "
+                f"applied_radius_km={vis_radius / 1000.0:.1f} "
+                f"refraction_factor={(settings.effective_earth_radius_factor if settings.atmospheric_refraction_enabled else 1.0):.6f} "
+                f"maximum_km={settings.maximum_radius_km:.1f}",
+                file=sys.stderr, flush=True,
+            )
             try:
                 provider.prepare_region(
                     x_utm,
                     y_utm,
-                    vis_radius,
+                    preload_radius,
                     progress_callback=_phase_progress(
                         job_id, "prepare", 15.0, 35.0
                     ),
@@ -322,7 +352,7 @@ def main():
                 provider.prepare_region(
                     x_utm,
                     y_utm,
-                    vis_radius,
+                    preload_radius,
                     progress_callback=_phase_progress(
                         job_id, "prepare", 15.0, 35.0
                     ),
@@ -353,14 +383,7 @@ def main():
                 )
                 light_sampler = None
 
-            try:
-                ground_h = provider.get_elevation(x_utm, y_utm)
-            except Exception:
-                ground_h = None
-            if ground_h is None:
-                ground_h = 200.0
-
-            band_defs = generate_bands(max(1, int(args.bands)))
+            band_defs = generate_bands(max(1, int(args.bands)), max_dist_m=vis_radius)
             azimuths = [i * 0.5 for i in range(int(round(360.0 / 0.5)))]
             azimuth_order = _build_priority_azimuth_order(
                 azimuths=azimuths,
@@ -392,6 +415,7 @@ def main():
                         domes,
                         peak_distances,
                         np.asarray(resolved_mask, dtype=bool),
+                        vis_radius,
                     )
                 except Exception as exc:
                     # Preview persistence is best-effort; do not abort the bake.
@@ -409,6 +433,7 @@ def main():
                     snapshot_path=preview_path,
                     current=int(current),
                     total=int(total),
+                    resolved_radius_m=vis_radius,
                 )
 
             (
@@ -481,10 +506,11 @@ def main():
                 light_peak_distances=light_peak_distances,
                 resolved_mask=np.asarray(resolved_mask, dtype=bool),
                 terrain_mesh=terrain_mesh,
+                resolved_radius_m=vis_radius,
             )
             _atomic_save_profile(final_profile, output_path)
 
-        _emit_event("done", job_id=job_id, profile_path=output_path)
+        _emit_event("done", job_id=job_id, profile_path=output_path, resolved_radius_m=vis_radius)
     except Exception as exc:
         _emit_event("error", job_id=job_id, message=str(exc))
         raise

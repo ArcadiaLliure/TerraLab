@@ -11,6 +11,7 @@ import glob
 import math
 import os
 import threading
+import copy
 from pathlib import Path
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -112,7 +113,7 @@ def compute_polar_mesh_normals(
     )
 
 
-def generate_bands(n: int = 20, max_dist_m: float = 150_000) -> list:
+def generate_bands(n: int = 20, max_dist_m: float | None = None) -> list:
     """
     Genera N bandes d'horitzó amb distribució logarítmica per zones (piecewise bilog).
 
@@ -132,6 +133,9 @@ def generate_bands(n: int = 20, max_dist_m: float = 150_000) -> list:
         Llista de dicts amb 'id', 'min', 'max' en metres
     """
     import math as _math
+    if max_dist_m is None:
+        raise ValueError("max_dist_m must be the resolved visibility radius")
+    max_dist_m = max(1.0, float(max_dist_m))
 
     # ── Paramètres de partició ────────────────────────────────────────────────
     # Distància de tall entre zona propera i zona llunyana
@@ -214,7 +218,7 @@ def generate_bands(n: int = 20, max_dist_m: float = 150_000) -> list:
 
 
 # Àlies retrocompatible — qualitat per defecte = 20 bandes
-DEFAULT_BANDS = generate_bands(20)
+DEFAULT_BANDS = None
 
 
 # ─────────────────────────────────────────────
@@ -236,6 +240,7 @@ class HorizonProfile:
     )
     resolved_mask: Optional[np.ndarray] = None
     terrain_mesh: Optional[Dict] = None
+    resolved_radius_m: Optional[float] = None
 
     def get_band_points(self, band_id: str):
         """Return list of (az_deg, elevation_deg) for a given band."""
@@ -279,6 +284,8 @@ class HorizonProfile:
             "light_domes": self.light_domes,
             "light_peak_distances": self.light_peak_distances,
         }
+        if self.resolved_radius_m is not None:
+            data["resolved_radius_m"] = np.asarray(float(self.resolved_radius_m))
         if self.resolved_mask is not None:
             data["resolved_mask"] = np.asarray(
                 self.resolved_mask, dtype=np.uint8
@@ -429,6 +436,11 @@ class HorizonProfile:
                 if "observer_lon" in d
                 else 0.0
             )
+            resolved_radius_m = (
+                float(np.asarray(d["resolved_radius_m"]).item())
+                if "resolved_radius_m" in d
+                else None
+            )
 
         return HorizonProfile(
             azimuths=azimuths,
@@ -439,7 +451,48 @@ class HorizonProfile:
             light_peak_distances=light_peak_distances,
             resolved_mask=resolved_mask,
             terrain_mesh=terrain_mesh,
+            resolved_radius_m=resolved_radius_m,
         )
+
+    def covers_radius(self, requested_radius_m: float) -> bool:
+        """Return false for legacy profiles whose coverage is unknown."""
+        return self.resolved_radius_m is not None and self.resolved_radius_m + 0.5 >= float(requested_radius_m)
+
+
+def limit_profile_radius(profile: HorizonProfile, radius_m: float) -> HorizonProfile:
+    """Create a cheap, non-destructive view of a baked profile up to ``radius_m``."""
+    radius = max(0.0, float(radius_m))
+    band_defs = list(getattr(profile, "_band_defs", []) or [])
+    allowed_ids = {
+        str(item.get("id")) for item in band_defs
+        if float(item.get("max", float("inf"))) <= radius + 0.5
+    }
+    if band_defs:
+        bands = [band for band in profile.bands if str(band.get("id")) in allowed_ids]
+        limited_defs = [item for item in band_defs if str(item.get("id")) in allowed_ids]
+    else:
+        bands = list(profile.bands)
+        limited_defs = []
+
+    mesh = profile.terrain_mesh
+    limited_mesh = mesh
+    if mesh and "distances" in mesh:
+        distances = np.asarray(mesh["distances"])
+        rows = int(np.searchsorted(distances, radius, side="right"))
+        if rows < distances.size:
+            limited_mesh = dict(mesh)
+            for key in ("distances", "altitudes", "elevations", "normal_x", "normal_y", "normal_z", "valid", "visible"):
+                if key in limited_mesh:
+                    limited_mesh[key] = np.asarray(limited_mesh[key])[:rows]
+
+    result = copy.copy(profile)
+    result.bands = bands
+    result.terrain_mesh = limited_mesh
+    result._source_resolved_radius_m = profile.resolved_radius_m
+    result.resolved_radius_m = min(radius, float(profile.resolved_radius_m or radius))
+    if limited_defs:
+        result._band_defs = limited_defs
+    return result
 
 
 # ─────────────────────────────────────────────
@@ -1578,7 +1631,7 @@ class HorizonBaker:
     def _mesh_distance_rings(
         d_max: float, resolution_m: Optional[float] = None
     ) -> np.ndarray:
-        visual_max = max(250.0, min(float(d_max), 80_000.0))
+        visual_max = max(250.0, float(d_max))
         resolution = (
             float(resolution_m)
             if resolution_m is not None
@@ -1586,26 +1639,18 @@ class HorizonBaker:
             and resolution_m > 0
             else 30.0
         )
-        near_step = max(5.0, min(20.0, resolution * 2.0))
-        mid_step = max(40.0, min(80.0, resolution * 8.0))
-        far_step = max(150.0, min(350.0, resolution * 24.0))
-        haze_step = max(500.0, min(1200.0, resolution * 90.0))
-
-        segments = [
-            np.arange(40.0, min(1_000.0, visual_max) + near_step, near_step),
-        ]
-        if visual_max > 1_000.0:
-            segments.append(
-                np.arange(1_000.0, min(5_000.0, visual_max) + mid_step, mid_step)
-            )
-        if visual_max > 5_000.0:
-            segments.append(
-                np.arange(5_000.0, min(20_000.0, visual_max) + far_step, far_step)
-            )
-        if visual_max > 20_000.0:
-            segments.append(
-                np.arange(20_000.0, visual_max + haze_step, haze_step)
-            )
+        # At most 395 rings: high detail to 5 km, then progressively sparser
+        # medium/low/silhouette LOD out to the resolved radius.
+        zones = ((40.0, 5_000.0, 150), (5_000.0, 25_000.0, 100),
+                 (25_000.0, 100_000.0, 75), (100_000.0, 250_000.0, 45),
+                 (250_000.0, visual_max, 25))
+        segments = []
+        for start, stop, budget in zones:
+            stop = min(stop, visual_max)
+            if stop <= start:
+                continue
+            count = max(2, min(budget, int(math.ceil((stop - start) / max(resolution * 2.0, 1.0))) + 1))
+            segments.append(np.geomspace(start, stop, count))
 
         rings = np.unique(np.round(np.concatenate(segments)).astype(np.float32))
         rings = rings[rings <= visual_max]
@@ -2028,7 +2073,7 @@ class HorizonBaker:
         obs_y: float,
         obs_h_ground: Optional[float] = None,
         step_m: float = 50,
-        d_max: float = 100_000,
+        d_max: Optional[float] = None,
         delta_az_deg: float = 0.5,
         band_defs: Optional[List[Dict]] = None,
         azimuth_order: Optional[List[int]] = None,
@@ -2046,6 +2091,8 @@ class HorizonBaker:
         for the full 360° solve to finish.
         """
         import time
+        if d_max is None:
+            raise ValueError("d_max must be the resolved visibility radius")
 
         if obs_h_ground is None:
             val = self.provider.get_elevation(obs_x, obs_y)
@@ -2066,7 +2113,7 @@ class HorizonBaker:
         resolved_mask = np.zeros(n_az, dtype=bool)
 
         if band_defs is None:
-            band_defs = DEFAULT_BANDS
+            band_defs = generate_bands(20, max_dist_m=d_max)
 
         bands = self._build_band_buffers(n_az, band_defs)
 
@@ -2182,7 +2229,7 @@ class HorizonBaker:
         obs_y: float,
         obs_h_ground: Optional[float] = None,
         step_m: float = 50,
-        d_max: float = 100_000,
+        d_max: Optional[float] = None,
         delta_az_deg: float = 0.5,
         band_defs: Optional[List[Dict]] = None,
         progress_callback=None,
@@ -2237,7 +2284,9 @@ class HorizonBaker:
         max_rad_per_az = np.zeros(n_az, dtype=np.float32)
 
         if band_defs is None:
-            band_defs = DEFAULT_BANDS
+            if d_max is None:
+                raise ValueError("d_max must be the resolved visibility radius")
+            band_defs = generate_bands(20, max_dist_m=d_max)
 
         bands = []
         for bd in band_defs:
@@ -2407,7 +2456,7 @@ def bake_and_save(
     lon: float,
     tiles_dir: str,
     output_path: str,
-    radius: float = 100_000,
+    radius: Optional[float] = None,
     step_m: float = 50,
     resolution_deg: float = 0.5,
     eye_height: float = 1.7,
@@ -2416,6 +2465,8 @@ def bake_and_save(
     """
     Full pipeline: transform coords, index tiles, bake horizon, save .npz.
     """
+    if radius is None:
+        raise ValueError("radius must be a resolved visibility radius")
     from pyproj import Transformer
 
     # Transform observer from geographic to terrain internal coordinates.
@@ -2461,6 +2512,7 @@ def bake_and_save(
         observer_lon=lon,
         light_domes=light_domes,
         light_peak_distances=light_peak_distances,
+        resolved_radius_m=float(radius),
     )
     profile.save(output_path)
     print(f"[HorizonEngine] Profile saved to {output_path}")

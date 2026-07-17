@@ -980,6 +980,28 @@ def build_deferred_controls_ui(widget):
     self.combo_layers.currentTextChanged.connect(self.on_layers_changed)
     h_lay.addWidget(self.combo_layers)
     v_earth.addLayout(h_lay)
+    h_depth = QHBoxLayout()
+    self.lbl_terrain_depth = QLabel()
+    self.lbl_terrain_depth.setStyleSheet("font-size: 9px; font-weight: normal;")
+    h_depth.addWidget(self.lbl_terrain_depth)
+    self.slider_terrain_depth = QSlider(Qt.Horizontal)
+    self.slider_terrain_depth.setRange(1, 530)
+    self.slider_terrain_depth.setSingleStep(1)
+    self.slider_terrain_depth.setPageStep(10)
+    from TerraLab.terrain.visibility_range import TerrainRangeSettings, resolve_visibility_range
+    range_settings = TerrainRangeSettings.from_mapping(
+        get_config_value("terrain_visibility_range", {})
+    )
+    default_depth = resolve_visibility_range(range_settings, 0.0).resolved_radius_m / 1000.0
+    initial_depth = int(round(float(get_config_value("terrain_display_radius_km", default_depth))))
+    self.slider_terrain_depth.setValue(max(1, min(530, initial_depth)))
+    self.slider_terrain_depth.setToolTip(
+        getTraduction("Terrain.DepthTooltip", "Profunditat topogràfica visible en km")
+    )
+    self.slider_terrain_depth.valueChanged.connect(self.on_terrain_depth_changed)
+    h_depth.addWidget(self.slider_terrain_depth, 1)
+    v_earth.addLayout(h_depth)
+    self._update_terrain_depth_label(self.slider_terrain_depth.value())
     v_earth.addStretch()
     panels_layout.addWidget(gb_earth, 1)
     self.panels_widget = QWidget()

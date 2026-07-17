@@ -63,6 +63,10 @@ class ConfigManager:
         """
         set_config_value(key, value)
 
+    # Historical aliases still used by a few dialogs.
+    get_value = get
+    set_value = set
+
     # --- Specific Getters/Setters ---
 
     def get_raster_path(self):
@@ -109,3 +113,13 @@ class ConfigManager:
         - None.
         """
         self.set("horizon_quality", int(n))
+
+    def get_terrain_range_settings(self):
+        """Load range settings; missing legacy keys intentionally mean safe auto mode."""
+        from TerraLab.terrain.visibility_range import TerrainRangeSettings
+
+        raw = self.get("terrain_visibility_range", {})
+        return TerrainRangeSettings.from_mapping(raw if isinstance(raw, dict) else {})
+
+    def set_terrain_range_settings(self, settings):
+        self.set("terrain_visibility_range", settings.validated().to_dict())

@@ -2172,6 +2172,7 @@ class AstronomicalWidget(CustomWidgetBase):
         QTimer.singleShot(15000, self._try_start_catalog_loader_deferred)
     def _build_horizon_bake_job(self) -> dict:
         from TerraLab.common.utils import get_config_value
+        from TerraLab.terrain.visibility_range import TerrainRangeSettings
         import uuid
         try:
             n_bands = int(get_config_value("horizon_quality", 20))
@@ -2187,14 +2188,16 @@ class AstronomicalWidget(CustomWidgetBase):
             "view_azimuth": float(getattr(self.canvas, "azimuth_offset", 180.0)) % 360.0,
             "view_fov_deg": float(current_fov),
             "view_elevation": float(getattr(self.canvas, "elevation_angle", 0.0)),
+            "range_settings": TerrainRangeSettings.from_mapping(
+                get_config_value("terrain_visibility_range", {})
+            ).to_dict(),
         }
     def _begin_horizon_bake(self):
         if not hasattr(self, "horizon_worker"):
             return
         self.horizon_worker.abort_current_job()
         self._active_horizon_job_id = None
-        if hasattr(self.canvas, "horizon_overlay"):
-            self.canvas.horizon_overlay.clear_profile()
+        # Keep the last covered profile visible until a wider bake yields previews.
         target_stage = "stars_ready" if hasattr(self, "np_ra") else "base_sky"
         self._set_scene_load_stage(target_stage)
         job = self._build_horizon_bake_job()
@@ -2234,6 +2237,10 @@ class AstronomicalWidget(CustomWidgetBase):
         profile = payload.get("profile")
         if profile is None:
             return
+        if hasattr(self, "slider_terrain_depth"):
+            profile = self._profile_for_terrain_depth(
+                profile, self.slider_terrain_depth.value()
+            )
         layer_defs = None
         band_defs = getattr(profile, "_band_defs", None)
         if band_defs is not None:
@@ -2256,6 +2263,13 @@ class AstronomicalWidget(CustomWidgetBase):
             profile = profile.get("profile")
         if profile is None:
             return
+        self._full_horizon_profile = profile
+        requested_km = float(
+            getattr(self, "_pending_terrain_depth_km", None)
+            or (self.slider_terrain_depth.value() if hasattr(self, "slider_terrain_depth") else 0.0)
+        )
+        if requested_km > 0.0:
+            profile = self._profile_for_terrain_depth(profile, requested_km)
         print(f"[AstroWidget] New Horizon Profile received! Bands: {len(profile.bands)}")
         # Hide Loading Label
         if hasattr(self, 'lbl_loading'):
@@ -2279,6 +2293,70 @@ class AstronomicalWidget(CustomWidgetBase):
         self.update_altitude_label()
         self._set_scene_load_stage("scene_ready")
         self.canvas.update()
+
+    def _update_terrain_depth_label(self, value_km):
+        if hasattr(self, "lbl_terrain_depth"):
+            self.lbl_terrain_depth.setText(
+                getTraduction("Terrain.Depth", "Profunditat: {km} km").format(km=int(value_km))
+            )
+
+    def on_terrain_depth_changed(self, value_km):
+        self._pending_terrain_depth_km = int(value_km)
+        self._update_terrain_depth_label(value_km)
+        timer = getattr(self, "terrain_depth_debounce_timer", None)
+        if timer is not None:
+            timer.start(2000)
+
+    def _profile_for_terrain_depth(self, profile, radius_km):
+        from TerraLab.terrain.engine import limit_profile_radius
+
+        return limit_profile_radius(profile, float(radius_km) * 1000.0)
+
+    def _show_profile_at_terrain_depth(self, profile, radius_km):
+        visible_profile = self._profile_for_terrain_depth(profile, radius_km)
+        layer_defs = None
+        band_defs = getattr(visible_profile, "_band_defs", None)
+        if band_defs is not None:
+            from TerraLab.terrain.overlay import generate_layer_defs
+            layer_defs = generate_layer_defs(band_defs)
+        if hasattr(self.canvas, "horizon_overlay"):
+            self.canvas.horizon_overlay.set_profile(visible_profile, layer_defs=layer_defs)
+        if hasattr(self.canvas, "village"):
+            self.canvas.village.set_profile(visible_profile)
+        self.canvas.update()
+
+    def _apply_pending_terrain_depth(self):
+        from TerraLab.common.utils import get_config_value, set_config_value
+        from TerraLab.terrain.visibility_range import TerrainRangeSettings
+
+        radius_km = int(
+            self._pending_terrain_depth_km
+            or (self.slider_terrain_depth.value() if hasattr(self, "slider_terrain_depth") else 1)
+        )
+        set_config_value("terrain_display_radius_km", radius_km)
+        current = TerrainRangeSettings.from_mapping(
+            get_config_value("terrain_visibility_range", {})
+        )
+        widened = TerrainRangeSettings(
+            mode="manual",
+            manual_radius_km=float(radius_km),
+            minimum_radius_km=current.minimum_radius_km,
+            maximum_radius_km=current.maximum_radius_km,
+            target_max_elevation_m=current.target_max_elevation_m,
+            atmospheric_refraction_enabled=current.atmospheric_refraction_enabled,
+            effective_earth_radius_factor=current.effective_earth_radius_factor,
+            immediate_preload_radius_km=current.immediate_preload_radius_km,
+        ).validated()
+        set_config_value("terrain_visibility_range", widened.to_dict())
+        profile = getattr(self, "_full_horizon_profile", None)
+        if profile is not None and profile.covers_radius(radius_km * 1000.0):
+            if hasattr(self, "horizon_worker"):
+                self.horizon_worker.abort_current_job()
+            self._show_profile_at_terrain_depth(profile, radius_km)
+            return
+        if hasattr(self, "horizon_worker"):
+            self.horizon_worker.reload_config()
+        self._begin_horizon_bake()
     def on_horizon_progress(self, msg):
         """Update loading label with progress message."""
         self._last_horizon_progress_text = str(msg or "")

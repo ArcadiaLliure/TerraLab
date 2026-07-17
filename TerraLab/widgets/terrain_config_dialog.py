@@ -8,17 +8,21 @@ from PyQt5.QtCore import Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QComboBox,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
     QMessageBox,
     QPushButton,
+    QDoubleSpinBox,
+    QFormLayout,
     QVBoxLayout,
 )
 
 from TerraLab.common.utils import getTraduction
 from TerraLab.config import ConfigManager
+from TerraLab.terrain.visibility_range import resolve_visibility_range
 
 # Presets de qualitat de l'horitzó: (clau de traducció, nombre de capes)
 QUALITY_PRESETS = [
@@ -134,8 +138,8 @@ class TerrainConfigDialog(QDialog):
         lbl_rec = QLabel(
             getTraduction(
                 "Terrain.Recommendation",
-                "ℹ Recomanació: Descarregueu almenys 150km a la redona en fitxers "
-                "trossejats (5×5° o similar).",
+                "ℹ Recomanació: useu fitxers trossejats (5×5° o similar); "
+                "la cobertura necessària depèn de l'abast resolt.",
             )
         )
         lbl_rec.setStyleSheet("color: #aaa; font-style: italic;")
@@ -219,6 +223,39 @@ class TerrainConfigDialog(QDialog):
         lbl_quality_note.setStyleSheet("color: #888; font-size: 11px;")
         layout.addWidget(lbl_quality_note)
 
+        range_settings = self.config.get_terrain_range_settings()
+        range_form = QFormLayout()
+        self.combo_range_mode = QComboBox()
+        self.combo_range_mode.addItem(getTraduction("Terrain.RangeAuto", "Automàtic"), "auto")
+        self.combo_range_mode.addItem(getTraduction("Terrain.RangeManual", "Manual"), "manual")
+        self.combo_range_mode.setCurrentIndex(1 if range_settings.mode == "manual" else 0)
+        range_form.addRow(getTraduction("Terrain.RangeMode", "Abast topogràfic:"), self.combo_range_mode)
+
+        self.spin_manual_radius = QDoubleSpinBox()
+        self.spin_manual_radius.setRange(1.0, 530.0)
+        self.spin_manual_radius.setSuffix(" km")
+        self.spin_manual_radius.setValue(range_settings.manual_radius_km)
+        range_form.addRow(getTraduction("Terrain.ManualRadius", "Radi manual:"), self.spin_manual_radius)
+
+        self.check_refraction = QCheckBox(getTraduction("Terrain.Refraction", "Refracció atmosfèrica (7/6 R)"))
+        self.check_refraction.setChecked(range_settings.atmospheric_refraction_enabled)
+        range_form.addRow("", self.check_refraction)
+
+        self.spin_target_elevation = QDoubleSpinBox()
+        self.spin_target_elevation.setRange(0.0, 12_000.0)
+        self.spin_target_elevation.setSuffix(" m")
+        self.spin_target_elevation.setValue(range_settings.target_max_elevation_m)
+        range_form.addRow(getTraduction("Terrain.TargetElevation", "Elevació objectiu màxima:"), self.spin_target_elevation)
+        self.lbl_resolved_radius = QLabel()
+        range_form.addRow(getTraduction("Terrain.ResolvedRadius", "Radi resolt estimat:"), self.lbl_resolved_radius)
+        layout.addLayout(range_form)
+
+        self.combo_range_mode.currentIndexChanged.connect(self._on_range_settings_changed)
+        self.spin_manual_radius.valueChanged.connect(self._on_range_settings_changed)
+        self.check_refraction.toggled.connect(self._on_range_settings_changed)
+        self.spin_target_elevation.valueChanged.connect(self._on_range_settings_changed)
+        self._on_range_settings_changed()
+
         # ── Botons d'acció ───────────────────────────────────────────────────
         btn_layout = QHBoxLayout()
 
@@ -272,6 +309,41 @@ class TerrainConfigDialog(QDialog):
                     "Terrain.CurrentPath", "Ruta actual: (No configurada)"
                 )
             )
+
+    def _on_range_settings_changed(self, *_args):
+        from TerraLab.terrain.visibility_range import TerrainRangeSettings
+
+        previous = self.config.get_terrain_range_settings()
+        settings = TerrainRangeSettings(
+            mode=str(self.combo_range_mode.currentData()),
+            manual_radius_km=float(self.spin_manual_radius.value()),
+            minimum_radius_km=previous.minimum_radius_km,
+            maximum_radius_km=previous.maximum_radius_km,
+            target_max_elevation_m=float(self.spin_target_elevation.value()),
+            atmospheric_refraction_enabled=bool(self.check_refraction.isChecked()),
+            effective_earth_radius_factor=previous.effective_earth_radius_factor,
+            immediate_preload_radius_km=previous.immediate_preload_radius_km,
+        ).validated()
+        self.spin_manual_radius.setEnabled(settings.mode == "manual")
+        observer_elevation = 0.0
+        suffix = ""
+        if settings.mode == "auto":
+            try:
+                ground = self.parent().horizon_worker.get_bare_elevation(
+                    float(self.parent().latitude), float(self.parent().longitude)
+                )
+                if ground is None:
+                    raise ValueError("observer elevation unavailable")
+                observer_elevation = (
+                    float(ground)
+                    + float(self.parent().horizon_worker.observer_offset)
+                    + 1.7
+                )
+            except Exception:
+                suffix = getTraduction("Terrain.RangeEstimateNote", " (a nivell del mar)")
+        estimate = resolve_visibility_range(settings, observer_elevation_m=observer_elevation)
+        self.lbl_resolved_radius.setText(f"{estimate.resolved_radius_m / 1000.0:.1f} km{suffix}")
+        self.config.set_terrain_range_settings(settings)
 
     def _update_lp_path_label(self):
         # We'll use a custom key for DVNL in ConfigManager
