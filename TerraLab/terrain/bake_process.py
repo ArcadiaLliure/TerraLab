@@ -77,10 +77,19 @@ def _emit_event(event_type: str, **payload) -> None:
 
 def _phase_progress(job_id: str, phase: str, start_pct: float, end_pct: float):
     span = float(end_pct) - float(start_pct)
+    last_emitted = {"percent": None}
 
     def _callback(percent: float, _msg: str = "") -> None:
         sub_pct = max(0.0, min(100.0, float(percent)))
         mapped = float(start_pct) + (sub_pct / 100.0) * span
+        previous = last_emitted["percent"]
+        if (
+            previous is not None
+            and mapped < float(end_pct)
+            and mapped - previous < 1.0
+        ):
+            return
+        last_emitted["percent"] = mapped
         _emit_event(
             "progress", job_id=job_id, phase=phase, percent=round(mapped, 1)
         )

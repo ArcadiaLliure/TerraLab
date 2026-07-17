@@ -20,7 +20,11 @@ import numpy as np
 import pandas as pd
 
 from TerraLab.common.perf_events import append_perf_event
-from TerraLab.common.performance import DEFAULT_PERFORMANCE_BUDGET, PERFORMANCE_FLAGS
+from TerraLab.common.performance import (
+    DEFAULT_PERFORMANCE_BUDGET,
+    PERFORMANCE_FLAGS,
+    process_memory_bytes,
+)
 from TerraLab.terrain.providers import (
     CRS_GEOGRAPHIC,
     CRS_TERRAIN_INTERNAL,
@@ -456,6 +460,9 @@ class TileIndex:
         self.patterns = patterns
         self.tiles: List[Dict] = []
         self.global_bbox = [np.inf, np.inf, -np.inf, -np.inf]
+        self._spatial_cell_size = 1.0
+        self._spatial_origin = (0.0, 0.0)
+        self._spatial_cells: Dict[Tuple[int, int], Tuple[int, ...]] = {}
         self._build_index(callback)
 
     def _build_index(self, callback=None):
@@ -528,7 +535,91 @@ class TileIndex:
                 len(files), len(files), f"Indexed {len(self.tiles)} tiles."
             )
 
+        self._build_spatial_index()
         print(f"[HorizonEngine] Indexed {len(self.tiles)} valid tiles.")
+
+    def _build_spatial_index(self) -> None:
+        """Build a compact uniform-grid lookup without changing tile precedence."""
+
+        if not self.tiles:
+            self._spatial_cells = {}
+            return
+        widths = [
+            max(0.0, float(tile["bbox"][2]) - float(tile["bbox"][0]))
+            for tile in self.tiles
+        ]
+        heights = [
+            max(0.0, float(tile["bbox"][3]) - float(tile["bbox"][1]))
+            for tile in self.tiles
+        ]
+        dimensions = [
+            value
+            for value in widths + heights
+            if np.isfinite(value) and value > 0
+        ]
+        self._spatial_cell_size = max(1.0, float(np.median(dimensions)))
+        origin_x = float(self.global_bbox[0])
+        origin_y = float(self.global_bbox[1])
+        self._spatial_origin = (origin_x, origin_y)
+        cells: Dict[Tuple[int, int], List[int]] = {}
+        cell_size = self._spatial_cell_size
+        for tile_index, tile in enumerate(self.tiles):
+            xmin, ymin, xmax, ymax = (float(value) for value in tile["bbox"])
+            ix0 = math.floor((xmin - origin_x) / cell_size)
+            iy0 = math.floor((ymin - origin_y) / cell_size)
+            # Include the cell touching an upper edge; exact bbox checks later
+            # discard points that belong to the neighbouring tile.
+            ix1 = math.floor((xmax - origin_x) / cell_size)
+            iy1 = math.floor((ymax - origin_y) / cell_size)
+            for iy in range(iy0, iy1 + 1):
+                for ix in range(ix0, ix1 + 1):
+                    cells.setdefault((ix, iy), []).append(tile_index)
+        self._spatial_cells = {
+            key: tuple(indices) for key, indices in cells.items()
+        }
+
+    def candidate_point_groups(
+        self, x: np.ndarray, y: np.ndarray
+    ) -> List[Tuple[Dict, np.ndarray]]:
+        """Group flat point indices by possible tile, in index precedence order."""
+
+        flat_x = np.asarray(x, dtype=np.float64).ravel()
+        flat_y = np.asarray(y, dtype=np.float64).ravel()
+        if flat_x.shape != flat_y.shape:
+            raise ValueError("Spatial lookup coordinate shapes must match")
+        if not self.tiles or flat_x.size == 0:
+            return []
+
+        origin_x, origin_y = self._spatial_origin
+        cell_size = self._spatial_cell_size
+        cell_x = np.floor((flat_x - origin_x) / cell_size).astype(np.int64)
+        cell_y = np.floor((flat_y - origin_y) / cell_size).astype(np.int64)
+        order = np.lexsort((cell_x, cell_y))
+        sorted_x = cell_x[order]
+        sorted_y = cell_y[order]
+        boundaries = np.flatnonzero(
+            (sorted_x[1:] != sorted_x[:-1]) | (sorted_y[1:] != sorted_y[:-1])
+        ) + 1
+        groups: Dict[int, List[np.ndarray]] = {}
+        for positions in np.split(order, boundaries):
+            if positions.size == 0:
+                continue
+            key = (int(cell_x[positions[0]]), int(cell_y[positions[0]]))
+            for tile_index in self._spatial_cells.get(key, ()):
+                tile = self.tiles[tile_index]
+                xmin, ymin, xmax, ymax = tile["bbox"]
+                selected = positions[
+                    (flat_x[positions] >= xmin)
+                    & (flat_x[positions] < xmax)
+                    & (flat_y[positions] >= ymin)
+                    & (flat_y[positions] < ymax)
+                ]
+                if selected.size:
+                    groups.setdefault(tile_index, []).append(selected)
+        return [
+            (self.tiles[tile_index], np.concatenate(groups[tile_index]))
+            for tile_index in sorted(groups)
+        ]
 
     @staticmethod
     def _parse_npy_filename(
@@ -668,6 +759,9 @@ class TileCache:
         self._cache_sizes: dict[str, int] = {}
         self._cache_bytes = 0
         self._lock = threading.Lock()
+        self.cache_hits = 0
+        self.cache_misses = 0
+        self.bytes_read = 0
         # Different tiles can be read in parallel.  Bounded striped locks keep
         # same-path materialisation exclusive without a lock object per tile.
         self._tile_io_lock = threading.Lock()
@@ -720,8 +814,10 @@ class TileCache:
         path = tile_info["path"]
         with self._lock:
             if path in self.cache:
+                self.cache_hits += 1
                 self.cache.move_to_end(path)
                 return self.cache[path]
+            self.cache_misses += 1
 
         header = tile_info["header"]
         filename = os.path.basename(path)
@@ -754,6 +850,7 @@ class TileCache:
                     )
                     # Ensure independent in-memory buffer (no file-backed view).
                     data = np.asarray(data, dtype=np.float32)
+                self.bytes_read += int(data.nbytes)
                 self._store(path, (data, header))
                 # print(f"[HorizonEngine] Loaded cached npy: {os.path.basename(candidate_npy)}")
                 return data, header
@@ -841,6 +938,7 @@ class TileCache:
             except:
                 pass
 
+            self.bytes_read += int(data.nbytes)
             self._store(path, (data, header))
 
             return data, header
@@ -1041,17 +1139,37 @@ class HorizonBaker:
 
         pending = [self.provider]
         seen: set[int] = set()
-        metrics = {"bytes_read": 0, "cache_hits": 0, "cache_misses": 0}
+        metrics = {
+            "bytes_read": 0,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "selection_ns": 0,
+            "interpolation_ns": 0,
+            "candidate_tiles": 0,
+            "loaded_tiles": 0,
+            "sampled_points": 0,
+        }
         while pending:
             item = pending.pop()
             if id(item) in seen:
                 continue
             seen.add(id(item))
             pending.extend(getattr(item, "providers", ()) or ())
+            for child_name in ("cache",):
+                child = getattr(item, child_name, None)
+                if child is not None:
+                    pending.append(child)
             datasets = getattr(item, "_datasets", ()) or ()
             pending.extend(datasets)
             for name in metrics:
-                metrics[name] += int(getattr(item, name, 0) or 0)
+                attribute = {
+                    "selection_ns": "sample_selection_ns",
+                    "interpolation_ns": "sample_interpolation_ns",
+                    "candidate_tiles": "sample_candidate_tiles",
+                    "loaded_tiles": "sample_loaded_tiles",
+                    "sampled_points": "sampled_points",
+                }.get(name, name)
+                metrics[name] += int(getattr(item, attribute, 0) or 0)
         return metrics
 
     @staticmethod
@@ -1746,8 +1864,9 @@ class HorizonBaker:
         field_valid = np.zeros(field_elevations.shape, dtype=bool)
         io_before = self._raster_io_metrics()
         t0 = time.time()
-        last_preview_t = t0
         completed = 0
+        reduction_ns = 0
+        snapshot_ns = 0
         rows_per_batch = DEFAULT_PERFORMANCE_BUDGET.batch_rows(40)
         batch_size = max(
             1,
@@ -1757,16 +1876,24 @@ class HorizonBaker:
                 rows_per_batch // max(1, int(sample_distances.size)),
             ),
         )
-        if preview_callback is not None:
-            batch_size = min(batch_size, max(1, int(preview_every)))
-
-        for chunk_start in range(0, len(ordered_indices), batch_size):
+        chunk_start = 0
+        first_batch_size = (
+            min(batch_size, max(1, int(preview_every)))
+            if preview_callback is not None
+            else batch_size
+        )
+        while chunk_start < len(ordered_indices):
             if abort_check and abort_check():
                 raise InterruptedError("Bake aborted")
+            current_batch_size = (
+                first_batch_size if chunk_start == 0 else batch_size
+            )
             chunk_indices = np.asarray(
-                ordered_indices[chunk_start : chunk_start + batch_size],
+                ordered_indices[chunk_start : chunk_start + current_batch_size],
                 dtype=np.int32,
             )
+            chunk_metrics_before = self._raster_io_metrics()
+            chunk_t0 = time.perf_counter_ns()
             result = self._sample_azimuth_chunk_vectorized(
                 az_indices=chunk_indices,
                 obs_x=obs_x,
@@ -1780,6 +1907,15 @@ class HorizonBaker:
                 cos_az=cos_az,
                 light_sampler=light_sampler,
             )
+            chunk_elapsed_ns = time.perf_counter_ns() - chunk_t0
+            chunk_metrics_after = self._raster_io_metrics()
+            provider_ns = (
+                chunk_metrics_after["selection_ns"]
+                - chunk_metrics_before["selection_ns"]
+                + chunk_metrics_after["interpolation_ns"]
+                - chunk_metrics_before["interpolation_ns"]
+            )
+            reduction_ns += max(0, int(chunk_elapsed_ns) - int(provider_ns))
             field_elevations[:, chunk_indices] = np.asarray(
                 result["elevations"], dtype=np.float32
             ).T
@@ -1809,28 +1945,24 @@ class HorizonBaker:
                 ][local_index]
                 resolved_mask[azimuth_index] = True
                 completed += 1
+            if progress_callback:
                 progress_pct = (completed / len(azimuths)) * 100.0
-                if progress_callback:
-                    progress_callback(
-                        progress_pct, f"Azimuth {completed}/{len(azimuths)}"
-                    )
-                if preview_callback:
-                    now = time.time()
-                    enough_samples = completed >= preview_every and (
-                        completed % max(1, preview_every) == 0
-                    )
-                    enough_time = (now - last_preview_t) >= 0.35
-                    if completed == len(azimuths) or enough_samples or enough_time:
-                        preview_callback(
-                            completed,
-                            len(azimuths),
-                            azimuths,
-                            bands,
-                            light_domes,
-                            light_peak_distances,
-                            resolved_mask,
-                        )
-                        last_preview_t = now
+                progress_callback(
+                    progress_pct, f"Azimuth {completed}/{len(azimuths)}"
+                )
+            if preview_callback:
+                snapshot_t0 = time.perf_counter_ns()
+                preview_callback(
+                    completed,
+                    len(azimuths),
+                    azimuths,
+                    bands,
+                    light_domes,
+                    light_peak_distances,
+                    resolved_mask,
+                )
+                snapshot_ns += time.perf_counter_ns() - snapshot_t0
+            chunk_start += len(chunk_indices)
 
         self._last_polar_field = PolarElevationField(
             azimuths=azimuths,
@@ -1849,6 +1981,7 @@ class HorizonBaker:
         )
         elapsed = time.time() - t0
         io_after = self._raster_io_metrics()
+        rss_bytes, peak_rss_bytes = process_memory_bytes()
         append_perf_event(
             "terrain.raycast",
             backend="vectorized",
@@ -1863,6 +1996,23 @@ class HorizonBaker:
             bytes_read=int(io_after["bytes_read"] - io_before["bytes_read"]),
             cache_hits=int(io_after["cache_hits"] - io_before["cache_hits"]),
             cache_misses=int(io_after["cache_misses"] - io_before["cache_misses"]),
+            selection_s=round(
+                (io_after["selection_ns"] - io_before["selection_ns"]) / 1e9, 6
+            ),
+            interpolation_s=round(
+                (io_after["interpolation_ns"] - io_before["interpolation_ns"]) / 1e9, 6
+            ),
+            reduction_s=round(reduction_ns / 1e9, 6),
+            snapshots_s=round(snapshot_ns / 1e9, 6),
+            candidate_tiles=int(
+                io_after["candidate_tiles"] - io_before["candidate_tiles"]
+            ),
+            loaded_tiles=int(io_after["loaded_tiles"] - io_before["loaded_tiles"]),
+            sampled_points=int(
+                io_after["sampled_points"] - io_before["sampled_points"]
+            ),
+            rss_bytes=int(rss_bytes),
+            peak_rss_bytes=int(peak_rss_bytes),
         )
         return (
             azimuths,
