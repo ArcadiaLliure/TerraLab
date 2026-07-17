@@ -4,6 +4,7 @@ import math
 import os
 import threading
 import sys
+import time
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -637,6 +638,11 @@ class AscRasterProvider(RasterProvider):
         self.internal_crs = CRS_TERRAIN_INTERNAL
         self.native_crs = CRS_TERRAIN_INTERNAL
         self.metadata: tuple[RasterMetadata, ...] = ()
+        self.sample_selection_ns = 0
+        self.sample_interpolation_ns = 0
+        self.sample_candidate_tiles = 0
+        self.sample_loaded_tiles = 0
+        self.sampled_points = 0
 
     def initialize(self, progress_callback=None):
         # We must import inside or assure no circular dependency
@@ -801,21 +807,22 @@ class AscRasterProvider(RasterProvider):
         valid = np.zeros(flat_x.size, dtype=bool)
 
         # Tiles are evaluated in deterministic index order.  Each tile load is
-        # performed once and all covered points are interpolated in NumPy.
-        for tile in self.index.tiles:
-            xmin, ymin, xmax, ymax = tile["bbox"]
-            indices = np.flatnonzero(
-                (~valid)
-                & (flat_x >= xmin)
-                & (flat_x < xmax)
-                & (flat_y >= ymin)
-                & (flat_y < ymax)
-            )
+        # performed once and all candidate points are interpolated in NumPy.
+        selection_start = time.perf_counter_ns()
+        candidate_groups = self.index.candidate_point_groups(flat_x, flat_y)
+        self.sample_selection_ns += time.perf_counter_ns() - selection_start
+        self.sample_candidate_tiles += len(candidate_groups)
+        self.sampled_points += int(flat_x.size)
+        interpolation_start = time.perf_counter_ns()
+        for tile, candidate_indices in candidate_groups:
+            indices = candidate_indices[~valid[candidate_indices]]
             if indices.size == 0:
                 continue
+            xmin, ymin, xmax, ymax = tile["bbox"]
             data, header = self.cache.load(tile)
             if data is None or header is None:
                 continue
+            self.sample_loaded_tiles += 1
             nrows, ncols = data.shape
             if header.get("NPY"):
                 sx = (xmax - xmin) / max(1, ncols)
@@ -864,6 +871,7 @@ class AscRasterProvider(RasterProvider):
             chosen = indices[point_valid]
             values[chosen] = sampled[point_valid]
             valid[chosen] = True
+        self.sample_interpolation_ns += time.perf_counter_ns() - interpolation_start
         sources = np.where(valid, 0, -1).astype(np.int16)
         return ElevationBatch(
             values.reshape(shape), valid.reshape(shape), sources.reshape(shape)
