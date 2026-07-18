@@ -1,17 +1,10 @@
-from setuptools import setup, find_packages
+from setuptools import find_packages, setup
 
 setup(
-    name="TerraLab",
+    name="terralab",
     version="0.1.0",
-    packages=find_packages(),
+    packages=find_packages(include=["TerraLab", "TerraLab.*"]),
     install_requires=[
-        "PyQt5",
-        "numpy",
-        "skyfield"
+        "numpy>=1.26",
     ],
-    entry_points={
-        'console_scripts': [
-            'terralab=TerraLab.__main__:main',
-        ],
-    },
 )

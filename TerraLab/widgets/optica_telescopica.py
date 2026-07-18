@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 
-
 # Empirical calibration constant for TerraLab scope rendering.
 # Calibrated so camera-like settings (e.g. ~250 mm, f/2.8, ISO 6400, 30 s)
 # land in a realistic deep-sky limit range for the current catalog.
@@ -36,9 +35,13 @@ def _effective_iso_term(iso: float) -> float:
     knee_stops = math.log2(ISO_KNEE / 100.0)
     iso_stops = math.log2(iso / 100.0)
     linear_stops = min(iso_stops, knee_stops)
-    compressed_stops = max(0.0, iso_stops - knee_stops) * ISO_HIGH_GAIN_EFFICIENCY
+    compressed_stops = (
+        max(0.0, iso_stops - knee_stops) * ISO_HIGH_GAIN_EFFICIENCY
+    )
     effective_stops = linear_stops + compressed_stops
-    return 1.25 * math.log10(100.0) + (1.25 * math.log10(2.0) * effective_stops)
+    return 1.25 * math.log10(100.0) + (
+        1.25 * math.log10(2.0) * effective_stops
+    )
 
 
 def _short_exposure_read_noise_penalty(exposure_seconds: float) -> float:
@@ -46,7 +49,9 @@ def _short_exposure_read_noise_penalty(exposure_seconds: float) -> float:
     exposure_seconds = max(1e-3, float(exposure_seconds))
     if exposure_seconds >= SHORT_EXPOSURE_REF_S:
         return 0.0
-    return SHORT_EXPOSURE_PENALTY_SLOPE * math.log10(SHORT_EXPOSURE_REF_S / exposure_seconds)
+    return SHORT_EXPOSURE_PENALTY_SLOPE * math.log10(
+        SHORT_EXPOSURE_REF_S / exposure_seconds
+    )
 
 
 def calculate_mag_limit(
@@ -72,7 +77,12 @@ def calculate_mag_limit(
     aperture_mm = float(aperture_mm)
     iso = float(iso)
     exposure_seconds = float(exposure_seconds)
-    if focal_mm <= 0.0 or aperture_mm <= 0.0 or iso <= 0.0 or exposure_seconds <= 0.0:
+    if (
+        focal_mm <= 0.0
+        or aperture_mm <= 0.0
+        or iso <= 0.0
+        or exposure_seconds <= 0.0
+    ):
         return 0.0
 
     f_ratio = focal_mm / aperture_mm
@@ -80,9 +90,16 @@ def calculate_mag_limit(
     term_exposure = 1.25 * math.log10(exposure_seconds)
     term_iso = _effective_iso_term(iso)
     term_f_ratio = -5.0 * math.log10(max(1e-6, f_ratio))
-    short_exposure_penalty = _short_exposure_read_noise_penalty(exposure_seconds)
+    short_exposure_penalty = _short_exposure_read_noise_penalty(
+        exposure_seconds
+    )
     return float(
-        sensor_constant + term_aperture + term_exposure + term_iso + term_f_ratio - short_exposure_penalty
+        sensor_constant
+        + term_aperture
+        + term_exposure
+        + term_iso
+        + term_f_ratio
+        - short_exposure_penalty
     )
 
 
@@ -97,10 +114,12 @@ def calculate_star_brightness(magnitude: float, mag_limit: float) -> float:
     flux_relative = 10.0 ** (delta_mag / 2.5)
     flux_sat = 10.0 ** (8.0 / 2.5)
     base = min(1.0, flux_relative / flux_sat)
-    return float(base ** 0.4)
+    return float(base**0.4)
 
 
-def calculate_star_radius_px(magnitude: float, mag_limit: float, mag_saturation: float = -1.5) -> float:
+def calculate_star_radius_px(
+    magnitude: float, mag_limit: float, mag_saturation: float = -1.5
+) -> float:
     """Map apparent magnitude to screen radius in pixels."""
     magnitude = float(magnitude)
     mag_limit = float(mag_limit)

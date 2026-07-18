@@ -11,7 +11,6 @@ from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
 from TerraLab.common.utils import getTraduction
 from TerraLab.widgets.spherical_math import slerp_arc_points
 
-
 SkyCoord = Tuple[float, float]  # (alt_deg, az_deg)
 
 
@@ -71,19 +70,51 @@ class ConstellationDrawingController:
         self.load()
 
     def set_enabled(self, enabled: bool) -> None:
+        """Defineix enabled a la instancia de ConstellationDrawingController.
+
+        Par?metres:
+        - enabled (bool): Valor del parametre 'enabled'.
+
+        Retorna:
+        - None.
+        """
         self.enabled = bool(enabled)
         if not self.enabled:
             self.clear_selection()
 
     def set_visible(self, visible: bool) -> None:
+        """Defineix visible a la instancia de ConstellationDrawingController.
+
+        Par?metres:
+        - visible (bool): Valor del parametre 'visible'.
+
+        Retorna:
+        - None.
+        """
         self.visible = bool(visible)
         if not self.visible:
             self.clear_selection()
 
     def set_eraser_mode(self, enabled: bool) -> None:
+        """Defineix eraser mode a la instancia de ConstellationDrawingController.
+
+        Par?metres:
+        - enabled (bool): Valor del parametre 'enabled'.
+
+        Retorna:
+        - None.
+        """
         self.eraser_mode = bool(enabled)
 
     def clear_selection(self) -> None:
+        """Executa el metode clear_selection de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         self.selected_group_index = None
         self.selected_node_index = None
         self.selected_segment_index = None
@@ -103,7 +134,9 @@ class ConstellationDrawingController:
         )
 
     @staticmethod
-    def _clone_groups(groups: List[ConstellationGroup]) -> List[ConstellationGroup]:
+    def _clone_groups(
+        groups: List[ConstellationGroup],
+    ) -> List[ConstellationGroup]:
         cloned: List[ConstellationGroup] = []
         for group in groups:
             cloned.append(
@@ -134,7 +167,11 @@ class ConstellationDrawingController:
             "selected_group_indices": set(self.selected_group_indices),
             "group_drawing_active": bool(self.group_drawing_active),
             "resume_from_node_index": self.resume_from_node_index,
-            "preview_ra_dec": tuple(self.preview_ra_dec) if self.preview_ra_dec is not None else None,
+            "preview_ra_dec": (
+                tuple(self.preview_ra_dec)
+                if self.preview_ra_dec is not None
+                else None
+            ),
             "preview_snapped": bool(self.preview_snapped),
         }
 
@@ -149,8 +186,12 @@ class ConstellationDrawingController:
             for t in snap.get("selected_segments", set())
             if isinstance(t, (tuple, list)) and len(t) == 2
         )
-        self.selected_group_indices = set(snap.get("selected_group_indices", set()))
-        self.group_drawing_active = bool(snap.get("group_drawing_active", False))
+        self.selected_group_indices = set(
+            snap.get("selected_group_indices", set())
+        )
+        self.group_drawing_active = bool(
+            snap.get("group_drawing_active", False)
+        )
         self.resume_from_node_index = snap.get("resume_from_node_index")
         prv = snap.get("preview_ra_dec")
         if isinstance(prv, (tuple, list)) and len(prv) == 2:
@@ -168,6 +209,14 @@ class ConstellationDrawingController:
             self._undo_stack = self._undo_stack[-self._max_undo_states :]
 
     def undo(self) -> bool:
+        """Executa el metode undo de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         if not self._undo_stack:
             return False
         snap = self._undo_stack.pop()
@@ -176,10 +225,29 @@ class ConstellationDrawingController:
         return True
 
     def next_default_name(self) -> str:
+        """Executa el metode next_default_name de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - str: Valor retornat pel metode.
+        """
         base = getTraduction("Astro.ConstellationDefaultName", "Constellation")
         return f"{base} {len(self.groups) + 1}"
 
-    def create_group(self, name: Optional[str] = None, record_undo: bool = True) -> int:
+    def create_group(
+        self, name: Optional[str] = None, record_undo: bool = True
+    ) -> int:
+        """Executa el metode create_group de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - name (Optional[str]): Valor del parametre 'name'.
+        - record_undo (bool): Valor del parametre 'record_undo'.
+
+        Retorna:
+        - int: Valor retornat pel metode.
+        """
         if record_undo:
             self._push_undo_state()
         group_name = str(name or "").strip() or self.next_default_name()
@@ -196,6 +264,14 @@ class ConstellationDrawingController:
         return self.active_group_index
 
     def finish_active_group(self) -> bool:
+        """Executa el metode finish_active_group de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         gi = self.active_group_index
         if gi is None or not (0 <= gi < len(self.groups)):
             self.group_drawing_active = False
@@ -208,12 +284,18 @@ class ConstellationDrawingController:
         self._push_undo_state()
         if len(group.nodes) == 0:
             del self.groups[gi]
-            self.active_group_index = min(gi, len(self.groups) - 1) if self.groups else None
+            self.active_group_index = (
+                min(gi, len(self.groups) - 1) if self.groups else None
+            )
             self.selected_group_index = self.active_group_index
             self.selected_node_index = None
             self.selected_segment_index = None
             self.selected_segments = set()
-            self.selected_group_indices = {int(self.active_group_index)} if self.active_group_index is not None else set()
+            self.selected_group_indices = (
+                {int(self.active_group_index)}
+                if self.active_group_index is not None
+                else set()
+            )
             self.group_drawing_active = False
             self.resume_from_node_index = None
             self.preview_ra_dec = None
@@ -234,6 +316,14 @@ class ConstellationDrawingController:
         return True
 
     def rename_active(self, new_name: str) -> bool:
+        """Executa el metode rename_active de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - new_name (str): Valor del parametre 'new_name'.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         if self.active_group_index is None:
             return False
         if not (0 <= self.active_group_index < len(self.groups)):
@@ -249,6 +339,14 @@ class ConstellationDrawingController:
         return True
 
     def delete_selected(self) -> bool:
+        """Executa el metode delete_selected de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         self._normalize_selected_segments()
         if len(self.selected_segments) > 1:
             return self.delete_selected_segments() > 0
@@ -264,7 +362,11 @@ class ConstellationDrawingController:
         if gi is None or not (0 <= gi < len(self.groups)):
             return self.delete_selected_groups() > 0
 
-        if (si is None) and (ni is None) and len(self.selected_group_indices) > 1:
+        if (
+            (si is None)
+            and (ni is None)
+            and len(self.selected_group_indices) > 1
+        ):
             return self.delete_selected_groups() > 0
 
         if si is not None:
@@ -272,12 +374,18 @@ class ConstellationDrawingController:
         if ni is None:
             self._push_undo_state()
             del self.groups[gi]
-            self.active_group_index = min(gi, len(self.groups) - 1) if self.groups else None
+            self.active_group_index = (
+                min(gi, len(self.groups) - 1) if self.groups else None
+            )
             self.selected_group_index = self.active_group_index
             self.selected_node_index = None
             self.selected_segment_index = None
             self.selected_segments = set()
-            self.selected_group_indices = {int(self.active_group_index)} if self.active_group_index is not None else set()
+            self.selected_group_indices = (
+                {int(self.active_group_index)}
+                if self.active_group_index is not None
+                else set()
+            )
             self.resume_from_node_index = None
             self.save()
             return True
@@ -291,12 +399,18 @@ class ConstellationDrawingController:
         del nodes[ni]
         if not nodes:
             del self.groups[gi]
-            self.active_group_index = min(gi, len(self.groups) - 1) if self.groups else None
+            self.active_group_index = (
+                min(gi, len(self.groups) - 1) if self.groups else None
+            )
             self.selected_group_index = self.active_group_index
             self.selected_node_index = None
             self.selected_segment_index = None
             self.selected_segments = set()
-            self.selected_group_indices = {int(self.active_group_index)} if self.active_group_index is not None else set()
+            self.selected_group_indices = (
+                {int(self.active_group_index)}
+                if self.active_group_index is not None
+                else set()
+            )
             self.resume_from_node_index = None
         else:
             if ni < len(nodes):
@@ -314,6 +428,14 @@ class ConstellationDrawingController:
         return True
 
     def has_deletable_selection(self) -> bool:
+        """Executa el metode has_deletable_selection de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         self._normalize_selected_segments()
         if self.selected_segments:
             return True
@@ -337,6 +459,14 @@ class ConstellationDrawingController:
         return len(self.selected_group_indices) > 1
 
     def toggle_group_multi_selection(self, group_index: int) -> bool:
+        """Executa el metode toggle_group_multi_selection de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - group_index (int): Valor del parametre 'group_index'.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         gi = int(group_index)
         if not (0 <= gi < len(self.groups)):
             return False
@@ -353,17 +483,37 @@ class ConstellationDrawingController:
         return True
 
     def delete_selected_groups(self, record_undo: bool = True) -> int:
-        valid = {int(i) for i in self.selected_group_indices if 0 <= int(i) < len(self.groups)}
+        """Executa el metode delete_selected_groups de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - record_undo (bool): Valor del parametre 'record_undo'.
+
+        Retorna:
+        - int: Valor retornat pel metode.
+        """
+        valid = {
+            int(i)
+            for i in self.selected_group_indices
+            if 0 <= int(i) < len(self.groups)
+        }
         if not valid:
             return 0
         if record_undo:
             self._push_undo_state()
-        self.groups = [g for idx, g in enumerate(self.groups) if idx not in valid]
+        self.groups = [
+            g for idx, g in enumerate(self.groups) if idx not in valid
+        ]
         removed = len(valid)
         if self.groups:
-            self.active_group_index = min(self.active_group_index or 0, len(self.groups) - 1)
+            self.active_group_index = min(
+                self.active_group_index or 0, len(self.groups) - 1
+            )
             self.selected_group_index = self.active_group_index
-            self.selected_group_indices = {int(self.active_group_index)} if self.active_group_index is not None else set()
+            self.selected_group_indices = (
+                {int(self.active_group_index)}
+                if self.active_group_index is not None
+                else set()
+            )
         else:
             self.active_group_index = None
             self.selected_group_index = None
@@ -376,6 +526,14 @@ class ConstellationDrawingController:
         return removed
 
     def delete_selected_segments(self, record_undo: bool = True) -> int:
+        """Executa el metode delete_selected_segments de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - record_undo (bool): Valor del parametre 'record_undo'.
+
+        Retorna:
+        - int: Valor retornat pel metode.
+        """
         self._normalize_selected_segments()
         if not self.selected_segments:
             return 0
@@ -403,7 +561,9 @@ class ConstellationDrawingController:
             self.save()
         return deleted
 
-    def _delete_segment(self, group_index: int, segment_index: int, record_undo: bool = True) -> bool:
+    def _delete_segment(
+        self, group_index: int, segment_index: int, record_undo: bool = True
+    ) -> bool:
         if not (0 <= group_index < len(self.groups)):
             return False
         group = self.groups[group_index]
@@ -439,6 +599,14 @@ class ConstellationDrawingController:
         return True
 
     def clear_all(self) -> None:
+        """Executa el metode clear_all de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         if self.groups:
             self._push_undo_state()
         self.groups = []
@@ -468,10 +636,17 @@ class ConstellationDrawingController:
 
     @staticmethod
     def _group_has_drawn_segments(group: ConstellationGroup) -> bool:
-        return any(bool(group.nodes[i].connect_from_prev) for i in range(1, len(group.nodes)))
+        return any(
+            bool(group.nodes[i].connect_from_prev)
+            for i in range(1, len(group.nodes))
+        )
 
-    def _remove_groups_without_segments(self, group_indices: Set[int]) -> Set[int]:
-        candidates = {int(i) for i in group_indices if 0 <= int(i) < len(self.groups)}
+    def _remove_groups_without_segments(
+        self, group_indices: Set[int]
+    ) -> Set[int]:
+        candidates = {
+            int(i) for i in group_indices if 0 <= int(i) < len(self.groups)
+        }
         if not candidates:
             return set()
 
@@ -484,7 +659,9 @@ class ConstellationDrawingController:
             return set()
 
         old_active = self.active_group_index
-        self.groups = [g for idx, g in enumerate(self.groups) if idx not in removed]
+        self.groups = [
+            g for idx, g in enumerate(self.groups) if idx not in removed
+        ]
 
         if self.groups:
             if (old_active is not None) and (old_active not in removed):
@@ -509,7 +686,9 @@ class ConstellationDrawingController:
         return removed
 
     @staticmethod
-    def _nodes_equivalent(a: ConstellationNode, b: ConstellationNode, eps: float = 1e-6) -> bool:
+    def _nodes_equivalent(
+        a: ConstellationNode, b: ConstellationNode, eps: float = 1e-6
+    ) -> bool:
         a_sid = str(a.star_id or "").strip()
         b_sid = str(b.star_id or "").strip()
         if a_sid and b_sid:
@@ -519,20 +698,31 @@ class ConstellationDrawingController:
         dec_diff = abs(float(a.dec_deg) - float(b.dec_deg))
         return (ra_diff <= eps) and (dec_diff <= eps)
 
-    def _edge_exists(self, group: ConstellationGroup, a: ConstellationNode, b: ConstellationNode) -> bool:
+    def _edge_exists(
+        self,
+        group: ConstellationGroup,
+        a: ConstellationNode,
+        b: ConstellationNode,
+    ) -> bool:
         nodes = group.nodes
         for i in range(1, len(nodes)):
             if not bool(nodes[i].connect_from_prev):
                 continue
             n0 = nodes[i - 1]
             n1 = nodes[i]
-            same_dir = self._nodes_equivalent(n0, a) and self._nodes_equivalent(n1, b)
-            inv_dir = self._nodes_equivalent(n0, b) and self._nodes_equivalent(n1, a)
+            same_dir = self._nodes_equivalent(
+                n0, a
+            ) and self._nodes_equivalent(n1, b)
+            inv_dir = self._nodes_equivalent(n0, b) and self._nodes_equivalent(
+                n1, a
+            )
             if same_dir or inv_dir:
                 return True
         return False
 
-    def _find_equivalent_node_index(self, group: ConstellationGroup, node: ConstellationNode) -> Optional[int]:
+    def _find_equivalent_node_index(
+        self, group: ConstellationGroup, node: ConstellationNode
+    ) -> Optional[int]:
         for i in range(len(group.nodes) - 1, -1, -1):
             if self._nodes_equivalent(group.nodes[i], node):
                 return i
@@ -549,6 +739,21 @@ class ConstellationDrawingController:
         additive_select: bool = False,
         allow_when_disabled: bool = False,
     ) -> bool:
+        """Executa el metode on_left_click de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+        - project_fn (Callable[[float, float], Optional[Tuple[float, float]]]): Valor del parametre 'project_fn'.
+        - radec_to_sky_fn (Callable[[float, float], Optional[SkyCoord]]): Valor del parametre 'radec_to_sky_fn'.
+        - pick_star_fn (Callable[[float, float, float], Optional[dict]]): Valor del parametre 'pick_star_fn'.
+        - force_add (bool): Valor del parametre 'force_add'.
+        - additive_select (bool): Valor del parametre 'additive_select'.
+        - allow_when_disabled (bool): Valor del parametre 'allow_when_disabled'.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         if not (self.enabled or bool(allow_when_disabled)):
             return False
 
@@ -576,7 +781,9 @@ class ConstellationDrawingController:
                 self.delete_selected()
                 return True
             if seg_hit is not None:
-                self.selected_group_index, self.selected_segment_index = seg_hit
+                self.selected_group_index, self.selected_segment_index = (
+                    seg_hit
+                )
                 self.selected_node_index = None
                 self.delete_selected()
                 return True
@@ -643,7 +850,10 @@ class ConstellationDrawingController:
                     self.selected_segment_index = None
                     self.selected_segments = set()
                     self.selected_group_indices = {int(hit_gi)}
-                    self.preview_ra_dec = (float(target.ra_deg), float(target.dec_deg))
+                    self.preview_ra_dec = (
+                        float(target.ra_deg),
+                        float(target.dec_deg),
+                    )
                     self.preview_snapped = bool(target.star_id)
                     return True
 
@@ -674,7 +884,10 @@ class ConstellationDrawingController:
                 self.selected_segments = set()
                 self.selected_group_indices = {int(hit_gi)}
                 self.resume_from_node_index = len(group_nodes) - 1
-                self.preview_ra_dec = (float(target.ra_deg), float(target.dec_deg))
+                self.preview_ra_dec = (
+                    float(target.ra_deg),
+                    float(target.dec_deg),
+                )
                 self.preview_snapped = bool(target.star_id)
                 self._normalize_group_connections(self.groups[hit_gi])
                 self.save()
@@ -759,7 +972,9 @@ class ConstellationDrawingController:
 
         self._push_undo_state()
 
-        if self.active_group_index is None or not (0 <= self.active_group_index < len(self.groups)):
+        if self.active_group_index is None or not (
+            0 <= self.active_group_index < len(self.groups)
+        ):
             self.create_group(record_undo=False)
 
         gi = int(self.active_group_index)
@@ -795,7 +1010,9 @@ class ConstellationDrawingController:
             start_node = group_nodes[int(anchor_idx)]
             if self._edge_exists(self.groups[gi], start_node, node):
                 # Prevent duplicate segment: just move anchor to the equivalent node if present.
-                existing_idx = self._find_equivalent_node_index(self.groups[gi], node)
+                existing_idx = self._find_equivalent_node_index(
+                    self.groups[gi], node
+                )
                 if existing_idx is not None:
                     self.resume_from_node_index = int(existing_idx)
                     self.selected_node_index = int(existing_idx)
@@ -844,8 +1061,23 @@ class ConstellationDrawingController:
         sx: float,
         sy: float,
         pick_star_fn: Callable[[float, float, float], Optional[dict]],
-        screen_to_radec_fn: Callable[[float, float], Optional[Tuple[float, float]]],
+        screen_to_radec_fn: Callable[
+            [float, float], Optional[Tuple[float, float]]
+        ],
     ) -> bool:
+        """Executa el metode on_mouse_move de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+        - pick_star_fn (Callable[[float, float, float], Optional[dict]]): Valor del parametre 'pick_star_fn'.
+        - screen_to_radec_fn (Callable[
+            [float, float], Optional[Tuple[float, float]]
+        ]): Valor del parametre 'screen_to_radec_fn'.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         if not self.enabled:
             return False
         if not self.group_drawing_active:
@@ -871,7 +1103,10 @@ class ConstellationDrawingController:
             try:
                 ra_deg = float(star.get("ra"))
                 dec_deg = float(star.get("dec"))
-                self.preview_ra_dec = (ra_deg % 360.0, max(-90.0, min(90.0, dec_deg)))
+                self.preview_ra_dec = (
+                    ra_deg % 360.0,
+                    max(-90.0, min(90.0, dec_deg)),
+                )
                 self.preview_snapped = True
                 return True
             except Exception:
@@ -883,7 +1118,10 @@ class ConstellationDrawingController:
             self.preview_ra_dec = None
             self.preview_snapped = False
             return False
-        self.preview_ra_dec = (float(ra_dec[0]) % 360.0, max(-90.0, min(90.0, float(ra_dec[1]))))
+        self.preview_ra_dec = (
+            float(ra_dec[0]) % 360.0,
+            max(-90.0, min(90.0, float(ra_dec[1]))),
+        )
         self.preview_snapped = False
         return True
 
@@ -896,6 +1134,19 @@ class ConstellationDrawingController:
         additive_select: bool = False,
         allow_when_disabled: bool = False,
     ) -> Optional[dict]:
+        """Executa el metode on_double_click de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+        - project_fn (Callable[[float, float], Optional[Tuple[float, float]]]): Valor del parametre 'project_fn'.
+        - radec_to_sky_fn (Callable[[float, float], Optional[SkyCoord]]): Valor del parametre 'radec_to_sky_fn'.
+        - additive_select (bool): Valor del parametre 'additive_select'.
+        - allow_when_disabled (bool): Valor del parametre 'allow_when_disabled'.
+
+        Retorna:
+        - Optional[dict]: Valor retornat pel metode.
+        """
         if not (self.enabled or bool(allow_when_disabled)):
             return None
 
@@ -960,6 +1211,17 @@ class ConstellationDrawingController:
         project_fn: Callable[[float, float], Optional[Tuple[float, float]]],
         radec_to_sky_fn: Callable[[float, float], Optional[SkyCoord]],
     ) -> bool:
+        """Executa el metode on_right_click de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+        - project_fn (Callable[[float, float], Optional[Tuple[float, float]]]): Valor del parametre 'project_fn'.
+        - radec_to_sky_fn (Callable[[float, float], Optional[SkyCoord]]): Valor del parametre 'radec_to_sky_fn'.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         if not self.enabled:
             return False
         node_hit = self._pick_node(sx, sy, project_fn, radec_to_sky_fn)
@@ -996,6 +1258,16 @@ class ConstellationDrawingController:
         project_fn: Callable[[float, float], Optional[Tuple[float, float]]],
         radec_to_sky_fn: Callable[[float, float], Optional[SkyCoord]],
     ) -> None:
+        """Executa el metode draw de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - painter (QPainter): Valor del parametre 'painter'.
+        - project_fn (Callable[[float, float], Optional[Tuple[float, float]]]): Valor del parametre 'project_fn'.
+        - radec_to_sky_fn (Callable[[float, float], Optional[SkyCoord]]): Valor del parametre 'radec_to_sky_fn'.
+
+        Retorna:
+        - None.
+        """
         self._label_hit_rects = {}
         if not self.visible:
             return
@@ -1023,11 +1295,15 @@ class ConstellationDrawingController:
             return
 
         start_idx = len(group.nodes) - 1
-        if self.resume_from_node_index is not None and (0 <= self.resume_from_node_index < len(group.nodes)):
+        if self.resume_from_node_index is not None and (
+            0 <= self.resume_from_node_index < len(group.nodes)
+        ):
             start_idx = int(self.resume_from_node_index)
         start_node = group.nodes[start_idx]
         start_sky = radec_to_sky_fn(start_node.ra_deg, start_node.dec_deg)
-        end_sky = radec_to_sky_fn(self.preview_ra_dec[0], self.preview_ra_dec[1])
+        end_sky = radec_to_sky_fn(
+            self.preview_ra_dec[0], self.preview_ra_dec[1]
+        )
         if start_sky is None or end_sky is None:
             return
         arc = slerp_arc_points(start_sky, end_sky, n_points=26)
@@ -1048,19 +1324,38 @@ class ConstellationDrawingController:
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setBrush(Qt.NoBrush)
         glow = QColor(150, 220, 255, 140)
-        line = QColor(170, 235, 255, 245) if self.preview_snapped else QColor(235, 245, 255, 220)
+        line = (
+            QColor(170, 235, 255, 245)
+            if self.preview_snapped
+            else QColor(235, 245, 255, 220)
+        )
         pen_glow = QPen(glow, 3.0)
         pen_line = QPen(line, 1.3)
-        pen_line.setStyle(Qt.DashLine if not self.preview_snapped else Qt.SolidLine)
+        pen_line.setStyle(
+            Qt.DashLine if not self.preview_snapped else Qt.SolidLine
+        )
         painter.setPen(pen_glow)
         painter.drawPath(path)
         painter.setPen(pen_line)
         painter.drawPath(path)
 
         tip = pts[-1]
-        painter.setPen(QPen(QColor(255, 245, 130, 235) if self.preview_snapped else QColor(210, 230, 255, 210), 1.0))
+        painter.setPen(
+            QPen(
+                (
+                    QColor(255, 245, 130, 235)
+                    if self.preview_snapped
+                    else QColor(210, 230, 255, 210)
+                ),
+                1.0,
+            )
+        )
         painter.setBrush(QColor(25, 30, 40, 170))
-        painter.drawEllipse(tip, 4.0 if self.preview_snapped else 3.0, 4.0 if self.preview_snapped else 3.0)
+        painter.drawEllipse(
+            tip,
+            4.0 if self.preview_snapped else 3.0,
+            4.0 if self.preview_snapped else 3.0,
+        )
         painter.restore()
 
     def _draw_group(
@@ -1085,11 +1380,23 @@ class ConstellationDrawingController:
             else:
                 screen_nodes.append(QPointF(float(pt[0]), float(pt[1])))
 
-        selected_group = (self.selected_group_index == gi)
+        selected_group = self.selected_group_index == gi
         multi_selected_group = gi in self.selected_group_indices
-        whole_group_selected = multi_selected_group or (selected_group and (self.selected_node_index is None) and (self.selected_segment_index is None))
-        glow_color = QColor(110, 180, 255, 120) if whole_group_selected else QColor(255, 255, 255, 80)
-        line_color = QColor(120, 200, 255, 230) if whole_group_selected else QColor(215, 235, 255, 205)
+        whole_group_selected = multi_selected_group or (
+            selected_group
+            and (self.selected_node_index is None)
+            and (self.selected_segment_index is None)
+        )
+        glow_color = (
+            QColor(110, 180, 255, 120)
+            if whole_group_selected
+            else QColor(255, 255, 255, 80)
+        )
+        line_color = (
+            QColor(120, 200, 255, 230)
+            if whole_group_selected
+            else QColor(215, 235, 255, 205)
+        )
 
         # Geodesic links on the sky sphere.
         # A segment exists only when node[i].connect_from_prev is True.
@@ -1115,11 +1422,23 @@ class ConstellationDrawingController:
 
             painter.save()
             painter.setRenderHint(QPainter.Antialiasing, True)
-            seg_selected = ((gi, i) in self.selected_segments) or (selected_group and (self.selected_segment_index == i))
-            painter.setPen(QPen(QColor(255, 240, 120, 135) if seg_selected else glow_color, 3.2 if seg_selected else 3.0))
+            seg_selected = ((gi, i) in self.selected_segments) or (
+                selected_group and (self.selected_segment_index == i)
+            )
+            painter.setPen(
+                QPen(
+                    QColor(255, 240, 120, 135) if seg_selected else glow_color,
+                    3.2 if seg_selected else 3.0,
+                )
+            )
             painter.setBrush(Qt.NoBrush)
             painter.drawPath(path)
-            painter.setPen(QPen(QColor(255, 245, 130, 240) if seg_selected else line_color, 1.35 if seg_selected else 1.15))
+            painter.setPen(
+                QPen(
+                    QColor(255, 245, 130, 240) if seg_selected else line_color,
+                    1.35 if seg_selected else 1.15,
+                )
+            )
             painter.drawPath(path)
             painter.restore()
 
@@ -1142,11 +1461,19 @@ class ConstellationDrawingController:
         # Persistent label per group.
         label_anchor = self._group_label_anchor(screen_nodes)
         if label_anchor is not None:
-            rect = self._draw_label(painter, label_anchor.x(), label_anchor.y(), group.name, whole_group_selected or selected_group)
+            rect = self._draw_label(
+                painter,
+                label_anchor.x(),
+                label_anchor.y(),
+                group.name,
+                whole_group_selected or selected_group,
+            )
             if rect is not None:
                 self._label_hit_rects[gi] = rect
 
-    def _draw_label(self, painter: QPainter, x: float, y: float, text: str, selected: bool) -> Optional[QRectF]:
+    def _draw_label(
+        self, painter: QPainter, x: float, y: float, text: str, selected: bool
+    ) -> Optional[QRectF]:
         if not text:
             return None
         painter.save()
@@ -1160,7 +1487,11 @@ class ConstellationDrawingController:
         # Bottom-centered label placement.
         rect = QRectF(float(x) - box_w * 0.5, float(y) + 10.0, box_w, box_h)
         bg = QColor(10, 14, 28, 185 if selected else 155)
-        border = QColor(140, 205, 255, 210) if selected else QColor(200, 220, 245, 150)
+        border = (
+            QColor(140, 205, 255, 210)
+            if selected
+            else QColor(200, 220, 245, 150)
+        )
         painter.setPen(QPen(border, 1.0))
         painter.setBrush(bg)
         painter.drawRoundedRect(rect, 5.0, 5.0)
@@ -1179,13 +1510,23 @@ class ConstellationDrawingController:
         return None
 
     def get_label_rect(self, group_index: int) -> Optional[QRectF]:
+        """Obte label rect de la instancia de ConstellationDrawingController.
+
+        Par?metres:
+        - group_index (int): Valor del parametre 'group_index'.
+
+        Retorna:
+        - Optional[QRectF]: Valor retornat pel metode.
+        """
         rect = self._label_hit_rects.get(int(group_index))
         if rect is None:
             return None
         return QRectF(rect)
 
     @staticmethod
-    def _group_label_anchor(nodes: List[Optional[QPointF]]) -> Optional[QPointF]:
+    def _group_label_anchor(
+        nodes: List[Optional[QPointF]],
+    ) -> Optional[QPointF]:
         valid = [p for p in nodes if p is not None]
         if not valid:
             return None
@@ -1213,7 +1554,9 @@ class ConstellationDrawingController:
                 pp = project_fn(float(sky[0]), float(sky[1]))
                 if pp is None:
                     continue
-                d = math.hypot(float(sx) - float(pp[0]), float(sy) - float(pp[1]))
+                d = math.hypot(
+                    float(sx) - float(pp[0]), float(sy) - float(pp[1])
+                )
                 if d <= self.node_pick_radius_px and d < best_d:
                     best = (gi, ni)
                     best_d = d
@@ -1243,14 +1586,21 @@ class ConstellationDrawingController:
                 pb = project_fn(float(sb[0]), float(sb[1]))
                 if pa is None or pb is None:
                     continue
-                d = self._point_to_segment_dist(float(sx), float(sy), QPointF(float(pa[0]), float(pa[1])), QPointF(float(pb[0]), float(pb[1])))
+                d = self._point_to_segment_dist(
+                    float(sx),
+                    float(sy),
+                    QPointF(float(pa[0]), float(pa[1])),
+                    QPointF(float(pb[0]), float(pb[1])),
+                )
                 if d <= self.segment_pick_radius_px and d < best_dist:
                     best_dist = d
                     best_segment = (gi, i)
         return best_segment
 
     @staticmethod
-    def _point_to_segment_dist(x: float, y: float, a: QPointF, b: QPointF) -> float:
+    def _point_to_segment_dist(
+        x: float, y: float, a: QPointF, b: QPointF
+    ) -> float:
         ax, ay = a.x(), a.y()
         bx, by = b.x(), b.y()
         vx, vy = bx - ax, by - ay
@@ -1271,6 +1621,14 @@ class ConstellationDrawingController:
         group.nodes[0].connect_from_prev = False
 
     def serialize(self) -> dict:
+        """Executa el metode serialize de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - dict: Valor retornat pel metode.
+        """
         out_groups = []
         for group in self.groups:
             out_groups.append(
@@ -1290,11 +1648,21 @@ class ConstellationDrawingController:
             )
         return {
             "version": 1,
-            "updated_utc": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "updated_utc": datetime.now(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
             "constellations": out_groups,
         }
 
     def save(self) -> bool:
+        """Executa el metode save de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         try:
             os.makedirs(os.path.dirname(self.data_path), exist_ok=True)
             with open(self.data_path, "w", encoding="utf-8") as fh:
@@ -1304,6 +1672,14 @@ class ConstellationDrawingController:
             return False
 
     def load(self) -> bool:
+        """Executa el metode load de la classe ConstellationDrawingController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         self._undo_stack = []
         self.groups = []
         self.active_group_index = None
@@ -1318,13 +1694,20 @@ class ConstellationDrawingController:
                 return False
             with open(self.data_path, "r", encoding="utf-8") as fh:
                 payload = json.load(fh)
-            groups = payload.get("constellations", []) if isinstance(payload, dict) else []
+            groups = (
+                payload.get("constellations", [])
+                if isinstance(payload, dict)
+                else []
+            )
             if not isinstance(groups, list):
                 return False
             for group in groups:
                 if not isinstance(group, dict):
                     continue
-                name = str(group.get("name", "")).strip() or self.next_default_name()
+                name = (
+                    str(group.get("name", "")).strip()
+                    or self.next_default_name()
+                )
                 nodes_raw = group.get("nodes", [])
                 if not isinstance(nodes_raw, list):
                     continue
@@ -1343,7 +1726,9 @@ class ConstellationDrawingController:
                             dec_deg=max(-90.0, min(90.0, dec)),
                             star_id=str(node.get("star_id", "") or ""),
                             star_name=str(node.get("star_name", "") or ""),
-                            connect_from_prev=bool(node.get("connect_from_prev", True)),
+                            connect_from_prev=bool(
+                                node.get("connect_from_prev", True)
+                            ),
                         )
                     )
                 if nodes:

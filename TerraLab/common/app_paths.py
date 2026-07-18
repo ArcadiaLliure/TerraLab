@@ -2,26 +2,24 @@
 
 from __future__ import annotations
 
-import os
 import shutil
 import sys
 from pathlib import Path
 
-
-APP_NAME = "TerraLab"
+from TerraLab.common.data_library import (
+    APP_NAME,
+    DataLibrary,
+    application_state_root,
+    platform_state_base,
+)
 
 
 def _appdata_root() -> Path:
-    appdata = os.getenv("APPDATA")
-    if appdata:
-        return Path(appdata)
-    if sys.platform.startswith("darwin"):
-        return Path.home() / "Library" / "Application Support"
-    return Path.home() / ".local" / "share"
+    return platform_state_base()
 
 
 def app_root() -> Path:
-    root = _appdata_root() / APP_NAME
+    root = application_state_root()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -37,15 +35,30 @@ def config_path() -> Path:
 
 
 def data_dir(*parts: str) -> Path:
-    path = app_root() / "data"
-    for part in parts:
-        path = path / str(part)
+    layout = DataLibrary.current(create=True).layout(create=True)
+    aliases = {
+        "gaia": "data_gaia",
+        "ngc": "data_ngc",
+        "milkyway": "data_milkyway",
+        "planck": "data_planck",
+        "ephemeris": "data_ephemeris",
+        "elevation": "data_elevation",
+        "surface": "data_surface",
+        "light_pollution": "data_light_pollution",
+    }
+    normalized = [str(part) for part in parts]
+    if normalized and normalized[0] in aliases:
+        path = layout[aliases[normalized.pop(0)]]
+    else:
+        path = layout["root"] / "data"
+    for part in normalized:
+        path /= part
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def cache_dir(*parts: str) -> Path:
-    path = app_root() / "cache"
+    path = DataLibrary.current(create=True).root / "cache"
     for part in parts:
         path = path / str(part)
     path.mkdir(parents=True, exist_ok=True)
@@ -53,7 +66,7 @@ def cache_dir(*parts: str) -> Path:
 
 
 def tmp_dir(*parts: str) -> Path:
-    path = app_root() / "tmp"
+    path = DataLibrary.current(create=True).root / "tmp"
     for part in parts:
         path = path / str(part)
     path.mkdir(parents=True, exist_ok=True)
@@ -65,24 +78,38 @@ def weather_cache_path() -> Path:
 
 
 def constellations_path() -> Path:
-    return app_root() / "terralab_constellations.json"
+    return DataLibrary.current(create=True).root / "terralab_constellations.json"
+
+
+def data_source_catalog_path() -> Path:
+    return DataLibrary.current(create=True).layout(create=True)[
+        "data_source_catalog"
+    ]
+
+
+def ephemeris_path() -> Path | None:
+    """Resolve DE421 explicitly without allowing Skyfield to download it."""
+
+    library = DataLibrary.current(create=True)
+    state = library.asset_state("solar_system_ephemeris")
+    configured = str(state.get("path", "") or "").strip()
+    candidates = []
+    if configured:
+        candidates.append(Path(configured))
+    candidates.append(library.layout(create=True)["data_ephemeris"] / "de421.bsp")
+    project = _repo_root()
+    candidates.extend((project / "data" / "stars" / "de421.bsp", project / "de421.bsp"))
+    for candidate in candidates:
+        try:
+            if candidate.is_file():
+                return candidate.resolve()
+        except OSError:
+            continue
+    return None
 
 
 def runtime_layout() -> dict[str, Path]:
-    root = app_root()
-    layout = {
-        "root": root,
-        "config": config_dir(),
-        "data_gaia": data_dir("gaia"),
-        "data_ngc": data_dir("ngc"),
-        "data_milkyway": data_dir("milkyway"),
-        "data_planck": data_dir("planck"),
-        "data_elevation": data_dir("elevation"),
-        "data_light_pollution": data_dir("light_pollution"),
-        "cache_weather": cache_dir("weather"),
-        "tmp": tmp_dir(),
-    }
-    return layout
+    return DataLibrary.current(create=True).layout(create=True)
 
 
 def _repo_root() -> Path:
@@ -119,4 +146,3 @@ def ensure_runtime_layout() -> dict[str, Path]:
     layout = runtime_layout()
     migrate_legacy_config()
     return layout
-

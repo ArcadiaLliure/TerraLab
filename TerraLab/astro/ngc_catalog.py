@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-
 _NAME_RE = re.compile(r"^(NGC|IC)\s*0*([0-9]+[A-Za-z]?)$", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"[A-Za-z0-9']+")
 
@@ -105,7 +104,9 @@ def _split_sexagesimal(text: str) -> Optional[List[str]]:
     return parts if len(parts) >= 2 else None
 
 
-def _parse_ra_deg(value: object, *, assume_hours_for_scalar: bool = False) -> Optional[float]:
+def _parse_ra_deg(
+    value: object, *, assume_hours_for_scalar: bool = False
+) -> Optional[float]:
     if value is None:
         return None
     text = str(value).strip()
@@ -234,8 +235,12 @@ def load_ngc_catalog(path: str | Path) -> List[NGCObject]:
                 assume_hours_for_scalar=False,
             )
             if ra is None:
-                ra = _parse_ra_deg(_pick_value(mapped, "ra"), assume_hours_for_scalar=True)
-            dec = _parse_dec_deg(_pick_value(mapped, "dej2000", "dec_deg", "decj2000", "dec"))
+                ra = _parse_ra_deg(
+                    _pick_value(mapped, "ra"), assume_hours_for_scalar=True
+                )
+            dec = _parse_dec_deg(
+                _pick_value(mapped, "dej2000", "dec_deg", "decj2000", "dec")
+            )
             if ra is None or dec is None:
                 continue
 
@@ -252,8 +257,12 @@ def load_ngc_catalog(path: str | Path) -> List[NGCObject]:
             if not name:
                 continue
 
-            maj_key, maj_raw = _pick_key_value(mapped, "maj_ax_deg", "majaxdeg", "majax")
-            min_key, min_raw = _pick_key_value(mapped, "min_ax_deg", "minaxdeg", "minax")
+            maj_key, maj_raw = _pick_key_value(
+                mapped, "maj_ax_deg", "majaxdeg", "majax"
+            )
+            min_key, min_raw = _pick_key_value(
+                mapped, "min_ax_deg", "minaxdeg", "minax"
+            )
             maj_val = _to_opt_float(maj_raw)
             min_val = _to_opt_float(min_raw)
 
@@ -278,19 +287,39 @@ def load_ngc_catalog(path: str | Path) -> List[NGCObject]:
 
             item = NGCObject(
                 name=name,
-                obj_type=str(_pick_value(mapped, "obj_type", "type") or "").strip(),
+                obj_type=str(
+                    _pick_value(mapped, "obj_type", "type") or ""
+                ).strip(),
                 ra_deg=float(ra),
                 dec_deg=float(dec),
                 maj_deg=float(maj),
                 min_deg=float(min_ax),
-                pos_ang_deg=_to_float(_pick_value(mapped, "pos_ang", "posang"), 0.0),
+                pos_ang_deg=_to_float(
+                    _pick_value(mapped, "pos_ang", "posang"), 0.0
+                ),
                 mag_v=_to_opt_float(_pick_value(mapped, "mag_v", "vmag")),
                 mag_b=_to_opt_float(_pick_value(mapped, "mag_b", "bmag")),
-                surf_br_B=_to_opt_float(_pick_value(mapped, "surf_br_B", "surfbrb", "surfbr")),
-                hubble_type=_clean_text(_pick_value(mapped, "hubble_type", "hubble")),
+                surf_br_B=_to_opt_float(
+                    _pick_value(mapped, "surf_br_B", "surfbrb", "surfbr")
+                ),
+                hubble_type=_clean_text(
+                    _pick_value(mapped, "hubble_type", "hubble")
+                ),
                 messier_nr=_to_opt_int(_pick_value(mapped, "messier_nr", "m")),
-                common_name=_first_common_name(_pick_value(mapped, "comname", "common_names", "common names")),
-                notes=_clean_text(_pick_value(mapped, "notes", "openngc_notes", "opengc_notes", "ned_notes")),
+                common_name=_first_common_name(
+                    _pick_value(
+                        mapped, "comname", "common_names", "common names"
+                    )
+                ),
+                notes=_clean_text(
+                    _pick_value(
+                        mapped,
+                        "notes",
+                        "openngc_notes",
+                        "opengc_notes",
+                        "ned_notes",
+                    )
+                ),
             )
             items.append(item)
 
@@ -338,4 +367,3 @@ def iter_ngc_aliases(obj: NGCObject) -> List[str]:
                 _add(token)
 
     return out
-

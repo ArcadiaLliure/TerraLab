@@ -10,10 +10,9 @@ import os
 from pathlib import Path
 from typing import Optional
 
+import hpgeom
 import numpy as np
 from astropy.io import fits
-import hpgeom
-
 
 _WORKER_VALUES = None
 _WORKER_HDUL = None
@@ -63,7 +62,14 @@ def _load_planck_field(fits_path: str) -> tuple[np.ndarray, int, bool, str]:
         return values, nside, nest, ordering
 
 
-def _init_worker(fits_path: str, column_name: str, nside: int, nest: bool, width: int, height: int) -> None:
+def _init_worker(
+    fits_path: str,
+    column_name: str,
+    nside: int,
+    nest: bool,
+    width: int,
+    height: int,
+) -> None:
     global _WORKER_VALUES, _WORKER_HDUL, _WORKER_NSIDE, _WORKER_NEST, _WORKER_WIDTH, _WORKER_HEIGHT, _WORKER_RA
     _WORKER_HDUL = fits.open(fits_path, memmap=True)
     hdu = None
@@ -79,7 +85,9 @@ def _init_worker(fits_path: str, column_name: str, nside: int, nest: bool, width
     _WORKER_NEST = bool(nest)
     _WORKER_WIDTH = int(width)
     _WORKER_HEIGHT = int(height)
-    _WORKER_RA = np.linspace(0.0, 360.0, num=_WORKER_WIDTH, endpoint=False, dtype=np.float64) + (180.0 / _WORKER_WIDTH)
+    _WORKER_RA = np.linspace(
+        0.0, 360.0, num=_WORKER_WIDTH, endpoint=False, dtype=np.float64
+    ) + (180.0 / _WORKER_WIDTH)
 
 
 def _convert_rows(task: tuple[int, int]) -> tuple[int, np.ndarray]:
@@ -104,7 +112,9 @@ def _convert_rows(task: tuple[int, int]) -> tuple[int, np.ndarray]:
     return y_start, out
 
 
-def _normalize_to_u16(data: np.ndarray, percentile_low: float, percentile_high: float) -> tuple[np.ndarray, float, float, np.ndarray]:
+def _normalize_to_u16(
+    data: np.ndarray, percentile_low: float, percentile_high: float
+) -> tuple[np.ndarray, float, float, np.ndarray]:
     finite = np.asarray(np.isfinite(data), dtype=bool)
     if not np.any(finite):
         zeros = np.zeros_like(data, dtype=np.float32)
@@ -129,13 +139,17 @@ def _save_preview_png(normalized: np.ndarray, preview_path: str) -> bool:
     except Exception:
         return False
 
-    arr = np.asarray(np.clip(np.rint(normalized * 255.0), 0.0, 255.0), dtype=np.uint8)
+    arr = np.asarray(
+        np.clip(np.rint(normalized * 255.0), 0.0, 255.0), dtype=np.uint8
+    )
     os.makedirs(os.path.dirname(preview_path), exist_ok=True)
     Image.fromarray(arr, mode="L").save(preview_path)
     return True
 
 
-def _save_optional_zst(data_u16: np.ndarray, output_zst: str, zst_level: int) -> bool:
+def _save_optional_zst(
+    data_u16: np.ndarray, output_zst: str, zst_level: int
+) -> bool:
     try:
         import zstandard as zstd
     except Exception:
@@ -284,12 +298,16 @@ def _default_output_npz() -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Converteix un FITS Planck a cache equirectangular comprimit.")
+    parser = argparse.ArgumentParser(
+        description="Converteix un FITS Planck a cache equirectangular comprimit."
+    )
     parser.add_argument("--fits-path", default=_default_fits_path())
     parser.add_argument("--output-npz", default=_default_output_npz())
     parser.add_argument("--width", type=int, default=3600)
     parser.add_argument("--height", type=int, default=1800)
-    parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
+    parser.add_argument(
+        "--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1)
+    )
     parser.add_argument("--chunk-rows", type=int, default=64)
     parser.add_argument("--percentile-low", type=float, default=1.0)
     parser.add_argument("--percentile-high", type=float, default=99.5)

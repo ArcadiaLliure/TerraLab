@@ -1,5 +1,7 @@
 import math
 
+from TerraLab.light_pollution.modes import mode_uses_bortle
+
 
 class AtmosphericMath:
     """
@@ -37,7 +39,9 @@ class AtmosphericMath:
         if h_deg >= 30.0:
             return 1.0 / max(1e-6, math.sin(math.radians(h_deg)))
         h_rad = math.radians(h_deg)
-        return 1.0 / (math.sin(h_rad) + 0.50572 * ((h_deg + 6.07995) ** (-1.6364)))
+        return 1.0 / (
+            math.sin(h_rad) + 0.50572 * ((h_deg + 6.07995) ** (-1.6364))
+        )
 
     @staticmethod
     def extinction_k_mag_per_airmass(aod, pressure_hpa, k_fallback=0.20):
@@ -139,7 +143,9 @@ class InstrumentOpticsMath:
         return max(1e-6, float(aperture_mm) / max(1e-6, float(magnification)))
 
     @staticmethod
-    def effective_aperture_mm(aperture_mm, exit_pupil_mm, eye_pupil_mm, is_camera):
+    def effective_aperture_mm(
+        aperture_mm, exit_pupil_mm, eye_pupil_mm, is_camera
+    ):
         """
         Calcula obertura efectiva visual.
 
@@ -156,7 +162,9 @@ class InstrumentOpticsMath:
 
         effective_aperture_mm = aperture_mm
         if exit_pupil_mm > eye_pupil_mm:
-            effective_aperture_mm *= float(eye_pupil_mm) / max(1e-6, float(exit_pupil_mm))
+            effective_aperture_mm *= float(eye_pupil_mm) / max(
+                1e-6, float(exit_pupil_mm)
+            )
         return max(0.1, effective_aperture_mm)
 
     @staticmethod
@@ -167,7 +175,10 @@ class InstrumentOpticsMath:
         Formula:
         - m_gain = 5*log10(D_eff / D_ull)
         """
-        return 5.0 * math.log10(max(0.1, float(effective_aperture_mm)) / max(0.5, float(eye_pupil_mm)))
+        return 5.0 * math.log10(
+            max(0.1, float(effective_aperture_mm))
+            / max(0.5, float(eye_pupil_mm))
+        )
 
 
 class VisualPhotometryMath:
@@ -195,16 +206,16 @@ class VisualPhotometryMath:
         return 7.6 - 0.5 * (bortle_class - 1.0)
 
     @staticmethod
-    def eye_limit_mag(auto_bortle, bortle_class, manual_eye_limit_mag):
+    def eye_limit_mag(light_pollution_mode, bortle_class, magnitude_limit):
         """
         Dona m_lim de base (ull nu).
 
-        - auto_bortle=True: usa conversio Bortle->NELM
-        - auto_bortle=False: usa valor manual de l'usuari
+        Bortle and automatic modes use Bortle-to-NELM. Magnitude mode uses the
+        catalog threshold selected by the user.
         """
-        if auto_bortle:
+        if mode_uses_bortle(light_pollution_mode):
             return VisualPhotometryMath.bortle_to_nelm_mag(float(bortle_class))
-        return float(manual_eye_limit_mag)
+        return float(magnitude_limit)
 
     @staticmethod
     def atmospheric_loss_mag(value):
@@ -236,7 +247,9 @@ class VisualPhotometryMath:
         Model simplificat:
         - gain_mag ~ 1.25 * log10((t * ISO)/100)
         """
-        ratio_vs_reference = max(1e-4, float(exposure_seconds) * max(1.0, float(iso)) / 100.0)
+        ratio_vs_reference = max(
+            1e-4, float(exposure_seconds) * max(1.0, float(iso)) / 100.0
+        )
         gain_mag = 1.25 * math.log10(ratio_vs_reference)
         return VisualPhotometryMath.clamp(gain_mag, -3.0, 8.0)
 
@@ -251,7 +264,10 @@ class VisualPhotometryMath:
         """
         if not is_camera:
             return 0.0
-        if instrument_profile == "camera_full_frame" or sensor_profile == "full_frame":
+        if (
+            instrument_profile == "camera_full_frame"
+            or sensor_profile == "full_frame"
+        ):
             return 0.35
         return 0.15
 
@@ -298,10 +314,16 @@ class VisualPhotometryMath:
         - si m_lim_scope puja respecte m_lim_eye, augmenta presencia d'estrelles
         - mes guany d'exposicio reforca lleugerament aquest efecte
         """
-        depth_bonus_mag = max(0.0, float(scope_limit_mag) - float(eye_limit_mag))
+        depth_bonus_mag = max(
+            0.0, float(scope_limit_mag) - float(eye_limit_mag)
+        )
         # A la mira telescopica, l'escala visual de les estrelles ha de reflectir
         # millor el guany fotometric per obertura+exposicio.
-        factor = 0.90 + 0.08 * depth_bonus_mag + 0.08 * max(0.0, float(exposure_gain_mag))
+        factor = (
+            0.90
+            + 0.08 * depth_bonus_mag
+            + 0.08 * max(0.0, float(exposure_gain_mag))
+        )
         return VisualPhotometryMath.clamp(factor, 0.70, 3.50)
 
     @staticmethod

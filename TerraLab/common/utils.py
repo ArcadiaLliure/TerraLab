@@ -5,14 +5,23 @@ import threading
 from typing import Any, Dict, Optional
 
 from PyQt5.QtCore import QLocale
-from PyQt5.QtGui import QFont, QFontDatabase, QFontInfo, QTextCharFormat, QTextCursor, QTextFormat
+from PyQt5.QtGui import (
+    QFont,
+    QFontDatabase,
+    QFontInfo,
+    QTextCharFormat,
+    QTextCursor,
+    QTextFormat,
+)
 from PyQt5.QtWidgets import QPlainTextEdit, QTextEdit
 
 from TerraLab.common.app_paths import (
     config_path as runtime_config_path,
-    ensure_runtime_layout,
 )
-
+from TerraLab.common.app_paths import (
+    ensure_runtime_layout,
+    migrate_legacy_config,
+)
 
 LANGUAGE_PRIORITY = ("ca", "es", "en", "fr", "it", "pt", "de", "nl", "el")
 LANGUAGE_OPTIONS: Dict[str, str] = {
@@ -30,12 +39,23 @@ LANGUAGE_OPTIONS: Dict[str, str] = {
 _translations_cache: Optional[Dict[str, Dict[str, str]]] = None
 _config_cache: Optional[Dict[str, Any]] = None
 _config_lock = threading.Lock()
+_base_dir_cache: Optional[str] = None
+_base_dir_lock = threading.Lock()
 
 
 def get_base_dir() -> str:
-    """Return TerraLab runtime root (`%APPDATA%/TerraLab` on Windows)."""
-    layout = ensure_runtime_layout()
-    return str(layout["root"])
+    """Return the user-selected TerraLab data-library root."""
+    global _base_dir_cache
+    cached = _base_dir_cache
+    if cached:
+        return str(cached)
+    with _base_dir_lock:
+        cached = _base_dir_cache
+        if cached:
+            return str(cached)
+        layout = ensure_runtime_layout()
+        _base_dir_cache = str(layout["root"])
+        return str(_base_dir_cache)
 
 
 def resource_path(relative_path: str) -> str:
@@ -44,6 +64,12 @@ def resource_path(relative_path: str) -> str:
     Runtime user data is managed by `common.app_paths`, not by this function.
     """
     rel = str(relative_path or "")
+    # ``data/config.json`` was historically both a bundled-resource lookup and
+    # the public way integrations located the writable preferences file.  Keep
+    # that lookup compatible while the file itself now lives in the small
+    # application-state area (never in the selected data library).
+    if rel.replace("\\", "/").lstrip("./") == "data/config.json":
+        return str(migrate_legacy_config().resolve())
     if getattr(sys, "frozen", False):
         try:
             base_path = sys._MEIPASS  # type: ignore[attr-defined]
@@ -51,9 +77,13 @@ def resource_path(relative_path: str) -> str:
             norm_rel = rel.replace("\\", "/")
             external_candidate = None
             if "data/terrain_cache" in norm_rel:
-                external_candidate = os.path.join(exe_dir, "maps", os.path.basename(rel))
+                external_candidate = os.path.join(
+                    exe_dir, "maps", os.path.basename(rel)
+                )
             elif "data/stars" in norm_rel:
-                external_candidate = os.path.join(exe_dir, "stars", os.path.basename(rel))
+                external_candidate = os.path.join(
+                    exe_dir, "stars", os.path.basename(rel)
+                )
             if external_candidate and os.path.exists(external_candidate):
                 return os.path.abspath(external_candidate)
         except Exception:
@@ -75,7 +105,9 @@ def resource_path(relative_path: str) -> str:
     return os.path.abspath(path)
 
 
-def _normalize_translation_payload(payload: object) -> Dict[str, Dict[str, str]]:
+def _normalize_translation_payload(
+    payload: object,
+) -> Dict[str, Dict[str, str]]:
     if not isinstance(payload, dict):
         return {}
 
@@ -115,7 +147,9 @@ def _load_translations() -> Dict[str, Dict[str, str]]:
     global _translations_cache
     if _translations_cache is None:
         try:
-            with open(resource_path("data/translations.json"), "r", encoding="utf-8") as f:
+            with open(
+                resource_path("data/translations.json"), "r", encoding="utf-8"
+            ) as f:
                 raw = json.load(f)
             _translations_cache = _normalize_translation_payload(raw)
         except Exception:
@@ -127,7 +161,9 @@ def getTraduction(key: str, default: str) -> str:
     try:
         translations = _load_translations()
         entry = translations.get(str(key), {})
-        lang = get_language("ca")
+        lang = str(get_config_value("idioma", "ca") or "ca")
+        if lang not in LANGUAGE_OPTIONS:
+            return str(default)
         if isinstance(entry, dict):
             if lang in entry:
                 return str(entry[lang])
@@ -143,13 +179,14 @@ def _load_config() -> Dict[str, Any]:
     global _config_cache
     with _config_lock:
         if _config_cache is None:
-            ensure_runtime_layout()
-            path = runtime_config_path()
+            path = migrate_legacy_config()
             if path.exists():
                 try:
                     with path.open("r", encoding="utf-8") as f:
                         payload = json.load(f)
-                    _config_cache = payload if isinstance(payload, dict) else {}
+                    _config_cache = (
+                        payload if isinstance(payload, dict) else {}
+                    )
                 except Exception:
                     _config_cache = {}
             else:
@@ -165,8 +202,7 @@ def _clear_cache_config():
 
 def _save_config(cfg: Dict[str, Any]) -> None:
     global _config_cache
-    ensure_runtime_layout()
-    path = runtime_config_path()
+    path = migrate_legacy_config()
     path.parent.mkdir(parents=True, exist_ok=True)
     with _config_lock:
         _config_cache = dict(cfg)
@@ -194,7 +230,9 @@ def get_config_value(path: str, default=None, *, refresh: bool = False):
     return cur
 
 
-def _set_nested_value(container: Dict[str, Any], dotted_key: str, value: Any) -> None:
+def _set_nested_value(
+    container: Dict[str, Any], dotted_key: str, value: Any
+) -> None:
     parts = [p for p in str(dotted_key).split(".") if p]
     if not parts:
         return

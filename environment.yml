@@ -19,3 +19,5 @@ dependencies:
   - pytest-cov>=4,<6
   - ruff>=0.6,<1
   - pip
+  - pip:
+      - py7zr>=0.22,<2

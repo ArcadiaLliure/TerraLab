@@ -17,7 +17,9 @@ except Exception:  # pragma: no cover
 ProgressFn = Callable[[float, str], None]
 
 
-def _progress(callback: Optional[ProgressFn], percent: float, message: str) -> None:
+def _progress(
+    callback: Optional[ProgressFn], percent: float, message: str
+) -> None:
     if callback is None:
         return
     try:
@@ -56,7 +58,9 @@ def _to_rgb_cube(data: np.ndarray) -> np.ndarray:
             g = _robust_normalize(arr[..., 1])
             b = _robust_normalize(arr[..., 2])
             return np.stack([r, g, b], axis=-1)
-    raise ValueError(f"Unsupported FITS shape for Milky Way texture: {arr.shape}")
+    raise ValueError(
+        f"Unsupported FITS shape for Milky Way texture: {arr.shape}"
+    )
 
 
 def _box_blur2d(arr: np.ndarray, radius: int) -> np.ndarray:
@@ -66,8 +70,17 @@ def _box_blur2d(arr: np.ndarray, radius: int) -> np.ndarray:
         return src.copy()
     k = 2 * radius + 1
     padded = np.pad(src, ((radius, radius), (radius, radius)), mode="reflect")
-    integral = np.pad(np.cumsum(np.cumsum(padded, axis=0), axis=1), ((1, 0), (1, 0)), mode="constant")
-    out = integral[k:, k:] - integral[:-k, k:] - integral[k:, :-k] + integral[:-k, :-k]
+    integral = np.pad(
+        np.cumsum(np.cumsum(padded, axis=0), axis=1),
+        ((1, 0), (1, 0)),
+        mode="constant",
+    )
+    out = (
+        integral[k:, k:]
+        - integral[:-k, k:]
+        - integral[k:, :-k]
+        + integral[:-k, :-k]
+    )
     out = out / float(k * k)
     return np.asarray(out, dtype=np.float32)
 
@@ -83,7 +96,11 @@ def _remove_star_like_sources(
     if rgb.ndim != 3 or rgb.shape[-1] != 3:
         return rgb.copy(), {"masked_pixels": 0, "sigma": 0.0, "threshold": 0.0}
 
-    lum = np.clip((rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114), 0.0, 1.0)
+    lum = np.clip(
+        (rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114),
+        0.0,
+        1.0,
+    )
     bg = _box_blur2d(lum, int(max(1, bg_radius)))
     residual = lum - bg
 
@@ -108,7 +125,11 @@ def _remove_star_like_sources(
 
     masked_pixels = int(np.count_nonzero(mask))
     if masked_pixels <= 0:
-        return rgb.copy(), {"masked_pixels": 0, "sigma": float(sigma), "threshold": float(threshold)}
+        return rgb.copy(), {
+            "masked_pixels": 0,
+            "sigma": float(sigma),
+            "threshold": float(threshold),
+        }
 
     # Fill masked pixels from a smooth background estimate.
     bg_rgb = np.empty_like(rgb, dtype=np.float32)
@@ -139,7 +160,9 @@ def convert_milkyway_fits_to_png(
     progress_callback: Optional[ProgressFn] = None,
 ) -> dict:
     if Image is None:
-        raise RuntimeError("Pillow is required for FITS->PNG conversion. Install with: pip install pillow")
+        raise RuntimeError(
+            "Pillow is required for FITS->PNG conversion. Install with: pip install pillow"
+        )
 
     fits_p = Path(fits_path)
     out_p = Path(output_png)
@@ -161,7 +184,11 @@ def convert_milkyway_fits_to_png(
 
     star_stats = {"masked_pixels": 0, "sigma": 0.0, "threshold": 0.0}
     if bool(remove_stars):
-        _progress(progress_callback, 45.0, "Removing star-like points (starless approx)...")
+        _progress(
+            progress_callback,
+            45.0,
+            "Removing star-like points (starless approx)...",
+        )
         rgb, star_stats = _remove_star_like_sources(
             rgb,
             threshold_sigma=float(star_threshold_sigma),
@@ -169,14 +196,26 @@ def convert_milkyway_fits_to_png(
             grow_radius=int(star_grow_radius),
         )
 
-    lum = np.clip((rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114), 0.0, 1.0)
-    alpha = np.clip((lum - float(alpha_floor)) / max(1e-6, 1.0 - float(alpha_floor)), 0.0, 1.0)
+    lum = np.clip(
+        (rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114),
+        0.0,
+        1.0,
+    )
+    alpha = np.clip(
+        (lum - float(alpha_floor)) / max(1e-6, 1.0 - float(alpha_floor)),
+        0.0,
+        1.0,
+    )
     alpha = np.power(alpha, float(max(0.1, alpha_gamma)))
 
     _progress(progress_callback, 70.0, "Composing PNG with transparency...")
     rgba_u8 = np.empty((*rgb.shape[:2], 4), dtype=np.uint8)
-    rgba_u8[..., :3] = np.clip(np.rint(rgb * 255.0), 0.0, 255.0).astype(np.uint8)
-    rgba_u8[..., 3] = np.clip(np.rint(alpha * 255.0), 0.0, 255.0).astype(np.uint8)
+    rgba_u8[..., :3] = np.clip(np.rint(rgb * 255.0), 0.0, 255.0).astype(
+        np.uint8
+    )
+    rgba_u8[..., 3] = np.clip(np.rint(alpha * 255.0), 0.0, 255.0).astype(
+        np.uint8
+    )
 
     out_p.parent.mkdir(parents=True, exist_ok=True)
     compress_level = int(max(0, min(9, int(png_compress_level))))

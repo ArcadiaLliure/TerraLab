@@ -4,11 +4,12 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timedelta, timezone
 
-from TerraLab.common.utils import get_config_value
 from TerraLab.common.app_paths import weather_cache_path
+from TerraLab.common.utils import get_config_value
 
-
-METNO_COMPACT_URL = "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+METNO_COMPACT_URL = (
+    "https://api.met.no/weatherapi/locationforecast/2.0/compact"
+)
 METNO_USER_AGENT = ""
 METNO_FORECAST_MAX_DAYS = 10
 METNO_CACHE_TTL_SECONDS = 12 * 3600
@@ -29,19 +30,27 @@ def _parse_iso_utc(value):
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(timezone.utc)
+        return datetime.fromisoformat(
+            str(value).replace("Z", "+00:00")
+        ).astimezone(timezone.utc)
     except Exception:
         return None
 
 
 def _extract_precip_rate_mm_h(data):
     # Prefer 1-hour buckets. Fallback to 6h/12h transformed to mm/h.
-    for key, hours in (("next_1_hours", 1.0), ("next_6_hours", 6.0), ("next_12_hours", 12.0)):
+    for key, hours in (
+        ("next_1_hours", 1.0),
+        ("next_6_hours", 6.0),
+        ("next_12_hours", 12.0),
+    ):
         block = data.get(key, {}) if isinstance(data, dict) else {}
         details = block.get("details", {}) if isinstance(block, dict) else {}
         amount = _to_float(details.get("precipitation_amount"), None)
         if amount is not None:
-            summary = block.get("summary", {}) if isinstance(block, dict) else {}
+            summary = (
+                block.get("summary", {}) if isinstance(block, dict) else {}
+            )
             symbol = str(summary.get("symbol_code", "") or "").lower()
             return max(0.0, amount / max(1.0, hours)), symbol
     return 0.0, ""
@@ -59,7 +68,9 @@ def _compact_metno_payload(payload):
     end_dt = None
 
     for item in timeseries:
-        dt = _parse_iso_utc(item.get("time") if isinstance(item, dict) else None)
+        dt = _parse_iso_utc(
+            item.get("time") if isinstance(item, dict) else None
+        )
         if dt is None:
             continue
         if start_dt is None or dt < start_dt:
@@ -69,18 +80,53 @@ def _compact_metno_payload(payload):
 
         data = item.get("data", {}) if isinstance(item, dict) else {}
         instant = data.get("instant", {}) if isinstance(data, dict) else {}
-        details = instant.get("details", {}) if isinstance(instant, dict) else {}
+        details = (
+            instant.get("details", {}) if isinstance(instant, dict) else {}
+        )
 
-        cloud_area_fraction = _to_float(details.get("cloud_area_fraction"), 0.0)
+        cloud_area_fraction = _to_float(
+            details.get("cloud_area_fraction"), 0.0
+        )
         cloud_cover = _clamp(cloud_area_fraction / 100.0, 0.0, 1.0)
-        cloud_low = _clamp(_to_float(details.get("cloud_area_fraction_low"), cloud_area_fraction) / 100.0, 0.0, 1.0)
-        cloud_mid = _clamp(_to_float(details.get("cloud_area_fraction_medium"), cloud_area_fraction) / 100.0, 0.0, 1.0)
-        cloud_high = _clamp(_to_float(details.get("cloud_area_fraction_high"), cloud_area_fraction) / 100.0, 0.0, 1.0)
-        fog_cover = _clamp(_to_float(details.get("fog_area_fraction"), 0.0) / 100.0, 0.0, 1.0)
-        relative_humidity = _clamp(_to_float(details.get("relative_humidity"), 75.0) / 100.0, 0.0, 1.0)
-        wind_speed_ms = _clamp(_to_float(details.get("wind_speed"), 2.0), 0.0, 60.0)
-        wind_direction_deg = _clamp(_to_float(details.get("wind_from_direction"), 0.0), 0.0, 360.0)
-        pressure_hpa = _to_float(details.get("air_pressure_at_sea_level"), None)
+        cloud_low = _clamp(
+            _to_float(
+                details.get("cloud_area_fraction_low"), cloud_area_fraction
+            )
+            / 100.0,
+            0.0,
+            1.0,
+        )
+        cloud_mid = _clamp(
+            _to_float(
+                details.get("cloud_area_fraction_medium"), cloud_area_fraction
+            )
+            / 100.0,
+            0.0,
+            1.0,
+        )
+        cloud_high = _clamp(
+            _to_float(
+                details.get("cloud_area_fraction_high"), cloud_area_fraction
+            )
+            / 100.0,
+            0.0,
+            1.0,
+        )
+        fog_cover = _clamp(
+            _to_float(details.get("fog_area_fraction"), 0.0) / 100.0, 0.0, 1.0
+        )
+        relative_humidity = _clamp(
+            _to_float(details.get("relative_humidity"), 75.0) / 100.0, 0.0, 1.0
+        )
+        wind_speed_ms = _clamp(
+            _to_float(details.get("wind_speed"), 2.0), 0.0, 60.0
+        )
+        wind_direction_deg = _clamp(
+            _to_float(details.get("wind_from_direction"), 0.0), 0.0, 360.0
+        )
+        pressure_hpa = _to_float(
+            details.get("air_pressure_at_sea_level"), None
+        )
 
         air_temperature = _to_float(details.get("air_temperature"), None)
         precip_rate_mm_h, symbol = _extract_precip_rate_mm_h(data)
@@ -97,9 +143,13 @@ def _compact_metno_payload(payload):
 
         if precipitation_type != "none":
             # Keep visual consistency: precipitation implies relevant cloud cover.
-            cloud_cover = max(cloud_cover, 0.65 + 0.25 * precipitation_intensity)
+            cloud_cover = max(
+                cloud_cover, 0.65 + 0.25 * precipitation_intensity
+            )
 
-        day_index = (dt.date() - datetime(dt.year, 1, 1, tzinfo=timezone.utc).date()).days
+        day_index = (
+            dt.date() - datetime(dt.year, 1, 1, tzinfo=timezone.utc).date()
+        ).days
         key = f"{dt.year}:{day_index}:{dt.hour}"
         records[key] = {
             "cloud_cover": cloud_cover,
@@ -121,8 +171,12 @@ def _compact_metno_payload(payload):
     fetched_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     return {
         "fetched_utc": fetched_utc,
-        "coverage_start": start_dt.isoformat().replace("+00:00", "Z") if start_dt else None,
-        "coverage_end": end_dt.isoformat().replace("+00:00", "Z") if end_dt else None,
+        "coverage_start": (
+            start_dt.isoformat().replace("+00:00", "Z") if start_dt else None
+        ),
+        "coverage_end": (
+            end_dt.isoformat().replace("+00:00", "Z") if end_dt else None
+        ),
         "records": records,
     }
 
@@ -152,7 +206,9 @@ def _fetch_metno_compact(lat, lon, timeout_s, user_agent):
 
 
 class MetNoWeatherProvider:
-    def __init__(self, latitude=0.0, longitude=0.0, use_remote=True, cache_enabled=True):
+    def __init__(
+        self, latitude=0.0, longitude=0.0, use_remote=True, cache_enabled=True
+    ):
         self.latitude = float(latitude)
         self.longitude = float(longitude)
         self.use_remote = bool(use_remote)
@@ -163,24 +219,58 @@ class MetNoWeatherProvider:
         self._attempt_backoff_seconds = 20.0
         self._cache = {}
         self.last_status = "init"
-        self.user_agent = str(get_config_value("weather.metno_user_agent", "") or "").strip()
+        self.user_agent = str(
+            get_config_value("weather.metno_user_agent", "") or ""
+        ).strip()
         # Disk cache used for reproducible testing and avoiding repeated API traffic.
         self._cache_path = str(weather_cache_path())
         self._load_cache()
 
     def get_cache_path(self):
+        """Obte cache path de la instancia de MetNoWeatherProvider.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         return self._cache_path
 
     def get_last_status(self):
+        """Obte last status de la instancia de MetNoWeatherProvider.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         return str(self.last_status or "init")
 
     def set_remote_enabled(self, enabled):
+        """Defineix remote enabled a la instancia de MetNoWeatherProvider.
+
+        Par?metres:
+        - enabled (Any): Valor del parametre 'enabled'.
+
+        Retorna:
+        - None.
+        """
         self.use_remote = bool(enabled)
         if not self.use_remote:
             self._future = None
             self.last_status = "remote_disabled"
 
     def set_cache_enabled(self, enabled):
+        """Defineix cache enabled a la instancia de MetNoWeatherProvider.
+
+        Par?metres:
+        - enabled (Any): Valor del parametre 'enabled'.
+
+        Retorna:
+        - None.
+        """
         self.cache_enabled = bool(enabled)
         if not self.cache_enabled:
             self._cache = {}
@@ -190,6 +280,14 @@ class MetNoWeatherProvider:
             self._load_cache()
 
     def set_user_agent(self, value):
+        """Defineix user agent a la instancia de MetNoWeatherProvider.
+
+        Par?metres:
+        - value (Any): Valor del parametre 'value'.
+
+        Retorna:
+        - None.
+        """
         self.user_agent = str(value or "").strip()
         if not self.user_agent:
             self.last_status = "missing_user_agent"
@@ -197,6 +295,14 @@ class MetNoWeatherProvider:
             self.last_status = "user_agent_updated"
 
     def clear_cache_file(self):
+        """Executa el metode clear_cache_file de la classe MetNoWeatherProvider.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         self._cache = {}
         self.last_status = "cache_cleared"
         try:
@@ -206,6 +312,14 @@ class MetNoWeatherProvider:
             pass
 
     def shutdown(self):
+        """Executa el metode shutdown de la classe MetNoWeatherProvider.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         self.last_status = "shutdown"
         try:
             if self._future is not None:
@@ -245,9 +359,21 @@ class MetNoWeatherProvider:
             pass
 
     def set_location(self, latitude, longitude):
+        """Defineix location a la instancia de MetNoWeatherProvider.
+
+        Par?metres:
+        - latitude (Any): Valor del parametre 'latitude'.
+        - longitude (Any): Valor del parametre 'longitude'.
+
+        Retorna:
+        - None.
+        """
         latitude = float(latitude)
         longitude = float(longitude)
-        if abs(self.latitude - latitude) < 1e-6 and abs(self.longitude - longitude) < 1e-6:
+        if (
+            abs(self.latitude - latitude) < 1e-6
+            and abs(self.longitude - longitude) < 1e-6
+        ):
             return
         self.latitude = latitude
         self.longitude = longitude
@@ -259,7 +385,11 @@ class MetNoWeatherProvider:
         self.last_status = "location_changed"
 
     def _cache_fresh(self):
-        fetched = _parse_iso_utc(self._cache.get("fetched_utc") if isinstance(self._cache, dict) else None)
+        fetched = _parse_iso_utc(
+            self._cache.get("fetched_utc")
+            if isinstance(self._cache, dict)
+            else None
+        )
         if fetched is None:
             return False
         age = abs((datetime.now(timezone.utc) - fetched).total_seconds())
@@ -272,7 +402,10 @@ class MetNoWeatherProvider:
         lon = _to_float(self._cache.get("lon"), None)
         if lat is None or lon is None:
             return False
-        return abs(lat - self.latitude) < 1e-6 and abs(lon - self.longitude) < 1e-6
+        return (
+            abs(lat - self.latitude) < 1e-6
+            and abs(lon - self.longitude) < 1e-6
+        )
 
     def _coverage_contains(self, target_date):
         if not isinstance(self._cache, dict):
@@ -285,7 +418,11 @@ class MetNoWeatherProvider:
 
     def _within_remote_range(self, target_date):
         today = datetime.now(timezone.utc).date()
-        return today <= target_date <= (today + timedelta(days=METNO_FORECAST_MAX_DAYS))
+        return (
+            today
+            <= target_date
+            <= (today + timedelta(days=METNO_FORECAST_MAX_DAYS))
+        )
 
     def _start_background_fetch(self):
         if self._future is not None and not self._future.done():
@@ -295,7 +432,10 @@ class MetNoWeatherProvider:
             self.last_status = "missing_user_agent"
             return
         now_m = time.monotonic()
-        if now_m - self._last_attempt_monotonic < self._attempt_backoff_seconds:
+        if (
+            now_m - self._last_attempt_monotonic
+            < self._attempt_backoff_seconds
+        ):
             self.last_status = "fetch_backoff"
             return
         self._last_attempt_monotonic = now_m
@@ -316,7 +456,11 @@ class MetNoWeatherProvider:
         except Exception:
             result = None
         self._future = None
-        if isinstance(result, dict) and isinstance(result.get("records"), dict) and result.get("records"):
+        if (
+            isinstance(result, dict)
+            and isinstance(result.get("records"), dict)
+            and result.get("records")
+        ):
             result["lat"] = self.latitude
             result["lon"] = self.longitude
             self._cache = result
@@ -343,6 +487,16 @@ class MetNoWeatherProvider:
         return not self._cache_fresh()
 
     def get_weather(self, year, day_of_year, hour):
+        """Obte weather de la instancia de MetNoWeatherProvider.
+
+        Par?metres:
+        - year (Any): Valor del parametre 'year'.
+        - day_of_year (Any): Valor del parametre 'day_of_year'.
+        - hour (Any): Valor del parametre 'hour'.
+
+        Retorna:
+        - Any: Valor retornat pel metode.
+        """
         if not self.use_remote:
             self.last_status = "remote_disabled"
             return None
@@ -374,7 +528,11 @@ class MetNoWeatherProvider:
                 self.last_status = "coverage_miss"
             return None
 
-        records = self._cache.get("records", {}) if isinstance(self._cache, dict) else {}
+        records = (
+            self._cache.get("records", {})
+            if isinstance(self._cache, dict)
+            else {}
+        )
         key = f"{int(year)}:{int(day_of_year)}:{int(hour) % 24}"
         item = records.get(key)
         if isinstance(item, dict):

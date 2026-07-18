@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-import os
 import json
+import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Dict, Iterable, Optional
-import numpy as np
 
+import numpy as np
 from PyQt5.QtCore import (
     QObject,
     QProcess,
     QProcessEnvironment,
     Qt,
+    QTimer,
     QThread,
     QUrl,
     pyqtSignal,
@@ -29,12 +31,12 @@ from PyQt5.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
-    QInputDialog,
-    QPushButton,
     QProgressBar,
+    QPushButton,
     QSizePolicy,
     QStackedWidget,
     QTextEdit,
@@ -42,9 +44,12 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from TerraLab.common.utils import getTraduction, set_config_value
+from TerraLab.common.utils import (
+    getTraduction,
+    get_config_value,
+    set_config_value,
+)
 from TerraLab.data.assets_manager import AssetManager
-
 
 _ASTRO_DIALOG_STYLE = """
 QDialog {
@@ -172,9 +177,22 @@ class _AssetJobWorker(QObject):
         self.asset_id = str(asset_id)
         self.files = list(files or [])
         self.options = dict(options or {})
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
 
     @pyqtSlot()
     def run(self):
+        """Executa el metode run de la classe _AssetJobWorker.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
+
         def _cb(percent: float, message: str):
             self.progress.emit(float(percent), str(message))
 
@@ -184,6 +202,7 @@ class _AssetJobWorker(QObject):
                     self.asset_id,
                     progress_callback=_cb,
                     options=self.options,
+                    cancelled=self._cancel_event.is_set,
                 )
             else:
                 result = self.manager.import_files(
@@ -214,10 +233,15 @@ class AssetOnboardingDialog(QDialog):
         self._gaia_tap_state_path: Optional[Path] = None
         self._gaia_visible_ready = False
         self._gaia_process_detached = False
+        self._gaia_download_mode = "tiles"
+        self._gaia_state_watch_timer: Optional[QTimer] = None
+        self._gaia_last_polled_state_signature = ""
 
         self.setWindowTitle(f"TerraLab - {self.spec.title}")
         self.setModal(True)
-        self.resize(760, 500)
+        # Algun entorns Windows eleven el minim vertical real (>540) per marges/frame.
+        # Partir d'una alcada inicial superior evita avisos de geometria i finestres truncades.
+        self.resize(760, 560)
         self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
         if self.asset_id == "gaia_catalog":
             self.setWindowFlag(Qt.WindowStaysOnTopHint, True)
@@ -259,21 +283,24 @@ class AssetOnboardingDialog(QDialog):
                 gaia_log_path = self._resolve_gaia_tap_log_path()
                 gaia_log_line = f"\nLog persistent: {gaia_log_path}\n"
             except Exception:
-                gaia_log_line = "\nLog persistent: %APPDATA%/TerraLab/logs/gaia_tap_last.log\n"
+                gaia_log_line = (
+                    "\nLog persistent: <biblioteca>/logs/gaia_tiles_last.log\n"
+                )
             extra_help = (
-                "\n\nEl boto 'Descarregar automaticament' executa el TAP en segon pla (Python natiu).\n"
-                "Flux: primer prepara estrelles visibles (mag <= 8), i despres continua per lots "
+                "\n\nEl boto 'Descarregar automaticament' executa el flux Gaia per teseles en segon pla.\n"
+                "Flux: primer crea la tesela general (mag < 8), i despres completa teseles profundes "
                 "fins a la magnitud objectiu, amb progressio reanudable.\n"
                 f"{gaia_log_line}"
                 "Opcional (avancat): pots executar-ho manualment amb:\n"
-                "python tools/download_gaia_tap.py --mag-limit 15 --yes"
+                "python tools/download_gaia_tiles.py --mag-limit 0 --tile-size-deg 10"
             )
         details.setText(
             f"Font oficial:\n{self.spec.source_url}\n\n"
             f"Formats admesos:\n{self.spec.accepted_formats}\n\n"
             f"Credits:\n{self.spec.credits}\n\n"
-            "Despres d'importar les dades, TerraLab les copia a la carpeta de l'app (%APPDATA%/TerraLab).\n"
-            "Pots esborrar el fitxer original si vols."
+            "Per defecte pots enllaçar dades pròpies a la seva ubicació original. "
+            "Si tries preparar/copiar, els datasets i derivats es guarden a la biblioteca seleccionada.\n"
+            f"Biblioteca activa: {self.manager.library.root}"
             f"{extra_help}"
         )
         panel_layout.addWidget(details)
@@ -284,7 +311,9 @@ class AssetOnboardingDialog(QDialog):
         climate_layout.setContentsMargins(0, 0, 0, 0)
         climate_layout.addWidget(QLabel("METNO User-Agent"), 0, 0)
         self.txt_user_agent = QLineEdit()
-        self.txt_user_agent.setPlaceholderText("TerraLab/1.0 (contact@example.com)")
+        self.txt_user_agent.setPlaceholderText(
+            "TerraLab/1.0 (contact@example.com)"
+        )
         self.txt_user_agent.setText(self.manager.get_user_agent())
         climate_layout.addWidget(self.txt_user_agent, 0, 1)
         self.btn_save_user_agent = QPushButton("Desar")
@@ -306,18 +335,32 @@ class AssetOnboardingDialog(QDialog):
         root.addWidget(self.milkyway_block)
 
         actions = QHBoxLayout()
-        self.btn_open_source = QPushButton(getTraduction("Onboarding.OpenSource", "Obrir font oficial"))
+        self.btn_open_source = QPushButton(
+            getTraduction("Onboarding.OpenSource", "Obrir font oficial")
+        )
         self.btn_open_source.clicked.connect(self._open_source)
         actions.addWidget(self.btn_open_source)
 
-        self.btn_auto_download = QPushButton(getTraduction("Onboarding.AutoDownload", "Descarregar automaticament"))
+        self.btn_auto_download = QPushButton(
+            getTraduction(
+                "Onboarding.AutoDownload", "Descarregar automaticament"
+            )
+        )
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         self.btn_auto_download.clicked.connect(self._auto_download)
         actions.addWidget(self.btn_auto_download)
 
-        self.btn_attach = QPushButton(getTraduction("Onboarding.AttachFiles", "Adjuntar fitxer(s)"))
+        self.btn_attach = QPushButton(
+            getTraduction("Onboarding.AttachFiles", "Copiar fitxer(s) a la biblioteca")
+        )
         self.btn_attach.clicked.connect(self._attach_files)
         actions.addWidget(self.btn_attach)
+        self.btn_attach_folder = QPushButton("Copiar carpeta a la biblioteca")
+        self.btn_attach_folder.setVisible(
+            self.asset_id in {"elevation_dem", "surface_rgb", "surface_categorical"}
+        )
+        self.btn_attach_folder.clicked.connect(self._attach_folder)
+        actions.addWidget(self.btn_attach_folder)
         root.addLayout(actions)
 
         self.lbl_status = QLabel("")
@@ -336,15 +379,25 @@ class AssetOnboardingDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.addStretch(1)
-        self.btn_close = QPushButton(getTraduction("Onboarding.Close", "Tancar"))
+        self.btn_cancel = QPushButton("Cancel·lar tasca")
+        self.btn_cancel.setVisible(False)
+        self.btn_cancel.clicked.connect(self._cancel_job)
+        footer.addWidget(self.btn_cancel)
+        self.btn_close = QPushButton(
+            getTraduction("Onboarding.Close", "Tancar")
+        )
         self.btn_close.clicked.connect(self.reject)
         footer.addWidget(self.btn_close)
         root.addLayout(footer)
+
+        if self.asset_id == "gaia_catalog":
+            self._start_gaia_state_watch_timer()
 
         if self.asset_id == "climate_metno":
             self.btn_open_source.setEnabled(True)
             self.btn_auto_download.setEnabled(False)
             self.btn_attach.setEnabled(False)
+            self.btn_attach_folder.setEnabled(False)
 
     def _supports_auto_download(self) -> bool:
         if self.asset_id == "gaia_catalog":
@@ -353,6 +406,14 @@ class AssetOnboardingDialog(QDialog):
 
     @property
     def completed(self) -> bool:
+        """Executa el metode completed de la classe AssetOnboardingDialog.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         return bool(self._completed)
 
     def _open_source(self):
@@ -370,41 +431,66 @@ class AssetOnboardingDialog(QDialog):
             )
             self.accept()
             return
-        QMessageBox.warning(self, "TerraLab", "Cal definir un User-Agent valid.")
+        QMessageBox.warning(
+            self, "TerraLab", "Cal definir un User-Agent valid."
+        )
 
     def _attach_files(self):
         if self.asset_id == "climate_metno":
             return
         allow_multiple = bool(self.spec.allow_multiple)
         filters = (
-            "Data files (*.fits *.png *.ecsv *.csv *.zst *.zip *.tif *.tiff *.asc *.txt);;"
+            "Data files (*.fits *.png *.jpg *.jpeg *.ecsv *.csv *.npy *.npz *.zst *.zip *.7z *.bsp "
+            "*.tif *.tiff *.vrt *.img *.jp2 *.asc *.txt);;"
             "All files (*.*)"
         )
         if allow_multiple:
-            files, _ = QFileDialog.getOpenFileNames(self, "Selecciona fitxers", "", filters)
+            files, _ = QFileDialog.getOpenFileNames(
+                self, "Selecciona fitxers", "", filters
+            )
         else:
-            single, _ = QFileDialog.getOpenFileName(self, "Selecciona fitxer", "", filters)
+            single, _ = QFileDialog.getOpenFileName(
+                self, "Selecciona fitxer", "", filters
+            )
             files = [single] if single else []
         files = [f for f in files if f and os.path.exists(f)]
         if not files:
             return
-        self._start_job(mode="import", files=files, options=self._collect_options())
+        self._start_job(
+            mode="import", files=files, options=self._collect_options()
+        )
+
+    def _attach_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Selecciona una carpeta o mosaic"
+        )
+        if folder:
+            self._start_job(
+                mode="import",
+                files=[folder],
+                options=self._collect_options(),
+            )
 
     def _auto_download(self):
         if self.asset_id == "gaia_catalog":
             state = self._load_gaia_tap_state()
-            pending = isinstance(state, dict) and str(state.get("status", "")).lower() not in {"done", "completed", "success"}
+            pending = isinstance(state, dict) and str(
+                state.get("status", "")
+            ).lower() not in {"done", "completed", "success"}
             if pending:
-                try:
-                    pct = float(state.get("progress_percent", 0.0) or 0.0)
-                except Exception:
-                    pct = 0.0
+                pct = self._state_progress_percent(state)
                 msg = (
                     "S'ha detectat una descarrega Gaia pendent.\n"
                     f"Progres guardat: {pct:.1f}%.\n\n"
                     "Vols reprendre-la ara?"
                 )
-                ans = QMessageBox.question(self, "TerraLab", msg, QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+                ans = QMessageBox.question(
+                    self,
+                    "TerraLab",
+                    msg,
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes,
+                )
                 if ans == QMessageBox.Yes:
                     self._start_gaia_tap_process(resume=True)
                     return
@@ -412,25 +498,51 @@ class AssetOnboardingDialog(QDialog):
             return
         if not self.spec.auto_download_url:
             return
-        self._start_job(mode="download", files=[], options=self._collect_options())
+        if self.asset_id == "elevation_dem":
+            answer = QMessageBox.question(
+                self,
+                "Descàrrega EU-DEM molt gran",
+                "El mosaic complet EU-DEM ocupa aproximadament 19,6 GB abans de l'extracció. "
+                "TerraLab comprovarà l'espai, permetrà reprendre la descàrrega i no l'activarà "
+                "fins que s'hagi verificat.\n\nVols continuar?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self._start_job(
+            mode="download", files=[], options=self._collect_options()
+        )
 
     def start_gaia_tap_resume(self) -> None:
+        """Executa el metode start_gaia_tap_resume de la classe AssetOnboardingDialog.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         self._start_gaia_tap_process(resume=True)
 
-    def _start_gaia_tap_process(self, *, resume: bool = False, mag_limit: Optional[float] = None) -> None:
+    def _start_gaia_tap_process(
+        self, *, resume: bool = False, mag_limit: Optional[float] = None
+    ) -> None:
         resolved_mag_limit = mag_limit
         if not resume:
             if resolved_mag_limit is None:
-                mag_default = 15.0
+                mag_default = 0.0
                 try:
-                    mag_default = float(self.manager.layout.get("gaia_mag_limit_default", 15.0))
+                    mag_default = float(
+                        self.manager.layout.get("gaia_mag_limit_default", 0.0)
+                    )
                 except Exception:
                     pass
                 mag_dialog = QInputDialog(self)
                 mag_dialog.setWindowTitle("Gaia TAP")
-                mag_dialog.setLabelText("Magnitud maxima G:")
+                mag_dialog.setLabelText("Magnitud maxima G (0 = sense limit):")
                 mag_dialog.setInputMode(QInputDialog.DoubleInput)
-                mag_dialog.setDoubleRange(1.0, 23.0)
+                mag_dialog.setDoubleRange(0.0, 23.0)
                 mag_dialog.setDoubleDecimals(2)
                 mag_dialog.setDoubleValue(float(mag_default))
                 mag_dialog.setStyleSheet(_ASTRO_DIALOG_STYLE)
@@ -441,13 +553,21 @@ class AssetOnboardingDialog(QDialog):
                 resolved_mag_limit = float(resolved_mag_limit)
 
         project_root = Path(__file__).resolve().parents[1]
-        script_path = project_root / "tools" / "download_gaia_tap.py"
+        tile_script_path = project_root / "tools" / "download_gaia_tiles.py"
+        legacy_script_path = project_root / "tools" / "download_gaia_tap.py"
+        use_tiles_flow = tile_script_path.exists()
+        script_path = tile_script_path if use_tiles_flow else legacy_script_path
         if not script_path.exists():
-            QMessageBox.critical(self, "TerraLab", f"No s'ha trobat l'script: {script_path}")
+            QMessageBox.critical(
+                self, "TerraLab", f"No s'ha trobat l'script: {script_path}"
+            )
             return
+        self._gaia_download_mode = "tiles" if use_tiles_flow else "tap"
 
         if self._gaia_tap_process is not None:
-            QMessageBox.information(self, "TerraLab", "Ja hi ha un proces Gaia TAP en execucio.")
+            QMessageBox.information(
+                self, "TerraLab", "Ja hi ha un proces Gaia TAP en execucio."
+            )
             return
 
         log_path = self._resolve_gaia_tap_log_path()
@@ -466,20 +586,59 @@ class AssetOnboardingDialog(QDialog):
         process.setProgram(str(sys.executable))
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONUNBUFFERED", "1")
+        env.insert("TERRALAB_DATA_ROOT", str(self.manager.library.root))
         process.setProcessEnvironment(env)
-        args = [
-            "-u",
-            str(script_path),
-            "--yes",
-            "--state-file",
-            str(state_path),
-            "--log-file",
-            str(log_path),
-        ]
-        if resume:
-            args.append("--resume")
+        args = ["-u", str(script_path)]
+        max_parallel_requests = self._gaia_max_parallel_requests()
+        if use_tiles_flow:
+            try:
+                tile_size_deg = float(
+                    get_config_value("gaia_tile_size_deg", 10.0)
+                )
+            except Exception:
+                tile_size_deg = 10.0
+            tile_size_deg = float(max(2.0, min(30.0, tile_size_deg)))
+            try:
+                output_dir = Path(
+                    str(self.manager.layout.get("data_gaia", project_root))
+                ).expanduser()
+            except Exception:
+                output_dir = project_root
+            args.extend(
+                [
+                    "--output-dir",
+                    str(output_dir),
+                    "--state-file",
+                    str(state_path),
+                    "--max-concurrent-requests",
+                    str(max_parallel_requests),
+                    "--tile-size-deg",
+                    f"{tile_size_deg:.2f}",
+                ]
+            )
+            if resume:
+                pass
+            else:
+                args.append("--no-resume")
+                args.extend(
+                    ["--mag-limit", f"{float(resolved_mag_limit):.2f}"]
+                )
         else:
-            args.extend(["--mag-limit", f"{float(resolved_mag_limit):.2f}"])
+            args.extend(
+                [
+                    "--yes",
+                    "--state-file",
+                    str(state_path),
+                    "--log-file",
+                    str(log_path),
+                ]
+            )
+            if resume:
+                args.append("--resume")
+            else:
+                args.extend(
+                    ["--mag-limit", f"{float(resolved_mag_limit):.2f}"]
+                )
         process.setArguments(args)
         process.setProcessChannelMode(QProcess.MergedChannels)
         process.readyReadStandardOutput.connect(self._on_gaia_tap_output)
@@ -488,29 +647,59 @@ class AssetOnboardingDialog(QDialog):
 
         self.btn_open_source.setEnabled(False)
         self.btn_attach.setEnabled(False)
+        self.btn_attach_folder.setEnabled(False)
         self.btn_auto_download.setEnabled(False)
         self.btn_close.setEnabled(False)
-        self.progress.setRange(0, 0)  # indeterminate while waiting first progress markers
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
+        if resume:
+            resume_state = self._load_gaia_tap_state()
+            resume_pct = self._state_progress_percent(resume_state)
+            if resume_pct > 0.0:
+                self.progress.setRange(0, 100)
+                self.progress.setValue(
+                    max(0, min(100, int(round(resume_pct))))
+                )
+            else:
+                self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(
+                0, 0
+            )  # indeterminate while waiting first progress markers
         self.lbl_status.setText(
-            getTraduction("Onboarding.DownloadingStars", "Descarregant estrelles...")
+            getTraduction(
+                "Onboarding.DownloadingStars", "Descarregant estrelles..."
+            )
         )
         self.txt_process_log.clear()
         self.txt_process_log.setVisible(True)
         self._append_gaia_tap_log_line(f"[gaia-tap] log file: {log_path}")
         self._append_gaia_tap_log_line(f"[gaia-tap] state file: {state_path}")
+        if use_tiles_flow:
+            self._append_gaia_tap_log_line(
+                "[gaia-tap] mode=tiles "
+                f"max_concurrent_requests={max_parallel_requests}"
+            )
         self._gaia_tap_out_buffer = ""
         self._gaia_tap_process = process
         process.start()
         if not process.waitForStarted(5000):
-            err_txt = str(process.errorString() or "No es pot iniciar el proces Gaia TAP.")
+            err_txt = str(
+                process.errorString()
+                or "No es pot iniciar el proces Gaia TAP."
+            )
             self._cleanup_gaia_tap_process()
             self.progress.setRange(0, 100)
             self.lbl_status.setText("Error en iniciar Gaia TAP.")
             self.btn_open_source.setEnabled(True)
             self.btn_attach.setEnabled(True)
+            self.btn_attach_folder.setEnabled(True)
             self.btn_auto_download.setEnabled(self._supports_auto_download())
             self.btn_close.setEnabled(True)
-            QMessageBox.critical(self, "TerraLab", f"{err_txt}\n\n{self._gaia_tap_log_hint()}")
+            self.btn_cancel.setVisible(False)
+            QMessageBox.critical(
+                self, "TerraLab", f"{err_txt}\n\n{self._gaia_tap_log_hint()}"
+            )
             return
 
     def _resolve_gaia_tap_log_path(self) -> Path:
@@ -518,27 +707,202 @@ class AssetOnboardingDialog(QDialog):
             root = Path(self.manager.layout.get("root", Path.home())).resolve()
         except Exception:
             root = Path.home()
-        return root / "logs" / "gaia_tap_last.log"
+        return root / "logs" / "gaia_tiles_last.log"
 
     def _resolve_gaia_tap_state_path(self) -> Path:
         try:
             root = Path(self.manager.layout.get("root", Path.home())).resolve()
         except Exception:
             root = Path.home()
+        return root / "logs" / "gaia_tiles_state.json"
+
+    def _resolve_legacy_gaia_tap_state_path(self) -> Path:
+        """Retorna la ruta legacy del fitxer d'estat Gaia TAP."""
+        try:
+            root = Path(self.manager.layout.get("root", Path.home())).resolve()
+        except Exception:
+            root = Path.home()
         return root / "logs" / "gaia_tap_state.json"
 
-    def _load_gaia_tap_state(self) -> Optional[dict]:
-        path = self._resolve_gaia_tap_state_path()
+    def _resolve_gaia_tiles_runtime_state_path(self) -> Path:
+        """Retorna la ruta runtime de l'estat per teseles (`data_gaia`)."""
+        try:
+            runtime_gaia_dir = Path(
+                str(self.manager.layout.get("data_gaia", ""))
+            ).expanduser()
+        except Exception:
+            runtime_gaia_dir = Path()
+        return runtime_gaia_dir / "gaia_tiles_state.json"
+
+    def _load_json_state_file(self, path: Path) -> Optional[dict]:
+        """Carrega un fitxer d'estat JSON si existeix i és vàlid."""
         if not path.exists():
             return None
         try:
             with path.open("r", encoding="utf-8") as fh:
                 payload = json.load(fh)
             if isinstance(payload, dict):
+                payload["_state_path"] = str(path)
                 return payload
         except Exception:
             return None
         return None
+
+    def _load_gaia_tap_state(self) -> Optional[dict]:
+        tile_state = self._load_json_state_file(self._resolve_gaia_tap_state_path())
+        runtime_tile_state = self._load_json_state_file(
+            self._resolve_gaia_tiles_runtime_state_path()
+        )
+        legacy_state = self._load_json_state_file(
+            self._resolve_legacy_gaia_tap_state_path()
+        )
+        if isinstance(tile_state, dict):
+            tile_status = str(tile_state.get("status", "")).lower()
+            if tile_status not in {"done", "completed", "success"}:
+                return tile_state
+        if isinstance(runtime_tile_state, dict):
+            runtime_status = str(runtime_tile_state.get("status", "")).lower()
+            if runtime_status not in {"done", "completed", "success"}:
+                return runtime_tile_state
+        if isinstance(legacy_state, dict):
+            legacy_status = str(legacy_state.get("status", "")).lower()
+            if legacy_status not in {"done", "completed", "success"}:
+                return legacy_state
+        if isinstance(tile_state, dict):
+            return tile_state
+        if isinstance(runtime_tile_state, dict):
+            return runtime_tile_state
+        if isinstance(legacy_state, dict):
+            return legacy_state
+        return None
+
+    def _state_progress_percent(self, state: Optional[dict]) -> float:
+        """Calcula percentatge de progrés aproximat per estat Gaia."""
+        if not isinstance(state, dict):
+            return 0.0
+        try:
+            if "progress_percent" in state:
+                return float(max(0.0, min(100.0, float(state.get("progress_percent", 0.0) or 0.0))))
+        except Exception:
+            pass
+        deep_tiles = state.get("deep_tiles")
+        if not isinstance(deep_tiles, dict):
+            return 0.0
+        try:
+            tile_size = float(state.get("tile_size_deg", 5.0) or 5.0)
+        except Exception:
+            tile_size = 5.0
+        tile_size = max(0.1, float(tile_size))
+        total_tiles = int((360.0 / tile_size) * (180.0 / tile_size))
+        done_tiles = sum(
+            1
+            for item in deep_tiles.values()
+            if isinstance(item, dict) and bool(item.get("done", False))
+        )
+        pct = 10.0 + 85.0 * (float(done_tiles) / float(max(1, total_tiles)))
+        if bool(state.get("general_tile_done", False)):
+            pct = max(pct, 9.0)
+        if str(state.get("status", "")).lower() in {"done", "completed", "success"}:
+            pct = 100.0
+        return float(max(0.0, min(100.0, pct)))
+
+    def _gaia_state_is_pending(self, state: Optional[dict]) -> bool:
+        """Retorna `True` si l'estat Gaia indica descarrega pendent."""
+        if not isinstance(state, dict):
+            return False
+        status_name = str(state.get("status", "")).strip().lower()
+        phase_name = str(state.get("phase", "")).strip().lower()
+        done_tokens = {"done", "completed", "success"}
+        return status_name not in done_tokens and phase_name not in done_tokens
+
+    def _gaia_state_status_text(self, state: dict, percent_value: float) -> str:
+        """Construeix text breu de progrés per estat Gaia."""
+        status_message = str(state.get("status_message", "") or "").strip()
+        tile_id = str(state.get("current_tile_id", "") or "").strip()
+        if not status_message:
+            status_message = "Descarregant Gaia per teseles"
+        if tile_id:
+            status_message = f"{status_message} [{tile_id}]"
+        return f"{status_message} ({percent_value:.1f}%)"
+
+    def _start_gaia_state_watch_timer(self) -> None:
+        """Activa polling periòdic de l'estat Gaia per refrescar el diàleg."""
+        if self.asset_id != "gaia_catalog":
+            return
+        if self._gaia_state_watch_timer is not None:
+            return
+        timer = QTimer(self)
+        timer.setInterval(900)
+        timer.timeout.connect(self._poll_gaia_state_feedback)
+        self._gaia_state_watch_timer = timer
+        timer.start()
+        QTimer.singleShot(120, self._poll_gaia_state_feedback)
+
+    def _stop_gaia_state_watch_timer(self) -> None:
+        """Atura el polling d'estat Gaia si està actiu."""
+        timer = self._gaia_state_watch_timer
+        if timer is None:
+            return
+        try:
+            timer.stop()
+        except Exception:
+            pass
+
+    def _poll_gaia_state_feedback(self) -> None:
+        """Actualitza progrés del diàleg des de fitxer d'estat Gaia."""
+        if self.asset_id != "gaia_catalog":
+            return
+        if self._gaia_tap_process is not None:
+            # Quan el procés llançat per aquest diàleg està viu, el progrés ja arriba per stdout.
+            return
+        state = self._load_gaia_tap_state()
+        if not self._gaia_state_is_pending(state):
+            return
+        assert isinstance(state, dict)
+
+        progress_percent = self._state_progress_percent(state)
+        status_text = self._gaia_state_status_text(state, progress_percent)
+        signature = f"{status_text}|{int(round(progress_percent))}"
+        if signature != self._gaia_last_polled_state_signature:
+            self._gaia_last_polled_state_signature = signature
+            if not bool(self.txt_process_log.isVisible()):
+                self.txt_process_log.setVisible(True)
+            self.txt_process_log.append(f"[gaia-state] {status_text}")
+
+        if progress_percent <= 0.0:
+            self.progress.setRange(0, 0)
+        else:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(
+                max(0, min(100, int(round(progress_percent))))
+            )
+        self.lbl_status.setText(status_text)
+
+    def _gaia_max_parallel_requests(self) -> int:
+        """Retorna concurrencia TAP per al flux Gaia per teseles."""
+        raw_candidates = []
+        try:
+            raw_candidates.append(
+                self.manager.layout.get("gaia_max_concurrent_requests")
+            )
+        except Exception:
+            pass
+        try:
+            raw_candidates.append(
+                get_config_value("gaia_max_concurrent_requests", 2)
+            )
+        except Exception:
+            pass
+        raw_candidates.append(2)
+
+        for raw_value in raw_candidates:
+            try:
+                parsed_value = int(raw_value)
+                if parsed_value > 0:
+                    return int(max(1, min(8, parsed_value)))
+            except Exception:
+                continue
+        return 2
 
     def _gaia_tap_log_hint(self) -> str:
         path = self._gaia_tap_log_path
@@ -604,53 +968,86 @@ class AssetOnboardingDialog(QDialog):
         state = self._load_gaia_tap_state()
         if not isinstance(state, dict):
             return
+        # Flux nou per teseles: tancar quan la tesela general ja existeix.
+        if "general_tile_done" in state or "deep_tiles" in state:
+            if not bool(state.get("general_tile_done", False)):
+                return
+            output_dir_raw = str(
+                state.get("output_dir", "")
+                or self.manager.layout.get("data_gaia", "")
+            ).strip()
+            if not output_dir_raw:
+                return
+            output_dir = Path(output_dir_raw).expanduser()
+            tile_all_path = output_dir / "tile_all.npz"
+            if not tile_all_path.exists() or (not tile_all_path.is_file()):
+                return
+            if tile_all_path.stat().st_size <= 0:
+                return
+            try:
+                with np.load(tile_all_path, allow_pickle=False) as tile_npz:
+                    if "ra" in tile_npz:
+                        row_count = int(len(tile_npz["ra"]))
+                    elif "RA" in tile_npz:
+                        row_count = int(len(tile_npz["RA"]))
+                    else:
+                        row_count = 0
+                if row_count <= 0:
+                    return
+            except Exception:
+                return
+
+            self._gaia_visible_ready = True
+            self._completed = True
+            self._detach_gaia_tap_process_for_background()
+            self.progress.setRange(0, 100)
+            pct_val = self._state_progress_percent(state)
+            self.progress.setValue(max(0, min(100, int(round(pct_val)))))
+            self.lbl_status.setText(
+                "Tesela general preparada. Es continua descarregant en segon pla..."
+            )
+            self.accept()
+            return
+
+        # Flux legacy TAP: manté compatibilitat.
         if not bool(state.get("visible_ready", False)):
             return
         output_dir = Path(str(state.get("output_dir", "") or "")).expanduser()
-        basename = str(state.get("basename", "stars_catalog") or "stars_catalog").strip() or "stars_catalog"
+        basename = (
+            str(state.get("basename", "stars_catalog") or "stars_catalog").strip()
+            or "stars_catalog"
+        )
         candidates = (
             output_dir / f"{basename}.npy",
             output_dir / f"{basename}.npz",
             output_dir / f"{basename}.zst",
         )
         visible_catalog_path = next((p for p in candidates if p.exists() and p.is_file()), None)
-        if visible_catalog_path is None:
+        if visible_catalog_path is None or visible_catalog_path.stat().st_size <= 0:
             return
-        if visible_catalog_path.stat().st_size <= 0:
-            return
-        if str(visible_catalog_path.suffix).lower() in {".npy", ".npz"}:
-            try:
-                if visible_catalog_path.suffix.lower() == ".npy":
-                    arr = np.load(visible_catalog_path, mmap_mode="r", allow_pickle=False)
-                    rows = int(len(arr))
-                else:
-                    with np.load(visible_catalog_path, allow_pickle=False) as data:
-                        if "ra" in data:
-                            rows = int(len(data["ra"]))
-                        elif "RA" in data:
-                            rows = int(len(data["RA"]))
-                        else:
-                            rows = 0
-                if rows <= 0:
-                    return
-            except Exception:
-                return
+
         self._gaia_visible_ready = True
         self._completed = True
         self._detach_gaia_tap_process_for_background()
         self.progress.setRange(0, 100)
-        try:
-            pct_val = float(state.get("progress_percent", 0.0) or 0.0)
-        except Exception:
-            pct_val = 0.0
+        pct_val = self._state_progress_percent(state)
         self.progress.setValue(max(0, min(100, int(round(pct_val)))))
-        self.lbl_status.setText("Cataleg visible preparat. Es continua descarregant en segon pla...")
+        self.lbl_status.setText(
+            "Cataleg visible preparat. Es continua descarregant en segon pla..."
+        )
         self.accept()
 
     def _append_gaia_tap_log_line(self, line: str) -> None:
         text = str(line or "").rstrip("\r\n")
         if not text:
             return
+        try:
+            if self._gaia_tap_log_path is not None:
+                self._gaia_tap_log_path.parent.mkdir(parents=True, exist_ok=True)
+                with self._gaia_tap_log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(text + "\n")
+        except Exception:
+            pass
         self.txt_process_log.append(text)
         self.lbl_status.setText(text)
 
@@ -664,7 +1061,9 @@ class AssetOnboardingDialog(QDialog):
             except Exception:
                 pass
 
-        m2 = re.search(r"\[gaia-tap\]\s+download\s+([0-9]+(?:\.[0-9]+)?)%", text)
+        m2 = re.search(
+            r"\[gaia-tap\]\s+download\s+([0-9]+(?:\.[0-9]+)?)%", text
+        )
         if m2 and self.progress.maximum() == 0:
             try:
                 pct2 = max(0, min(100, int(round(float(m2.group(1)) * 0.75))))
@@ -673,15 +1072,24 @@ class AssetOnboardingDialog(QDialog):
             except Exception:
                 pass
 
-        m3 = re.search(r"\[gaia-progress\]\s+([0-9]+(?:\.[0-9]+)?)%", text)
+        m3 = re.search(
+            r"\[gaia-progress\]\s+([0-9]+(?:\.[0-9]+)?)%\s*(.*)$",
+            text,
+        )
         if m3:
             try:
                 pct3 = max(0, min(100, int(round(float(m3.group(1))))))
                 if self.progress.maximum() == 0:
                     self.progress.setRange(0, 100)
                 self.progress.setValue(pct3)
-                status = getTraduction("Onboarding.DownloadingStars", "Descarregant estrelles...")
-                self.lbl_status.setText(f"{status} ({pct3}%)")
+                msg_text = str(m3.group(2) or "").strip()
+                if msg_text:
+                    self.lbl_status.setText(f"{msg_text} ({pct3}%)")
+                else:
+                    status = getTraduction(
+                        "Onboarding.DownloadingStars", "Descarregant estrelles..."
+                    )
+                    self.lbl_status.setText(f"{status} ({pct3}%)")
             except Exception:
                 pass
 
@@ -692,7 +1100,9 @@ class AssetOnboardingDialog(QDialog):
         proc = self._gaia_tap_process
         if proc is None:
             return
-        chunk = bytes(proc.readAllStandardOutput()).decode("utf-8", errors="replace")
+        chunk = bytes(proc.readAllStandardOutput()).decode(
+            "utf-8", errors="replace"
+        )
         if not chunk:
             return
         merged = self._gaia_tap_out_buffer + chunk
@@ -703,13 +1113,16 @@ class AssetOnboardingDialog(QDialog):
             self._append_gaia_tap_log_line(line)
         self._maybe_close_after_visible_ready()
 
-    def _on_gaia_tap_finished(self, exit_code: int, exit_status: QProcess.ExitStatus):
+    def _on_gaia_tap_finished(
+        self, exit_code: int, exit_status: QProcess.ExitStatus
+    ):
         if self._gaia_tap_out_buffer:
             self._append_gaia_tap_log_line(self._gaia_tap_out_buffer)
             self._gaia_tap_out_buffer = ""
         log_hint = self._gaia_tap_log_hint()
         state = self._load_gaia_tap_state()
         self._cleanup_gaia_tap_process()
+        self.btn_cancel.setVisible(False)
 
         self.progress.setRange(0, 100)
         ok = (
@@ -720,12 +1133,12 @@ class AssetOnboardingDialog(QDialog):
         if ok:
             self.progress.setValue(100)
             self._completed = True
-            self.lbl_status.setText("Cataleg Gaia preparat correctament.")
+            self.lbl_status.setText("Dades Gaia preparades correctament.")
             QMessageBox.information(
                 self,
                 "TerraLab",
-                "Importacio Gaia completada.\n\n"
-                "Les dades ja son dins la carpeta de TerraLab.\n"
+                "Preparacio Gaia completada.\n\n"
+                f"Les dades ja són dins la biblioteca {self.manager.library.root}.\n"
                 "Si vols, ja pots esborrar el fitxer original.\n\n"
                 f"{log_hint}",
             )
@@ -734,28 +1147,35 @@ class AssetOnboardingDialog(QDialog):
 
         self.btn_open_source.setEnabled(True)
         self.btn_attach.setEnabled(True)
+        self.btn_attach_folder.setEnabled(True)
         self.btn_close.setEnabled(True)
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         pct_hint = ""
         if isinstance(state, dict):
             try:
-                pct_val = float(state.get("progress_percent", 0.0) or 0.0)
-                pct_hint = f"\nProgres guardat: {pct_val:.1f}% (es pot reprendre)."
+                pct_val = self._state_progress_percent(state)
+                pct_hint = (
+                    f"\nProgres guardat: {pct_val:.1f}% (es pot reprendre)."
+                )
             except Exception:
                 pct_hint = ""
-        self.lbl_status.setText("Gaia TAP ha finalitzat, pero no s'ha detectat un cataleg valid.")
-        status_name = "normal" if exit_status == QProcess.NormalExit else "crash"
+        self.lbl_status.setText(
+            "La descarrega Gaia ha finalitzat, pero no s'ha detectat un cataleg valid."
+        )
+        status_name = (
+            "normal" if exit_status == QProcess.NormalExit else "crash"
+        )
         QMessageBox.warning(
             self,
             "TerraLab",
-            "El proces TAP ha acabat, pero TerraLab no troba el cataleg Gaia preparat.\n"
+            "El proces Gaia ha acabat, pero TerraLab no troba el cataleg Gaia preparat.\n"
             f"Exit code: {int(exit_code)} ({status_name}).\n"
             f"{log_hint}{pct_hint}",
         )
 
     def _on_gaia_tap_error(self, _error):
         proc = self._gaia_tap_process
-        err_txt = "Error executant Gaia TAP."
+        err_txt = "Error executant la descarrega Gaia."
         if proc is not None:
             try:
                 err_txt = str(proc.errorString() or err_txt)
@@ -763,12 +1183,14 @@ class AssetOnboardingDialog(QDialog):
                 pass
         log_hint = self._gaia_tap_log_hint()
         self._cleanup_gaia_tap_process()
+        self.btn_cancel.setVisible(False)
         self.progress.setRange(0, 100)
         self.btn_open_source.setEnabled(True)
         self.btn_attach.setEnabled(True)
+        self.btn_attach_folder.setEnabled(True)
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         self.btn_close.setEnabled(True)
-        self.lbl_status.setText("Error en Gaia TAP.")
+        self.lbl_status.setText("Error en descarrega Gaia.")
         QMessageBox.critical(self, "TerraLab", f"{err_txt}\n\n{log_hint}")
 
     def _collect_options(self) -> dict:
@@ -778,9 +1200,12 @@ class AssetOnboardingDialog(QDialog):
             }
         return {}
 
-    def _start_job(self, mode: str, files: Iterable[str], options: Optional[dict] = None):
+    def _start_job(
+        self, mode: str, files: Iterable[str], options: Optional[dict] = None
+    ):
         self.btn_open_source.setEnabled(False)
         self.btn_attach.setEnabled(False)
+        self.btn_attach_folder.setEnabled(False)
         self.btn_auto_download.setEnabled(False)
         self.btn_close.setEnabled(False)
         self.progress.setRange(0, 100)
@@ -808,6 +1233,30 @@ class AssetOnboardingDialog(QDialog):
         self._worker = worker
         thread.start()
 
+    def _cancel_job(self) -> None:
+        process = getattr(self, "_gaia_tap_process", None)
+        if process is not None and process.state() != QProcess.NotRunning:
+            self.btn_cancel.setEnabled(False)
+            self.lbl_status.setText(
+                "Cancel·lant Gaia… El progrés i les descàrregues parcials es conservaran."
+            )
+            process.terminate()
+
+            def force_stop(proc=process) -> None:
+                if proc.state() != QProcess.NotRunning:
+                    proc.kill()
+
+            QTimer.singleShot(3000, force_stop)
+            return
+        worker = getattr(self, "_worker", None)
+        if worker is None:
+            return
+        worker.cancel()
+        self.btn_cancel.setEnabled(False)
+        self.lbl_status.setText(
+            "Cancel·lant… La descàrrega parcial es conservarà per reprendre-la."
+        )
+
     def _on_progress(self, percent: float, message: str):
         pct = float(percent)
         if pct < 0.0:
@@ -823,12 +1272,31 @@ class AssetOnboardingDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self._completed = True
+        self.btn_cancel.setVisible(False)
         self.lbl_status.setText("Dades preparades correctament.")
         self.btn_close.setEnabled(True)
+        extra = ""
+        if isinstance(result, dict) and self.asset_id == "elevation_dem":
+            observer_auto = result.get("observer_auto", {})
+            if isinstance(observer_auto, dict) and bool(
+                observer_auto.get("applied", False)
+            ):
+                try:
+                    lat = float(observer_auto.get("lat"))
+                    lon = float(observer_auto.get("lon"))
+                    tz = str(observer_auto.get("timezone", "") or "").strip()
+                    tz_suffix = f" ({tz})" if tz else ""
+                    extra = (
+                        "\n\nUbicacio detectada automaticament del DEM:\n"
+                        f"lat={lat:.6f}, lon={lon:.6f}{tz_suffix}"
+                    )
+                except Exception:
+                    extra = ""
         msg = (
             "Importacio completada.\n\n"
-            "Les dades ja son dins la carpeta de TerraLab.\n"
-            "Si vols, ja pots esborrar el fitxer original que has adjuntat."
+            f"Els derivats o la còpia administrada són a {self.manager.library.root}.\n"
+            "Les fonts enllaçades continuen a la seva ubicació original."
+            + extra
         )
         QMessageBox.information(self, "TerraLab", msg)
         self.accept()
@@ -836,13 +1304,28 @@ class AssetOnboardingDialog(QDialog):
     def _on_failed(self, error_message: str):
         self.btn_open_source.setEnabled(True)
         self.btn_attach.setEnabled(True)
+        self.btn_attach_folder.setEnabled(True)
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         self.btn_close.setEnabled(True)
+        self.btn_cancel.setVisible(False)
         self.progress.setRange(0, 100)
-        self.lbl_status.setText("Error durant la preparacio de dades.")
-        QMessageBox.critical(self, "TerraLab", str(error_message))
+        if "cancel" in str(error_message).lower():
+            self.lbl_status.setText("Tasca cancel·lada; es podrà reprendre.")
+            QMessageBox.information(self, "TerraLab", str(error_message))
+        else:
+            self.lbl_status.setText("Error durant la preparacio de dades.")
+            QMessageBox.critical(self, "TerraLab", str(error_message))
 
     def reject(self):
+        """Executa el metode reject de la classe AssetOnboardingDialog.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
+        self._stop_gaia_state_watch_timer()
         proc = self._gaia_tap_process
         if proc is not None:
             try:
@@ -860,7 +1343,9 @@ class AssetOnboardingDialog(QDialog):
 class WelcomeOnboardingDialog(QDialog):
     """First-run product onboarding with optional per-asset setup."""
 
-    def __init__(self, manager: AssetManager, parent=None, *, mandatory: bool = False):
+    def __init__(
+        self, manager: AssetManager, parent=None, *, mandatory: bool = False
+    ):
         super().__init__(parent)
         self.manager = manager
         self._mandatory = bool(mandatory)
@@ -945,6 +1430,9 @@ class WelcomeOnboardingDialog(QDialog):
         return page
 
     def _build_data_page(self) -> QWidget:
+        from TerraLab.data.layer_manager import LayerManager
+        from TerraLab.ui.layer_configurator import LayerConfiguratorWidget
+
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(10)
@@ -958,66 +1446,38 @@ class WelcomeOnboardingDialog(QDialog):
         title = QLabel("Preparacio de dades")
         title.setObjectName("titleLabel")
         subtitle = QLabel(
-            "Aquest pas replica els mini-assistents de cada capa. "
-            "Pots preparar-ho ara o ometre-ho i fer-ho mes tard."
+            "Configura la visibilitat, les fonts pròpies i les descàrregues de les nou capes. "
+            "També trobaràs aquest mateix gestor durant l'ús normal."
         )
         subtitle.setWordWrap(True)
         panel_layout.addWidget(title)
         panel_layout.addWidget(subtitle)
 
-        for asset_id in self.manager.onboarding_asset_order():
-            spec = self.manager.get_spec(asset_id)
-            row = QFrame()
-            row.setObjectName("assetRow")
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(10, 10, 10, 10)
-            row_layout.setSpacing(8)
-
-            text_box = QVBoxLayout()
-            text_box.setSpacing(2)
-            lbl_title = QLabel(spec.title)
-            f = lbl_title.font()
-            f.setBold(True)
-            lbl_title.setFont(f)
-            lbl_meta = QLabel(f"{spec.accepted_formats} | Credits: {spec.credits}")
-            lbl_meta.setObjectName("subtitleLabel")
-            lbl_meta.setWordWrap(True)
-            text_box.addWidget(lbl_title)
-            text_box.addWidget(lbl_meta)
-            row_layout.addLayout(text_box, 1)
-
-            status_lbl = QLabel("")
-            status_lbl.setMinimumWidth(95)
-            status_lbl.setAlignment(Qt.AlignCenter)
-            self._asset_status_labels[asset_id] = status_lbl
-            row_layout.addWidget(status_lbl)
-
-            btn_source = QPushButton("Font")
-            btn_source.clicked.connect(lambda _=False, url=spec.source_url: QDesktopServices.openUrl(QUrl(url)))
-            row_layout.addWidget(btn_source)
-
-            btn_run = QPushButton("Configurar")
-            btn_run.clicked.connect(lambda _=False, aid=asset_id: self._run_asset_wizard(aid))
-            self._asset_run_buttons[asset_id] = btn_run
-            row_layout.addWidget(btn_run)
-
-            panel_layout.addWidget(row)
-
-        panel_layout.addStretch(1)
+        self.layer_configurator = LayerConfiguratorWidget(
+            LayerManager(self.manager), panel
+        )
+        panel_layout.addWidget(self.layer_configurator, 1)
         layout.addWidget(panel, 1)
         return page
 
     def _refresh_asset_statuses(self) -> None:
+        configurator = getattr(self, "layer_configurator", None)
+        if configurator is not None:
+            configurator.refresh()
         for asset_id, label in self._asset_status_labels.items():
             ready = bool(self.manager.asset_ready(asset_id))
             label.setText("Preparat" if ready else "Pendent")
-            label.setObjectName("assetStatusOk" if ready else "assetStatusMissing")
+            label.setObjectName(
+                "assetStatusOk" if ready else "assetStatusMissing"
+            )
             label.style().unpolish(label)
             label.style().polish(label)
 
     def _run_asset_wizard(self, asset_id: str) -> None:
         dlg = AssetOnboardingDialog(self.manager, asset_id, self)
-        ok = dlg.exec_() == QDialog.Accepted and bool(getattr(dlg, "completed", False))
+        ok = dlg.exec_() == QDialog.Accepted and bool(
+            getattr(dlg, "completed", False)
+        )
         if ok:
             self._refresh_asset_statuses()
 
@@ -1040,7 +1500,9 @@ class WelcomeOnboardingDialog(QDialog):
     def _skip_data_step(self):
         if self.pages.currentIndex() != self._data_page_index:
             return
-        self.pages.setCurrentIndex(min(self.pages.count() - 1, self._data_page_index + 1))
+        self.pages.setCurrentIndex(
+            min(self.pages.count() - 1, self._data_page_index + 1)
+        )
         self._refresh_nav()
 
     def _next(self):
@@ -1054,6 +1516,14 @@ class WelcomeOnboardingDialog(QDialog):
         self.accept()
 
     def reject(self):
+        """Executa el metode reject de la classe WelcomeOnboardingDialog.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         if self._mandatory:
             return
         super().reject()

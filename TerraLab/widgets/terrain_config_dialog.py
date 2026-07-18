@@ -1,24 +1,35 @@
-
 # Diàleg de configuració del terreny (MDT/DEM) per a TerraLab.
 # Gestiona la selecció de la carpeta de dades, la qualitat de l'horitzó
 # i ofereix enllaços de descàrrega als principals repositoris de MDT públics.
 
 import os
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton,
-                             QFileDialog, QHBoxLayout, QMessageBox, QComboBox)
+
 from PyQt5.QtCore import Qt, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtWidgets import (
+    QComboBox,
+    QCheckBox,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QDoubleSpinBox,
+    QFormLayout,
+    QVBoxLayout,
+)
 
-from TerraLab.config import ConfigManager
 from TerraLab.common.utils import getTraduction
-
+from TerraLab.config import ConfigManager
+from TerraLab.terrain.visibility_range import resolve_visibility_range
 
 # Presets de qualitat de l'horitzó: (clau de traducció, nombre de capes)
 QUALITY_PRESETS = [
-    ("Horizon.QualityLow",     10),
-    ("Horizon.QualityNormal",  20),
-    ("Horizon.QualityHigh",    40),
-    ("Horizon.QualityUltra",   60),
+    ("Horizon.QualityLow", 10),
+    ("Horizon.QualityNormal", 20),
+    ("Horizon.QualityHigh", 40),
+    ("Horizon.QualityUltra", 60),
     ("Horizon.QualityExtreme", 80),
 ]
 
@@ -36,7 +47,11 @@ class TerrainConfigDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(getTraduction("Terrain.ConfigTitle", "Configuració de Mapes Topogràfics"))
+        self.setWindowTitle(
+            getTraduction(
+                "Terrain.ConfigTitle", "Configuració de Mapes Topogràfics"
+            )
+        )
         self.resize(560, 440)
         self.setModal(True)
         self.config = ConfigManager()
@@ -45,7 +60,11 @@ class TerrainConfigDialog(QDialog):
         layout.setSpacing(14)
 
         # ── Títol ────────────────────────────────────────────────────────────
-        lbl_title = QLabel(getTraduction("Terrain.ConfigTitle", "Configuració de Mapes Topogràfics"))
+        lbl_title = QLabel(
+            getTraduction(
+                "Terrain.ConfigTitle", "Configuració de Mapes Topogràfics"
+            )
+        )
         font = lbl_title.font()
         font.setPointSize(12)
         font.setBold(True)
@@ -54,19 +73,25 @@ class TerrainConfigDialog(QDialog):
         layout.addWidget(lbl_title)
 
         # ── Descripció general ───────────────────────────────────────────────
-        lbl_desc = QLabel(getTraduction(
-            "Terrain.ConfigDesc",
-            "TerraLab necessita dades d'elevació (MDT) per generar l'horitzó real.\n"
-            "Si no en disposes, s'utilitzarà un paisatge generat proceduralment.\n\n"
-            "Formats suportats: .asc (ESRI ASCII Grid) o .tif (GeoTIFF)."
-        ))
+        lbl_desc = QLabel(
+            getTraduction(
+                "Terrain.ConfigDesc",
+                "TerraLab necessita dades d'elevació (MDT) per generar l'horitzó real.\n"
+                "Si no en disposes, s'utilitzarà un paisatge generat proceduralment.\n\n"
+                "Formats suportats: .asc (ESRI ASCII Grid) o .tif (GeoTIFF).",
+            )
+        )
         lbl_desc.setWordWrap(True)
         layout.addWidget(lbl_desc)
 
         # ── Enllaços de descàrrega ───────────────────────────────────────────
 
         # Enllaç ICGC (Catalunya)
-        btn_icgc = QPushButton(getTraduction("Terrain.DownloadICGC", "Descarregar MDT de Catalunya (ICGC)"))
+        btn_icgc = QPushButton(
+            getTraduction(
+                "Terrain.DownloadICGC", "Descarregar MDT de Catalunya (ICGC)"
+            )
+        )
         btn_icgc.setCursor(Qt.PointingHandCursor)
         btn_icgc.setStyleSheet(
             "text-align: left; color: #4facfe; text-decoration: underline; "
@@ -77,58 +102,79 @@ class TerrainConfigDialog(QDialog):
 
         # Enllaç Copernicus (Europa)
         btn_copernicus = QPushButton(
-            getTraduction("Terrain.DownloadCopernicus", "Descarregar DEM d'Europa (Copernicus / GISCO-EU)")
+            getTraduction(
+                "Terrain.DownloadCopernicus",
+                "Descarregar DEM d'Europa (Copernicus / GISCO-EU)",
+            )
         )
         btn_copernicus.setCursor(Qt.PointingHandCursor)
         btn_copernicus.setStyleSheet(
             "text-align: left; color: #4facfe; text-decoration: underline; "
             "background: transparent; border: none;"
         )
-        btn_copernicus.setToolTip(getTraduction(
-            "Terrain.DownloadCopernicusTooltip",
-            "El DEM europeu de 25m de resolució del projecte Copernicus/GISCO "
-            "cobreix tot el continent. Disponible per descàrrega lliure en fitxers de 5×5 graus."
-        ))
+        btn_copernicus.setToolTip(
+            getTraduction(
+                "Terrain.DownloadCopernicusTooltip",
+                "El DEM europeu de 25m de resolució del projecte Copernicus/GISCO "
+                "cobreix tot el continent. Disponible per descàrrega lliure en fitxers de 5×5 graus.",
+            )
+        )
         btn_copernicus.clicked.connect(self._open_copernicus_link)
         layout.addWidget(btn_copernicus)
 
         # Nota per a la resta del món
-        lbl_world = QLabel(getTraduction(
-            "Terrain.DownloadWorld",
-            "ℹ Per a altres regions del món, consulteu l'agència cartogràfica del vostre país "
-            "(p. ex. USGS, IGN, OS, BKG…)."
-        ))
+        lbl_world = QLabel(
+            getTraduction(
+                "Terrain.DownloadWorld",
+                "ℹ Per a altres regions del món, consulteu l'agència cartogràfica del vostre país "
+                "(p. ex. USGS, IGN, OS, BKG…).",
+            )
+        )
         lbl_world.setStyleSheet("color: #aaa; font-style: italic;")
         lbl_world.setWordWrap(True)
         layout.addWidget(lbl_world)
 
         # ── Recomanació de cobertura ─────────────────────────────────────────
-        lbl_rec = QLabel(getTraduction(
-            "Terrain.Recommendation",
-            "ℹ Recomanació: Descarregueu almenys 150km a la redona en fitxers "
-            "trossejats (5×5° o similar)."
-        ))
+        lbl_rec = QLabel(
+            getTraduction(
+                "Terrain.Recommendation",
+                "ℹ Recomanació: useu fitxers trossejats (5×5° o similar); "
+                "la cobertura necessària depèn de l'abast resolt.",
+            )
+        )
         lbl_rec.setStyleSheet("color: #aaa; font-style: italic;")
         lbl_rec.setWordWrap(True)
         layout.addWidget(lbl_rec)
 
         # ── Ruta actual ──────────────────────────────────────────────────────
         self.lbl_path = QLabel("")
-        self.lbl_path.setStyleSheet("background: #222; padding: 8px; border-radius: 4px; color: #ddd;")
+        self.lbl_path.setStyleSheet(
+            "background: #222; padding: 8px; border-radius: 4px; color: #ddd;"
+        )
         self.lbl_path.setWordWrap(True)
         self._update_path_label()
         layout.addWidget(self.lbl_path)
 
         # ── Contaminació Lumínica (DVNL) ─────────────────────────────────────
-        layout.addWidget(QLabel("<b>" + getTraduction("Terrain.LightPollution", "Contaminació Lumínica (DVNL)") + "</b>"))
-        
+        layout.addWidget(
+            QLabel(
+                "<b>"
+                + getTraduction(
+                    "Terrain.LightPollution", "Contaminació Lumínica (DVNL)"
+                )
+                + "</b>"
+            )
+        )
+
         lp_layout = QHBoxLayout()
         self.lbl_lp_path = QLabel("")
-        self.lbl_lp_path.setStyleSheet("background: #222; padding: 8px; border-radius: 4px; color: #ddd;")
+        self.lbl_lp_path.setStyleSheet(
+            "background: #222; padding: 8px; border-radius: 4px; color: #ddd;"
+        )
         self.lbl_lp_path.setWordWrap(True)
         self._update_lp_path_label()
         lp_layout.addWidget(self.lbl_lp_path, 1)
-        
+
         btn_select_lp = QPushButton("...")
         btn_select_lp.setFixedSize(30, 30)
         btn_select_lp.clicked.connect(self._select_lp_file)
@@ -138,11 +184,13 @@ class TerrainConfigDialog(QDialog):
         # ── Qualitat de l'horitzó ────────────────────────────────────────────
         quality_row = QHBoxLayout()
 
-        lbl_quality = QLabel(getTraduction("Horizon.QualityLabel", "Qualitat de l'horitzó:"))
+        lbl_quality = QLabel(
+            getTraduction("Horizon.QualityLabel", "Qualitat de l'horitzó:")
+        )
         tooltip_quality = getTraduction(
             "Horizon.QualityTooltip",
             "Nombre de capes de profunditat del terreny.\n"
-            "Més capes = millor gradient visual, major temps de càlcul inicial."
+            "Més capes = millor gradient visual, major temps de càlcul inicial.",
         )
         lbl_quality.setToolTip(tooltip_quality)
         quality_row.addWidget(lbl_quality)
@@ -159,24 +207,64 @@ class TerrainConfigDialog(QDialog):
                 selected_idx = i
 
         self.combo_quality.setCurrentIndex(selected_idx)
-        self.combo_quality.currentIndexChanged.connect(self._on_quality_changed)
+        self.combo_quality.currentIndexChanged.connect(
+            self._on_quality_changed
+        )
         quality_row.addWidget(self.combo_quality)
         quality_row.addStretch()
         layout.addLayout(quality_row)
 
-        lbl_quality_note = QLabel(getTraduction(
-            "Horizon.QualityNote",
-            "📝 El canvi s'aplica al proper càlcul de l'horitzó (\"Regenerar\")."
-        ))
+        lbl_quality_note = QLabel(
+            getTraduction(
+                "Horizon.QualityNote",
+                "📝 El canvi s'aplica al proper càlcul de l'horitzó (\"Regenerar\").",
+            )
+        )
         lbl_quality_note.setStyleSheet("color: #888; font-size: 11px;")
         layout.addWidget(lbl_quality_note)
+
+        range_settings = self.config.get_terrain_range_settings()
+        range_form = QFormLayout()
+        self.combo_range_mode = QComboBox()
+        self.combo_range_mode.addItem(getTraduction("Terrain.RangeAuto", "Automàtic"), "auto")
+        self.combo_range_mode.addItem(getTraduction("Terrain.RangeManual", "Manual"), "manual")
+        self.combo_range_mode.setCurrentIndex(1 if range_settings.mode == "manual" else 0)
+        range_form.addRow(getTraduction("Terrain.RangeMode", "Abast topogràfic:"), self.combo_range_mode)
+
+        self.spin_manual_radius = QDoubleSpinBox()
+        self.spin_manual_radius.setRange(1.0, 530.0)
+        self.spin_manual_radius.setSuffix(" km")
+        self.spin_manual_radius.setValue(range_settings.manual_radius_km)
+        range_form.addRow(getTraduction("Terrain.ManualRadius", "Radi manual:"), self.spin_manual_radius)
+
+        self.check_refraction = QCheckBox(getTraduction("Terrain.Refraction", "Refracció atmosfèrica (7/6 R)"))
+        self.check_refraction.setChecked(range_settings.atmospheric_refraction_enabled)
+        range_form.addRow("", self.check_refraction)
+
+        self.spin_target_elevation = QDoubleSpinBox()
+        self.spin_target_elevation.setRange(0.0, 12_000.0)
+        self.spin_target_elevation.setSuffix(" m")
+        self.spin_target_elevation.setValue(range_settings.target_max_elevation_m)
+        range_form.addRow(getTraduction("Terrain.TargetElevation", "Elevació objectiu màxima:"), self.spin_target_elevation)
+        self.lbl_resolved_radius = QLabel()
+        range_form.addRow(getTraduction("Terrain.ResolvedRadius", "Radi resolt estimat:"), self.lbl_resolved_radius)
+        layout.addLayout(range_form)
+
+        self.combo_range_mode.currentIndexChanged.connect(self._on_range_settings_changed)
+        self.spin_manual_radius.valueChanged.connect(self._on_range_settings_changed)
+        self.check_refraction.toggled.connect(self._on_range_settings_changed)
+        self.spin_target_elevation.valueChanged.connect(self._on_range_settings_changed)
+        self._on_range_settings_changed()
 
         # ── Botons d'acció ───────────────────────────────────────────────────
         btn_layout = QHBoxLayout()
 
-        btn_select = QPushButton(getTraduction("Terrain.SelectFolder", "Seleccionar Carpeta DEM..."))
+        btn_select = QPushButton(
+            getTraduction("Terrain.SelectFolder", "Seleccionar Carpeta DEM...")
+        )
         btn_select.clicked.connect(self._select_folder)
-        btn_select.setStyleSheet("""
+        btn_select.setStyleSheet(
+            """
             QPushButton {
                 background-color: #4facfe;
                 color: white;
@@ -187,7 +275,8 @@ class TerrainConfigDialog(QDialog):
             QPushButton:hover {
                 background-color: #00f2fe;
             }
-        """)
+        """
+        )
 
         btn_close = QPushButton(getTraduction("Terrain.CloseButton", "Tancar"))
         btn_close.clicked.connect(self.accept)
@@ -200,7 +289,9 @@ class TerrainConfigDialog(QDialog):
         # ── Estat inicial de la ruta ─────────────────────────────────────────
         curr = self.config.get_raster_path()
         if curr:
-            tpl = getTraduction("Terrain.CurrentPathSet", "Ruta actual: {path}")
+            tpl = getTraduction(
+                "Terrain.CurrentPathSet", "Ruta actual: {path}"
+            )
             self.lbl_path.setText(tpl.format(path=curr))
 
     # ── Mètodes privats ──────────────────────────────────────────────────────
@@ -208,10 +299,51 @@ class TerrainConfigDialog(QDialog):
     def _update_path_label(self):
         curr = self.config.get_raster_path()
         if curr:
-            tpl = getTraduction("Terrain.CurrentPathSet", "Ruta actual: {path}")
+            tpl = getTraduction(
+                "Terrain.CurrentPathSet", "Ruta actual: {path}"
+            )
             self.lbl_path.setText(tpl.format(path=curr))
         else:
-            self.lbl_path.setText(getTraduction("Terrain.CurrentPath", "Ruta actual: (No configurada)"))
+            self.lbl_path.setText(
+                getTraduction(
+                    "Terrain.CurrentPath", "Ruta actual: (No configurada)"
+                )
+            )
+
+    def _on_range_settings_changed(self, *_args):
+        from TerraLab.terrain.visibility_range import TerrainRangeSettings
+
+        previous = self.config.get_terrain_range_settings()
+        settings = TerrainRangeSettings(
+            mode=str(self.combo_range_mode.currentData()),
+            manual_radius_km=float(self.spin_manual_radius.value()),
+            minimum_radius_km=previous.minimum_radius_km,
+            maximum_radius_km=previous.maximum_radius_km,
+            target_max_elevation_m=float(self.spin_target_elevation.value()),
+            atmospheric_refraction_enabled=bool(self.check_refraction.isChecked()),
+            effective_earth_radius_factor=previous.effective_earth_radius_factor,
+            immediate_preload_radius_km=previous.immediate_preload_radius_km,
+        ).validated()
+        self.spin_manual_radius.setEnabled(settings.mode == "manual")
+        observer_elevation = 0.0
+        suffix = ""
+        if settings.mode == "auto":
+            try:
+                ground = self.parent().horizon_worker.get_bare_elevation(
+                    float(self.parent().latitude), float(self.parent().longitude)
+                )
+                if ground is None:
+                    raise ValueError("observer elevation unavailable")
+                observer_elevation = (
+                    float(ground)
+                    + float(self.parent().horizon_worker.observer_offset)
+                    + 1.7
+                )
+            except Exception:
+                suffix = getTraduction("Terrain.RangeEstimateNote", " (a nivell del mar)")
+        estimate = resolve_visibility_range(settings, observer_elevation_m=observer_elevation)
+        self.lbl_resolved_radius.setText(f"{estimate.resolved_radius_m / 1000.0:.1f} km{suffix}")
+        self.config.set_terrain_range_settings(settings)
 
     def _update_lp_path_label(self):
         # We'll use a custom key for DVNL in ConfigManager
@@ -219,12 +351,18 @@ class TerrainConfigDialog(QDialog):
         if curr:
             self.lbl_lp_path.setText(f"DVNL: {os.path.basename(curr)}")
         else:
-            self.lbl_lp_path.setText("DVNL: (No configurada - Usant fallback interna)")
+            self.lbl_lp_path.setText(
+                "DVNL: (No configurada - Usant fallback interna)"
+            )
 
     def _select_lp_file(self):
         """Obre un diàleg per seleccionar el fitxer GeoTIFF de DVNL."""
-        dialog_title = getTraduction("Terrain.SelectLPFile", "Seleccionar fitxer DVNL (.tif)")
-        file_path, _ = QFileDialog.getOpenFileName(self, dialog_title, "", "GeoTIFF (*.tif *.tiff)")
+        dialog_title = getTraduction(
+            "Terrain.SelectLPFile", "Seleccionar fitxer DVNL (.tif)"
+        )
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, dialog_title, "", "GeoTIFF (*.tif *.tiff)"
+        )
         if file_path:
             self.config.set_value("dvnl_path", file_path)
             self._update_lp_path_label()
@@ -232,23 +370,29 @@ class TerrainConfigDialog(QDialog):
 
     def _select_folder(self):
         """Obre un diàleg per seleccionar la carpeta dels fitxers MDT."""
-        dialog_title = getTraduction("Terrain.SelectFolderDialog", "Seleccionar carpeta amb fitxers .asc o .tif")
+        dialog_title = getTraduction(
+            "Terrain.SelectFolderDialog",
+            "Seleccionar carpeta amb fitxers .asc o .tif",
+        )
         folder = QFileDialog.getExistingDirectory(self, dialog_title)
         if folder:
             # Comprova si la carpeta conté fitxers compatibles
             has_valid = any(
-                f.lower().endswith(('.asc', '.txt', '.tif', '.tiff'))
+                f.lower().endswith((".asc", ".txt", ".tif", ".tiff"))
                 for f in os.listdir(folder)
             )
             if not has_valid:
                 QMessageBox.warning(
                     self,
-                    getTraduction("Terrain.EmptyFolder", "Carpeta buida o sense DEM suportat"),
+                    getTraduction(
+                        "Terrain.EmptyFolder",
+                        "Carpeta buida o sense DEM suportat",
+                    ),
                     getTraduction(
                         "Terrain.EmptyFolderMsg",
                         "No s'han trobat arxius .asc, .txt o .tif en aquesta carpeta.\n"
-                        "Assegureu-vos de descomprimir els mapes aquí."
-                    )
+                        "Assegureu-vos de descomprimir els mapes aquí.",
+                    ),
                 )
 
             self.config.set_raster_path(folder)

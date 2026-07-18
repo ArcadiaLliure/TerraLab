@@ -1,10 +1,10 @@
 import rasterio.warp
 from rasterio.crs import CRS
 
-src_crs = CRS.from_string("EPSG:32631") 
-dst_crs = CRS.from_string("EPSG:4326")  
+src_crs = CRS.from_string("EPSG:32631")
+dst_crs = CRS.from_string("EPSG:4326")
 
-utm_x, utm_y = 479417, 4647571 
+utm_x, utm_y = 479417, 4647571
 
 # Test 1: (E, N) -> (Lon, Lat)?
 xs1, ys1 = rasterio.warp.transform(src_crs, dst_crs, [utm_x], [utm_y])

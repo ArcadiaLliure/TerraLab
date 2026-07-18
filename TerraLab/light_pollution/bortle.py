@@ -1,19 +1,20 @@
 """
 bortle.py
 
-Maps SQM readings to the Bortle Dark-Sky Scale.
+Mapeja lectures d'SQM a l'escala de cel fosc de Bortle.
 """
+
 
 def sqm_to_bortle_class(sqm: float) -> int:
     """
-    Converts a Zenith Sky Quality Meter (SQM) reading (mag/arcsec^2) 
-    to a Bortle class ranging from 1 to 9.
-    
-    Args:
-        sqm (float): The sky brightness in mag/arcsec^2.
-        
-    Returns:
-        int: The integer Bortle class (1=Excellent, 9=Inner City).
+    Converteix una lectura del Sky Quality Meter zenital (mag/arcsec^2)
+    a una classe Bortle entre 1 i 9.
+
+    Paràmetres:
+    - sqm (float): Brillantor del cel en mag/arcsec^2.
+
+    Retorna:
+    - int: Classe Bortle sencera (1 = excel·lent, 9 = centre urbà).
     """
     if sqm >= 21.99:
         return 1

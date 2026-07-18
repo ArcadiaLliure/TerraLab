@@ -1,37 +1,35 @@
 import math
-# Test the new scaling logic
 
-screen_width = 1920
-zoom = 1.0
+SCREEN_WIDTH = 1920
+ZOOM = 1.0
 
-# Copy logic from _draw_single_city_dome
-def test_dome(intensity, dist_m):
-    dist_factor = math.exp(-dist_m / 35000.0) 
-    log_intensity = math.log10(1.0 + intensity)
+
+def _compute_dome(intensity: float, dist_m: float):
+    dist_factor = math.exp(-float(dist_m) / 35000.0)
+    log_intensity = math.log10(1.0 + float(intensity))
     visual_intensity = log_intensity * dist_factor
-    
-    alpha_base = min(100, int(visual_intensity * 60 * 1.0))
+
+    alpha_base = min(100, int(visual_intensity * 60.0))
     alpha_base = int(alpha_base * 1.5)
-    
-    max_rad = screen_width * 0.4
-    rad_x = min(max_rad, log_intensity * 30.0 * zoom * dist_factor)
+
+    max_rad = SCREEN_WIDTH * 0.4
+    rad_x = min(max_rad, log_intensity * 30.0 * ZOOM * dist_factor)
     rad_y = rad_x * 0.35
-    
     return alpha_base, rad_x, rad_y
 
-peaks = [
-    (195.47, 88000),
-    (231.62, 84000),
-    (117.43, 80000),
-    (100.50, 72000),
-    (88.54, 70000),
-    (110.48, 52000),
-    (379.71, 42000),
-    (299.48, 42000),
-    (165.35, 40000),
-    (202.34, 24000)
-]
 
-for p in peaks:
-    a, rx, ry = test_dome(p[0], p[1])
-    print(f"Intensity {p[0]:.1f} @ {p[1]:.0f}m -> Alpha: {a}, RadX: {rx:.0f}px, RadY: {ry:.0f}px")
+def test_dome_scale_outputs_are_finite():
+    alpha, rx, ry = _compute_dome(200.0, 24000.0)
+    assert alpha >= 0
+    assert math.isfinite(rx)
+    assert math.isfinite(ry)
+    assert rx >= 0.0
+    assert ry >= 0.0
+
+
+def test_dome_scale_decreases_with_distance():
+    near = _compute_dome(180.0, 24000.0)
+    far = _compute_dome(180.0, 88000.0)
+    assert near[0] > far[0]
+    assert near[1] > far[1]
+    assert near[2] > far[2]

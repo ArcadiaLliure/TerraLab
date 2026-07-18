@@ -14,7 +14,6 @@ from TerraLab.widgets.spherical_math import (
     slerp_arc_points,
 )
 
-
 SkyCoord = Tuple[float, float]  # (alt_deg, az_deg)
 
 TOOL_NONE = "none"
@@ -82,12 +81,28 @@ class MeasurementController:
         return {
             "items": self._clone_items(self.items),
             "selected_index": self.selected_index,
-            "current_start": tuple(self.current_start) if self.current_start is not None else None,
-            "current_cursor": tuple(self.current_cursor) if self.current_cursor is not None else None,
-            "ruler_first_point": tuple(self.ruler_first_point) if self.ruler_first_point is not None else None,
+            "current_start": (
+                tuple(self.current_start)
+                if self.current_start is not None
+                else None
+            ),
+            "current_cursor": (
+                tuple(self.current_cursor)
+                if self.current_cursor is not None
+                else None
+            ),
+            "ruler_first_point": (
+                tuple(self.ruler_first_point)
+                if self.ruler_first_point is not None
+                else None
+            ),
             "drag_mode": str(self.drag_mode),
             "resize_handle": self.resize_handle,
-            "last_drag_sky": tuple(self.last_drag_sky) if self.last_drag_sky is not None else None,
+            "last_drag_sky": (
+                tuple(self.last_drag_sky)
+                if self.last_drag_sky is not None
+                else None
+            ),
             "active_tool": str(self.active_tool),
         }
 
@@ -98,10 +113,26 @@ class MeasurementController:
         cc = snap.get("current_cursor")
         rf = snap.get("ruler_first_point")
         ld = snap.get("last_drag_sky")
-        self.current_start = (float(cs[0]), float(cs[1])) if isinstance(cs, (tuple, list)) and len(cs) == 2 else None
-        self.current_cursor = (float(cc[0]), float(cc[1])) if isinstance(cc, (tuple, list)) and len(cc) == 2 else None
-        self.ruler_first_point = (float(rf[0]), float(rf[1])) if isinstance(rf, (tuple, list)) and len(rf) == 2 else None
-        self.last_drag_sky = (float(ld[0]), float(ld[1])) if isinstance(ld, (tuple, list)) and len(ld) == 2 else None
+        self.current_start = (
+            (float(cs[0]), float(cs[1]))
+            if isinstance(cs, (tuple, list)) and len(cs) == 2
+            else None
+        )
+        self.current_cursor = (
+            (float(cc[0]), float(cc[1]))
+            if isinstance(cc, (tuple, list)) and len(cc) == 2
+            else None
+        )
+        self.ruler_first_point = (
+            (float(rf[0]), float(rf[1]))
+            if isinstance(rf, (tuple, list)) and len(rf) == 2
+            else None
+        )
+        self.last_drag_sky = (
+            (float(ld[0]), float(ld[1]))
+            if isinstance(ld, (tuple, list)) and len(ld) == 2
+            else None
+        )
         self.drag_mode = str(snap.get("drag_mode", DRAG_NONE))
         self.resize_handle = snap.get("resize_handle")
         self.active_tool = str(snap.get("active_tool", self.active_tool))
@@ -116,6 +147,14 @@ class MeasurementController:
             self._undo_stack = self._undo_stack[-int(self._max_undo_states) :]
 
     def undo(self) -> bool:
+        """Executa el metode undo de la classe MeasurementController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         if not self._undo_stack:
             return False
         snap = self._undo_stack.pop()
@@ -123,10 +162,26 @@ class MeasurementController:
         return True
 
     def set_tool(self, tool: str) -> None:
+        """Defineix tool a la instancia de MeasurementController.
+
+        Par?metres:
+        - tool (str): Valor del parametre 'tool'.
+
+        Retorna:
+        - None.
+        """
         self.active_tool = tool
         self.cancel_current()
 
     def clear(self) -> None:
+        """Executa el metode clear de la classe MeasurementController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         if self.items:
             self._push_undo_state()
         self.items.clear()
@@ -134,6 +189,14 @@ class MeasurementController:
         self.selected_index = None
 
     def delete_selected(self) -> bool:
+        """Executa el metode delete_selected de la classe MeasurementController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         if self.selected_index is None:
             return False
         if not (0 <= self.selected_index < len(self.items)):
@@ -149,6 +212,14 @@ class MeasurementController:
         return True
 
     def cancel_current(self) -> None:
+        """Executa el metode cancel_current de la classe MeasurementController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - None.
+        """
         self.current_start = None
         self.current_cursor = None
         self.drag_mode = DRAG_NONE
@@ -158,6 +229,14 @@ class MeasurementController:
             self.ruler_first_point = None
 
     def has_active_interaction(self) -> bool:
+        """Executa el metode has_active_interaction de la classe MeasurementController.
+
+        Par?metres:
+        - Cap.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         return (
             self.current_start is not None
             or self.current_cursor is not None
@@ -170,8 +249,23 @@ class MeasurementController:
         sx: float,
         sy: float,
         unproject_fn: Callable,
-        project_fn: Optional[Callable[[float, float], Optional[Tuple[float, float]]]] = None,
+        project_fn: Optional[
+            Callable[[float, float], Optional[Tuple[float, float]]]
+        ] = None,
     ) -> bool:
+        """Executa el metode on_mouse_press de la classe MeasurementController.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+        - unproject_fn (Callable): Valor del parametre 'unproject_fn'.
+        - project_fn (Optional[
+            Callable[[float, float], Optional[Tuple[float, float]]]
+        ]): Valor del parametre 'project_fn'.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         if self.active_tool == TOOL_NONE:
             return False
 
@@ -179,7 +273,11 @@ class MeasurementController:
         if sky is None:
             return True
 
-        hit = self._pick_item(float(sx), float(sy), project_fn) if project_fn is not None else None
+        hit = (
+            self._pick_item(float(sx), float(sy), project_fn)
+            if project_fn is not None
+            else None
+        )
         if hit is not None:
             idx, handle = hit
             self.selected_index = idx
@@ -204,7 +302,9 @@ class MeasurementController:
                 self.current_cursor = sky
             else:
                 self._push_undo_state()
-                it = MeasurementItem(tool=TOOL_RULER, a=self.ruler_first_point, b=sky)
+                it = MeasurementItem(
+                    tool=TOOL_RULER, a=self.ruler_first_point, b=sky
+                )
                 self.items.append(it)
                 self.selected_index = len(self.items) - 1
                 self.ruler_first_point = None
@@ -222,8 +322,23 @@ class MeasurementController:
         sx: float,
         sy: float,
         unproject_fn: Callable,
-        project_fn: Optional[Callable[[float, float], Optional[Tuple[float, float]]]] = None,
+        project_fn: Optional[
+            Callable[[float, float], Optional[Tuple[float, float]]]
+        ] = None,
     ) -> bool:
+        """Executa el metode on_mouse_move de la classe MeasurementController.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+        - unproject_fn (Callable): Valor del parametre 'unproject_fn'.
+        - project_fn (Optional[
+            Callable[[float, float], Optional[Tuple[float, float]]]
+        ]): Valor del parametre 'project_fn'.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         if self.active_tool == TOOL_NONE:
             return False
 
@@ -235,7 +350,11 @@ class MeasurementController:
             self.current_cursor = sky
             return True
 
-        if self.drag_mode == DRAG_MOVING and self.selected_index is not None and self.last_drag_sky is not None:
+        if (
+            self.drag_mode == DRAG_MOVING
+            and self.selected_index is not None
+            and self.last_drag_sky is not None
+        ):
             if not self._drag_undo_pushed:
                 self._push_undo_state()
                 self._drag_undo_pushed = True
@@ -245,14 +364,21 @@ class MeasurementController:
             self.last_drag_sky = sky
             return True
 
-        if self.drag_mode == DRAG_RESIZING and self.selected_index is not None and self.resize_handle:
+        if (
+            self.drag_mode == DRAG_RESIZING
+            and self.selected_index is not None
+            and self.resize_handle
+        ):
             if not self._drag_undo_pushed:
                 self._push_undo_state()
                 self._drag_undo_pushed = True
             self._resize_item(self.selected_index, self.resize_handle, sky)
             return True
 
-        if self.active_tool == TOOL_RULER and self.ruler_first_point is not None:
+        if (
+            self.active_tool == TOOL_RULER
+            and self.ruler_first_point is not None
+        ):
             self.current_cursor = sky
             return True
 
@@ -263,8 +389,23 @@ class MeasurementController:
         sx: float,
         sy: float,
         unproject_fn: Callable,
-        project_fn: Optional[Callable[[float, float], Optional[Tuple[float, float]]]] = None,
+        project_fn: Optional[
+            Callable[[float, float], Optional[Tuple[float, float]]]
+        ] = None,
     ) -> bool:
+        """Executa el metode on_mouse_release de la classe MeasurementController.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+        - unproject_fn (Callable): Valor del parametre 'unproject_fn'.
+        - project_fn (Optional[
+            Callable[[float, float], Optional[Tuple[float, float]]]
+        ]): Valor del parametre 'project_fn'.
+
+        Retorna:
+        - bool: Valor retornat pel metode.
+        """
         if self.active_tool == TOOL_NONE:
             return False
 
@@ -272,9 +413,17 @@ class MeasurementController:
         if sky is not None and self.drag_mode == DRAG_CREATING:
             self.current_cursor = sky
 
-        if self.drag_mode == DRAG_CREATING and self.current_start is not None and self.current_cursor is not None:
+        if (
+            self.drag_mode == DRAG_CREATING
+            and self.current_start is not None
+            and self.current_cursor is not None
+        ):
             self._push_undo_state()
-            it = MeasurementItem(tool=self.active_tool, a=self.current_start, b=self.current_cursor)
+            it = MeasurementItem(
+                tool=self.active_tool,
+                a=self.current_start,
+                b=self.current_cursor,
+            )
             self.items.append(it)
             self.selected_index = len(self.items) - 1
             self.current_start = None
@@ -293,6 +442,16 @@ class MeasurementController:
         project_fn: Callable[[float, float], Optional[Tuple[float, float]]],
         formatters: Dict[str, Callable[[float], str]],
     ) -> None:
+        """Executa el metode draw de la classe MeasurementController.
+
+        Par?metres:
+        - painter (QPainter): Valor del parametre 'painter'.
+        - project_fn (Callable[[float, float], Optional[Tuple[float, float]]]): Valor del parametre 'project_fn'.
+        - formatters (Dict[str, Callable[[float], str]]): Valor del parametre 'formatters'.
+
+        Retorna:
+        - None.
+        """
         if (
             not self.items
             and self.current_start is None
@@ -302,29 +461,78 @@ class MeasurementController:
 
         for i, it in enumerate(self.items):
             ri = self._render_item(it)
-            self._draw_render_info(painter, project_fn, ri, selected=(i == self.selected_index))
+            self._draw_render_info(
+                painter, project_fn, ri, selected=(i == self.selected_index)
+            )
 
-        if self.active_tool == TOOL_RULER and self.ruler_first_point is not None and self.current_cursor is not None:
-            preview = self._render_item(MeasurementItem(tool=TOOL_RULER, a=self.ruler_first_point, b=self.current_cursor))
-            self._draw_render_info(painter, project_fn, preview, selected=False, preview_alpha=140)
+        if (
+            self.active_tool == TOOL_RULER
+            and self.ruler_first_point is not None
+            and self.current_cursor is not None
+        ):
+            preview = self._render_item(
+                MeasurementItem(
+                    tool=TOOL_RULER,
+                    a=self.ruler_first_point,
+                    b=self.current_cursor,
+                )
+            )
+            self._draw_render_info(
+                painter, project_fn, preview, selected=False, preview_alpha=140
+            )
 
         if self.active_tool in (TOOL_SQUARE, TOOL_RECTANGLE, TOOL_CIRCLE):
-            if self.current_start is not None and self.current_cursor is not None:
-                preview = self._render_item(MeasurementItem(tool=self.active_tool, a=self.current_start, b=self.current_cursor))
-                self._draw_render_info(painter, project_fn, preview, selected=False, preview_alpha=140)
+            if (
+                self.current_start is not None
+                and self.current_cursor is not None
+            ):
+                preview = self._render_item(
+                    MeasurementItem(
+                        tool=self.active_tool,
+                        a=self.current_start,
+                        b=self.current_cursor,
+                    )
+                )
+                self._draw_render_info(
+                    painter,
+                    project_fn,
+                    preview,
+                    selected=False,
+                    preview_alpha=140,
+                )
 
-        if self.active_tool == TOOL_RULER and self.ruler_first_point is not None:
+        if (
+            self.active_tool == TOOL_RULER
+            and self.ruler_first_point is not None
+        ):
             p = project_fn(*self.ruler_first_point)
             if p is not None:
                 painter.save()
                 painter.setRenderHint(QPainter.Antialiasing, True)
                 painter.setPen(QPen(QColor(255, 255, 255, 230), 1.2))
                 painter.setBrush(QColor(255, 255, 255, 110))
-                painter.drawEllipse(QPointF(float(p[0]), float(p[1])), 3.5, 3.5)
+                painter.drawEllipse(
+                    QPointF(float(p[0]), float(p[1])), 3.5, 3.5
+                )
                 painter.restore()
 
-    def update_preview_cursor(self, sx: float, sy: float, unproject_fn: Callable) -> None:
-        if self.active_tool == TOOL_RULER and self.ruler_first_point is not None:
+    def update_preview_cursor(
+        self, sx: float, sy: float, unproject_fn: Callable
+    ) -> None:
+        """Actualitza preview cursor de la instancia de MeasurementController.
+
+        Par?metres:
+        - sx (float): Valor del parametre 'sx'.
+        - sy (float): Valor del parametre 'sy'.
+        - unproject_fn (Callable): Valor del parametre 'unproject_fn'.
+
+        Retorna:
+        - None.
+        """
+        if (
+            self.active_tool == TOOL_RULER
+            and self.ruler_first_point is not None
+        ):
             sky = screen_to_sky(sx, sy, unproject_fn)
             if sky is not None:
                 self.current_cursor = sky
@@ -341,16 +549,26 @@ class MeasurementController:
             pts = self._project_path(project_fn, sky_path)
             if len(pts) < 2:
                 continue
-            self._stroke_segment(painter, pts, preview_alpha, selected=selected)
+            self._stroke_segment(
+                painter, pts, preview_alpha, selected=selected
+            )
 
         anc = project_fn(*ri.anchor)
         if anc is not None:
-            self._draw_label(painter, float(anc[0]), float(anc[1]), ri.label, preview_alpha)
+            self._draw_label(
+                painter, float(anc[0]), float(anc[1]), ri.label, preview_alpha
+            )
 
         if selected:
             self._draw_handles(painter, project_fn, ri, preview_alpha)
 
-    def _stroke_segment(self, painter: QPainter, pts: List[QPointF], alpha: int, selected: bool = False) -> None:
+    def _stroke_segment(
+        self,
+        painter: QPainter,
+        pts: List[QPointF],
+        alpha: int,
+        selected: bool = False,
+    ) -> None:
         if len(pts) < 2:
             return
         path = QPainterPath()
@@ -358,8 +576,16 @@ class MeasurementController:
         for p in pts[1:]:
             path.lineTo(p)
 
-        glow = QColor(255, 255, 180, int(alpha * 0.45)) if selected else QColor(255, 255, 255, int(alpha * 0.35))
-        line = QColor(255, 245, 120, alpha) if selected else QColor(255, 255, 255, alpha)
+        glow = (
+            QColor(255, 255, 180, int(alpha * 0.45))
+            if selected
+            else QColor(255, 255, 255, int(alpha * 0.35))
+        )
+        line = (
+            QColor(255, 245, 120, alpha)
+            if selected
+            else QColor(255, 255, 255, alpha)
+        )
 
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
@@ -389,7 +615,9 @@ class MeasurementController:
             painter.drawEllipse(q, 4.0, 4.0)
         painter.restore()
 
-    def _draw_label(self, painter: QPainter, x: float, y: float, txt: str, alpha: int) -> None:
+    def _draw_label(
+        self, painter: QPainter, x: float, y: float, txt: str, alpha: int
+    ) -> None:
         painter.save()
         # Mida del HUD ajustada al text real per evitar caixes sobredimensionades.
         lines = [line for line in str(txt).split("\n") if line != ""]
@@ -432,7 +660,10 @@ class MeasurementController:
                 hp = project_fn(*hsky)
                 if hp is None:
                     continue
-                if self._dist(sx, sy, float(hp[0]), float(hp[1])) <= self.handle_hit_px:
+                if (
+                    self._dist(sx, sy, float(hp[0]), float(hp[1]))
+                    <= self.handle_hit_px
+                ):
                     return idx, hk
 
             # Body hit (move/select)
@@ -482,9 +713,16 @@ class MeasurementController:
 
         # Rectangle / square
         if handle in ("origin", "corner"):
-            self._resize_rect_from_corner(it, handle, self._norm(sky), force_square=(it.tool == TOOL_SQUARE))
+            self._resize_rect_from_corner(
+                it,
+                handle,
+                self._norm(sky),
+                force_square=(it.tool == TOOL_SQUARE),
+            )
         elif handle == "rotate" and it.tool == TOOL_RECTANGLE:
-            center, _, _, _, sign_alt, _ = self._rect_params(it, force_square=False)
+            center, _, _, _, sign_alt, _ = self._rect_params(
+                it, force_square=False
+            )
             x, y = self._sky_to_local(center, self._norm(sky))
             if abs(x) < 1e-6 and abs(y) < 1e-6:
                 return
@@ -506,7 +744,9 @@ class MeasurementController:
         Keeps the opposite corner fixed, preserves current rotation and
         updates width/height (or side for square) from the live drag.
         """
-        center, width, height, sign_az, sign_alt, rot_deg = self._rect_params(it, force_square=force_square)
+        center, width, height, sign_az, sign_alt, rot_deg = self._rect_params(
+            it, force_square=force_square
+        )
         p00, _, p11, _, _, _ = self._rect_corners(
             center=center,
             width=width,
@@ -520,7 +760,9 @@ class MeasurementController:
         # First-order midpoint on local tangent frame.
         d_alt = dragged[0] - fixed[0]
         d_az = angular_delta_signed(fixed[1], dragged[1])
-        center_guess = self._norm((fixed[0] + 0.5 * d_alt, fixed[1] + 0.5 * d_az))
+        center_guess = self._norm(
+            (fixed[0] + 0.5 * d_alt, fixed[1] + 0.5 * d_az)
+        )
 
         rot_rad = math.radians(rot_deg)
         fx, fy = self._sky_to_local(center_guess, fixed)
@@ -590,7 +832,9 @@ class MeasurementController:
     def _render_ruler(self, it: MeasurementItem) -> RenderInfo:
         dist = angular_distance(it.a, it.b)
         arc = slerp_arc_points(it.a, it.b, n_points=72)
-        lbl = getTraduction("Measure.Distance", "Distance: {v:.3f}deg").format(v=dist)
+        lbl = getTraduction("Measure.Distance", "Distance: {v:.3f}deg").format(
+            v=dist
+        )
         mid = arc[len(arc) // 2]
         return RenderInfo(
             paths=[arc],
@@ -615,9 +859,13 @@ class MeasurementController:
             pts.append(destination_point(center, b, r))
 
         lbl = (
-            getTraduction("Measure.Diameter", "Diameter: {v:.3f}deg").format(v=dia)
+            getTraduction("Measure.Diameter", "Diameter: {v:.3f}deg").format(
+                v=dia
+            )
             + " | "
-            + getTraduction("Measure.Area", "Area: {v:.3f} deg2").format(v=area)
+            + getTraduction("Measure.Area", "Area: {v:.3f} deg2").format(
+                v=area
+            )
         )
         anc = destination_point(center, 45.0, max(r * 0.65, 0.2))
         return RenderInfo(
@@ -628,8 +876,12 @@ class MeasurementController:
             hit_polygon=pts,
         )
 
-    def _render_rect_like(self, it: MeasurementItem, force_square: bool) -> RenderInfo:
-        center, width, height, sign_az, sign_alt, rot_deg = self._rect_params(it, force_square=force_square)
+    def _render_rect_like(
+        self, it: MeasurementItem, force_square: bool
+    ) -> RenderInfo:
+        center, width, height, sign_az, sign_alt, rot_deg = self._rect_params(
+            it, force_square=force_square
+        )
         p00, p10, p11, p01, top_mid, rotate_handle = self._rect_corners(
             center=center,
             width=width,
@@ -650,9 +902,13 @@ class MeasurementController:
         lbl = (
             getTraduction("Measure.Width", "Width: {v:.3f}deg").format(v=width)
             + "\n"
-            + getTraduction("Measure.Height", "Height: {v:.3f}deg").format(v=height)
+            + getTraduction("Measure.Height", "Height: {v:.3f}deg").format(
+                v=height
+            )
             + "\n"
-            + getTraduction("Measure.Area", "Area: {v:.3f} deg2").format(v=area)
+            + getTraduction("Measure.Area", "Area: {v:.3f} deg2").format(
+                v=area
+            )
         )
         anc = center
         handles = {"origin": p00, "corner": p11}
@@ -696,8 +952,19 @@ class MeasurementController:
         height = max(1e-6, height)
         center_alt = max(-89.9, min(89.9, (alt0 + alt1) * 0.5))
         center_az = (az0 + angular_delta_signed(az0, az1) * 0.5) % 360.0
-        rot_deg = float(it.rotation_deg) if (it.tool == TOOL_RECTANGLE and not force_square) else 0.0
-        return (center_alt, center_az), width, height, sign_az, sign_alt, rot_deg
+        rot_deg = (
+            float(it.rotation_deg)
+            if (it.tool == TOOL_RECTANGLE and not force_square)
+            else 0.0
+        )
+        return (
+            (center_alt, center_az),
+            width,
+            height,
+            sign_az,
+            sign_alt,
+            rot_deg,
+        )
 
     def _rect_corners(
         self,
@@ -723,15 +990,27 @@ class MeasurementController:
             xr, yr = self._rotate_local(x * sign_az, y * sign_alt, rot_rad)
             local_corners.append((xr, yr))
 
-        p00 = self._local_to_sky(center, local_corners[0][0], local_corners[0][1])
-        p10 = self._local_to_sky(center, local_corners[1][0], local_corners[1][1])
-        p11 = self._local_to_sky(center, local_corners[2][0], local_corners[2][1])
-        p01 = self._local_to_sky(center, local_corners[3][0], local_corners[3][1])
+        p00 = self._local_to_sky(
+            center, local_corners[0][0], local_corners[0][1]
+        )
+        p10 = self._local_to_sky(
+            center, local_corners[1][0], local_corners[1][1]
+        )
+        p11 = self._local_to_sky(
+            center, local_corners[2][0], local_corners[2][1]
+        )
+        p01 = self._local_to_sky(
+            center, local_corners[3][0], local_corners[3][1]
+        )
 
         # Rotation control handle is offset from the "top" side midpoint in local frame.
-        top_mid_x, top_mid_y = self._rotate_local(0.0, sign_alt * half_h, rot_rad)
+        top_mid_x, top_mid_y = self._rotate_local(
+            0.0, sign_alt * half_h, rot_rad
+        )
         rotate_dist = half_h + max(0.15, 0.15 * max(width, height))
-        rot_h_x, rot_h_y = self._rotate_local(0.0, sign_alt * rotate_dist, rot_rad)
+        rot_h_x, rot_h_y = self._rotate_local(
+            0.0, sign_alt * rotate_dist, rot_rad
+        )
         top_mid = self._local_to_sky(center, top_mid_x, top_mid_y)
         rotate_handle = self._local_to_sky(center, rot_h_x, rot_h_y)
         return p00, p10, p11, p01, top_mid, rotate_handle
@@ -755,7 +1034,9 @@ class MeasurementController:
         dy = y1 - y2
         return math.sqrt(dx * dx + dy * dy)
 
-    def _point_to_polyline_dist(self, x: float, y: float, pts: List[QPointF]) -> float:
+    def _point_to_polyline_dist(
+        self, x: float, y: float, pts: List[QPointF]
+    ) -> float:
         best = 1e9
         for i in range(len(pts) - 1):
             d = self._point_to_segment_dist(x, y, pts[i], pts[i + 1])
@@ -763,7 +1044,9 @@ class MeasurementController:
                 best = d
         return best
 
-    def _point_to_segment_dist(self, x: float, y: float, a: QPointF, b: QPointF) -> float:
+    def _point_to_segment_dist(
+        self, x: float, y: float, a: QPointF, b: QPointF
+    ) -> float:
         ax, ay = a.x(), a.y()
         bx, by = b.x(), b.y()
         vx = bx - ax
@@ -778,7 +1061,9 @@ class MeasurementController:
         py = ay + t * vy
         return self._dist(x, y, px, py)
 
-    def _point_in_polygon(self, x: float, y: float, poly: List[QPointF]) -> bool:
+    def _point_in_polygon(
+        self, x: float, y: float, poly: List[QPointF]
+    ) -> bool:
         inside = False
         n = len(poly)
         if n < 3:
@@ -804,19 +1089,25 @@ class MeasurementController:
         return self._norm((p[0] + d_alt, p[1] + d_az))
 
     @staticmethod
-    def _rotate_local(x: float, y: float, angle_rad: float) -> Tuple[float, float]:
+    def _rotate_local(
+        x: float, y: float, angle_rad: float
+    ) -> Tuple[float, float]:
         ca = math.cos(angle_rad)
         sa = math.sin(angle_rad)
         return (x * ca - y * sa, x * sa + y * ca)
 
-    def _local_to_sky(self, center: SkyCoord, x_deg: float, y_deg: float) -> SkyCoord:
+    def _local_to_sky(
+        self, center: SkyCoord, x_deg: float, y_deg: float
+    ) -> SkyCoord:
         c_alt, c_az = center
         cos_lat = max(0.05, math.cos(math.radians(c_alt)))
         alt = c_alt + y_deg
         az = c_az + (x_deg / cos_lat)
         return self._norm((alt, az))
 
-    def _sky_to_local(self, center: SkyCoord, sky: SkyCoord) -> Tuple[float, float]:
+    def _sky_to_local(
+        self, center: SkyCoord, sky: SkyCoord
+    ) -> Tuple[float, float]:
         c_alt, c_az = center
         alt, az = self._norm(sky)
         cos_lat = max(0.05, math.cos(math.radians(c_alt)))
