@@ -52,9 +52,10 @@ from TerraLab.util.color import bp_rp_to_rgb_arrays
 from TerraLab.widgets.scope_runtime_cache import ScopeRuntimeCacheManager
 
 try:
-    from skyfield.api import load
+    from skyfield.api import load, load_file
 except Exception:
     load = None
+    load_file = None
 
 STAR_CATALOG_NAKED_EYE_MAX_MAG = 8.0
 NO_GAIA_STARS_JSON_NAME = "no_gaia_stars.json"
@@ -2206,8 +2207,11 @@ class SkyfieldLoaderWorker(QObject):
 
         t0 = time.time()
         try:
+            from TerraLab.common.app_paths import ephemeris_path
+
             ts = load.timescale()
-            eph = load("de421.bsp")
+            path = ephemeris_path()
+            eph = load_file(str(path)) if path is not None else None
             print(f"[SkyfieldLoader] Initialized in {time.time()-t0:.3f}s")
             self.skyfield_ready.emit(ts, eph)
         except Exception as e:

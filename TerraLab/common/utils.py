@@ -20,6 +20,7 @@ from TerraLab.common.app_paths import (
 )
 from TerraLab.common.app_paths import (
     ensure_runtime_layout,
+    migrate_legacy_config,
 )
 
 LANGUAGE_PRIORITY = ("ca", "es", "en", "fr", "it", "pt", "de", "nl", "el")
@@ -43,7 +44,7 @@ _base_dir_lock = threading.Lock()
 
 
 def get_base_dir() -> str:
-    """Return TerraLab runtime root (`%APPDATA%/TerraLab` on Windows)."""
+    """Return the user-selected TerraLab data-library root."""
     global _base_dir_cache
     cached = _base_dir_cache
     if cached:
@@ -63,6 +64,12 @@ def resource_path(relative_path: str) -> str:
     Runtime user data is managed by `common.app_paths`, not by this function.
     """
     rel = str(relative_path or "")
+    # ``data/config.json`` was historically both a bundled-resource lookup and
+    # the public way integrations located the writable preferences file.  Keep
+    # that lookup compatible while the file itself now lives in the small
+    # application-state area (never in the selected data library).
+    if rel.replace("\\", "/").lstrip("./") == "data/config.json":
+        return str(migrate_legacy_config().resolve())
     if getattr(sys, "frozen", False):
         try:
             base_path = sys._MEIPASS  # type: ignore[attr-defined]
@@ -154,7 +161,9 @@ def getTraduction(key: str, default: str) -> str:
     try:
         translations = _load_translations()
         entry = translations.get(str(key), {})
-        lang = get_language("ca")
+        lang = str(get_config_value("idioma", "ca") or "ca")
+        if lang not in LANGUAGE_OPTIONS:
+            return str(default)
         if isinstance(entry, dict):
             if lang in entry:
                 return str(entry[lang])
@@ -170,8 +179,7 @@ def _load_config() -> Dict[str, Any]:
     global _config_cache
     with _config_lock:
         if _config_cache is None:
-            ensure_runtime_layout()
-            path = runtime_config_path()
+            path = migrate_legacy_config()
             if path.exists():
                 try:
                     with path.open("r", encoding="utf-8") as f:
@@ -194,8 +202,7 @@ def _clear_cache_config():
 
 def _save_config(cfg: Dict[str, Any]) -> None:
     global _config_cache
-    ensure_runtime_layout()
-    path = runtime_config_path()
+    path = migrate_legacy_config()
     path.parent.mkdir(parents=True, exist_ok=True)
     with _config_lock:
         _config_cache = dict(cfg)

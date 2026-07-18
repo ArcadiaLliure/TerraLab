@@ -38,14 +38,21 @@ class TerrainCoordinator(QObject):
     def shutdown(self) -> None:
         """Atura el worker de terreny i allibera recursos."""
         try:
-            self._worker.abort_current_job()
+            self._worker.shutdown()
         except Exception:
             pass
         try:
+            self._thread.requestInterruption()
             self._thread.quit()
-            self._thread.wait(1500)
+            if not self._thread.wait(1500):
+                self._thread.terminate()
+                self._thread.wait(1500)
         except Exception:
             pass
+
+    @property
+    def thread(self) -> QThread:
+        return self._thread
 
     def initialize(self) -> None:
         """Inicialitza proveidors del worker en el seu thread."""
@@ -58,6 +65,9 @@ class TerrainCoordinator(QObject):
     def abort_current_job(self) -> None:
         """Demana cancelacio del bake en curs."""
         self._worker.abort_current_job()
+
+    def request_surface_refresh(self, profile: object | None = None) -> None:
+        self._worker.request_surface_refresh(profile or self._current_profile)
 
     def get_profile(self) -> object | None:
         """Retorna l'ultim perfil final disponible."""

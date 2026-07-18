@@ -11,7 +11,8 @@ Coordinate contract:
 
 import os
 import threading
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Any, Optional, Tuple
 
 import numpy as np
 import rasterio
@@ -804,3 +805,159 @@ class LightPollutionSampler:
             self._is_geographic = False
             self._tr_geo_to_src = None
             self._tr_terrain_to_src = None
+
+
+def _source_value(source: Any, name: str, default=None):
+    if isinstance(source, dict):
+        return source.get(name, default)
+    return getattr(source, name, default)
+
+
+def _expand_light_paths(value: Any) -> list[str]:
+    raw_values = value if isinstance(value, (list, tuple)) else [value]
+    paths: list[str] = []
+    for raw in raw_values:
+        path = Path(str(raw or "")).expanduser()
+        if path.is_dir():
+            candidates = sorted(
+                (
+                    child.resolve()
+                    for child in path.rglob("*")
+                    if child.is_file() and child.suffix.lower() in {".tif", ".tiff"}
+                ),
+                key=lambda child: str(child).lower(),
+            )
+            paths.extend(str(child) for child in candidates)
+        elif path.is_file():
+            paths.append(str(path.resolve()))
+    return paths
+
+
+def snapshot_light_pollution_sources(sources: Any) -> list[dict[str, Any]]:
+    """Create a process-safe, ordered snapshot of typed DVNL sources."""
+
+    sequence = sources if isinstance(sources, (list, tuple)) else [sources]
+    result = []
+    for index, source in enumerate(sequence):
+        if source is None or not bool(_source_value(source, "enabled", True)):
+            continue
+        raw_paths = _source_value(source, "paths", None)
+        if raw_paths is None:
+            raw_paths = _source_value(source, "path", "")
+        paths = _expand_light_paths(raw_paths)
+        if not paths:
+            continue
+        result.append(
+            {
+                "id": str(_source_value(source, "id", f"light-{index}")),
+                "paths": paths,
+                "fingerprint": str(_source_value(source, "fingerprint", "") or ""),
+            }
+        )
+    return result
+
+
+class LightPollutionSamplerChain:
+    """Nodata-aware per-point fallback across ordered DVNL rasters."""
+
+    def __init__(self, samplers: list[LightPollutionSampler]) -> None:
+        self.samplers = tuple(samplers)
+        self.raster_path = self.samplers[0].raster_path if self.samplers else ""
+
+    @staticmethod
+    def _sample_optional(
+        sampler: LightPollutionSampler,
+        first: float,
+        second: float,
+        *,
+        input_crs: str,
+    ) -> float | None:
+        path = str(sampler.raster_path or "")
+        if not path or not os.path.isfile(path):
+            return None
+        try:
+            with RASTERIO_LOCK, rasterio.open(path) as src:
+                context = sampler._build_runtime_context(src, terrain_crs=input_crs)
+                if input_crs == CRS_GEOGRAPHIC:
+                    x_src, y_src = context["tr_geo_to_src"].transform(second, first)
+                else:
+                    x_src, y_src = context["tr_terrain_to_src"].transform(first, second)
+                row, col = src.index(x_src, y_src)
+                if not (0 <= row < src.height and 0 <= col < src.width):
+                    return None
+                sample = src.read(
+                    1,
+                    window=((row, row + 1), (col, col + 1)),
+                    masked=True,
+                )
+                if sample.size != 1 or bool(np.ma.getmaskarray(sample)[0, 0]):
+                    return None
+                value = float(sample[0, 0])
+                if not np.isfinite(value) or value < 0.0 or value > 1e10:
+                    return None
+                return value
+        except Exception:
+            return None
+
+    def get_radiance(self, lat: float, lon: float) -> float:
+        for sampler in self.samplers:
+            value = self._sample_optional(
+                sampler, lat, lon, input_crs=CRS_GEOGRAPHIC
+            )
+            if value is not None:
+                return float(value)
+        return 0.0
+
+    def get_radiance_terrain_xy(
+        self,
+        x_terrain: float,
+        y_terrain: float,
+        input_crs: str = CRS_TERRAIN_INTERNAL,
+    ) -> float:
+        for sampler in self.samplers:
+            value = self._sample_optional(
+                sampler, x_terrain, y_terrain, input_crs=input_crs
+            )
+            if value is not None:
+                return float(value)
+        return 0.0
+
+    def estimate_zenith_sqm(self, lat: float, lon: float) -> Tuple[float, int]:
+        for sampler in self.samplers:
+            if self._sample_optional(
+                sampler, lat, lon, input_crs=CRS_GEOGRAPHIC
+            ) is not None:
+                return sampler.estimate_zenith_sqm(lat, lon)
+        return LightPollutionSampler._default_sqm_bortle()
+
+    def prepare_region(self, *args, **kwargs) -> None:
+        for sampler in self.samplers:
+            sampler.prepare_region(*args, **kwargs)
+
+    def prepare_region_from_terrain_xy(self, *args, **kwargs) -> None:
+        for sampler in self.samplers:
+            sampler.prepare_region_from_terrain_xy(*args, **kwargs)
+
+    def close(self) -> None:
+        for sampler in self.samplers:
+            sampler.close()
+
+
+def create_light_pollution_sampler(sources: Any) -> LightPollutionSampler | LightPollutionSamplerChain:
+    snapshot = snapshot_light_pollution_sources(sources)
+    samplers = [
+        LightPollutionSampler(path)
+        for source in snapshot
+        for path in source["paths"]
+    ]
+    if len(samplers) == 1:
+        return samplers[0]
+    return LightPollutionSamplerChain(samplers)
+
+
+__all__ = [
+    "LightPollutionSampler",
+    "LightPollutionSamplerChain",
+    "create_light_pollution_sampler",
+    "snapshot_light_pollution_sources",
+]

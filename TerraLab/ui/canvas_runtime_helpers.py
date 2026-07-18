@@ -9,6 +9,15 @@ from TerraLab.light_pollution.modes import (
     resolve_bortle_class,
 )
 
+
+def _terrain_relief_enabled_for_frame(
+    configured_enabled: bool, camera_interaction_active: bool
+) -> bool:
+    """Return the transient relief state without changing user preferences."""
+
+    return bool(configured_enabled and not camera_interaction_active)
+
+
 def canvas_update_skyfield_cache(canvas, ut_hour, day_of_year):
     from TerraLab.ui import sky_widget_impl as _impl
     globals().update(_impl.__dict__)
@@ -450,8 +459,20 @@ def canvas_paintEvent(canvas, event):
         if scene_stage_rank <= 0:
             return
         # Interaction mode: favor smoothness while user moves camera/scope.
+        # Camera movement additionally replaces relief with its 2-D profile
+        # until the camera becomes idle; scope-reticle and time dragging do not.
+        camera_interaction_active = bool(
+            self._camera_interaction_active(
+                include_time_drag=False,
+                include_animation=True,
+            )
+        )
         fast_interaction = bool(
-            self._camera_interaction_active(include_time_drag=True, include_animation=True)
+            camera_interaction_active
+            or self._camera_interaction_active(
+                include_time_drag=True,
+                include_animation=True,
+            )
             or self.scope_mode_enabled()
         )
         painter.setRenderHint(QPainter.Antialiasing, not fast_interaction)
@@ -677,9 +698,13 @@ def canvas_paintEvent(canvas, event):
         use_detailed_topo = True
         if hasattr(self.parent_widget, 'chk_enable_village'):
             use_detailed_topo = self._parent_checkbox_checked("chk_enable_village", default=True)
-        terrain_shading_enabled = True
-        if hasattr(self.parent_widget, "chk_terrain_shading"):
-            terrain_shading_enabled = self._parent_checkbox_checked(
+        terrain_3d_enabled = True
+        if hasattr(self.parent_widget, "chk_terrain_3d"):
+            terrain_3d_enabled = self._parent_checkbox_checked(
+                "chk_terrain_3d", default=True
+            )
+        elif hasattr(self.parent_widget, "chk_terrain_shading"):
+            terrain_3d_enabled = self._parent_checkbox_checked(
                 "chk_terrain_shading", default=True
             )
         if show_horizon:
@@ -718,8 +743,12 @@ def canvas_paintEvent(canvas, event):
                 draw_domes_callback=dome_callback,
                 sun_alt=eff_sun_alt,
                 sun_az=eff_sun_az,
-                terrain_shading_enabled=terrain_shading_enabled,
+                terrain_3d_enabled=_terrain_relief_enabled_for_frame(
+                    terrain_3d_enabled,
+                    camera_interaction_active,
+                ),
                 sky_color_fn=self.sky_color_phys,
+                interaction_active=fast_interaction,
             )
             if hasattr(self, '_dome_count') and self._dome_count > 0:
                 current_time = __import__('time').time()

@@ -12,12 +12,15 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from TerraLab.common.app_paths import ephemeris_path
+
 from PyQt5.QtCore import QObject, pyqtSignal
 
 try:
-    from skyfield.api import load, wgs84
+    from skyfield.api import load, load_file, wgs84
 except Exception:  # pragma: no cover
     load = None
+    load_file = None
     wgs84 = None
 
 
@@ -43,10 +46,11 @@ class EphemerisCoordinator(QObject):
 
         self._ts = None
         self._eph = None
-        if load is not None:
+        if load is not None and load_file is not None:
             try:
                 self._ts = load.timescale()
-                self._eph = load("de421.bsp")
+                path = ephemeris_path()
+                self._eph = load_file(str(path)) if path is not None else None
             except Exception:
                 self._ts = None
                 self._eph = None

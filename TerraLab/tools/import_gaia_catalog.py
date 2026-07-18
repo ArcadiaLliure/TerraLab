@@ -13,12 +13,12 @@ if __package__ in (None, ""):
     if str(_repo_root) not in sys.path:
         sys.path.insert(0, str(_repo_root))
 
-from TerraLab.common.app_paths import ensure_runtime_layout
+from TerraLab.common.data_library import DataLibrary
 from TerraLab.util.gaia_importer import build_gaia_catalog_from_tables
 
 
 def _default_output_dir() -> str:
-    layout = ensure_runtime_layout()
+    layout = DataLibrary.current(require_configured=True).layout(create=True)
     return str(Path(layout["data_gaia"]).resolve())
 
 
@@ -31,8 +31,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--output-dir",
-        default=_default_output_dir(),
-        help="Destination folder",
+        default="",
+        help=(
+            "Destination folder. If omitted, configure the TerraLab data "
+            "library or set TERRALAB_DATA_ROOT."
+        ),
     )
     parser.add_argument(
         "--basename", default="stars_catalog", help="Output base name"
@@ -86,9 +89,14 @@ def main() -> int:
     def _progress(percent: float, message: str) -> None:
         print(f"[gaia-import] {percent:5.1f}% {message}")
 
+    try:
+        output_dir = str(args.output_dir).strip() or _default_output_dir()
+    except Exception as exc:
+        parser.error(str(exc))
+
     summary = build_gaia_catalog_from_tables(
         args.inputs,
-        args.output_dir,
+        output_dir,
         output_basename=args.basename,
         zst_level=args.zst_level,
         write_npz=bool(args.write_npz),

@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication
 
 from TerraLab.common.timestamped_print import enable_timestamped_print
+from TerraLab.ui.data_library_dialog import ensure_data_library_for_gui
 from TerraLab.ui.sky_widget import AstronomicalWidget
 
 
@@ -47,6 +48,10 @@ def main():
         print(f"[TerraLab] Warning: could not enable faulthandler: {e}")
 
     app = QApplication(sys.argv)
+
+    # Data-heavy services are constructed by the widget, so require the
+    # user-controlled library before any coordinator or cache can be created.
+    ensure_data_library_for_gui()
 
     widget = StandaloneAstronomicalWidget()
     widget.show()

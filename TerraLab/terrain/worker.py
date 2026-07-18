@@ -16,6 +16,7 @@ from TerraLab.common.utils import (
     set_config_value,
 )
 from TerraLab.terrain.engine import HorizonProfile, generate_bands
+from TerraLab.terrain.data_sources import DataSourceRegistry, LayerSelectionService
 
 
 _LP_RESULT_PREFIX = "TERRALAB_LP_RESULT="
@@ -37,6 +38,7 @@ class HorizonWorker(QObject):
     progress_message = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     bortle_estimate_ready = pyqtSignal(int, float, float, int)
+    effective_sources_changed = pyqtSignal(object)
 
     def __init__(self, tiles_dir=None, parent=None):
         super().__init__(parent)
@@ -62,6 +64,139 @@ class HorizonWorker(QObject):
         )
         self._isolated_lp_sampler_logged = False
         self._provider_source_path = ""
+        self.data_source_registry = DataSourceRegistry.default()
+        self.layer_selection = LayerSelectionService(self.data_source_registry)
+        self._light_source_signature = None
+        self._surface_service = None
+        self._surface_source_signature = None
+        self._last_profile = None
+
+    def _ensure_light_sampler_for_location(self, lat: float, lon: float):
+        enabled = bool(get_config_value("light_pollution_enabled", True))
+        selection = self.layer_selection.select_light_pollution(lat, lon)
+        sources = list(selection.chain) if enabled else []
+        signature = tuple(
+            (source.id, source.path, source.fingerprint) for source in sources
+        )
+        if signature == self._light_source_signature and self.light_sampler is not None:
+            return self.light_sampler
+        old = self.light_sampler
+        self.light_sampler = None
+        if old is not None and hasattr(old, "close"):
+            old.close()
+        if sources:
+            from TerraLab.terrain.light_pollution_sampler import (
+                create_light_pollution_sampler,
+                snapshot_light_pollution_sources,
+            )
+
+            self.light_sampler = create_light_pollution_sampler(
+                snapshot_light_pollution_sources(sources)
+            )
+        self._light_source_signature = signature
+        return self.light_sampler
+
+    def _surface_selection(self, lat: float, lon: float):
+        selection = self.layer_selection.select_surface(lat, lon)
+        visible = bool(get_config_value("ui.visibility.earth.surface", True))
+        return selection, list(selection.chain) if visible else []
+
+    @staticmethod
+    def _effective_surface_source_id(cache):
+        if cache is None:
+            return None
+        get = cache.get if isinstance(cache, dict) else lambda key, default=None: getattr(cache, key, default)
+        source_ids = tuple(get("source_ids", ()) or ())
+        for valid_name, index_name in (
+            ("profile_valid", "profile_source_indices"),
+            ("relief_valid", "relief_source_indices"),
+        ):
+            valid = get(valid_name, None)
+            indices = get(index_name, None)
+            if valid is None or indices is None:
+                continue
+            valid_array = __import__("numpy").asarray(valid, dtype=bool)
+            index_array = __import__("numpy").asarray(indices)
+            usable = index_array[valid_array & (index_array >= 0)]
+            if usable.size:
+                index = int(usable.flat[0])
+                return source_ids[index] if 0 <= index < len(source_ids) else None
+        return None
+
+    def _prepare_surface_samples(self, profile):
+        if profile is None:
+            return None
+        selection, sources = self._surface_selection(
+            float(getattr(profile, "observer_lat", 0.0)),
+            float(getattr(profile, "observer_lon", 0.0)),
+        )
+        signature = tuple(
+            (
+                str(getattr(source, "id", "")),
+                str(getattr(source, "path", "")),
+                str(getattr(source, "fingerprint", "")),
+            )
+            for source in sources
+        )
+        if signature != self._surface_source_signature:
+            if self._surface_service is not None:
+                self._surface_service.close()
+            self._surface_service = None
+            if sources:
+                from TerraLab.terrain.surface import (
+                    SurfaceSamplingService,
+                    create_surface_providers,
+                )
+
+                self._surface_service = SurfaceSamplingService(
+                    create_surface_providers(sources)
+                )
+            self._surface_source_signature = signature
+        if self._surface_service is None:
+            profile.surface_samples = None
+            return profile
+        geometry_id = str(getattr(profile, "geometry_id", "") or "")
+        profile.surface_samples = self._surface_service.sample_profile(
+            profile, geometry_id=geometry_id
+        )
+        profile.effective_surface_source_id = self._effective_surface_source_id(
+            profile.surface_samples
+        )
+        profile.surface_source_status = str(getattr(selection, "reason", ""))
+        return profile
+
+    def _publish_effective_sources(self, profile=None):
+        payload = {
+            "surface": {
+                "source_id": str(
+                    getattr(profile, "effective_surface_source_id", "") or ""
+                ),
+                "status": str(getattr(profile, "surface_source_status", "") or ""),
+            }
+        }
+        self.effective_sources_changed.emit(payload)
+        return payload
+
+    @pyqtSlot(object)
+    def request_surface_refresh(self, profile=None):
+        target = profile or self._last_profile
+        if target is None:
+            return
+        self._prepare_surface_samples(target)
+        self._last_profile = target
+        self._publish_effective_sources(target)
+        self.profile_ready.emit({"job_id": "surface-refresh", "profile": target})
+
+    def shutdown(self) -> None:
+        self.abort_current_job()
+        for resource_name in ("_surface_service", "light_sampler", "provider"):
+            resource = getattr(self, resource_name, None)
+            if resource is not None and hasattr(resource, "close"):
+                try:
+                    resource.close()
+                except Exception:
+                    pass
+            setattr(self, resource_name, None)
 
     @staticmethod
     def _paths_equivalent(path_a: object, path_b: object) -> bool:
@@ -378,10 +513,21 @@ class HorizonWorker(QObject):
     def _estimate_light_pollution_isolated(
         self, lat: float, lon: float
     ) -> tuple[float, int]:
-        raster_path = str(
-            getattr(self.light_sampler, "raster_path", "") or ""
-        ).strip()
-        if not raster_path or not os.path.isfile(raster_path):
+        configured_paths = tuple(
+            str(value).strip()
+            for value in tuple(
+                getattr(self.light_sampler, "raster_paths", ()) or ()
+            )
+            if str(value).strip()
+        )
+        if not configured_paths:
+            configured_paths = (
+                str(getattr(self.light_sampler, "raster_path", "") or "").strip(),
+            )
+        raster_paths = tuple(
+            path for path in configured_paths if path and os.path.isfile(path)
+        )
+        if not raster_paths:
             return 21.0, 4
 
         project_root = Path(__file__).resolve().parents[2]
@@ -389,13 +535,15 @@ class HorizonWorker(QObject):
             sys.executable,
             "-m",
             "TerraLab.terrain.light_pollution_query",
-            "--raster",
-            raster_path,
+        ]
+        for raster_path in raster_paths:
+            command.extend(["--raster", raster_path])
+        command.extend([
             "--lat",
             f"{float(lat):.12f}",
             "--lon",
             f"{float(lon):.12f}",
-        ]
+        ])
         completed = subprocess.run(
             command,
             cwd=str(project_root),
@@ -574,7 +722,12 @@ class HorizonWorker(QObject):
             pass
 
     def _build_subprocess_command(
-        self, job: dict, output_path: str, preview_path: str
+        self,
+        job: dict,
+        output_path: str,
+        preview_path: str,
+        elevation_sources_json: str | None = None,
+        light_pollution_sources_json: str | None = None,
     ):
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         cmd = [
@@ -606,6 +759,38 @@ class HorizonWorker(QObject):
             "--range-settings-json",
             json.dumps(job.get("range_settings", {}), sort_keys=True),
         ]
+        cmd.extend(
+            [
+                "--representation-mode",
+                str(job.get("representation_mode", "relief")),
+            ]
+        )
+        if elevation_sources_json:
+            cmd.extend(["--elevation-sources-json", str(elevation_sources_json)])
+        for source_id in tuple(job.get("elevation_source_ids", ()) or ()):
+            cmd.extend(["--elevation-source-id", str(source_id)])
+        if job.get("effective_elevation_source_id"):
+            cmd.extend(
+                [
+                    "--effective-elevation-source-id",
+                    str(job["effective_elevation_source_id"]),
+                ]
+            )
+        if job.get("elevation_source_status"):
+            cmd.extend(
+                ["--elevation-source-status", str(job["elevation_source_status"])]
+            )
+        if job.get("light_pollution_path"):
+            cmd.extend(
+                ["--light-pollution-path", str(job["light_pollution_path"])]
+            )
+        if light_pollution_sources_json:
+            cmd.extend(
+                [
+                    "--light-pollution-sources-json",
+                    str(light_pollution_sources_json),
+                ]
+            )
         return base_dir, cmd
 
     @staticmethod

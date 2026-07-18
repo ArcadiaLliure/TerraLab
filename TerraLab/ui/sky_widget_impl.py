@@ -50,6 +50,8 @@ from TerraLab.light_pollution.modes import (
     resolve_bortle_class,
 )
 from TerraLab.data.assets_manager import AssetManager
+from TerraLab.data.layer_manager import LayerId, LayerManager
+from TerraLab.ui.data_layers_dialog import DataLayerChanges, DataLayersDialog
 from TerraLab.ui.canvas_input_handler import CanvasInputHandler
 from TerraLab.ui.canvas_selection import CanvasSelection
 from TerraLab.ui.widget_init_helpers import (
@@ -197,11 +199,13 @@ from TerraLab.scene.scene_state import SceneState, build_star_scene_state
 from TerraLab.util.math2d import clamp
 # Skyfield imports
 try:
-    from skyfield.api import load, wgs84, N, W, E, S
+    from skyfield.api import load, load_file, wgs84, N, W, E, S
     from skyfield import almanac
     from skyfield.framelib import ecliptic_frame
     SKYFIELD_AVAILABLE = True
 except ImportError:
+    load = None
+    load_file = None
     SKYFIELD_AVAILABLE = False
     print("WARNING: Skyfield not available. Install with: pip install skyfield")
 from TerraLab.widgets.sky_legacy_components import (
@@ -504,6 +508,21 @@ class AstroCanvas(QWidget):
             float(getattr(self, "_scope_interaction_until", 0.0)),
             time.monotonic() + hold,
         )
+    def _mark_camera_interaction(self, hold_seconds: float = 0.20) -> None:
+        """Keep transient camera LOD active until wheel/step input settles."""
+        try:
+            hold = max(0.0, float(hold_seconds))
+        except Exception:
+            hold = 0.2
+        self._camera_interaction_until = max(
+            float(getattr(self, "_camera_interaction_until", 0.0)),
+            time.monotonic() + hold,
+        )
+        timer = getattr(self, "_camera_idle_timer", None)
+        if timer is not None:
+            # Small guard avoids an early timer firing on coarse Windows clocks
+            # before the monotonic hold deadline has actually elapsed.
+            timer.start(max(1, int(round(hold * 1000.0)) + 25))
     def _scope_motion_active(self) -> bool:
         if not self.scope_mode_enabled():
             return False
@@ -532,7 +551,18 @@ class AstroCanvas(QWidget):
         # Scope-reticle drag is an overlay interaction; it must not trigger camera/star LOD degradation.
         dragging_time = bool(getattr(self.parent_widget, "_dragging_time", False)) if include_time_drag else False
         anim_active = bool(hasattr(self, "anim_timer") and self.anim_timer.isActive()) if include_animation else False
-        return bool((self.dragging or dragging_time or anim_active) and (not self._scope_reticle_drag_active()))
+        wheel_or_step_active = time.monotonic() < float(
+            getattr(self, "_camera_interaction_until", 0.0)
+        )
+        return bool(
+            (
+                self.dragging
+                or dragging_time
+                or anim_active
+                or wheel_or_step_active
+            )
+            and (not self._scope_reticle_drag_active())
+        )
     def _selection_pulse_tick(self):
         if self.selected_target is None or self.scope_mode_enabled():
             if self._selection_pulse_timer.isActive():
@@ -1115,6 +1145,7 @@ class AstroCanvas(QWidget):
     def _camera_wheel_zoom(self, steps: float) -> None:
         if abs(steps) < 1e-9:
             return
+        self._mark_camera_interaction(0.20)
         if self.scope_mode_enabled():
             self._mark_scope_interaction(0.25)
         factor = 1.1 ** steps
@@ -2061,37 +2092,28 @@ class AstronomicalWidget(CustomWidgetBase):
         return False
     def _persist_visibility_state(self, key: str, checked: bool) -> None:
         set_config_value(f"ui.visibility.{key}", bool(checked))
+        stable_ids = {
+            "estrelles": LayerId.SKY_STARS,
+            "espai_profund": LayerId.SKY_NGC,
+            "via_lactia": LayerId.SKY_MILKY_WAY,
+            "pols_planck": LayerId.SKY_PLANCK_DUST,
+            "sistema_solar": LayerId.SKY_SOLAR_SYSTEM,
+            "clima": LayerId.SKY_WEATHER,
+            "topografia": LayerId.EARTH_TERRAIN,
+            "superficie": LayerId.EARTH_SURFACE,
+            "contaminacio_luminica": LayerId.EARTH_LIGHT_POLLUTION,
+        }
+        layer_id = stable_ids.get(str(key))
+        manager = getattr(self, "layer_manager", None)
+        if layer_id is not None and manager is not None:
+            manager.set_visible(layer_id, bool(checked))
     def _load_visibility_state(self, key: str, default: bool) -> bool:
         return bool(get_config_value(f"ui.visibility.{key}", default))
     def _validate_checked_assets_startup(self):
-        """Disable persisted layer toggles whose required asset is currently missing."""
-        checks = (
-            ("chk_clima", "clima", "climate_metno"),
-            ("chk_enable_sky", "estrelles", "gaia_catalog"),
-            ("chk_enable_milkyway", "via_lactia", "milkyway_texture"),
-            ("chk_enable_planck_dust", "pols_planck", "planck_dust"),
-            ("chk_deep_space", "espai_profund", "ngc_catalog"),
-            ("chk_light_pollution", "contaminacio_luminica", "light_pollution"),
-            ("chk_enable_village", "topografia", "elevation_dem"),
-        )
-        for attr_name, key, asset_id in checks:
-            chk = getattr(self, attr_name, None)
-            if chk is None:
-                continue
-            if (not bool(chk.isChecked())) or self.asset_manager.asset_ready(asset_id):
-                continue
-            chk.blockSignals(True)
-            chk.setChecked(False)
-            chk.blockSignals(False)
-            self._persist_visibility_state(key, False)
-            if attr_name == "chk_clima":
-                if hasattr(self.canvas, "weather"):
-                    self.canvas.weather.enabled = False
-                if hasattr(self, "weather"):
-                    self.weather.enabled = False
-            if attr_name == "chk_light_pollution":
-                self.light_pollution_enabled = False
-                set_config_value("light_pollution_enabled", False)
+        """Keep persisted visibility and expose fallback state without prompts."""
+        self._refresh_climate_status_indicator()
+        self._refresh_stars_status_indicator()
+        self._refresh_milkyway_status_indicator()
         if hasattr(self, "canvas"):
             self.canvas.update()
     def _start_async_bootstrap(self):
@@ -2586,8 +2608,11 @@ class AstronomicalWidget(CustomWidgetBase):
     def init_skyfield(self):
         """Legacy synchronous init. Kept for compatibility."""
         try:
+            from TerraLab.common.app_paths import ephemeris_path
+
             self.ts = load.timescale()
-            self.eph = load('de421.bsp')
+            path = ephemeris_path()
+            self.eph = load_file(str(path)) if path is not None else None
             print("Skyfield Initialized.")
         except Exception as e:
             print(f"Skyfield Error: {e}")
@@ -3345,8 +3370,6 @@ class AstronomicalWidget(CustomWidgetBase):
             self.recalculate_automatic_light_pollution()
     def on_stars_toggled(self, checked):
         checked = bool(checked)
-        if checked and (not self._ensure_asset_before_enable(self.chk_enable_sky, checked, "gaia_catalog")):
-            checked = False
         if checked != bool(self.chk_enable_sky.isChecked()):
             self.chk_enable_sky.blockSignals(True)
             self.chk_enable_sky.setChecked(checked)
@@ -3356,8 +3379,6 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.update()
     def on_climate_toggled(self, checked):
         checked = bool(checked)
-        if checked and (not self._ensure_asset_before_enable(self.chk_clima, checked, "climate_metno")):
-            checked = False
         if checked != bool(self.chk_clima.isChecked()):
             self.chk_clima.blockSignals(True)
             self.chk_clima.setChecked(checked)
@@ -3369,14 +3390,10 @@ class AstronomicalWidget(CustomWidgetBase):
         if hasattr(self, "weather"):
             self.weather.enabled = checked
             self.weather.set_remote_user_agent(self.asset_manager.get_user_agent())
-        if checked:
-            self._ensure_copernicus_credentials_prompt()
         self._refresh_climate_status_indicator()
         self.canvas.update()
     def on_light_pollution_toggled(self, checked):
         checked = bool(checked)
-        if checked and (not self._ensure_asset_before_enable(self.chk_light_pollution, checked, "light_pollution")):
-            checked = False
         if checked != bool(self.chk_light_pollution.isChecked()):
             self.chk_light_pollution.blockSignals(True)
             self.chk_light_pollution.setChecked(checked)
@@ -3396,8 +3413,6 @@ class AstronomicalWidget(CustomWidgetBase):
         self._apply_light_pollution_graphics()
     def on_milkyway_toggled(self, checked):
         checked = bool(checked)
-        if checked and (not self._ensure_asset_before_enable(self.chk_enable_milkyway, checked, "milkyway_texture")):
-            checked = False
         if checked != bool(self.chk_enable_milkyway.isChecked()):
             self.chk_enable_milkyway.blockSignals(True)
             self.chk_enable_milkyway.setChecked(checked)
@@ -3409,8 +3424,6 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.update()
     def on_planck_dust_toggled(self, checked):
         checked = bool(checked)
-        if checked and (not self._ensure_asset_before_enable(self.chk_enable_planck_dust, checked, "planck_dust")):
-            checked = False
         if checked != bool(self.chk_enable_planck_dust.isChecked()):
             self.chk_enable_planck_dust.blockSignals(True)
             self.chk_enable_planck_dust.setChecked(checked)
@@ -3425,8 +3438,6 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.update()
     def on_deep_space_toggled(self, checked):
         checked = bool(checked)
-        if checked and (not self._ensure_asset_before_enable(self.chk_deep_space, checked, "ngc_catalog")):
-            checked = False
         if checked != bool(self.chk_deep_space.isChecked()):
             self.chk_deep_space.blockSignals(True)
             self.chk_deep_space.setChecked(checked)
@@ -3437,14 +3448,148 @@ class AstronomicalWidget(CustomWidgetBase):
         self.canvas.update()
     def on_topography_toggled(self, checked):
         checked = bool(checked)
-        if checked and (not self._ensure_asset_before_enable(self.chk_enable_village, checked, "elevation_dem")):
-            checked = False
         if checked != bool(self.chk_enable_village.isChecked()):
             self.chk_enable_village.blockSignals(True)
             self.chk_enable_village.setChecked(checked)
             self.chk_enable_village.blockSignals(False)
         self._persist_visibility_state("topografia", checked)
         self.canvas.update()
+    def on_surface_layer_toggled(self, checked):
+        checked = bool(checked)
+        self._persist_visibility_state("superficie", checked)
+        coordinator = getattr(self, "terrain_coordinator", None)
+        refresh = getattr(coordinator, "request_surface_refresh", None)
+        if callable(refresh):
+            refresh()
+        self.canvas.update()
+    def on_solar_system_toggled(self, checked):
+        checked = bool(checked)
+        self._persist_visibility_state("sistema_solar", checked)
+        for name in ("chk_sun_moon", "chk_planets"):
+            control = getattr(self, name, None)
+            if control is not None:
+                control.setEnabled(checked)
+        self.canvas.update()
+    def open_data_layers_dialog(self):
+        dialog = DataLayersDialog(
+            self,
+            registry=self.asset_manager.data_sources,
+            asset_manager=self.asset_manager,
+            latitude=float(self.latitude),
+            longitude=float(self.longitude),
+        )
+        result = dialog.exec_()
+        dialog.post_close_changes.connect(self._apply_data_layer_changes)
+        if result == QDialog.Accepted:
+            self._apply_data_layer_changes(dialog.changes)
+            self._sync_layer_visibility_controls()
+            self._sync_runtime_asset_config()
+        return result
+    def _sync_layer_visibility_controls(self):
+        manager = getattr(self, "layer_manager", None)
+        if manager is None:
+            return
+        controls = (
+            ("chk_enable_sky", LayerId.SKY_STARS),
+            ("chk_deep_space", LayerId.SKY_NGC),
+            ("chk_enable_milkyway", LayerId.SKY_MILKY_WAY),
+            ("chk_enable_planck_dust", LayerId.SKY_PLANCK_DUST),
+            ("chk_solar_system", LayerId.SKY_SOLAR_SYSTEM),
+            ("chk_clima", LayerId.SKY_WEATHER),
+            ("chk_enable_village", LayerId.EARTH_TERRAIN),
+            ("chk_surface_layer", LayerId.EARTH_SURFACE),
+            ("chk_light_pollution", LayerId.EARTH_LIGHT_POLLUTION),
+        )
+        for attribute, layer_id in controls:
+            checkbox = getattr(self, attribute, None)
+            desired = manager.is_visible(layer_id)
+            if checkbox is not None and bool(checkbox.isChecked()) != desired:
+                checkbox.setChecked(desired)
+        if hasattr(self, "canvas"):
+            self.canvas.update()
+    def _apply_data_layer_changes(self, changes: DataLayerChanges):
+        if changes is None:
+            return
+        self._effective_data_sources_payload = None
+        coordinator = getattr(self, "terrain_coordinator", None)
+        if bool(changes.surface):
+            refresh = getattr(coordinator, "request_surface_refresh", None)
+            if callable(refresh):
+                refresh()
+        if bool(changes.elevation or changes.representation):
+            abort = getattr(coordinator, "abort_current_job", None)
+            if callable(abort):
+                abort()
+            relocate = getattr(self, "request_relocation", None)
+            if callable(relocate):
+                relocate()
+        if bool(changes.light_pollution):
+            worker = getattr(self, "horizon_worker", None)
+            reload_config = getattr(worker, "reload_config", None)
+            if callable(reload_config):
+                reload_config()
+            recalculate = getattr(self, "recalculate_automatic_light_pollution", None)
+            if callable(recalculate) and is_automatic_mode(
+                getattr(self, "light_pollution_mode", LP_MODE_BORTLE)
+            ):
+                recalculate()
+        self._refresh_data_layer_indicators()
+    def _refresh_data_layer_indicators(self):
+        manager = getattr(self, "layer_manager", None)
+        if manager is not None:
+            # Status is evaluated lazily from the registry; touching it here
+            # refreshes availability after asynchronous inspections.
+            for descriptor in manager.list_layers():
+                manager.status(descriptor.id)
+        if hasattr(self, "canvas"):
+            self.canvas.update()
+    def _effective_layer_label(
+        self,
+        selection,
+        fallback: str,
+        *,
+        runtime=None,
+        registry=None,
+    ):
+        """Describe the source actually used by runtime, including fallbacks."""
+        runtime = runtime if isinstance(runtime, dict) else None
+        catalogue = getattr(selection, "effective", None)
+        effective = catalogue
+        reason = str(getattr(selection, "reason", "") or "")
+        if runtime is not None:
+            reason = str(runtime.get("status", "") or reason)
+            source_id = str(runtime.get("source_id", "") or "")
+            effective = registry.get(source_id) if source_id and registry is not None else None
+        if effective is None:
+            text = str(fallback)
+        else:
+            text = str(
+                getattr(effective, "display_name", "")
+                or getattr(effective, "id", "")
+                or fallback
+            )
+            try:
+                resolution = float(getattr(effective, "resolution_m", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                resolution = 0.0
+            if resolution > 0.0:
+                text += f" · {resolution:g} m"
+        tooltip_lines = []
+        if runtime is not None and catalogue is not None and effective is not catalogue:
+            candidate_name = str(
+                getattr(catalogue, "display_name", "")
+                or getattr(catalogue, "id", "")
+            )
+            if candidate_name:
+                tooltip_lines.append(f"Candidata del catàleg: {candidate_name}")
+        configured = getattr(selection, "configured", None)
+        if configured is not None and configured is not catalogue:
+            configured_name = str(getattr(configured, "display_name", "") or "")
+            if configured_name:
+                tooltip_lines.append(f"Font configurada: {configured_name}")
+        if reason:
+            tooltip_lines.append(f"Motiu: {reason}")
+        return text, "\n".join(tooltip_lines)
     def _refresh_milkyway_status_indicator(self):
         return widget_refresh_milkyway_status_indicator(self)
     def set_weather_remote_metno_enabled(self, enabled: bool):

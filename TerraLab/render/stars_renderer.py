@@ -754,6 +754,12 @@ class StarsRenderer:
         ):
             return self._scope_grid_indices, self._scope_grid_offsets
 
+        # A background warm-up owns this catalog key.  Building the same
+        # index synchronously here defeats the warm-up and can stall a paint
+        # triggered while layer state is changing.
+        if self._scope_index_pending_key == key:
+            return None, None
+
         can_sync = bool(allow_sync_build)
         if can_sync:
             try:

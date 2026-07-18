@@ -1,5 +1,6 @@
 import abc
 import hashlib
+import json
 import math
 import os
 import threading
@@ -15,6 +16,7 @@ import numpy as np
 from pyproj import Transformer
 
 from TerraLab.common.locks import RASTERIO_LOCK
+from TerraLab.common.data_library import DataLibrary, application_state_root
 from TerraLab.common.performance import DEFAULT_PERFORMANCE_BUDGET, PERFORMANCE_FLAGS
 from TerraLab.terrain.crs import (
     DEFAULT_TRANSFORM_SERVICE,
@@ -25,6 +27,33 @@ from TerraLab.terrain.crs import (
 CRS_GEOGRAPHIC = "EPSG:4326"
 CRS_TERRAIN_INTERNAL = "EPSG:25831"
 PYPROJ_TRANSFORMER_LOCK = threading.Lock()
+
+
+def _terrain_materialized_root(kind: str) -> Path:
+    try:
+        root = DataLibrary.current(create=True).root
+    except Exception:
+        root = application_state_root()
+    path = root / "cache" / "terrain_materialized" / str(kind)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _is_managed_data_path(path: Path) -> bool:
+    roots = []
+    try:
+        roots.append(DataLibrary.current(create=True).root / "data")
+    except Exception:
+        pass
+    roots.append(application_state_root() / "data")
+    resolved = path.resolve(strict=False)
+    for root in roots:
+        try:
+            resolved.relative_to(root.resolve(strict=False))
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 @dataclass(frozen=True)
@@ -323,6 +352,12 @@ class _GeoRasterDataset:
         block_cache_bytes: int | None = None,
     ) -> None:
         self.path = str(Path(path).expanduser().resolve(strict=False))
+        cache_key = hashlib.blake2b(
+            self.path.encode("utf-8", errors="replace"), digest_size=12
+        ).hexdigest()
+        self.materialized_dir = _terrain_materialized_root("gdal") / cache_key
+        self.materialized_path = self.materialized_dir / "materialized.npy"
+        self.materialized_manifest_path = self.materialized_dir / "manifest.json"
         self.declared_crs = declared_crs
         self.transform_service = transform_service or DEFAULT_TRANSFORM_SERVICE
         self.block_cache_capacity = max(1, int(block_cache_capacity))
@@ -390,7 +425,7 @@ class _GeoRasterDataset:
             nodata=self.nodatavals,
             driver=self.driver,
             band_count=self.count,
-            paths=(self.path,),
+            paths=(self.path, str(self.materialized_path)),
             extra={
                 "width": self.width,
                 "height": self.height,
@@ -398,6 +433,17 @@ class _GeoRasterDataset:
                 "block_height": self.block_height,
             },
         )
+        self.materialized_dir.mkdir(parents=True, exist_ok=True)
+        manifest = {
+            "schema_version": 1,
+            "source": self.path,
+            "cache": str(self.materialized_path),
+            "bounded_blocks": True,
+            "native_crs": self.native_crs,
+        }
+        temporary = self.materialized_manifest_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        os.replace(temporary, self.materialized_manifest_path)
         return True
 
     def _reader(self):
@@ -470,6 +516,13 @@ class _GeoRasterDataset:
             else:
                 valid &= data[local_band] != nodata
         value = (data, valid, row_off, col_off)
+        try:
+            self.materialized_dir.mkdir(parents=True, exist_ok=True)
+            temporary = self.materialized_path.with_suffix(".tmp.npy")
+            np.save(temporary, data, allow_pickle=False)
+            os.replace(temporary, self.materialized_path)
+        except OSError:
+            pass
         self.bytes_read += int(data.nbytes + masks.nbytes)
         self._cache_put(key, value)
         return value
@@ -670,6 +723,24 @@ class AscRasterProvider(RasterProvider):
         for tile in getattr(self.index, "tiles", ()):
             header = tile.get("header", {})
             nodata = header.get("NODATA_VALUE")
+            original_path = Path(str(tile.get("path", ""))).resolve(strict=False)
+            metadata_paths = [str(original_path)]
+            if original_path.suffix.lower() in {".asc", ".txt"}:
+                allow_adjacent = _is_managed_data_path(original_path)
+                tile["allow_adjacent_cache"] = allow_adjacent
+                if allow_adjacent:
+                    cache_path = original_path.with_suffix(".npy")
+                else:
+                    identity = hashlib.blake2b(
+                        str(original_path).encode("utf-8", errors="replace"),
+                        digest_size=12,
+                    ).hexdigest()
+                    cache_path = _terrain_materialized_root("ascii") / f"{identity}.npy"
+                tile["materialized_path"] = str(cache_path)
+                tile["materialized_metadata_path"] = str(
+                    cache_path.with_suffix(".npy.json")
+                )
+                metadata_paths.append(str(cache_path))
             metadata.append(
                 RasterMetadata(
                     native_crs=self.native_crs,
@@ -678,7 +749,7 @@ class AscRasterProvider(RasterProvider):
                     nodata=(float(nodata) if nodata is not None else None,),
                     driver="NPY" if header.get("NPY") else "AAIGrid",
                     band_count=1,
-                    paths=(str(tile.get("path", "")),),
+                    paths=tuple(metadata_paths),
                 )
             )
         self.metadata = tuple(metadata)

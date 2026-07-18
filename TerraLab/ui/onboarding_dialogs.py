@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
@@ -176,6 +177,10 @@ class _AssetJobWorker(QObject):
         self.asset_id = str(asset_id)
         self.files = list(files or [])
         self.options = dict(options or {})
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
 
     @pyqtSlot()
     def run(self):
@@ -197,6 +202,7 @@ class _AssetJobWorker(QObject):
                     self.asset_id,
                     progress_callback=_cb,
                     options=self.options,
+                    cancelled=self._cancel_event.is_set,
                 )
             else:
                 result = self.manager.import_files(
@@ -278,7 +284,7 @@ class AssetOnboardingDialog(QDialog):
                 gaia_log_line = f"\nLog persistent: {gaia_log_path}\n"
             except Exception:
                 gaia_log_line = (
-                    "\nLog persistent: %APPDATA%/TerraLab/logs/gaia_tiles_last.log\n"
+                    "\nLog persistent: <biblioteca>/logs/gaia_tiles_last.log\n"
                 )
             extra_help = (
                 "\n\nEl boto 'Descarregar automaticament' executa el flux Gaia per teseles en segon pla.\n"
@@ -292,8 +298,9 @@ class AssetOnboardingDialog(QDialog):
             f"Font oficial:\n{self.spec.source_url}\n\n"
             f"Formats admesos:\n{self.spec.accepted_formats}\n\n"
             f"Credits:\n{self.spec.credits}\n\n"
-            "Despres d'importar les dades, TerraLab les copia a la carpeta de l'app (%APPDATA%/TerraLab).\n"
-            "Pots esborrar el fitxer original si vols."
+            "Per defecte pots enllaçar dades pròpies a la seva ubicació original. "
+            "Si tries preparar/copiar, els datasets i derivats es guarden a la biblioteca seleccionada.\n"
+            f"Biblioteca activa: {self.manager.library.root}"
             f"{extra_help}"
         )
         panel_layout.addWidget(details)
@@ -344,10 +351,16 @@ class AssetOnboardingDialog(QDialog):
         actions.addWidget(self.btn_auto_download)
 
         self.btn_attach = QPushButton(
-            getTraduction("Onboarding.AttachFiles", "Adjuntar fitxer(s)")
+            getTraduction("Onboarding.AttachFiles", "Copiar fitxer(s) a la biblioteca")
         )
         self.btn_attach.clicked.connect(self._attach_files)
         actions.addWidget(self.btn_attach)
+        self.btn_attach_folder = QPushButton("Copiar carpeta a la biblioteca")
+        self.btn_attach_folder.setVisible(
+            self.asset_id in {"elevation_dem", "surface_rgb", "surface_categorical"}
+        )
+        self.btn_attach_folder.clicked.connect(self._attach_folder)
+        actions.addWidget(self.btn_attach_folder)
         root.addLayout(actions)
 
         self.lbl_status = QLabel("")
@@ -366,6 +379,10 @@ class AssetOnboardingDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.addStretch(1)
+        self.btn_cancel = QPushButton("Cancel·lar tasca")
+        self.btn_cancel.setVisible(False)
+        self.btn_cancel.clicked.connect(self._cancel_job)
+        footer.addWidget(self.btn_cancel)
         self.btn_close = QPushButton(
             getTraduction("Onboarding.Close", "Tancar")
         )
@@ -380,6 +397,7 @@ class AssetOnboardingDialog(QDialog):
             self.btn_open_source.setEnabled(True)
             self.btn_auto_download.setEnabled(False)
             self.btn_attach.setEnabled(False)
+            self.btn_attach_folder.setEnabled(False)
 
     def _supports_auto_download(self) -> bool:
         if self.asset_id == "gaia_catalog":
@@ -422,7 +440,8 @@ class AssetOnboardingDialog(QDialog):
             return
         allow_multiple = bool(self.spec.allow_multiple)
         filters = (
-            "Data files (*.fits *.png *.ecsv *.csv *.zst *.zip *.tif *.tiff *.asc *.txt);;"
+            "Data files (*.fits *.png *.jpg *.jpeg *.ecsv *.csv *.npy *.npz *.zst *.zip *.7z *.bsp "
+            "*.tif *.tiff *.vrt *.img *.jp2 *.asc *.txt);;"
             "All files (*.*)"
         )
         if allow_multiple:
@@ -440,6 +459,17 @@ class AssetOnboardingDialog(QDialog):
         self._start_job(
             mode="import", files=files, options=self._collect_options()
         )
+
+    def _attach_folder(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Selecciona una carpeta o mosaic"
+        )
+        if folder:
+            self._start_job(
+                mode="import",
+                files=[folder],
+                options=self._collect_options(),
+            )
 
     def _auto_download(self):
         if self.asset_id == "gaia_catalog":
@@ -468,6 +498,18 @@ class AssetOnboardingDialog(QDialog):
             return
         if not self.spec.auto_download_url:
             return
+        if self.asset_id == "elevation_dem":
+            answer = QMessageBox.question(
+                self,
+                "Descàrrega EU-DEM molt gran",
+                "El mosaic complet EU-DEM ocupa aproximadament 19,6 GB abans de l'extracció. "
+                "TerraLab comprovarà l'espai, permetrà reprendre la descàrrega i no l'activarà "
+                "fins que s'hagi verificat.\n\nVols continuar?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         self._start_job(
             mode="download", files=[], options=self._collect_options()
         )
@@ -544,6 +586,7 @@ class AssetOnboardingDialog(QDialog):
         process.setProgram(str(sys.executable))
         env = QProcessEnvironment.systemEnvironment()
         env.insert("PYTHONUNBUFFERED", "1")
+        env.insert("TERRALAB_DATA_ROOT", str(self.manager.library.root))
         process.setProcessEnvironment(env)
         args = ["-u", str(script_path)]
         max_parallel_requests = self._gaia_max_parallel_requests()
@@ -604,8 +647,11 @@ class AssetOnboardingDialog(QDialog):
 
         self.btn_open_source.setEnabled(False)
         self.btn_attach.setEnabled(False)
+        self.btn_attach_folder.setEnabled(False)
         self.btn_auto_download.setEnabled(False)
         self.btn_close.setEnabled(False)
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
         if resume:
             resume_state = self._load_gaia_tap_state()
             resume_pct = self._state_progress_percent(resume_state)
@@ -647,8 +693,10 @@ class AssetOnboardingDialog(QDialog):
             self.lbl_status.setText("Error en iniciar Gaia TAP.")
             self.btn_open_source.setEnabled(True)
             self.btn_attach.setEnabled(True)
+            self.btn_attach_folder.setEnabled(True)
             self.btn_auto_download.setEnabled(self._supports_auto_download())
             self.btn_close.setEnabled(True)
+            self.btn_cancel.setVisible(False)
             QMessageBox.critical(
                 self, "TerraLab", f"{err_txt}\n\n{self._gaia_tap_log_hint()}"
             )
@@ -1074,6 +1122,7 @@ class AssetOnboardingDialog(QDialog):
         log_hint = self._gaia_tap_log_hint()
         state = self._load_gaia_tap_state()
         self._cleanup_gaia_tap_process()
+        self.btn_cancel.setVisible(False)
 
         self.progress.setRange(0, 100)
         ok = (
@@ -1089,7 +1138,7 @@ class AssetOnboardingDialog(QDialog):
                 self,
                 "TerraLab",
                 "Preparacio Gaia completada.\n\n"
-                "Les dades ja son dins la carpeta de TerraLab.\n"
+                f"Les dades ja són dins la biblioteca {self.manager.library.root}.\n"
                 "Si vols, ja pots esborrar el fitxer original.\n\n"
                 f"{log_hint}",
             )
@@ -1098,6 +1147,7 @@ class AssetOnboardingDialog(QDialog):
 
         self.btn_open_source.setEnabled(True)
         self.btn_attach.setEnabled(True)
+        self.btn_attach_folder.setEnabled(True)
         self.btn_close.setEnabled(True)
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         pct_hint = ""
@@ -1133,9 +1183,11 @@ class AssetOnboardingDialog(QDialog):
                 pass
         log_hint = self._gaia_tap_log_hint()
         self._cleanup_gaia_tap_process()
+        self.btn_cancel.setVisible(False)
         self.progress.setRange(0, 100)
         self.btn_open_source.setEnabled(True)
         self.btn_attach.setEnabled(True)
+        self.btn_attach_folder.setEnabled(True)
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         self.btn_close.setEnabled(True)
         self.lbl_status.setText("Error en descarrega Gaia.")
@@ -1153,6 +1205,7 @@ class AssetOnboardingDialog(QDialog):
     ):
         self.btn_open_source.setEnabled(False)
         self.btn_attach.setEnabled(False)
+        self.btn_attach_folder.setEnabled(False)
         self.btn_auto_download.setEnabled(False)
         self.btn_close.setEnabled(False)
         self.progress.setRange(0, 100)
@@ -1180,6 +1233,30 @@ class AssetOnboardingDialog(QDialog):
         self._worker = worker
         thread.start()
 
+    def _cancel_job(self) -> None:
+        process = getattr(self, "_gaia_tap_process", None)
+        if process is not None and process.state() != QProcess.NotRunning:
+            self.btn_cancel.setEnabled(False)
+            self.lbl_status.setText(
+                "Cancel·lant Gaia… El progrés i les descàrregues parcials es conservaran."
+            )
+            process.terminate()
+
+            def force_stop(proc=process) -> None:
+                if proc.state() != QProcess.NotRunning:
+                    proc.kill()
+
+            QTimer.singleShot(3000, force_stop)
+            return
+        worker = getattr(self, "_worker", None)
+        if worker is None:
+            return
+        worker.cancel()
+        self.btn_cancel.setEnabled(False)
+        self.lbl_status.setText(
+            "Cancel·lant… La descàrrega parcial es conservarà per reprendre-la."
+        )
+
     def _on_progress(self, percent: float, message: str):
         pct = float(percent)
         if pct < 0.0:
@@ -1195,6 +1272,7 @@ class AssetOnboardingDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self._completed = True
+        self.btn_cancel.setVisible(False)
         self.lbl_status.setText("Dades preparades correctament.")
         self.btn_close.setEnabled(True)
         extra = ""
@@ -1216,8 +1294,8 @@ class AssetOnboardingDialog(QDialog):
                     extra = ""
         msg = (
             "Importacio completada.\n\n"
-            "Les dades ja son dins la carpeta de TerraLab.\n"
-            "Si vols, ja pots esborrar el fitxer original que has adjuntat."
+            f"Els derivats o la còpia administrada són a {self.manager.library.root}.\n"
+            "Les fonts enllaçades continuen a la seva ubicació original."
             + extra
         )
         QMessageBox.information(self, "TerraLab", msg)
@@ -1226,11 +1304,17 @@ class AssetOnboardingDialog(QDialog):
     def _on_failed(self, error_message: str):
         self.btn_open_source.setEnabled(True)
         self.btn_attach.setEnabled(True)
+        self.btn_attach_folder.setEnabled(True)
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         self.btn_close.setEnabled(True)
+        self.btn_cancel.setVisible(False)
         self.progress.setRange(0, 100)
-        self.lbl_status.setText("Error durant la preparacio de dades.")
-        QMessageBox.critical(self, "TerraLab", str(error_message))
+        if "cancel" in str(error_message).lower():
+            self.lbl_status.setText("Tasca cancel·lada; es podrà reprendre.")
+            QMessageBox.information(self, "TerraLab", str(error_message))
+        else:
+            self.lbl_status.setText("Error durant la preparacio de dades.")
+            QMessageBox.critical(self, "TerraLab", str(error_message))
 
     def reject(self):
         """Executa el metode reject de la classe AssetOnboardingDialog.
@@ -1346,6 +1430,9 @@ class WelcomeOnboardingDialog(QDialog):
         return page
 
     def _build_data_page(self) -> QWidget:
+        from TerraLab.data.layer_manager import LayerManager
+        from TerraLab.ui.layer_configurator import LayerConfiguratorWidget
+
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setSpacing(10)
@@ -1359,64 +1446,24 @@ class WelcomeOnboardingDialog(QDialog):
         title = QLabel("Preparacio de dades")
         title.setObjectName("titleLabel")
         subtitle = QLabel(
-            "Aquest pas replica els mini-assistents de cada capa. "
-            "Pots preparar-ho ara o ometre-ho i fer-ho mes tard."
+            "Configura la visibilitat, les fonts pròpies i les descàrregues de les nou capes. "
+            "També trobaràs aquest mateix gestor durant l'ús normal."
         )
         subtitle.setWordWrap(True)
         panel_layout.addWidget(title)
         panel_layout.addWidget(subtitle)
 
-        for asset_id in self.manager.onboarding_asset_order():
-            spec = self.manager.get_spec(asset_id)
-            row = QFrame()
-            row.setObjectName("assetRow")
-            row_layout = QHBoxLayout(row)
-            row_layout.setContentsMargins(10, 10, 10, 10)
-            row_layout.setSpacing(8)
-
-            text_box = QVBoxLayout()
-            text_box.setSpacing(2)
-            lbl_title = QLabel(spec.title)
-            f = lbl_title.font()
-            f.setBold(True)
-            lbl_title.setFont(f)
-            lbl_meta = QLabel(
-                f"{spec.accepted_formats} | Credits: {spec.credits}"
-            )
-            lbl_meta.setObjectName("subtitleLabel")
-            lbl_meta.setWordWrap(True)
-            text_box.addWidget(lbl_title)
-            text_box.addWidget(lbl_meta)
-            row_layout.addLayout(text_box, 1)
-
-            status_lbl = QLabel("")
-            status_lbl.setMinimumWidth(95)
-            status_lbl.setAlignment(Qt.AlignCenter)
-            self._asset_status_labels[asset_id] = status_lbl
-            row_layout.addWidget(status_lbl)
-
-            btn_source = QPushButton("Font")
-            btn_source.clicked.connect(
-                lambda _=False, url=spec.source_url: QDesktopServices.openUrl(
-                    QUrl(url)
-                )
-            )
-            row_layout.addWidget(btn_source)
-
-            btn_run = QPushButton("Configurar")
-            btn_run.clicked.connect(
-                lambda _=False, aid=asset_id: self._run_asset_wizard(aid)
-            )
-            self._asset_run_buttons[asset_id] = btn_run
-            row_layout.addWidget(btn_run)
-
-            panel_layout.addWidget(row)
-
-        panel_layout.addStretch(1)
+        self.layer_configurator = LayerConfiguratorWidget(
+            LayerManager(self.manager), panel
+        )
+        panel_layout.addWidget(self.layer_configurator, 1)
         layout.addWidget(panel, 1)
         return page
 
     def _refresh_asset_statuses(self) -> None:
+        configurator = getattr(self, "layer_configurator", None)
+        if configurator is not None:
+            configurator.refresh()
         for asset_id, label in self._asset_status_labels.items():
             ready = bool(self.manager.asset_ready(asset_id))
             label.setText("Preparat" if ready else "Pendent")

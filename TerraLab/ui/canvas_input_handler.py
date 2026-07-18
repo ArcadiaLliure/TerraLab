@@ -133,7 +133,11 @@ class CanvasInputHandler:
                     handled = c.scope_controller.handle_click(
                         event.x(), event.y(), c.unproject_stereo
                     )
-                    c._mark_scope_interaction(0.25)
+                    if bool(handled):
+                        c.scope_controller.start_drag(event.x(), event.y())
+                    mark_interaction = getattr(c, "_mark_scope_interaction", None)
+                    if callable(mark_interaction):
+                        mark_interaction(0.25)
                     if bool(handled):
                         parent_widget = getattr(c, "parent_widget", None)
                         if parent_widget is not None and hasattr(

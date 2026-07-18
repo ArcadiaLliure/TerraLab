@@ -20,12 +20,17 @@ from PyQt5.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
+    QWidget,
 )
 
 from TerraLab.common.utils import getTraduction
+from TerraLab.data.assets_manager import AssetManager
+from TerraLab.data.layer_manager import LayerManager
+from TerraLab.ui.layer_configurator import LayerConfiguratorWidget
 from TerraLab.terrain.data_sources import (
     DataSourceRegistry,
     LayerSelectionService,
@@ -34,6 +39,200 @@ from TerraLab.terrain.data_sources import (
     SourceHealthStatus,
 )
 from TerraLab.terrain.representation import normalize_terrain_representation_mode
+
+
+_DATA_LAYERS_STYLE = """
+QDialog#dataLayersDialog {
+    background-color: #081326;
+    color: #ffe680;
+}
+QDialog#dataLayersDialog QTabWidget::pane {
+    border: 1px solid #29466f;
+    border-radius: 0 8px 8px 8px;
+    background-color: #0d1a30;
+    top: -1px;
+}
+QDialog#dataLayersDialog QTabBar::tab {
+    background-color: #101f38;
+    color: #b9cae5;
+    border: 1px solid #29466f;
+    border-bottom: none;
+    padding: 8px 16px;
+    margin-right: 3px;
+    min-height: 18px;
+}
+QDialog#dataLayersDialog QTabBar::tab:first {
+    border-top-left-radius: 7px;
+}
+QDialog#dataLayersDialog QTabBar::tab:last {
+    border-top-right-radius: 7px;
+}
+QDialog#dataLayersDialog QTabBar::tab:selected {
+    background-color: #173052;
+    color: #fff0a6;
+    border-color: #3d679d;
+}
+QDialog#dataLayersDialog QTabBar::tab:hover:!selected {
+    background-color: #142947;
+    color: #e8f0ff;
+}
+QDialog#dataLayersDialog QWidget#advancedLayersPage,
+QDialog#dataLayersDialog QWidget#layerConfiguratorPage,
+QDialog#dataLayersDialog QScrollArea,
+QDialog#dataLayersDialog QScrollArea > QWidget > QWidget {
+    background-color: #0d1a30;
+}
+QDialog#dataLayersDialog QGroupBox {
+    color: #ffe680;
+    background-color: #101f38;
+    border: 1px solid #29466f;
+    border-radius: 8px;
+    margin-top: 12px;
+    padding: 12px 8px 8px 8px;
+    font-weight: 600;
+}
+QDialog#dataLayersDialog QGroupBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 10px;
+    padding: 0 6px;
+    color: #ffe680;
+    background-color: #101f38;
+}
+QDialog#dataLayersDialog QLabel,
+QDialog#dataLayersDialog QCheckBox {
+    color: #ffe680;
+    background-color: transparent;
+}
+QDialog#dataLayersDialog QLabel#effectiveSource,
+QDialog#dataLayersDialog QLabel#subtitleLabel {
+    color: #9dc8ef;
+}
+QDialog#dataLayersDialog QLabel#footerNote {
+    color: #aebed8;
+}
+QDialog#dataLayersDialog QFrame#assetRow {
+    background-color: #132542;
+    border: 1px solid #2b4d79;
+    border-radius: 8px;
+}
+QDialog#dataLayersDialog QComboBox {
+    background-color: #0a172b;
+    color: #eef5ff;
+    border: 1px solid #315783;
+    border-radius: 5px;
+    padding: 5px 28px 5px 8px;
+    min-height: 18px;
+    selection-background-color: #285b91;
+    selection-color: #ffffff;
+}
+QDialog#dataLayersDialog QComboBox:hover,
+QDialog#dataLayersDialog QComboBox:focus {
+    border-color: #5a87bb;
+    background-color: #0d1d34;
+}
+QDialog#dataLayersDialog QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: top right;
+    width: 24px;
+    border-left: 1px solid #315783;
+    background-color: #16345a;
+}
+QDialog#dataLayersDialog QComboBox QAbstractItemView {
+    background-color: #0d1a30;
+    color: #eef5ff;
+    border: 1px solid #3c6799;
+    selection-background-color: #285b91;
+    selection-color: #ffffff;
+    outline: 0;
+}
+QDialog#dataLayersDialog QTreeWidget {
+    background-color: #0a172b;
+    alternate-background-color: #10213b;
+    color: #e8f0ff;
+    border: 1px solid #315783;
+    border-radius: 5px;
+    outline: 0;
+    selection-background-color: #285b91;
+    selection-color: #ffffff;
+}
+QDialog#dataLayersDialog QTreeWidget::item {
+    min-height: 22px;
+    padding: 2px 4px;
+    border-bottom: 1px solid #152945;
+}
+QDialog#dataLayersDialog QTreeWidget::item:hover {
+    background-color: #193757;
+}
+QDialog#dataLayersDialog QTreeWidget::item:selected {
+    background-color: #285b91;
+    color: #ffffff;
+}
+QDialog#dataLayersDialog QHeaderView::section {
+    background-color: #173052;
+    color: #fff0a6;
+    border: none;
+    border-right: 1px solid #315783;
+    border-bottom: 1px solid #315783;
+    padding: 6px 7px;
+    font-weight: 600;
+}
+QDialog#dataLayersDialog QPushButton {
+    background-color: #1b3d68;
+    color: #f4f8ff;
+    border: 1px solid #3c6799;
+    border-radius: 6px;
+    padding: 6px 11px;
+    min-height: 18px;
+}
+QDialog#dataLayersDialog QPushButton:hover {
+    background-color: #245181;
+    border-color: #6e9bc9;
+}
+QDialog#dataLayersDialog QPushButton:pressed {
+    background-color: #122b4b;
+}
+QDialog#dataLayersDialog QPushButton:focus {
+    border: 2px solid #ffe680;
+    padding: 5px 10px;
+}
+QDialog#dataLayersDialog QPushButton:disabled {
+    background-color: #13243b;
+    color: #6f819d;
+    border-color: #253a57;
+}
+QDialog#dataLayersDialog QScrollBar:vertical {
+    background: #09162a;
+    width: 12px;
+    margin: 0;
+}
+QDialog#dataLayersDialog QScrollBar::handle:vertical {
+    background: #315783;
+    min-height: 30px;
+    border-radius: 5px;
+}
+QDialog#dataLayersDialog QScrollBar:horizontal {
+    background: #09162a;
+    height: 12px;
+    margin: 0;
+}
+QDialog#dataLayersDialog QScrollBar::handle:horizontal {
+    background: #315783;
+    min-width: 30px;
+    border-radius: 5px;
+}
+QDialog#dataLayersDialog QScrollBar::add-line,
+QDialog#dataLayersDialog QScrollBar::sub-line {
+    width: 0;
+    height: 0;
+}
+QDialog#dataLayersDialog QToolTip {
+    background-color: #172a46;
+    color: #f4f8ff;
+    border: 1px solid #537faf;
+    padding: 4px;
+}
+"""
 
 
 class _InspectionSignals(QObject):
@@ -173,11 +372,15 @@ class DataLayersDialog(QDialog):
         parent=None,
         *,
         registry: Optional[DataSourceRegistry] = None,
+        asset_manager: Optional[AssetManager] = None,
         latitude: float = 0.0,
         longitude: float = 0.0,
     ) -> None:
         super().__init__(parent)
-        self.registry = registry or DataSourceRegistry.default()
+        self.asset_manager = asset_manager or AssetManager()
+        self.registry = registry or self.asset_manager.data_sources
+        self.asset_manager.data_sources = self.registry
+        self.layer_manager = LayerManager(self.asset_manager)
         self.selection = LayerSelectionService(self.registry)
         self.latitude = float(latitude)
         self.longitude = float(longitude)
@@ -192,20 +395,33 @@ class DataLayersDialog(QDialog):
         self.setWindowTitle(
             getTraduction("DataLayers.Title", "Capes de dades")
         )
-        self.resize(920, 650)
+        self.setObjectName("dataLayersDialog")
+        self.resize(980, 760)
+        self.setStyleSheet(_DATA_LAYERS_STYLE)
         root = QVBoxLayout(self)
-        root.addWidget(self._build_active_group())
-        root.addWidget(self._build_installed_group(), 1)
+        root.setContentsMargins(12, 12, 12, 10)
+        root.setSpacing(10)
+        tabs = QTabWidget()
+        self.layer_configurator = LayerConfiguratorWidget(self.layer_manager, tabs)
+        self.layer_configurator.setObjectName("layerConfiguratorPage")
+        tabs.addTab(self.layer_configurator, "Biblioteca de capes")
+        advanced = QWidget()
+        advanced.setObjectName("advancedLayersPage")
+        advanced_layout = QVBoxLayout(advanced)
+        advanced_layout.addWidget(self._build_active_group())
+        advanced_layout.addWidget(self._build_installed_group(), 1)
+        tabs.addTab(advanced, "Fonts geoespacials avançades")
+        root.addWidget(tabs, 1)
 
         footer = QHBoxLayout()
-        footer.addWidget(
-            QLabel(
-                getTraduction(
-                    "DataLayers.RemoveNote",
-                    "Eliminar del catàleg no esborra els fitxers del disc.",
-                )
+        footer_note = QLabel(
+            getTraduction(
+                "DataLayers.RemoveNote",
+                "Eliminar del catàleg no esborra els fitxers del disc.",
             )
         )
+        footer_note.setObjectName("footerNote")
+        footer.addWidget(footer_note)
         footer.addStretch(1)
         close_button = QPushButton(
             getTraduction("Terrain.CloseButton", "Tancar")
@@ -235,6 +451,7 @@ class DataLayersDialog(QDialog):
         )
         form.addRow("Elevació:", self.combo_elevation)
         self.lbl_effective_elevation = QLabel("")
+        self.lbl_effective_elevation.setObjectName("effectiveSource")
         self.lbl_effective_elevation.setWordWrap(True)
         form.addRow("Elevació efectiva:", self.lbl_effective_elevation)
 
@@ -246,6 +463,7 @@ class DataLayersDialog(QDialog):
         )
         form.addRow("Superfície:", self.combo_surface)
         self.lbl_effective_surface = QLabel("")
+        self.lbl_effective_surface.setObjectName("effectiveSource")
         self.lbl_effective_surface.setWordWrap(True)
         form.addRow("Superfície efectiva:", self.lbl_effective_surface)
 
@@ -257,6 +475,7 @@ class DataLayersDialog(QDialog):
         )
         form.addRow("Contaminació lumínica:", self.combo_light)
         self.lbl_effective_light = QLabel("")
+        self.lbl_effective_light.setObjectName("effectiveSource")
         self.lbl_effective_light.setWordWrap(True)
         form.addRow("Font efectiva:", self.lbl_effective_light)
 

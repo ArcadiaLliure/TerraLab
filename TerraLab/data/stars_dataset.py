@@ -1,4 +1,4 @@
-"""Runtime stars dataset access from `%APPDATA%/TerraLab/data/gaia`."""
+"""Runtime stars dataset access from the user-selected data library."""
 
 from __future__ import annotations
 
@@ -711,7 +711,7 @@ def _build_from_npy_sources(stars_dir: Path, runtime_npy_path: Path) -> bool:
 
 
 def ensure_stars_dataset() -> str:
-    """Ensure `%APPDATA%/TerraLab/data/stars_catalog.npy` exists and return it."""
+    """Ensure the runtime Gaia catalogue exists in the selected library."""
     runtime_npy_path = _runtime_npy_path()
     runtime_npz_path = _runtime_npz_path()
     runtime_zst_path = _runtime_zst_path()

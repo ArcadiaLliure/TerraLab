@@ -260,6 +260,15 @@ def build_deferred_controls_ui(widget):
     self.chk_sun_moon.toggled.connect(
         lambda c: self._persist_visibility_state("sol_i_lluna", c)
     )
+    self.chk_solar_system = QCheckBox("Sistema solar")
+    self.chk_solar_system.setChecked(
+        self._load_visibility_state("sistema_solar", True)
+    )
+    self.chk_solar_system.toggled.connect(self.on_solar_system_toggled)
+    self.chk_planets.setText("   Planetes")
+    self.chk_sun_moon.setText("   Sol i Lluna")
+    self.chk_planets.setEnabled(self.chk_solar_system.isChecked())
+    self.chk_sun_moon.setEnabled(self.chk_solar_system.isChecked())
     self.chk_enable_sky = QCheckBox("Estrelles")
     self.chk_enable_sky.setChecked(
         self._load_visibility_state("estrelles", True)
@@ -285,7 +294,7 @@ def build_deferred_controls_ui(widget):
         self._load_visibility_state("pols_planck", bool(self.dust_map_enabled))
     )
     self.chk_enable_planck_dust.toggled.connect(self.on_planck_dust_toggled)
-    self.chk_deep_space = QCheckBox("l'espai profund")
+    self.chk_deep_space = QCheckBox("Catàleg NGC")
     self.chk_deep_space.setEnabled(True)
     self.chk_deep_space.setChecked(
         self._load_visibility_state("espai_profund", False)
@@ -296,7 +305,7 @@ def build_deferred_controls_ui(widget):
     self.lbl_milkyway_status.setVisible(True)
     for c in (
         self.chk_clima,
-        self.chk_light_pollution,
+        self.chk_solar_system,
         self.chk_planets,
         self.chk_sun_moon,
         self.chk_enable_milkyway,
@@ -926,6 +935,12 @@ def build_deferred_controls_ui(widget):
     gb_earth.setStyleSheet(gb_style)
     v_earth = QVBoxLayout(gb_earth)
     v_earth.setSpacing(6)
+    self.btn_manage_layers = QPushButton("⚙ Gestionar capes")
+    self.btn_manage_layers.setToolTip(
+        "Configura visibilitat, fonts pròpies, descàrregues i prioritats."
+    )
+    self.btn_manage_layers.clicked.connect(self.open_data_layers_dialog)
+    v_earth.addWidget(self.btn_manage_layers)
     self.chk_enable_horizon = QCheckBox("Horitzó")
     self.chk_enable_horizon.setStyleSheet(
         "font-style: normal; font-weight: normal;"
@@ -948,18 +963,33 @@ def build_deferred_controls_ui(widget):
     self.chk_enable_village.toggled.connect(self.canvas.update)
     self.chk_enable_village.toggled.connect(self.on_topography_toggled)
     v_earth.addWidget(self.chk_enable_village)
-    self.chk_terrain_shading = QCheckBox("Relleu suau")
-    self.chk_terrain_shading.setStyleSheet(
+    self.chk_surface_layer = QCheckBox("Tipus de sòl")
+    self.chk_surface_layer.setChecked(
+        self._load_visibility_state("superficie", True)
+    )
+    self.chk_surface_layer.toggled.connect(self.on_surface_layer_toggled)
+    v_earth.addWidget(self.chk_surface_layer)
+    # Compatibility alias for integrations that used a surface checkbox name.
+    self.chk_surface = self.chk_surface_layer
+    v_earth.addWidget(self.chk_light_pollution)
+    legacy_terrain_3d = self._load_visibility_state("ombres_terreny", True)
+    self.chk_terrain_3d = QCheckBox("Relleu tridimensional")
+    self.chk_terrain_3d.setToolTip(
+        "Activat: superfície tridimensional. Desactivat: siluetes per distància."
+    )
+    self.chk_terrain_3d.setStyleSheet(
         "font-style: normal; font-weight: normal;"
     )
-    self.chk_terrain_shading.setChecked(
-        self._load_visibility_state("ombres_terreny", True)
+    self.chk_terrain_3d.setChecked(
+        self._load_visibility_state("relleu_tridimensional", legacy_terrain_3d)
     )
-    self.chk_terrain_shading.toggled.connect(self.canvas.update)
-    self.chk_terrain_shading.toggled.connect(
-        lambda c: self._persist_visibility_state("ombres_terreny", c)
+    self.chk_terrain_3d.toggled.connect(self.canvas.update)
+    self.chk_terrain_3d.toggled.connect(
+        lambda c: self._persist_visibility_state("relleu_tridimensional", c)
     )
-    v_earth.addWidget(self.chk_terrain_shading)
+    # Compatibility alias for integrations that still reference the old control.
+    self.chk_terrain_shading = self.chk_terrain_3d
+    v_earth.addWidget(self.chk_terrain_3d)
     h_lay = QHBoxLayout()
     l_lay = QLabel("Nombre\nde capes")
     l_lay.setStyleSheet(

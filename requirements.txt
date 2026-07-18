@@ -16,4 +16,5 @@ tqdm>=4.66,<5
 cdsapi>=0.7,<1
 requests>=2.31,<3
 zstandard>=0.23,<1
+py7zr>=0.22,<2
 timezonefinder>=8.2,<9

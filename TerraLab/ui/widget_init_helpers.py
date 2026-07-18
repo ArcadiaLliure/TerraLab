@@ -29,6 +29,10 @@ def astro_canvas_init(obj, parent):
     self.debug_render_metrics = bool(get_config_value("debug_render_metrics", False))
     self._last_diagnostics_log_time = 0.0
     self.dragging = False
+    self._camera_interaction_until = 0.0
+    self._camera_idle_timer = QTimer(self)
+    self._camera_idle_timer.setSingleShot(True)
+    self._camera_idle_timer.timeout.connect(self.update)
     self.last_mouse_x = 0
     self.last_mouse_y = 0
     self.setFocusPolicy(Qt.StrongFocus)
@@ -161,6 +165,8 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self = obj
     # 1. Initialize properties required by UI/Canvas
     self.asset_manager = AssetManager()
+    from TerraLab.data.layer_manager import LayerManager
+    self.layer_manager = LayerManager(self.asset_manager)
     self.runtime_layout = dict(getattr(self.asset_manager, "layout", {}))
     self.latitude = float(get_config_value("observer_lat", 41.189795))
     self.longitude = float(get_config_value("observer_lon", 1.210058))

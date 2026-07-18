@@ -19,7 +19,6 @@ from typing import Callable
 
 import numpy as np
 
-from TerraLab.common.app_paths import ensure_runtime_layout
 from TerraLab.data.tile_manifest import build_tile_identifier
 
 try:
@@ -896,7 +895,9 @@ def _frange(start: float, stop: float, step: float):
 
 def _default_output_dir() -> Path:
     """Retorna directori runtime Gaia per defecte."""
-    layout = ensure_runtime_layout()
+    from TerraLab.common.data_library import DataLibrary
+
+    layout = DataLibrary.current(require_configured=True).layout(create=True)
     return Path(layout["data_gaia"]).resolve()
 
 
@@ -907,8 +908,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--output-dir",
-        default=str(_default_output_dir()),
-        help="Destination folder for tile files",
+        default="",
+        help=(
+            "Destination folder for tile files. If omitted, configure the "
+            "TerraLab data library or set TERRALAB_DATA_ROOT."
+        ),
     )
     parser.add_argument(
         "--mag-limit",
@@ -976,8 +980,17 @@ def main() -> int:
         else None
     )
 
+    try:
+        output_dir = (
+            Path(args.output_dir).expanduser().resolve()
+            if str(args.output_dir).strip()
+            else _default_output_dir()
+        )
+    except Exception as exc:
+        parser.error(str(exc))
+
     config = GaiaTileDownloaderConfig(
-        output_dir=Path(args.output_dir).expanduser().resolve(),
+        output_dir=output_dir,
         mag_limit=float(args.mag_limit),
         visible_mag_limit=float(args.visible_mag_limit),
         tile_size_deg=float(args.tile_size_deg),

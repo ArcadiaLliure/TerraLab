@@ -31,6 +31,12 @@ from TerraLab.terrain.providers import (
     CRS_TERRAIN_INTERNAL,
     PYPROJ_TRANSFORMER_LOCK,
 )
+from TerraLab.terrain.representation import (
+    TerrainGeometrySource,
+    TerrainRepresentationMode,
+    normalize_terrain_geometry_source,
+    normalize_terrain_representation_mode,
+)
 
 # --- Constants ---
 R_EARTH = 6_371_000.0
@@ -241,6 +247,28 @@ class HorizonProfile:
     resolved_mask: Optional[np.ndarray] = None
     terrain_mesh: Optional[Dict] = None
     resolved_radius_m: Optional[float] = None
+    schema_version: int = 2
+    representation_mode: TerrainRepresentationMode = TerrainRepresentationMode.RELIEF
+    geometry_source: TerrainGeometrySource = TerrainGeometrySource.LEGACY_UNKNOWN
+    geometry_id: str = ""
+    elevation_source_ids: tuple[str, ...] = ()
+    effective_elevation_source_id: Optional[str] = None
+    elevation_source_status: str = "legacy_unknown"
+    geometry_crs: str = CRS_TERRAIN_INTERNAL
+    observer_x: Optional[float] = None
+    observer_y: Optional[float] = None
+    surface_samples: object = None
+
+    def __post_init__(self) -> None:
+        self.representation_mode = normalize_terrain_representation_mode(
+            self.representation_mode
+        )
+        self.geometry_source = normalize_terrain_geometry_source(
+            self.geometry_source
+        )
+        self.elevation_source_ids = tuple(
+            str(value) for value in (self.elevation_source_ids or ()) if str(value)
+        )
 
     def get_band_points(self, band_id: str):
         """Return list of (az_deg, elevation_deg) for a given band."""
@@ -277,6 +305,18 @@ class HorizonProfile:
     def save(self, path: str):
         """Save profile to .npy file."""
         data = {
+            "schema_version": np.asarray(int(self.schema_version)),
+            "representation_mode": np.asarray(self.representation_mode.value),
+            "geometry_source": np.asarray(self.geometry_source.value),
+            "geometry_id": np.asarray(str(self.geometry_id or "")),
+            "elevation_source_ids": np.asarray(self.elevation_source_ids, dtype=str),
+            "effective_elevation_source_id": np.asarray(
+                str(self.effective_elevation_source_id or "")
+            ),
+            "elevation_source_status": np.asarray(
+                str(self.elevation_source_status or "")
+            ),
+            "geometry_crs": np.asarray(str(self.geometry_crs or CRS_TERRAIN_INTERNAL)),
             "azimuths": self.azimuths,
             "observer_lat": self.observer_lat,
             "observer_lon": self.observer_lon,
@@ -284,6 +324,10 @@ class HorizonProfile:
             "light_domes": self.light_domes,
             "light_peak_distances": self.light_peak_distances,
         }
+        if self.observer_x is not None:
+            data["observer_x"] = np.asarray(float(self.observer_x))
+        if self.observer_y is not None:
+            data["observer_y"] = np.asarray(float(self.observer_y))
         if self.resolved_radius_m is not None:
             data["resolved_radius_m"] = np.asarray(float(self.resolved_radius_m))
         if self.resolved_mask is not None:
@@ -311,6 +355,10 @@ class HorizonProfile:
                     data[f"terrain_mesh_{key}"] = np.asarray(mesh[key])
         for i, b in enumerate(self.bands):
             data[f"band_{i}_id"] = b["id"]
+            if "min" in b:
+                data[f"band_{i}_min"] = np.asarray(float(b["min"]))
+            if "max" in b:
+                data[f"band_{i}_max"] = np.asarray(float(b["max"]))
             data[f"band_{i}_angles"] = b["angles"]
             data[f"band_{i}_dists"] = b["dists"]
             data[f"band_{i}_heights"] = b["heights"]
@@ -338,6 +386,10 @@ class HorizonProfile:
                     "dists": np.asarray(d[f"band_{i}_dists"]).copy(),
                     "heights": np.asarray(d[f"band_{i}_heights"]).copy(),
                 }
+                if f"band_{i}_min" in d:
+                    band["min"] = float(np.asarray(d[f"band_{i}_min"]).item())
+                if f"band_{i}_max" in d:
+                    band["max"] = float(np.asarray(d[f"band_{i}_max"]).item())
                 if f"band_{i}_surface_angles" in d:
                     band["surface_angles"] = np.asarray(
                         d[f"band_{i}_surface_angles"]
@@ -441,6 +493,52 @@ class HorizonProfile:
                 if "resolved_radius_m" in d
                 else None
             )
+            schema_version = (
+                int(np.asarray(d["schema_version"]).item())
+                if "schema_version" in d
+                else 1
+            )
+            representation_mode = normalize_terrain_representation_mode(
+                np.asarray(d["representation_mode"]).item()
+                if "representation_mode" in d
+                else TerrainRepresentationMode.RELIEF
+            )
+            geometry_source = normalize_terrain_geometry_source(
+                np.asarray(d["geometry_source"]).item()
+                if "geometry_source" in d
+                else TerrainGeometrySource.LEGACY_UNKNOWN
+            )
+            geometry_id = (
+                str(np.asarray(d["geometry_id"]).item())
+                if "geometry_id" in d
+                else ""
+            )
+            elevation_source_ids = (
+                tuple(str(value) for value in np.asarray(d["elevation_source_ids"]).tolist())
+                if "elevation_source_ids" in d
+                else ()
+            )
+            effective_elevation_source_id = (
+                str(np.asarray(d["effective_elevation_source_id"]).item())
+                if "effective_elevation_source_id" in d
+                else ""
+            ) or None
+            elevation_source_status = (
+                str(np.asarray(d["elevation_source_status"]).item())
+                if "elevation_source_status" in d
+                else "legacy_unknown"
+            )
+            geometry_crs = (
+                str(np.asarray(d["geometry_crs"]).item())
+                if "geometry_crs" in d
+                else CRS_TERRAIN_INTERNAL
+            )
+            observer_x = (
+                float(np.asarray(d["observer_x"]).item()) if "observer_x" in d else None
+            )
+            observer_y = (
+                float(np.asarray(d["observer_y"]).item()) if "observer_y" in d else None
+            )
 
         return HorizonProfile(
             azimuths=azimuths,
@@ -452,11 +550,92 @@ class HorizonProfile:
             resolved_mask=resolved_mask,
             terrain_mesh=terrain_mesh,
             resolved_radius_m=resolved_radius_m,
+            schema_version=schema_version,
+            representation_mode=representation_mode,
+            geometry_source=geometry_source,
+            geometry_id=geometry_id,
+            elevation_source_ids=elevation_source_ids,
+            effective_elevation_source_id=effective_elevation_source_id,
+            elevation_source_status=elevation_source_status,
+            geometry_crs=geometry_crs,
+            observer_x=observer_x,
+            observer_y=observer_y,
         )
 
     def covers_radius(self, requested_radius_m: float) -> bool:
         """Return false for legacy profiles whose coverage is unknown."""
         return self.resolved_radius_m is not None and self.resolved_radius_m + 0.5 >= float(requested_radius_m)
+
+
+def build_flat_horizon_profile(
+    *,
+    observer_lat: float,
+    observer_lon: float,
+    representation_mode: TerrainRepresentationMode | str = TerrainRepresentationMode.RELIEF,
+    band_defs: Optional[List[Dict]] = None,
+    geometry_id: str = "",
+) -> HorizonProfile:
+    """Build an explicit no-DEM profile while retaining surface sample points."""
+
+    mode = normalize_terrain_representation_mode(representation_mode)
+    definitions = list(
+        band_defs
+        or [{"id": "flat_0_150k", "min": 0.0, "max": 150_000.0}]
+    )
+    azimuths = np.arange(0.0, 360.0, 0.5, dtype=np.float32)
+    bands = []
+    for definition in definitions:
+        maximum = max(1.0, float(definition.get("max", 150_000.0)))
+        zeros = np.zeros(azimuths.shape, dtype=np.float32)
+        bands.append(
+            {
+                "id": str(definition.get("id", "flat")),
+                "min": float(definition.get("min", 0.0)),
+                "max": maximum,
+                "angles": zeros.copy(),
+                "dists": zeros.copy(),
+                "heights": zeros.copy(),
+                "surface_angles": zeros.copy(),
+                "surface_dists": np.full(azimuths.shape, maximum, dtype=np.float32),
+                "surface_heights": zeros.copy(),
+            }
+        )
+    observer_x = observer_y = None
+    try:
+        from pyproj import Transformer
+
+        with PYPROJ_TRANSFORMER_LOCK:
+            transformer = Transformer.from_crs(
+                CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL, always_xy=True
+            )
+        observer_x, observer_y = transformer.transform(
+            float(observer_lon), float(observer_lat)
+        )
+    except Exception:
+        pass
+    resolved_radius = max(float(item["max"]) for item in bands)
+    identity = geometry_id or (
+        f"flat:{float(observer_lat):.6f}:{float(observer_lon):.6f}:"
+        f"{mode.value}:{resolved_radius:.1f}"
+    )
+    profile = HorizonProfile(
+        azimuths=azimuths,
+        bands=bands,
+        observer_lat=float(observer_lat),
+        observer_lon=float(observer_lon),
+        resolved_mask=np.ones(azimuths.shape, dtype=bool),
+        terrain_mesh=None,
+        resolved_radius_m=resolved_radius,
+        representation_mode=mode,
+        geometry_source=TerrainGeometrySource.FLAT_FALLBACK,
+        geometry_id=identity,
+        elevation_source_status="fallback_no_elevation",
+        geometry_crs=CRS_TERRAIN_INTERNAL,
+        observer_x=float(observer_x) if observer_x is not None else None,
+        observer_y=float(observer_y) if observer_y is not None else None,
+    )
+    profile._band_defs = definitions
+    return profile
 
 
 def limit_profile_radius(profile: HorizonProfile, radius_m: float) -> HorizonProfile:
@@ -680,18 +859,19 @@ class TileIndex:
     ) -> Optional[Tuple[float, float, float, float]]:
         # Format: Y_(ymin_ymax)X_(xmin_xmax).npy
         try:
-            base = name.replace(".npy", "")
-            parts = base.split("X_")
-            if len(parts) != 2:
+            import re
+
+            base = name.rsplit(".npy", 1)[0]
+            match = re.search(
+                r"Y_\((-?\d+(?:\.\d+)?)_(-?\d+(?:\.\d+)?)\)"
+                r"X_\((-?\d+(?:\.\d+)?)_(-?\d+(?:\.\d+)?)\)",
+                base,
+                re.IGNORECASE,
+            )
+            if match is None:
                 return None
 
-            y_part = (
-                parts[0].replace("Y_", "").replace("(", "").replace(")", "")
-            )
-            x_part = parts[1].replace("(", "").replace(")", "")
-
-            y_min, y_max = map(float, y_part.split("_"))
-            x_min, x_max = map(float, x_part.split("_"))
+            y_min, y_max, x_min, x_max = map(float, match.groups())
 
             return (x_min, y_min, x_max, y_max)
         except:
@@ -882,11 +1062,18 @@ class TileCache:
             self._packaged_cache_root / f"{base_name}.npy"
         )
 
-        # 2. Try adjacent cache (original location)
+        # 2. Try the library-owned materialized cache.  An already-existing
+        # adjacent cache may be consumed even for an external source, but new
+        # conversions are only published in the selected library.
         adjacent_npy = os.path.splitext(path)[0] + ".npy"
+        materialized_npy = str(tile_info.get("materialized_path", "") or "")
 
         candidate_npy = None
-        if os.path.exists(packaged_npy):
+        if header.get("NPY") and os.path.exists(path):
+            candidate_npy = path
+        elif materialized_npy and os.path.exists(materialized_npy):
+            candidate_npy = materialized_npy
+        elif os.path.exists(packaged_npy):
             candidate_npy = packaged_npy
         elif os.path.exists(adjacent_npy):
             candidate_npy = adjacent_npy
@@ -941,8 +1128,9 @@ class TileCache:
                     else:
                         break
 
-            # Use adjacent folder or packaged folder for saving
-            output_npy = adjacent_npy
+            output_npy = materialized_npy or (
+                adjacent_npy if bool(tile_info.get("allow_adjacent_cache", False)) else ""
+            )
 
             print(
                 f"[HorizonEngine] Parsing with Pandas: {os.path.basename(path)}..."
@@ -983,10 +1171,24 @@ class TileCache:
 
             # Save binary cache to original location if possible
             try:
+                if not output_npy:
+                    raise OSError("No writable materialization target")
+                os.makedirs(os.path.dirname(output_npy), exist_ok=True)
                 with self._io_lock_for(output_npy):
                     temp_output_npy = f"{output_npy}.tmp.npy"
                     np.save(temp_output_npy, data)
                     os.replace(temp_output_npy, output_npy)
+                sidecar = str(tile_info.get("materialized_metadata_path", "") or "")
+                if sidecar:
+                    import json
+
+                    with open(sidecar, "w", encoding="utf-8") as handle:
+                        json.dump(
+                            {"source": path, "cache": output_npy, "header": header},
+                            handle,
+                            ensure_ascii=False,
+                            indent=2,
+                        )
                 # print(f"[HorizonEngine] Saved cache: {os.path.basename(output_npy)}")
             except:
                 pass

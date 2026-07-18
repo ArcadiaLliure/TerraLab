@@ -1075,6 +1075,11 @@ def _palette_for_source(
     return {}
 
 
+# TODO(soil-wms): implement the CLC+ WMS source advertised at
+# https://geoserver.geoville.com/geoserver/clcp/ows?service=WMS&version=1.3.0&request=GetCapabilities
+# for layer CLMS_CLCplus_RASTER_2023_010m_eu.  Tiles must be cached below
+# data_root and composed with the effective DEM.  Do not issue WMS requests
+# until that provider and its bounded cache policy are implemented.
 def create_surface_providers(
     sources: Any,
     *,

@@ -24,7 +24,6 @@ if __package__ in (None, ""):
     if str(_repo_root) not in sys.path:
         sys.path.insert(0, str(_repo_root))
 
-from TerraLab.common.app_paths import ensure_runtime_layout
 from TerraLab.common.deprecation_registry import (
     register_deprecated_method,
 )
@@ -193,12 +192,16 @@ def _fmt_int_ca(value: int) -> str:
 
 
 def _default_output_dir() -> Path:
-    layout = ensure_runtime_layout()
+    from TerraLab.common.data_library import DataLibrary
+
+    layout = DataLibrary.current(require_configured=True).layout(create=True)
     return Path(layout["data_gaia"]).resolve()
 
 
 def _default_state_file() -> Path:
-    layout = ensure_runtime_layout()
+    from TerraLab.common.data_library import DataLibrary
+
+    layout = DataLibrary.current(require_configured=True).layout(create=True)
     root = Path(layout["root"]).resolve()
     return root / "logs" / "gaia_tap_state.json"
 
@@ -913,7 +916,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--state-file",
-        default=str(_default_state_file()),
+        default="",
         help="Persistent state JSON path.",
     )
     parser.add_argument(
@@ -948,8 +951,11 @@ def main() -> int:
     )
     parser.add_argument(
         "--output-dir",
-        default=str(_default_output_dir()),
-        help="Destination folder",
+        default="",
+        help=(
+            "Destination folder. If omitted, configure the TerraLab data "
+            "library or set TERRALAB_DATA_ROOT."
+        ),
     )
     parser.add_argument(
         "--basename", default="stars_catalog", help="Output base name"
@@ -1053,6 +1059,14 @@ def main() -> int:
         help="Optional path to write a persistent execution log",
     )
     args = parser.parse_args()
+
+    try:
+        if not str(args.output_dir).strip():
+            args.output_dir = str(_default_output_dir())
+        if not str(args.state_file).strip():
+            args.state_file = str(_default_state_file())
+    except Exception as exc:
+        parser.error(str(exc))
 
     log_stream, orig_stdout, orig_stderr, _ = _setup_file_logging(
         str(args.log_file or "")

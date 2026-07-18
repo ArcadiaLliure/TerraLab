@@ -12,7 +12,13 @@ import numpy as np
 from TerraLab.terrain.engine import (
     HorizonBaker,
     HorizonProfile,
+    build_flat_horizon_profile,
     generate_bands,
+)
+from TerraLab.terrain.representation import (
+    TerrainGeometrySource,
+    TerrainRepresentationMode,
+    normalize_terrain_representation_mode,
 )
 
 
@@ -97,7 +103,9 @@ def _phase_progress(job_id: str, phase: str, start_pct: float, end_pct: float):
     return _callback
 
 
-def _resolve_light_pollution_path() -> str:
+def _resolve_light_pollution_path(explicit_path: str | None = None) -> str:
+    if explicit_path and os.path.isfile(explicit_path):
+        return str(explicit_path)
     try:
         from TerraLab.config import ConfigManager
 
@@ -119,7 +127,7 @@ def _resolve_light_pollution_path() -> str:
     return ""
 
 
-def _create_provider(tiles_dir: str, progress_callback=None):
+def _create_provider(tiles_dir, progress_callback=None):
     """
     Create the terrain DEM provider used by the bake subprocess.
 
@@ -130,11 +138,9 @@ def _create_provider(tiles_dir: str, progress_callback=None):
     Output CRS:
         - Not applicable (returns a provider object).
     """
-    from TerraLab.terrain.providers import create_raster_provider
+    from TerraLab.terrain.providers import create_elevation_provider
 
-    return create_raster_provider(
-        tiles_dir, progress_callback=progress_callback
-    )
+    return create_elevation_provider(tiles_dir, progress_callback=progress_callback)
 
 
 def _resolve_raycast_step_m(provider) -> float:
@@ -241,7 +247,7 @@ def _save_preview_snapshot(
     _atomic_save_profile(profile, path)
 
 
-def main():
+def _legacy_main():
     """Punt d'entrada del subprocess de bake d'horitzo."""
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -525,6 +531,306 @@ def main():
                 provider.close()
         except Exception:
             pass
+
+
+def _path_has_elevation_data(path_value: str | None) -> bool:
+    raw = str(path_value or "").strip()
+    if not raw:
+        return False
+    path = os.path.abspath(os.path.expanduser(raw))
+    if os.path.isfile(path):
+        return os.path.splitext(path)[1].lower() in {
+            ".tif",
+            ".tiff",
+            ".vrt",
+            ".img",
+            ".jp2",
+            ".asc",
+            ".txt",
+            ".npy",
+        }
+    if not os.path.isdir(path):
+        return False
+    allowed = {".tif", ".tiff", ".vrt", ".img", ".jp2", ".asc", ".txt", ".npy"}
+    return any(
+        os.path.splitext(name)[1].lower() in allowed
+        for root, _dirs, files in os.walk(path)
+        for name in files
+    )
+
+
+def _observer_elevation_sample(provider, x: float, y: float):
+    """Sample observer height while retaining typed-chain provenance."""
+
+    sampler = getattr(provider, "sample_elevations", None)
+    if callable(sampler):
+        try:
+            input_crs = str(getattr(provider, "internal_crs", "EPSG:25831"))
+            batch = sampler(float(x), float(y), input_crs=input_crs)
+            if bool(np.asarray(batch.valid).item()):
+                value = float(np.asarray(batch.values).item())
+                source_index = int(np.asarray(batch.source_indices).item())
+                providers = tuple(getattr(provider, "providers", ()) or ())
+                source_id = None
+                if 0 <= source_index < len(providers):
+                    source_id = str(getattr(providers[source_index], "source_id", "") or "") or None
+                return value, source_id, bool(source_id)
+        except Exception:
+            pass
+    value = provider.get_elevation(float(x), float(y))
+    return (float(value) if value is not None else None), None, False
+
+
+def _runtime_source_metadata(args, provider, sampled_source_id, has_runtime_provenance):
+    requested = tuple(str(value) for value in (args.elevation_source_id or ()) if str(value))
+    if not requested:
+        requested = tuple(
+            str(getattr(item, "source_id", "") or "")
+            for item in tuple(getattr(provider, "providers", ()) or ())
+            if str(getattr(item, "source_id", "") or "")
+        )
+    configured = str(args.effective_elevation_source_id or "") or None
+    status = str(args.elevation_source_status or "automatic")
+    if has_runtime_provenance and sampled_source_id:
+        effective = str(sampled_source_id)
+        if configured and configured != effective and not status.endswith("_sample_fallback"):
+            status += "_sample_fallback"
+    else:
+        effective = configured
+    return requested, effective, status
+
+
+def _load_source_snapshot(path_value: str | None):
+    path = str(path_value or "").strip()
+    if not path or not os.path.isfile(path):
+        return None
+    with open(path, "r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if isinstance(payload, dict):
+        payload = payload.get("sources", payload.get("items", []))
+    return payload if isinstance(payload, list) else None
+
+
+def main(argv=None):
+    """Bake a real or explicit flat-fallback profile and return it."""
+
+    parser = argparse.ArgumentParser(
+        description="Bake a horizon profile in a separate process."
+    )
+    parser.add_argument("--job-id", required=True)
+    parser.add_argument("--lat", type=float, required=True)
+    parser.add_argument("--lon", type=float, required=True)
+    parser.add_argument("--tiles-dir", default="")
+    parser.add_argument("--elevation-sources-json", default="")
+    parser.add_argument("--elevation-source-id", action="append", default=[])
+    parser.add_argument("--effective-elevation-source-id", default="")
+    parser.add_argument("--elevation-source-status", default="automatic")
+    parser.add_argument("--representation-mode", default="relief")
+    parser.add_argument("--light-pollution-path", default="")
+    parser.add_argument("--light-pollution-sources-json", default="")
+    parser.add_argument("--observer-offset", type=float, default=0.0)
+    parser.add_argument("--bands", type=int, default=20)
+    parser.add_argument("--output", required=True)
+    parser.add_argument("--preview-path", required=True)
+    parser.add_argument("--view-azimuth", type=float, default=180.0)
+    parser.add_argument("--view-fov-deg", type=float, default=90.0)
+    parser.add_argument("--view-elevation", type=float, default=0.0)
+    parser.add_argument("--range-settings-json", default="{}")
+    args = parser.parse_args(argv)
+
+    job_id = str(args.job_id)
+    mode = normalize_terrain_representation_mode(args.representation_mode)
+    output_path = os.path.abspath(args.output)
+    preview_path = os.path.abspath(args.preview_path)
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(preview_path), exist_ok=True)
+    provider = None
+    light_sampler = None
+    try:
+        source_snapshot = _load_source_snapshot(args.elevation_sources_json)
+        provider_input = source_snapshot if source_snapshot else args.tiles_dir
+        has_elevation = bool(source_snapshot) or _path_has_elevation_data(args.tiles_dir)
+        requested_ids = tuple(str(value) for value in args.elevation_source_id)
+        if not has_elevation:
+            profile = build_flat_horizon_profile(
+                observer_lat=args.lat,
+                observer_lon=args.lon,
+                representation_mode=mode,
+                band_defs=[
+                    {"id": "flat_0_150k", "min": 0.0, "max": 150_000.0}
+                ],
+            )
+            profile.elevation_source_ids = requested_ids
+            profile.effective_elevation_source_id = None
+            profile.elevation_source_status = "fallback_no_elevation"
+            _atomic_save_profile(profile, preview_path)
+            _atomic_save_profile(profile, output_path)
+            _emit_event(
+                "done",
+                job_id=job_id,
+                profile_path=output_path,
+                resolved_radius_m=float(profile.resolved_radius_m or 0.0),
+            )
+            return profile
+
+        _emit_event("progress", job_id=job_id, phase="prepare", percent=0.0)
+        provider = _create_provider(
+            provider_input,
+            progress_callback=_phase_progress(job_id, "prepare", 0.0, 15.0),
+        )
+        baker = HorizonBaker(provider)
+        x_utm, y_utm = provider.transform_coordinates(args.lat, args.lon)
+        ground_h, sampled_source_id, has_runtime_provenance = _observer_elevation_sample(
+            provider, x_utm, y_utm
+        )
+        if ground_h is None:
+            ground_h = 200.0
+        source_ids, effective_source_id, source_status = _runtime_source_metadata(
+            args, provider, sampled_source_id, has_runtime_provenance
+        )
+
+        from TerraLab.terrain.visibility_range import (
+            EARTH_RADIUS_M,
+            TerrainRangeSettings,
+            resolve_visibility_range,
+        )
+
+        try:
+            settings_payload = json.loads(args.range_settings_json or "{}")
+        except json.JSONDecodeError:
+            settings_payload = {}
+        settings = TerrainRangeSettings.from_mapping(settings_payload)
+        baker.R = EARTH_RADIUS_M * (
+            settings.effective_earth_radius_factor
+            if settings.atmospheric_refraction_enabled
+            else 1.0
+        )
+        range_result = resolve_visibility_range(
+            settings,
+            float(ground_h) + float(args.observer_offset) + float(getattr(baker, "eye_height", 1.7)),
+        )
+        vis_radius = float(range_result.resolved_radius_m)
+        try:
+            provider.prepare_region(
+                x_utm,
+                y_utm,
+                min(vis_radius, settings.immediate_preload_radius_km * 1000.0),
+                progress_callback=_phase_progress(job_id, "prepare", 15.0, 35.0),
+            )
+        except TypeError:
+            provider.prepare_region(x_utm, y_utm, vis_radius)
+
+        light_snapshot = _load_source_snapshot(args.light_pollution_sources_json)
+        if light_snapshot:
+            from TerraLab.terrain.light_pollution_sampler import create_light_pollution_sampler
+
+            light_sampler = create_light_pollution_sampler(light_snapshot)
+        else:
+            try:
+                lp_path = _resolve_light_pollution_path(args.light_pollution_path)
+            except TypeError:
+                lp_path = _resolve_light_pollution_path()
+            if lp_path:
+                from TerraLab.terrain.light_pollution_sampler import LightPollutionSampler
+
+                light_sampler = LightPollutionSampler(lp_path)
+
+        band_defs = generate_bands(max(1, int(args.bands)), max_dist_m=vis_radius)
+        azimuths = [index * 0.5 for index in range(720)]
+
+        def preview_callback(current, total, az_arr, bands_arr, domes, peaks, resolved):
+            preview = HorizonProfile(
+                azimuths=np.asarray(az_arr),
+                bands=bands_arr,
+                observer_lat=float(args.lat),
+                observer_lon=float(args.lon),
+                light_domes=domes,
+                light_peak_distances=peaks,
+                resolved_mask=np.asarray(resolved, dtype=bool),
+                resolved_radius_m=vis_radius,
+                representation_mode=mode,
+                geometry_source=TerrainGeometrySource.REAL_ELEVATION,
+                geometry_id=f"real:{job_id}",
+                elevation_source_ids=source_ids,
+                effective_elevation_source_id=effective_source_id,
+                elevation_source_status=source_status,
+                observer_x=float(x_utm),
+                observer_y=float(y_utm),
+            )
+            _atomic_save_profile(preview, preview_path)
+            _emit_event(
+                "preview",
+                job_id=job_id,
+                snapshot_path=preview_path,
+                current=int(current),
+                total=int(total),
+                resolved_radius_m=vis_radius,
+            )
+
+        az_arr, bands, domes, peaks, resolved = baker.bake_progressive(
+            obs_x=x_utm,
+            obs_y=y_utm,
+            obs_h_ground=float(ground_h) + float(args.observer_offset),
+            step_m=_resolve_raycast_step_m(provider),
+            d_max=vis_radius,
+            delta_az_deg=0.5,
+            band_defs=band_defs,
+            azimuth_order=_build_priority_azimuth_order(
+                azimuths, args.view_azimuth, args.view_fov_deg
+            ),
+            progress_callback=_phase_progress(job_id, "bake", 35.0, 98.0),
+            preview_callback=preview_callback,
+            preview_every=max(12, len(azimuths) // 18),
+            light_sampler=light_sampler,
+            abort_check=None,
+        )
+        terrain_mesh = None
+        if mode is TerrainRepresentationMode.RELIEF:
+            _emit_event("progress", job_id=job_id, phase="terrain_mesh", percent=98.7)
+            terrain_mesh = baker.build_view_mesh(
+                obs_x=x_utm,
+                obs_y=y_utm,
+                obs_h_ground=float(ground_h) + float(args.observer_offset),
+                d_max=vis_radius,
+                delta_az_deg=0.5,
+            )
+        final = HorizonProfile(
+            azimuths=np.asarray(az_arr),
+            bands=bands,
+            observer_lat=float(args.lat),
+            observer_lon=float(args.lon),
+            light_domes=domes,
+            light_peak_distances=peaks,
+            resolved_mask=np.asarray(resolved, dtype=bool),
+            terrain_mesh=terrain_mesh,
+            resolved_radius_m=vis_radius,
+            representation_mode=mode,
+            geometry_source=TerrainGeometrySource.REAL_ELEVATION,
+            geometry_id=f"real:{job_id}",
+            elevation_source_ids=source_ids,
+            effective_elevation_source_id=effective_source_id,
+            elevation_source_status=source_status,
+            observer_x=float(x_utm),
+            observer_y=float(y_utm),
+        )
+        _atomic_save_profile(final, output_path)
+        _emit_event(
+            "done",
+            job_id=job_id,
+            profile_path=output_path,
+            resolved_radius_m=vis_radius,
+        )
+        return final
+    except Exception as exc:
+        _emit_event("error", job_id=job_id, message=str(exc))
+        raise
+    finally:
+        for resource in (light_sampler, provider):
+            if resource is not None and hasattr(resource, "close"):
+                try:
+                    resource.close()
+                except Exception:
+                    pass
 
 
 if __name__ == "__main__":
