@@ -355,6 +355,69 @@ def test_real_dem_builds_mesh_only_for_relief(
     )
 
 
+def test_real_bake_prepares_light_raster_for_full_visibility_radius(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from TerraLab.terrain import light_pollution_sampler
+
+    prepared = []
+
+    class RecordingLightSampler:
+        def __init__(self, path):
+            assert path == "configured-dvnl.tif"
+
+        def prepare_region_from_terrain_xy(self, **kwargs):
+            prepared.append(kwargs)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        bake_process, "_path_has_elevation_data", lambda _path: True
+    )
+    monkeypatch.setattr(
+        bake_process, "_create_provider", lambda *_args, **_kwargs: _FakeProvider()
+    )
+    monkeypatch.setattr(bake_process, "HorizonBaker", _FakeBaker)
+    monkeypatch.setattr(
+        bake_process,
+        "_resolve_light_pollution_path",
+        lambda _path=None: "configured-dvnl.tif",
+    )
+    monkeypatch.setattr(
+        light_pollution_sampler, "LightPollutionSampler", RecordingLightSampler
+    )
+    output = tmp_path / "prepared-light-final.npz"
+    preview = tmp_path / "prepared-light-preview.npz"
+
+    profile = bake_process.main(
+        [
+            "--job-id",
+            "prepared-light",
+            "--lat",
+            "41.5",
+            "--lon",
+            "1.25",
+            "--tiles-dir",
+            str(tmp_path / "dem"),
+            "--representation-mode",
+            TerrainRepresentationMode.PROFILE.value,
+            "--bands",
+            "1",
+            "--output",
+            str(output),
+            "--preview-path",
+            str(preview),
+        ]
+    )
+
+    assert len(prepared) == 1
+    assert prepared[0]["x_terrain"] == 0.0
+    assert prepared[0]["y_terrain"] == 0.0
+    assert prepared[0]["radius_m"] == profile.resolved_radius_m
+    assert prepared[0]["input_crs"] == "EPSG:25831"
+
+
 def test_bake_persists_observer_sample_fallback_source_in_preview_and_final(
     monkeypatch,
     tmp_path: Path,

@@ -717,7 +717,17 @@ class AscRasterProvider(RasterProvider):
                 else None
             ),
         )
-        self.cache = TileCache(capacity=500)
+        # The 5 m ASC tiles are large; the shared 2.4 GiB DEM allowance caused
+        # this subprocess alone to peak near 2.8 GiB.  A 1.5 GiB resident LRU,
+        # combined with per-batch LRU prioritisation, keeps the active angular
+        # working set resident while preserving the 2 GiB process target.
+        self.cache = TileCache(
+            capacity=500,
+            max_bytes=min(
+                DEFAULT_PERFORMANCE_BUDGET.dem_bytes,
+                1536 * 1024**2,
+            ),
+        )
         self.sampler = DemSampler(self.index, self.cache)
         metadata = []
         for tile in getattr(self.index, "tiles", ()):
@@ -842,6 +852,10 @@ class AscRasterProvider(RasterProvider):
                 except Exception as e:
                     print(f"[AscRasterProvider] Tile load error: {e}")
 
+        pin = getattr(self.cache, "pin", None)
+        if callable(pin):
+            pin(tiles_needed)
+
     def get_elevation(self, x: float, y: float) -> Optional[float]:
         """Obte elevation de la instancia de AscRasterProvider.
 
@@ -884,6 +898,15 @@ class AscRasterProvider(RasterProvider):
         self.sample_selection_ns += time.perf_counter_ns() - selection_start
         self.sample_candidate_tiles += len(candidate_groups)
         self.sampled_points += int(flat_x.size)
+        # Tiles containing the most points are normally the near-observer
+        # tiles shared by consecutive azimuth blocks.  Keep those at the MRU
+        # end without changing the deterministic overlap sampling order.
+        cache_priority = sorted(
+            candidate_groups, key=lambda item: int(item[1].size)
+        )
+        prioritize = getattr(self.cache, "prioritize", None)
+        if callable(prioritize):
+            prioritize(tile for tile, _indices in cache_priority)
         interpolation_start = time.perf_counter_ns()
         for tile, candidate_indices in candidate_groups:
             indices = candidate_indices[~valid[candidate_indices]]
@@ -942,6 +965,8 @@ class AscRasterProvider(RasterProvider):
             chosen = indices[point_valid]
             values[chosen] = sampled[point_valid]
             valid[chosen] = True
+        if callable(prioritize):
+            prioritize(tile for tile, _indices in cache_priority)
         self.sample_interpolation_ns += time.perf_counter_ns() - interpolation_start
         sources = np.where(valid, 0, -1).astype(np.int16)
         return ElevationBatch(

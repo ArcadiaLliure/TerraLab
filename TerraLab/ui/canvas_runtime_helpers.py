@@ -458,22 +458,17 @@ def canvas_paintEvent(canvas, event):
                 self.parent_widget._on_canvas_first_useful_paint()
         if scene_stage_rank <= 0:
             return
-        # Interaction mode: favor smoothness while user moves camera/scope.
-        # Camera movement additionally replaces relief with its 2-D profile
-        # until the camera becomes idle; scope-reticle and time dragging do not.
-        camera_interaction_active = bool(
+        # Interaction mode: favor smoothness while camera or simulated time moves.
+        # Both temporarily replace relief with the bounded 2-D profile; moving
+        # only the scope reticle does not alter terrain detail.
+        view_interaction_active = bool(
             self._camera_interaction_active(
-                include_time_drag=False,
+                include_time_drag=True,
                 include_animation=True,
             )
         )
         fast_interaction = bool(
-            camera_interaction_active
-            or self._camera_interaction_active(
-                include_time_drag=True,
-                include_animation=True,
-            )
-            or self.scope_mode_enabled()
+            view_interaction_active or self.scope_mode_enabled()
         )
         painter.setRenderHint(QPainter.Antialiasing, not fast_interaction)
         painter.setRenderHint(QPainter.TextAntialiasing, not fast_interaction)
@@ -745,10 +740,10 @@ def canvas_paintEvent(canvas, event):
                 sun_az=eff_sun_az,
                 terrain_3d_enabled=_terrain_relief_enabled_for_frame(
                     terrain_3d_enabled,
-                    camera_interaction_active,
+                    view_interaction_active,
                 ),
                 sky_color_fn=self.sky_color_phys,
-                interaction_active=fast_interaction,
+                interaction_active=view_interaction_active,
             )
             if hasattr(self, '_dome_count') and self._dome_count > 0:
                 current_time = __import__('time').time()

@@ -60,6 +60,7 @@ def build_deferred_controls_ui(widget):
     # â”€â”€ TIME BAR (At the top) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     self.time_bar = RusticTimeBar()
     self.time_bar.valueChanged.connect(self.on_time_bar_change)
+    self.time_bar.dragStateChanged.connect(self.on_time_bar_drag_state_changed)
     self.time_bar.update_params(self.latitude, self.longitude, self.manual_day)
     frame_layout.addWidget(self.time_bar)
     # Loading indicator (absolute, sobre canvas)

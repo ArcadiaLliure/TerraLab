@@ -203,6 +203,7 @@ def _build_priority_azimuth_order(
 
 
 def _atomic_save_profile(profile: HorizonProfile, path: str) -> None:
+    save_started_ns = time.perf_counter_ns()
     tmp_path = f"{path}.tmp.npz"
     max_attempts = 6
     last_exc = None
@@ -210,6 +211,24 @@ def _atomic_save_profile(profile: HorizonProfile, path: str) -> None:
         try:
             profile.save(tmp_path)
             os.replace(tmp_path, path)
+            elapsed_s = (time.perf_counter_ns() - save_started_ns) / 1e9
+            try:
+                from TerraLab.common.perf_events import append_perf_event
+                from TerraLab.common.performance import process_memory_bytes
+
+                rss_bytes, peak_rss_bytes = process_memory_bytes()
+                append_perf_event(
+                    "terrain.serialization",
+                    elapsed_s=round(elapsed_s, 6),
+                    azimuths=int(len(profile.azimuths)),
+                    bands=int(len(profile.bands)),
+                    mesh_present=bool(profile.terrain_mesh),
+                    output_bytes=int(os.path.getsize(path)),
+                    rss_bytes=int(rss_bytes),
+                    peak_rss_bytes=int(peak_rss_bytes),
+                )
+            except Exception:
+                pass
             return
         except PermissionError as exc:
             last_exc = exc
@@ -221,6 +240,17 @@ def _atomic_save_profile(profile: HorizonProfile, path: str) -> None:
             raise
     if last_exc is not None:
         raise last_exc
+
+
+def _unique_preview_path(base_path: str, current: int) -> str:
+    """Return an immutable preview name so Windows readers never block replace."""
+
+    root, extension = os.path.splitext(os.path.abspath(base_path))
+    extension = extension or ".npz"
+    return (
+        f"{root}_{max(0, int(current)):08d}_"
+        f"{time.monotonic_ns()}{extension}"
+    )
 
 
 def _save_preview_snapshot(
@@ -245,6 +275,54 @@ def _save_preview_snapshot(
         resolved_radius_m=float(resolved_radius_m),
     )
     _atomic_save_profile(profile, path)
+
+
+def _reduced_preview_payload(
+    azimuths,
+    bands,
+    light_domes,
+    light_peak_distances,
+    resolved_mask,
+    *,
+    maximum_azimuths: int = 1440,
+):
+    """Return a resolved-only, angularly bounded snapshot payload."""
+    azimuths = np.asarray(azimuths)
+    resolved = np.asarray(resolved_mask, dtype=bool)
+    resolved_indices = np.flatnonzero(resolved)
+    limit = max(1, int(maximum_azimuths))
+    if resolved_indices.size > limit:
+        positions = np.linspace(
+            0, resolved_indices.size - 1, limit, dtype=np.int64
+        )
+        resolved_indices = resolved_indices[positions]
+    # Priority-order processing resolves the visible view first.  Sort only
+    # after selection so that early previews retain those useful samples.
+    indices = np.sort(resolved_indices)
+    reduced_bands = []
+    for band in bands:
+        reduced = {
+            key: value
+            for key, value in band.items()
+            if key not in {
+                "angles", "dists", "heights", "surface_angles",
+                "surface_dists", "surface_heights",
+            }
+        }
+        for key in (
+            "angles", "dists", "heights", "surface_angles",
+            "surface_dists", "surface_heights",
+        ):
+            if key in band:
+                reduced[key] = np.asarray(band[key])[indices]
+        reduced_bands.append(reduced)
+    return (
+        azimuths[indices],
+        reduced_bands,
+        np.asarray(light_domes)[indices],
+        np.asarray(light_peak_distances)[indices],
+        np.ones(indices.size, dtype=bool),
+    )
 
 
 def _legacy_main():
@@ -399,7 +477,7 @@ def _legacy_main():
                 view_azimuth=float(args.view_azimuth) % 360.0,
                 view_fov_deg=max(1.0, float(args.view_fov_deg)),
             )
-            preview_every = max(12, min(48, int(max(1, len(azimuths) // 18))))
+            preview_every = max(1, int(math.ceil(len(azimuths) / 18.0)))
             last_preview_emit = {"t": 0.0}
 
             def _preview_callback(
@@ -415,15 +493,21 @@ def _legacy_main():
                 if current < total and (now - last_preview_emit["t"]) < 0.20:
                     return
                 try:
-                    _save_preview_snapshot(
-                        preview_path,
-                        args.lat,
-                        args.lon,
+                    preview_payload = _reduced_preview_payload(
                         az_arr,
                         bands_arr,
                         domes,
                         peak_distances,
-                        np.asarray(resolved_mask, dtype=bool),
+                        resolved_mask,
+                    )
+                    snapshot_path = _unique_preview_path(
+                        preview_path, current
+                    )
+                    _save_preview_snapshot(
+                        snapshot_path,
+                        args.lat,
+                        args.lon,
+                        *preview_payload,
                         vis_radius,
                     )
                 except Exception as exc:
@@ -439,7 +523,7 @@ def _legacy_main():
                     "preview",
                     job_id=job_id,
                     observer={"lat": float(args.lat), "lon": float(args.lon)},
-                    snapshot_path=preview_path,
+                    snapshot_path=snapshot_path,
                     current=int(current),
                     total=int(total),
                     resolved_radius_m=vis_radius,
@@ -742,33 +826,69 @@ def main(argv=None):
 
                 light_sampler = LightPollutionSampler(lp_path)
 
+        # The vectorized light sampler is fast only when its projected raster
+        # window has been prepared.  Without this step a 530 km bake used to
+        # fall back to roughly 1.8 million individual GeoTIFF reads.
+        if light_sampler is not None:
+            from TerraLab.terrain.providers import CRS_TERRAIN_INTERNAL
+
+            light_sampler.prepare_region_from_terrain_xy(
+                x_terrain=float(x_utm),
+                y_terrain=float(y_utm),
+                radius_m=float(vis_radius),
+                input_crs=CRS_TERRAIN_INTERNAL,
+            )
+
         band_defs = generate_bands(max(1, int(args.bands)), max_dist_m=vis_radius)
         azimuths = [index * ray_step_deg for index in range(ray_count(ray_step_deg))]
+        latest_preview = {"profile": None}
 
         def preview_callback(current, total, az_arr, bands_arr, domes, peaks, resolved):
-            preview = HorizonProfile(
-                azimuths=np.asarray(az_arr),
-                bands=bands_arr,
-                observer_lat=float(args.lat),
-                observer_lon=float(args.lon),
-                light_domes=domes,
-                light_peak_distances=peaks,
-                resolved_mask=np.asarray(resolved, dtype=bool),
-                resolved_radius_m=vis_radius,
-                representation_mode=mode,
-                geometry_source=TerrainGeometrySource.REAL_ELEVATION,
-                geometry_id=f"real:{job_id}",
-                elevation_source_ids=source_ids,
-                effective_elevation_source_id=effective_source_id,
-                elevation_source_status=source_status,
-                observer_x=float(x_utm),
-                observer_y=float(y_utm),
-            )
-            _atomic_save_profile(preview, preview_path)
+            try:
+                (
+                    preview_azimuths,
+                    preview_bands,
+                    preview_domes,
+                    preview_peaks,
+                    preview_resolved,
+                ) = _reduced_preview_payload(
+                    az_arr, bands_arr, domes, peaks, resolved
+                )
+                preview = HorizonProfile(
+                    azimuths=preview_azimuths,
+                    bands=preview_bands,
+                    observer_lat=float(args.lat),
+                    observer_lon=float(args.lon),
+                    light_domes=preview_domes,
+                    light_peak_distances=preview_peaks,
+                    resolved_mask=preview_resolved,
+                    resolved_radius_m=vis_radius,
+                    representation_mode=mode,
+                    geometry_source=TerrainGeometrySource.REAL_ELEVATION,
+                    geometry_id=f"real:{job_id}",
+                    elevation_source_ids=source_ids,
+                    effective_elevation_source_id=effective_source_id,
+                    elevation_source_status=source_status,
+                    observer_x=float(x_utm),
+                    observer_y=float(y_utm),
+                )
+                snapshot_path = _unique_preview_path(
+                    preview_path, current
+                )
+                _atomic_save_profile(preview, snapshot_path)
+                latest_preview["profile"] = preview
+            except Exception as exc:
+                # A preview is optional and must never cancel the final bake.
+                print(
+                    f"[HorizonBakeProcess] Preview snapshot skipped: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return
             _emit_event(
                 "preview",
                 job_id=job_id,
-                snapshot_path=preview_path,
+                snapshot_path=snapshot_path,
                 current=int(current),
                 total=int(total),
                 resolved_radius_m=vis_radius,
@@ -787,7 +907,7 @@ def main(argv=None):
             ),
             progress_callback=_phase_progress(job_id, "bake", 35.0, 98.0),
             preview_callback=preview_callback,
-            preview_every=max(12, len(azimuths) // 18),
+            preview_every=max(1, int(math.ceil(len(azimuths) / 18.0))),
             light_sampler=light_sampler,
             abort_check=None,
         )
@@ -821,6 +941,12 @@ def main(argv=None):
             observer_y=float(y_utm),
         )
         _atomic_save_profile(final, output_path)
+        # Preserve the historical fixed preview path for tooling that inspects
+        # it after completion.  It is published only once, after preview
+        # generation has stopped, so no live reader can block a subsequent
+        # os.replace on Windows.
+        if latest_preview["profile"] is not None:
+            _atomic_save_profile(latest_preview["profile"], preview_path)
         _emit_event(
             "done",
             job_id=job_id,

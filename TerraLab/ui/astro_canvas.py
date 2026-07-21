@@ -524,17 +524,19 @@ class AstroCanvas(LegacyAstroCanvas):
             )
             snapshot = coordinator_ephemeris.get_snapshot() or {}
             if not isinstance(snapshot, dict):
-                return super().update_skyfield_cache(ut_hour, day_of_year)
+                self._last_skyfield_update = 0
+                return None
             if "sun" not in snapshot or "moon" not in snapshot:
-                return super().update_skyfield_cache(ut_hour, day_of_year)
+                self._last_skyfield_update = 0
+                return None
             if not _snapshot_cache_compatible(snapshot):
-                # Ephemeris snapshot schema may be lighter than renderer cache schema.
-                # Fall back to legacy full cache build to keep render layers aligned.
-                return super().update_skyfield_cache(ut_hour, day_of_year)
+                self._last_skyfield_update = 0
+                return None
             if not _snapshot_matches_request_time(snapshot):
-                # The async coordinator can return an older snapshot while a new one
-                # is still being computed. Never render stale eclipse geometry.
-                return super().update_skyfield_cache(ut_hour, day_of_year)
+                # Keep the previous visual snapshot until the coalesced async
+                # request completes. Never run Skyfield in the GUI paint path.
+                self._last_skyfield_update = 0
+                return None
             self._sf_cache = {
                 "time": float(ut_hour),
                 "ut_hour": float(ut_hour),
@@ -546,7 +548,8 @@ class AstroCanvas(LegacyAstroCanvas):
             }
             return snapshot
         except Exception:
-            return super().update_skyfield_cache(ut_hour, day_of_year)
+            self._last_skyfield_update = 0
+            return None
 
     def _collect_enabled_layers(self, widget_pare: Any) -> set[str]:
         """Deriva el conjunt de capes visibles des de l'estat actual de la UI."""

@@ -3078,12 +3078,19 @@ class AstronomicalWidget(CustomWidgetBase):
     def clear_measurement_overlays(self):
         self.canvas.clear_measurements()
         self._sync_measure_tool_buttons(self.canvas.measurement_controller.active_tool)
+    def on_time_bar_drag_state_changed(self, active):
+        self._dragging_time = bool(active)
+        if hasattr(self, "canvas"):
+            self.canvas.update()
+            if not self._dragging_time:
+                # Repaint once more after the lightweight interaction frame so
+                # the settled view restores its normal-detail representation.
+                QTimer.singleShot(0, self.canvas.update)
     def on_time_bar_change(self, val):
         self.use_real_time = False
         self.btn_realtime.setChecked(False)
         self.manual_hour = val
         self._last_seek_hour = val
-        self.canvas.update()
         self.canvas.update()
         # Time bar stays LOCAL; hint shows local and UTC from observer tz conversion.
         if hasattr(self.canvas, 'hint_overlay'):

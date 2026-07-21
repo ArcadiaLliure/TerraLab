@@ -94,6 +94,41 @@ class _TerrainRenderAsset:
             np.asarray(getattr(self, name)).setflags(write=False)
 
 
+def _extrema_lod_indices(values, maximum_points: int) -> np.ndarray:
+    """Bound a dense angular series while retaining local peaks and valleys."""
+
+    series = np.asarray(values)
+    count = int(series.size)
+    limit = max(2, int(maximum_points))
+    if count <= limit:
+        return np.arange(count, dtype=np.int32)
+
+    # Two extrema per bucket preserve narrow ridges and valleys substantially
+    # better than a uniform stride while keeping the Qt polygon size bounded.
+    bucket_target = max(1, (limit - 2) // 2)
+    stride = max(1, int(math.ceil(count / bucket_target)))
+    bucket_count = int(math.ceil(count / stride))
+    padded_count = bucket_count * stride
+    finite = np.isfinite(series)
+    low = np.full(padded_count, np.inf, dtype=np.float64)
+    high = np.full(padded_count, -np.inf, dtype=np.float64)
+    source = np.asarray(series, dtype=np.float64)
+    low[:count] = np.where(finite, source, np.inf)
+    high[:count] = np.where(finite, source, -np.inf)
+    low = low.reshape(bucket_count, stride)
+    high = high.reshape(bucket_count, stride)
+    has_finite = np.any(np.isfinite(low), axis=1)
+    starts = np.arange(bucket_count, dtype=np.int64) * stride
+    minima = starts + np.argmin(low, axis=1)
+    maxima = starts + np.argmax(high, axis=1)
+    pairs = np.sort(np.stack((minima, maxima), axis=1), axis=1)
+    selected = pairs[has_finite].reshape(-1)
+    selected = np.concatenate(
+        (np.asarray([0], dtype=np.int64), selected, np.asarray([count - 1]))
+    )
+    return np.unique(selected).astype(np.int32)
+
+
 @dataclass(frozen=True)
 class _TerrainSurfaceSpan:
     """One topologically continuous, projected terrain contribution."""
@@ -797,25 +832,49 @@ class _BandPoints:
         # Parsegem min/max de l'ID (ex: "far_25k_38k")
         self.band_min, self.band_max = _parse_band_max_from_id(band_id)
         self.points, self.valid_mask = self._build(
-            profile.get_band_points(band_id), profile, vert_exaggeration
+            self._profile_band_points(profile, band_id), profile, vert_exaggeration
         )
-        surface_raw = []
-        surface_getter = getattr(profile, "get_band_surface_points", None)
-        if callable(surface_getter):
-            surface_raw = surface_getter(band_id)
         self.surface_points, self.surface_valid_mask = self._build(
-            surface_raw, profile, vert_exaggeration
+            self._profile_band_points(profile, band_id, surface=True),
+            profile,
+            vert_exaggeration,
         )
 
     # ── private ──
 
+    @staticmethod
+    def _profile_band_points(profile, band_id, *, surface=False):
+        """Return NumPy arrays directly, avoiding millions of Python tuples."""
+
+        angle_key = "surface_angles" if surface else "angles"
+        azimuths = np.asarray(getattr(profile, "azimuths", ()), dtype=np.float32)
+        for band in getattr(profile, "bands", ()) or ():
+            if str(band.get("id", "")) != str(band_id) or angle_key not in band:
+                continue
+            angles = np.asarray(band[angle_key], dtype=np.float32)
+            if angles.shape != azimuths.shape:
+                break
+            elevations = np.where(
+                angles <= -np.pi / 2.0,
+                -10.0,
+                np.rad2deg(angles),
+            ).astype(np.float32)
+            return azimuths, elevations
+
+        getter_name = "get_band_surface_points" if surface else "get_band_points"
+        getter = getattr(profile, getter_name, None)
+        return getter(band_id) if callable(getter) else []
+
     def _build(self, raw, profile, vert_exag):
-        if not raw:
+        if raw is None or len(raw) == 0:
             return (None, None), None
 
         # Unpack raw data (list of (az, elev))
         # Check if raw is already a numpy array from the engine
-        if isinstance(raw, np.ndarray):
+        if isinstance(raw, tuple) and len(raw) == 2:
+            az = np.asarray(raw[0], dtype=np.float32)
+            elev = np.asarray(raw[1], dtype=np.float32)
+        elif isinstance(raw, np.ndarray):
             az = raw[:, 0]
             elev = raw[:, 1]
         else:
@@ -883,6 +942,10 @@ class HorizonOverlay(QObject):
         self._terrain_polygon_cache_key = None
         self._terrain_polygon_cache = None
         self._terrain_polygon_cache_geometry = None
+        self._profile_polygon_cache_view_key = None
+        self._profile_polygon_cache = {}
+        self._profile_image_cache_key = None
+        self._profile_image_cache = None
         self._terrain_surface_image_cache_key = None
         self._terrain_surface_image_cache = None
         self._terrain_surface_image_geometry = None
@@ -974,6 +1037,10 @@ class HorizonOverlay(QObject):
         self._terrain_polygon_cache_key = None
         self._terrain_polygon_cache = None
         self._terrain_polygon_cache_geometry = None
+        self._profile_polygon_cache_view_key = None
+        self._profile_polygon_cache.clear()
+        self._profile_image_cache_key = None
+        self._profile_image_cache = None
         self._terrain_surface_image_cache_key = None
         self._terrain_surface_image_cache = None
         self._terrain_surface_image_geometry = None
@@ -1028,6 +1095,10 @@ class HorizonOverlay(QObject):
         self._terrain_polygon_cache_key = None
         self._terrain_polygon_cache = None
         self._terrain_polygon_cache_geometry = None
+        self._profile_polygon_cache_view_key = None
+        self._profile_polygon_cache.clear()
+        self._profile_image_cache_key = None
+        self._profile_image_cache = None
         self._terrain_surface_image_cache_key = None
         self._terrain_surface_image_cache = None
         self._terrain_surface_image_geometry = None
@@ -1038,6 +1109,79 @@ class HorizonOverlay(QObject):
         if self.allow_procedural_fallback:
             self._build_procedural_fallback()
         self.request_update.emit()
+
+    @staticmethod
+    def _profile_point_budget(width: int, interaction_active: bool) -> int:
+        width = max(1, int(width))
+        if interaction_active:
+            return max(256, min(1024, width))
+        return max(512, min(2048, width * 2))
+
+    def _profile_layers_for_frame(self, interaction_active: bool):
+        layers = self._layers
+        if not interaction_active or len(layers) <= 12:
+            return layers
+        indices = np.unique(
+            np.rint(np.linspace(0, len(layers) - 1, 12)).astype(np.int32)
+        )
+        return [layers[int(index)] for index in indices]
+
+    def _prepare_profile_polygon_cache(
+        self,
+        profile,
+        projection_fn,
+        width,
+        height,
+        current_azimuth,
+        az_min,
+        az_max,
+        interaction_active,
+    ) -> None:
+        view_key = (
+            id(profile),
+            int(width),
+            int(height),
+            float(current_azimuth),
+            float(az_min),
+            float(az_max),
+            bool(interaction_active),
+            self._profile_point_budget(width, interaction_active),
+            self._projection_geometry_signature(projection_fn, az_min, az_max),
+        )
+        if view_key != self._profile_polygon_cache_view_key:
+            self._profile_polygon_cache_view_key = view_key
+            self._profile_polygon_cache.clear()
+
+    def _draw_cached_profile_polygons(self, painter, cache_key, color) -> bool:
+        if self._profile_polygon_cache_view_key is None:
+            return False
+        polygons = self._profile_polygon_cache.get(cache_key)
+        if polygons is None:
+            return False
+        painter.setBrush(QBrush(color))
+        painter.setPen(Qt.NoPen)
+        for polygon in polygons:
+            painter.drawPolygon(polygon)
+        return True
+
+    def _cache_profile_polygons(self, cache_key, list_sx, list_sy, bottom_y):
+        polygons = []
+        for sx_arr, sy_arr in zip(list_sx, list_sy):
+            valid = np.isfinite(sx_arr) & np.isfinite(sy_arr)
+            if np.count_nonzero(valid) < 2:
+                continue
+            f_sx = np.asarray(sx_arr[valid], dtype=np.float32)
+            f_sy = np.asarray(sy_arr[valid], dtype=np.float32)
+            points = [
+                QPointF(float(x), float(y)) for x, y in zip(f_sx, f_sy)
+            ]
+            points.append(QPointF(float(f_sx[-1]), float(bottom_y)))
+            points.append(QPointF(float(f_sx[0]), float(bottom_y)))
+            polygons.append(QPolygonF(points))
+        result = tuple(polygons)
+        if self._profile_polygon_cache_view_key is not None:
+            self._profile_polygon_cache[cache_key] = result
+        return result
 
     def draw(
         self,
@@ -1179,15 +1323,53 @@ class HorizonOverlay(QObject):
         has_terrain_mesh = bool(terrain_mesh)
         has_surface2d = self._has_terrain_surface_2d(terrain_mesh)
         use_3d_relief = bool(terrain_3d_enabled and has_surface2d)
+        profile_target_painter = painter
+        profile_image = None
+        profile_image_painter = None
+        profile_image_key = None
 
         if use_3d_relief:
+            self._profile_polygon_cache_view_key = None
+            self._profile_polygon_cache.clear()
             while pending_domes:
                 d_info = pending_domes.pop(0)
                 draw_domes_callback(painter, d_info["idx"], d_info["dist"])
         else:
+            self._prepare_profile_polygon_cache(
+                self.profile,
+                projection_fn,
+                width,
+                height,
+                current_azimuth,
+                az_min,
+                az_max,
+                interaction_active,
+            )
+            if not interaction_active and not pending_domes and self._layers:
+                profile_image_key = (
+                    self._profile_polygon_cache_view_key,
+                    round(float(t_night) * 256.0) / 256.0,
+                    int(sky_ref.rgba()),
+                )
+                if (
+                    profile_image_key == self._profile_image_cache_key
+                    and self._profile_image_cache is not None
+                ):
+                    painter.drawImage(0, 0, self._profile_image_cache)
+                    return
+                profile_image = QImage(
+                    int(width), int(height), QImage.Format_ARGB32_Premultiplied
+                )
+                profile_image.fill(0)
+                profile_image_painter = QPainter(profile_image)
+                profile_image_painter.setRenderHint(
+                    QPainter.Antialiasing,
+                    painter.testRenderHint(QPainter.Antialiasing),
+                )
+                profile_target_painter = profile_image_painter
             # Bands are already ordered far-to-near. In silhouette mode the
             # layer-count control remains authoritative even if a mesh exists.
-            terrain_layers = self._layers
+            terrain_layers = self._profile_layers_for_frame(interaction_active)
             for band_pts, night_c, day_c in terrain_layers:
                 # First: Draw any domes that are behind or within this band (further than band_min)
                 while (
@@ -1201,7 +1383,7 @@ class HorizonOverlay(QObject):
                     base_color, sky_ref, band_pts, t_night
                 )
                 self._draw_band_linear(
-                    painter,
+                    profile_target_painter,
                     band_pts,
                     color,
                     projection_fn,
@@ -1213,6 +1395,7 @@ class HorizonOverlay(QObject):
                     az_max,
                     projection_fn_numpy,
                     terrain_shading_enabled=False,
+                    interaction_active=interaction_active,
                 )
 
         # ── Farciment del terra amb gradient de perspectiva ───────────────────────
@@ -1231,7 +1414,7 @@ class HorizonOverlay(QObject):
             ground_c = _lerp_color(GROUND_DAY, GROUND_NIGHT, t_night)
             nearest = self._layers[-1]
             self._draw_ground_linear(
-                painter,
+                profile_target_painter,
                 nearest[0],
                 ground_c,
                 projection_fn,
@@ -1243,7 +1426,15 @@ class HorizonOverlay(QObject):
                 az_max,
                 overlap_px=1.0,
                 projection_fn_numpy=projection_fn_numpy,
+                interaction_active=interaction_active,
             )
+
+        if profile_image_painter is not None and profile_image is not None:
+            profile_image_painter.end()
+            self._profile_image_cache_key = profile_image_key
+            self._profile_image_cache = profile_image
+            painter.drawImage(0, 0, profile_image)
+            return
 
         if use_3d_relief:
             self._draw_terrain_surface_2d(
@@ -2971,10 +3162,23 @@ class HorizonOverlay(QObject):
         sun_az=None,
         terrain_shading_enabled=True,
         sky_color=None,
+        interaction_active=False,
     ):
         """
         Draw one filled silhouette band using the shared sky projection.
         """
+        polygon_cache_key = ("band", id(band_pts))
+        cacheable_fill = bool(
+            not terrain_shading_enabled
+            and ridge_color is None
+            and shadow_color is None
+            and surface_color is None
+        )
+        if cacheable_fill and self._draw_cached_profile_polygons(
+            painter, polygon_cache_key, color
+        ):
+            return
+
         az_raw, h_raw = band_pts.points
         if az_raw is None:
             return
@@ -3005,6 +3209,13 @@ class HorizonOverlay(QObject):
             culled_valid = np.asarray(valid_raw[mask], dtype=bool)
             if not np.any(culled_valid):
                 continue
+
+            point_budget = self._profile_point_budget(w, interaction_active)
+            if len(culled_az) > point_budget and bool(np.all(culled_valid)):
+                lod_indices = _extrema_lod_indices(culled_h, point_budget)
+                culled_az = culled_az[lod_indices]
+                culled_h = culled_h[lod_indices]
+                culled_valid = culled_valid[lod_indices]
 
             # 2. VECTORIZED PROJECTION
             if proj_fn_numpy:
@@ -3066,6 +3277,13 @@ class HorizonOverlay(QObject):
                     band_pts,
                     sky_color,
                 )
+            elif cacheable_fill and self._profile_polygon_cache_view_key is not None:
+                painter.setBrush(QBrush(color))
+                painter.setPen(Qt.NoPen)
+                for polygon in self._cache_profile_polygons(
+                    polygon_cache_key, all_sx, all_sy, h * 2
+                ):
+                    painter.drawPolygon(polygon)
             else:
                 self._fill_strip_downward_numpy(
                     painter, all_sx, all_sy, color, h * 2, solid=True
@@ -3311,10 +3529,17 @@ class HorizonOverlay(QObject):
         overlap_px=0.0,
         projection_fn_numpy=None,
         ridge_color=None,
+        interaction_active=False,
     ):
         """
         Draw ground fill using the same projection logic as bands.
         """
+        polygon_cache_key = ("ground", id(band_pts), float(overlap_px))
+        if ridge_color is None and self._draw_cached_profile_polygons(
+            painter, polygon_cache_key, color
+        ):
+            return
+
         az_raw, h_raw = band_pts.points
         if az_raw is None:
             return
@@ -3333,6 +3558,11 @@ class HorizonOverlay(QObject):
 
             culled_az = final_az[mask]
             culled_h = h_raw[mask]
+            point_budget = self._profile_point_budget(w, interaction_active)
+            if len(culled_az) > point_budget:
+                lod_indices = _extrema_lod_indices(culled_h, point_budget)
+                culled_az = culled_az[lod_indices]
+                culled_h = culled_h[lod_indices]
 
             if projection_fn_numpy:
                 projected = projection_fn_numpy(culled_h, culled_az)
@@ -3362,9 +3592,17 @@ class HorizonOverlay(QObject):
             all_sy.append(sy)
 
         if all_sx:
-            self._fill_strip_downward_numpy(
-                painter, all_sx, all_sy, color, h * 2, solid=True
-            )
+            if ridge_color is None and self._profile_polygon_cache_view_key is not None:
+                painter.setBrush(QBrush(color))
+                painter.setPen(Qt.NoPen)
+                for polygon in self._cache_profile_polygons(
+                    polygon_cache_key, all_sx, all_sy, h * 2
+                ):
+                    painter.drawPolygon(polygon)
+            else:
+                self._fill_strip_downward_numpy(
+                    painter, all_sx, all_sy, color, h * 2, solid=True
+                )
             if ridge_color is not None:
                 self._stroke_ridge_lines_numpy(
                     painter, all_sx, all_sy, ridge_color, width=0.65

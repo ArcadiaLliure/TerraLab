@@ -82,6 +82,9 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
             tiles_dir=str(getattr(self, "runtime_layout", {}).get("data_elevation", "") or "")
         )
         self.ephemeris_coordinator = EphemerisCoordinator()
+        self.ephemeris_coordinator.ephemeris_ready.connect(
+            self._on_async_ephemeris_ready
+        )
         self._horizon_worker_bridge_connected = False
         self._gaia_attach_timer = None
         if QTimer is not None:
@@ -101,6 +104,14 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
         # El worker legacy es crea de manera diferida al bootstrap.
         QTimer.singleShot(700, self._try_connect_horizon_worker)
         QTimer.singleShot(1600, self._try_connect_horizon_worker)
+
+    def _on_async_ephemeris_ready(self, _snapshot) -> None:
+        canvas = getattr(self, "canvas", None)
+        if canvas is None:
+            return
+        # Force the next paint to ingest the completed snapshot immediately.
+        canvas._last_skyfield_update = 0
+        canvas.update()
 
     def _resolve_gaia_manifest_path(self) -> Path:
         """Resol la ruta esperada del `tile_manifest.json` Gaia runtime."""

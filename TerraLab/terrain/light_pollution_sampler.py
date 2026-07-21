@@ -18,7 +18,7 @@ import numpy as np
 import rasterio
 from pyproj import Transformer
 from rasterio.crs import CRS
-from rasterio.windows import from_bounds
+from rasterio.windows import Window, from_bounds
 
 from TerraLab.common.locks import RASTERIO_LOCK
 from TerraLab.light_pollution.bortle import sqm_to_bortle_class
@@ -43,7 +43,11 @@ class LightPollutionSampler:
 
     DEFAULT_SQM = 21.0
     DEFAULT_BORTLE = 4
-    MAX_SQM_WINDOW_PIXELS = 1024
+    # 2,048 float32 pixels per side are 16 MiB.  This covers the configured
+    # 530 km horizon in the bundled 1 km DVNL raster without truncating its
+    # outer samples, while still bounding accidental fine-resolution reads.
+    MAX_SQM_WINDOW_PIXELS = 2048
+    DIRECT_BATCH_TILE_PIXELS = 512
 
     def __init__(
         self,
@@ -791,6 +795,128 @@ class LightPollutionSampler:
         except Exception:
             return 0.0
 
+    def get_radiance_terrain_xy_batch(
+        self, x_terrain, y_terrain, input_crs: str = CRS_TERRAIN_INTERNAL
+    ) -> np.ndarray:
+        """Vectorized cached-window radiance sampling in terrain coordinates."""
+        x_arr, y_arr = np.broadcast_arrays(
+            np.asarray(x_terrain, dtype=np.float64),
+            np.asarray(y_terrain, dtype=np.float64),
+        )
+        output = np.zeros(x_arr.shape, dtype=np.float32)
+        with self._lock:
+            ready = (
+                str(input_crs or CRS_TERRAIN_INTERNAL)
+                == str(self._terrain_crs_for_transform or "")
+                and self._cached_data is not None
+                and self._tr_terrain_to_src is not None
+                and self._cached_bounds is not None
+                and self._cached_transform is not None
+            )
+            if ready:
+                x_src, y_src = self._tr_terrain_to_src.transform(x_arr, y_arr)
+                bounds = self._cached_bounds
+                inside = (
+                    (x_src >= bounds[0]) & (x_src <= bounds[2])
+                    & (y_src >= bounds[1]) & (y_src <= bounds[3])
+                )
+                inv = ~self._cached_transform
+                cols, rows = inv * (x_src, y_src)
+                row_i = rows.astype(np.int64)
+                col_i = cols.astype(np.int64)
+                inside &= (
+                    (row_i >= 0) & (col_i >= 0)
+                    & (row_i < self._cached_data.shape[0])
+                    & (col_i < self._cached_data.shape[1])
+                )
+                if np.any(inside):
+                    values = self._cached_data[row_i[inside], col_i[inside]]
+                    output[inside] = np.where(
+                        np.isfinite(values)
+                        & (values >= 0.0)
+                        & (values <= 1e10),
+                        values,
+                        0.0,
+                    ).astype(np.float32, copy=False)
+                return output
+
+        # Defensive path for callers that did not preload a region.  Keep the
+        # operation batched: open the raster once and gather points from a
+        # bounded set of 512x512 windows.  Never degrade to one raster open and
+        # one read for every candidate point.
+        if not self.raster_path or not os.path.exists(self.raster_path):
+            return output
+        try:
+            with RASTERIO_LOCK:
+                with rasterio.open(self.raster_path) as src:
+                    context = self._get_cached_context(
+                        terrain_crs=input_crs,
+                        require_terrain_transform=True,
+                    )
+                    if context is None:
+                        context = self._build_runtime_context(
+                            src, terrain_crs=input_crs
+                        )
+                    x_src, y_src = context["tr_terrain_to_src"].transform(
+                        x_arr, y_arr
+                    )
+                    inv = ~src.transform
+                    cols, rows = inv * (x_src, y_src)
+                    finite = np.isfinite(rows) & np.isfinite(cols)
+                    row_i = np.zeros(x_arr.shape, dtype=np.int64)
+                    col_i = np.zeros(x_arr.shape, dtype=np.int64)
+                    row_i[finite] = np.floor(rows[finite]).astype(np.int64)
+                    col_i[finite] = np.floor(cols[finite]).astype(np.int64)
+                    inside = (
+                        finite
+                        & (row_i >= 0)
+                        & (col_i >= 0)
+                        & (row_i < int(src.height))
+                        & (col_i < int(src.width))
+                    )
+                    flat_positions = np.flatnonzero(inside)
+                    if flat_positions.size:
+                        flat_rows = row_i.ravel()[flat_positions]
+                        flat_cols = col_i.ravel()[flat_positions]
+                        tile_side = int(max(64, self.DIRECT_BATCH_TILE_PIXELS))
+                        tile_columns = int(
+                            np.ceil(float(src.width) / float(tile_side))
+                        )
+                        tile_keys = (
+                            (flat_rows // tile_side) * tile_columns
+                            + (flat_cols // tile_side)
+                        )
+                        for tile_key in np.unique(tile_keys):
+                            selected = tile_keys == tile_key
+                            positions = flat_positions[selected]
+                            rows_selected = flat_rows[selected]
+                            cols_selected = flat_cols[selected]
+                            row0 = int((rows_selected[0] // tile_side) * tile_side)
+                            col0 = int((cols_selected[0] // tile_side) * tile_side)
+                            height = min(tile_side, int(src.height) - row0)
+                            width = min(tile_side, int(src.width) - col0)
+                            data = src.read(
+                                1,
+                                window=Window(col0, row0, width, height),
+                            ).astype(np.float32, copy=False)
+                            values = data[
+                                rows_selected - row0,
+                                cols_selected - col0,
+                            ]
+                            valid_values = (
+                                np.isfinite(values)
+                                & (values >= 0.0)
+                                & (values <= 1e10)
+                            )
+                            output.ravel()[positions] = np.where(
+                                valid_values, values, 0.0
+                            ).astype(np.float32, copy=False)
+                    with self._lock:
+                        self._update_context_locked(context)
+            return output
+        except Exception:
+            return output
+
     def close(self) -> None:
         """
         Release in-memory cached raster state and transformers.
@@ -921,6 +1047,26 @@ class LightPollutionSamplerChain:
             if value is not None:
                 return float(value)
         return 0.0
+
+    def get_radiance_terrain_xy_batch(
+        self, x_terrain, y_terrain, input_crs: str = CRS_TERRAIN_INTERNAL
+    ) -> np.ndarray:
+        x_arr, y_arr = np.broadcast_arrays(
+            np.asarray(x_terrain), np.asarray(y_terrain)
+        )
+        result = np.zeros(x_arr.shape, dtype=np.float32)
+        unresolved = np.ones(x_arr.shape, dtype=bool)
+        for sampler in self.samplers:
+            if not np.any(unresolved):
+                break
+            positions = np.flatnonzero(unresolved)
+            values = sampler.get_radiance_terrain_xy_batch(
+                x_arr.flat[positions], y_arr.flat[positions], input_crs
+            )
+            chosen = np.isfinite(values) & (values > 0.0)
+            result.flat[positions[chosen]] = values[chosen]
+            unresolved.flat[positions[chosen]] = False
+        return result
 
     def estimate_zenith_sqm(self, lat: float, lon: float) -> Tuple[float, int]:
         for sampler in self.samplers:

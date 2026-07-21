@@ -1102,6 +1102,7 @@ class AstroEngine:
 
 class RusticTimeBar(QWidget):
     valueChanged = pyqtSignal(float)
+    dragStateChanged = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1116,6 +1117,7 @@ class RusticTimeBar(QWidget):
         self.day_of_year = 1
         self._bg_cache_image = None
         self._bg_cache_key = None
+        self._dragging = False
 
     def set_time(self, hour):
         self.current_hour = hour % 24.0
@@ -1300,10 +1302,21 @@ class RusticTimeBar(QWidget):
         painter.end()
 
     def mousePressEvent(self, event):
+        if not self._dragging:
+            self._dragging = True
+            self.dragStateChanged.emit(True)
         self._update_from_mouse(event)
 
     def mouseMoveEvent(self, event):
-        self._update_from_mouse(event)
+        if self._dragging:
+            self._update_from_mouse(event)
+
+    def mouseReleaseEvent(self, event):
+        if self._dragging:
+            self._update_from_mouse(event)
+            self._dragging = False
+            self.dragStateChanged.emit(False)
+        super().mouseReleaseEvent(event)
 
     def _update_from_mouse(self, event):
         x = max(0, min(self.width(), event.x()))

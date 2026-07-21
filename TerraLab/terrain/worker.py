@@ -714,12 +714,25 @@ class HorizonWorker(QObject):
     def _cleanup_temp_dir(self, temp_dir: Optional[str]) -> None:
         if not temp_dir:
             return
-        try:
-            import shutil
+        import shutil
 
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+        last_exc = None
+        for attempt in range(6):
+            try:
+                shutil.rmtree(temp_dir)
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError as exc:
+                last_exc = exc
+                time.sleep(0.04 * (attempt + 1))
+            except Exception as exc:
+                last_exc = exc
+                break
+        if last_exc is not None:
+            print(
+                f"[HorizonWorker] Warning cleaning temporary bake data: {last_exc}"
+            )
 
     def _build_subprocess_command(
         self,

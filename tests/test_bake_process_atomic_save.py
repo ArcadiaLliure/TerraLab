@@ -88,6 +88,18 @@ def test_atomic_save_profile_propagates_non_permission_errors(
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
+def test_preview_snapshots_use_immutable_unique_paths(tmp_path):
+    base = tmp_path / "profile_preview.npz"
+
+    first = Path(bake_process._unique_preview_path(str(base), 24))
+    second = Path(bake_process._unique_preview_path(str(base), 24))
+
+    assert first.parent == tmp_path
+    assert first.name.startswith("profile_preview_00000024_")
+    assert first.suffix == ".npz"
+    assert first != second
+
+
 def test_emit_event_uses_fd_stdout_when_pythonw_streams_missing(monkeypatch):
     """Verifica que l'emissor JSON funciona quan stdout/stderr Python no existeixen."""
     json_stream = io.StringIO()

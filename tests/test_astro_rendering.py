@@ -22,6 +22,7 @@ from TerraLab.terrain.engine import HorizonProfile, compute_polar_mesh_normals
 from TerraLab.terrain.overlay import (
     HorizonOverlay,
     _build_terrain_surface_spans,
+    _extrema_lod_indices,
     _rasterize_terrain_triangles,
     _simplify_projected_boundaries,
 )
@@ -127,6 +128,100 @@ def test_distance_silhouettes_use_the_full_sky_projection():
     np.testing.assert_allclose(list_sx[0], [279.0, 380.0, 481.0])
     np.testing.assert_allclose(list_sy[0], [7.0, 14.0, 21.0])
     assert solid is True
+
+
+def test_profile_lod_bounds_dense_series_and_preserves_extrema():
+    values = np.zeros(72_000, dtype=np.float32)
+    values[12_345] = 18.0
+    values[54_321] = -11.0
+
+    indices = _extrema_lod_indices(values, 1024)
+
+    assert indices.size <= 1024
+    assert indices[0] == 0
+    assert indices[-1] == values.size - 1
+    assert 12_345 in indices
+    assert 54_321 in indices
+
+
+def test_profile_interaction_reduces_depth_layers_but_keeps_endpoints():
+    overlay = HorizonOverlay(
+        horizon_profile_path=None, allow_procedural_fallback=False
+    )
+    overlay._layers = list(range(80))
+
+    interactive = overlay._profile_layers_for_frame(True)
+
+    assert len(overlay._profile_layers_for_frame(False)) == 80
+    assert len(interactive) == 12
+    assert interactive[0] == 0
+    assert interactive[-1] == 79
+
+
+def test_settled_profile_reuses_composited_terrain_image():
+    azimuths = np.arange(0.0, 360.0, 0.5, dtype=np.float32)
+    angles = np.deg2rad(
+        2.0 + np.sin(np.deg2rad(azimuths * 3.0))
+    ).astype(np.float32)
+    profile = HorizonProfile(
+        azimuths=azimuths,
+        bands=[
+            {
+                "id": "all",
+                "angles": angles,
+                "dists": np.full(azimuths.shape, 1_000.0, dtype=np.float32),
+                "heights": np.full(azimuths.shape, 100.0, dtype=np.float32),
+            }
+        ],
+        observer_lat=42.0,
+        observer_lon=1.0,
+        resolved_mask=np.ones(azimuths.shape, dtype=bool),
+    )
+    overlay = HorizonOverlay(
+        horizon_profile_path=None, allow_procedural_fallback=False
+    )
+    overlay.set_profile(
+        profile,
+        layer_defs=[("all", QColor(10, 20, 30), QColor(70, 90, 70))],
+    )
+    image = QImage(320, 180, QImage.Format_ARGB32_Premultiplied)
+    numpy_calls = {"count": 0}
+
+    def project(altitude, azimuth):
+        return (float(azimuth) - 180.0 + 160.0, 120.0 - float(altitude))
+
+    def project_np(altitude, azimuth):
+        numpy_calls["count"] += 1
+        return (
+            np.asarray(azimuth, dtype=np.float32) - 20.0,
+            120.0 - np.asarray(altitude, dtype=np.float32),
+        )
+
+    def render_once():
+        painter = QPainter(image)
+        try:
+            overlay.draw(
+                painter,
+                project,
+                320,
+                180,
+                180.0,
+                1.0,
+                0.0,
+                12.0,
+                projection_fn_numpy=project_np,
+                terrain_3d_enabled=False,
+            )
+        finally:
+            painter.end()
+
+    render_once()
+    first_calls = numpy_calls["count"]
+    render_once()
+
+    assert first_calls > 0
+    assert numpy_calls["count"] == first_calls
+    assert overlay._profile_image_cache is not None
 
 
 def test_terrain_zbuffer_keeps_nearest_triangle_per_subsample():

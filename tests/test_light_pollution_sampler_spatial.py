@@ -2,10 +2,12 @@ from pathlib import Path
 import tempfile
 
 import numpy as np
+import pytest
 import rasterio
 from pyproj import Transformer
 from rasterio.transform import from_origin, rowcol
 
+from TerraLab.terrain import light_pollution_sampler as sampler_module
 from TerraLab.terrain.light_pollution_sampler import LightPollutionSampler
 
 
@@ -71,6 +73,35 @@ def test_sampling_matches_same_physical_point_for_latlon_and_terrain_xy() -> Non
         rad_ll = sampler.get_radiance(TARGET_LAT, TARGET_LON)
         assert rad_xy == 7.0
         assert rad_ll == 7.0
+
+
+def test_batch_sampling_without_preload_opens_raster_only_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    raster_path = tmp_path / "dvnl_batch_8857.tif"
+    _build_test_raster(raster_path, crs=CRS_8857)
+    to_terrain = Transformer.from_crs(
+        "EPSG:4326", CRS_25831, always_xy=True
+    )
+    x_terrain, y_terrain = to_terrain.transform(TARGET_LON, TARGET_LAT)
+    sampler = LightPollutionSampler(str(raster_path), radius_km=1.0)
+    real_open = rasterio.open
+    open_calls = []
+
+    def counted_open(*args, **kwargs):
+        open_calls.append(str(args[0]))
+        return real_open(*args, **kwargs)
+
+    monkeypatch.setattr(sampler_module.rasterio, "open", counted_open)
+    values = sampler.get_radiance_terrain_xy_batch(
+        np.full(128, x_terrain),
+        np.full(128, y_terrain),
+        input_crs=CRS_25831,
+    )
+
+    assert np.all(values == 7.0)
+    assert len(open_calls) == 1
+    assert sampler._cached_data is None
 
 
 def test_missing_crs_uses_explicit_fallback_policy_for_dvnl_extent() -> None:

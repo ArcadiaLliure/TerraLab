@@ -259,6 +259,7 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.celestial_objects = []
     self.use_real_time = True
     self.manual_hour = 12.0
+    self._dragging_time = False
     self.pure_colors = False
     # Light Pollution state
     configured_lp_mode = get_config_value("light_pollution_mode", None)
