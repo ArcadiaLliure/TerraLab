@@ -114,6 +114,16 @@ class ConfigManager:
         """
         self.set("horizon_quality", int(n))
 
+    def get_horizon_ray_step_deg(self):
+        from TerraLab.terrain.ray_precision import normalize_ray_step_deg
+
+        return normalize_ray_step_deg(self.get("horizon_ray_step_deg", 0.5))
+
+    def set_horizon_ray_step_deg(self, value: float):
+        from TerraLab.terrain.ray_precision import normalize_ray_step_deg
+
+        self.set("horizon_ray_step_deg", normalize_ray_step_deg(value))
+
     def get_terrain_range_settings(self):
         """Load range settings; missing legacy keys intentionally mean safe auto mode."""
         from TerraLab.terrain.visibility_range import TerrainRangeSettings

@@ -267,6 +267,7 @@ def _legacy_main():
     parser.add_argument("--tiles-dir", required=True)
     parser.add_argument("--observer-offset", type=float, default=0.0)
     parser.add_argument("--bands", type=int, default=20)
+    parser.add_argument("--ray-step-deg", type=float, default=0.5)
     parser.add_argument("--output", required=True)
     parser.add_argument("--preview-path", required=True)
     parser.add_argument("--view-azimuth", type=float, default=180.0)
@@ -274,6 +275,8 @@ def _legacy_main():
     parser.add_argument("--view-elevation", type=float, default=0.0)
     parser.add_argument("--range-settings-json", required=True)
     args = parser.parse_args()
+    from TerraLab.terrain.ray_precision import normalize_ray_step_deg, ray_count
+    ray_step_deg = normalize_ray_step_deg(args.ray_step_deg)
 
     job_id = str(args.job_id)
     print(
@@ -390,7 +393,7 @@ def _legacy_main():
                 light_sampler = None
 
             band_defs = generate_bands(max(1, int(args.bands)), max_dist_m=vis_radius)
-            azimuths = [i * 0.5 for i in range(int(round(360.0 / 0.5)))]
+            azimuths = [i * ray_step_deg for i in range(ray_count(ray_step_deg))]
             azimuth_order = _build_priority_azimuth_order(
                 azimuths=azimuths,
                 view_azimuth=float(args.view_azimuth) % 360.0,
@@ -454,7 +457,7 @@ def _legacy_main():
                 obs_h_ground=float(ground_h) + float(args.observer_offset),
                 step_m=_resolve_raycast_step_m(provider),
                 d_max=vis_radius,
-                delta_az_deg=0.5,
+                delta_az_deg=ray_step_deg,
                 band_defs=band_defs,
                 azimuth_order=azimuth_order,
                 progress_callback=lambda pct, _msg: _emit_event(
@@ -492,7 +495,7 @@ def _legacy_main():
                 obs_y=y_utm,
                 obs_h_ground=float(ground_h) + float(args.observer_offset),
                 d_max=vis_radius,
-                delta_az_deg=0.5,
+                delta_az_deg=ray_step_deg,
             )
 
             _emit_event(
@@ -630,6 +633,7 @@ def main(argv=None):
     parser.add_argument("--light-pollution-sources-json", default="")
     parser.add_argument("--observer-offset", type=float, default=0.0)
     parser.add_argument("--bands", type=int, default=20)
+    parser.add_argument("--ray-step-deg", type=float, default=0.5)
     parser.add_argument("--output", required=True)
     parser.add_argument("--preview-path", required=True)
     parser.add_argument("--view-azimuth", type=float, default=180.0)
@@ -637,6 +641,8 @@ def main(argv=None):
     parser.add_argument("--view-elevation", type=float, default=0.0)
     parser.add_argument("--range-settings-json", default="{}")
     args = parser.parse_args(argv)
+    from TerraLab.terrain.ray_precision import normalize_ray_step_deg, ray_count
+    ray_step_deg = normalize_ray_step_deg(args.ray_step_deg)
 
     job_id = str(args.job_id)
     mode = normalize_terrain_representation_mode(args.representation_mode)
@@ -659,6 +665,7 @@ def main(argv=None):
                 band_defs=[
                     {"id": "flat_0_150k", "min": 0.0, "max": 150_000.0}
                 ],
+                delta_az_deg=ray_step_deg,
             )
             profile.elevation_source_ids = requested_ids
             profile.effective_elevation_source_id = None
@@ -736,7 +743,7 @@ def main(argv=None):
                 light_sampler = LightPollutionSampler(lp_path)
 
         band_defs = generate_bands(max(1, int(args.bands)), max_dist_m=vis_radius)
-        azimuths = [index * 0.5 for index in range(720)]
+        azimuths = [index * ray_step_deg for index in range(ray_count(ray_step_deg))]
 
         def preview_callback(current, total, az_arr, bands_arr, domes, peaks, resolved):
             preview = HorizonProfile(
@@ -773,7 +780,7 @@ def main(argv=None):
             obs_h_ground=float(ground_h) + float(args.observer_offset),
             step_m=_resolve_raycast_step_m(provider),
             d_max=vis_radius,
-            delta_az_deg=0.5,
+            delta_az_deg=ray_step_deg,
             band_defs=band_defs,
             azimuth_order=_build_priority_azimuth_order(
                 azimuths, args.view_azimuth, args.view_fov_deg
@@ -792,7 +799,7 @@ def main(argv=None):
                 obs_y=y_utm,
                 obs_h_ground=float(ground_h) + float(args.observer_offset),
                 d_max=vis_radius,
-                delta_az_deg=0.5,
+                delta_az_deg=ray_step_deg,
             )
         final = HorizonProfile(
             azimuths=np.asarray(az_arr),

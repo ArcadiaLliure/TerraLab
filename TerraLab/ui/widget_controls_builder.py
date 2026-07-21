@@ -1032,6 +1032,40 @@ def build_deferred_controls_ui(widget):
     h_depth.addWidget(self.slider_terrain_depth, 1)
     v_earth.addLayout(h_depth)
     self._update_terrain_depth_label(self.slider_terrain_depth.value())
+    h_rays = QHBoxLayout()
+    self.lbl_terrain_ray_precision = QLabel()
+    self.lbl_terrain_ray_precision.setStyleSheet("font-size: 9px; font-weight: normal;")
+    h_rays.addWidget(self.lbl_terrain_ray_precision)
+    self.slider_terrain_ray_precision = QSlider(Qt.Horizontal)
+    from TerraLab.terrain.ray_precision import (
+        DEFAULT_RAY_STEP_DEG,
+        MAX_RAY_STEP_DEG,
+        MIN_RAY_STEP_DEG,
+        RAY_STEP_SLIDER_SCALE,
+        ray_step_to_slider,
+    )
+    self.slider_terrain_ray_precision.setRange(
+        int(MIN_RAY_STEP_DEG * RAY_STEP_SLIDER_SCALE),
+        int(MAX_RAY_STEP_DEG * RAY_STEP_SLIDER_SCALE),
+    )
+    self.slider_terrain_ray_precision.setSingleStep(5)
+    self.slider_terrain_ray_precision.setPageStep(50)
+    self.slider_terrain_ray_precision.setValue(
+        ray_step_to_slider(get_config_value("horizon_ray_step_deg", DEFAULT_RAY_STEP_DEG))
+    )
+    self.slider_terrain_ray_precision.setToolTip(
+        getTraduction(
+            "Terrain.RayPrecisionTooltip",
+            "SeparaciÃ³n angular entre rayos del horizonte "
+            "(0,005\N{DEGREE SIGN} a 5\N{DEGREE SIGN})",
+        )
+    )
+    self.slider_terrain_ray_precision.valueChanged.connect(
+        self.on_terrain_ray_precision_changed
+    )
+    h_rays.addWidget(self.slider_terrain_ray_precision, 1)
+    v_earth.addLayout(h_rays)
+    self._update_terrain_ray_precision_label(self.slider_terrain_ray_precision.value())
     v_earth.addStretch()
     panels_layout.addWidget(gb_earth, 1)
     self.panels_widget = QWidget()

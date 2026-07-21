@@ -574,6 +574,7 @@ def build_flat_horizon_profile(
     representation_mode: TerrainRepresentationMode | str = TerrainRepresentationMode.RELIEF,
     band_defs: Optional[List[Dict]] = None,
     geometry_id: str = "",
+    delta_az_deg: float = 0.5,
 ) -> HorizonProfile:
     """Build an explicit no-DEM profile while retaining surface sample points."""
 
@@ -582,7 +583,11 @@ def build_flat_horizon_profile(
         band_defs
         or [{"id": "flat_0_150k", "min": 0.0, "max": 150_000.0}]
     )
-    azimuths = np.arange(0.0, 360.0, 0.5, dtype=np.float32)
+    from TerraLab.terrain.ray_precision import normalize_ray_step_deg
+
+    azimuths = np.arange(
+        0.0, 360.0, normalize_ray_step_deg(delta_az_deg), dtype=np.float32
+    )
     bands = []
     for definition in definitions:
         maximum = max(1.0, float(definition.get("max", 150_000.0)))

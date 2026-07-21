@@ -3473,9 +3473,18 @@ class HorizonOverlay(QObject):
         for bid, nc, dc, base, freq, amp in configs:
             pts_az = []
             pts_h = []
-            # Generate 360 degrees
-            for step in range(720):  # 0.5 deg steps
-                az = step * 0.5
+            # Use the same angular sampling selected for real horizon rays.
+            from TerraLab.common.utils import get_config_value
+            from TerraLab.terrain.ray_precision import (
+                normalize_ray_step_deg,
+                ray_count,
+            )
+
+            ray_step_deg = normalize_ray_step_deg(
+                get_config_value("horizon_ray_step_deg", 0.5)
+            )
+            for step in range(ray_count(ray_step_deg)):
+                az = step * ray_step_deg
                 # Normalize az to 0..360
                 norm_az = az % 360.0
 

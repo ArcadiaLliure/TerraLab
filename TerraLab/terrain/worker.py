@@ -746,6 +746,8 @@ class HorizonWorker(QObject):
             str(float(job.get("observer_offset", self.observer_offset))),
             "--bands",
             str(int(job["bands"])),
+            "--ray-step-deg",
+            str(float(job.get("ray_step_deg", 0.5))),
             "--output",
             str(output_path),
             "--preview-path",
@@ -889,11 +891,14 @@ class HorizonWorker(QObject):
                 self._current_temp_dir = temp_dir
 
             initial_state = {
+                # Keep UI progress aligned with the exact subprocess ray grid.
                 "job_id": self._current_job_id,
                 "phase": "prepare",
                 "percent": 0.0,
                 "current": 0,
-                "total": int(round(360.0 / 0.5)),
+                "total": __import__(
+                    "TerraLab.terrain.ray_precision", fromlist=["ray_count"]
+                ).ray_count(job.get("ray_step_deg", 0.5)),
             }
             self._emit_progress_state(initial_state)
 

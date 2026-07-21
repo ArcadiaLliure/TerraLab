@@ -204,6 +204,8 @@ def request_relocation(widget):
         widget.bake_debounce_timer.start(1500)
 
         if hasattr(widget, "lbl_loading"):
+            from TerraLab.terrain.ray_precision import ray_count
+
             widget.on_horizon_progress_state(
                 {
                     "job_id": getattr(widget, "_active_horizon_job_id", "")
@@ -211,7 +213,9 @@ def request_relocation(widget):
                     "phase": "prepare",
                     "percent": 0.0,
                     "current": 0,
-                    "total": int(round(360.0 / 0.5)),
+                    "total": ray_count(
+                        get_config_value("horizon_ray_step_deg", 0.5)
+                    ),
                 }
             )
 

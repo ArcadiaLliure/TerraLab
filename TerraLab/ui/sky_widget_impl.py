@@ -2200,6 +2200,10 @@ class AstronomicalWidget(CustomWidgetBase):
             n_bands = int(get_config_value("horizon_quality", 20))
         except Exception:
             n_bands = 20
+        from TerraLab.terrain.ray_precision import normalize_ray_step_deg, ray_count
+        ray_step_deg = normalize_ray_step_deg(
+            get_config_value("horizon_ray_step_deg", 0.5)
+        )
         current_fov = 100.0 / max(0.001, float(getattr(self.canvas, "zoom_level", 1.0)))
         return {
             "job_id": uuid.uuid4().hex,
@@ -2207,6 +2211,7 @@ class AstronomicalWidget(CustomWidgetBase):
             "lon": float(self.longitude),
             "observer_offset": float(getattr(self.horizon_worker, "observer_offset", 0.0)),
             "bands": max(1, int(n_bands)),
+            "ray_step_deg": ray_step_deg,
             "view_azimuth": float(getattr(self.canvas, "azimuth_offset", 180.0)) % 360.0,
             "view_fov_deg": float(current_fov),
             "view_elevation": float(getattr(self.canvas, "elevation_angle", 0.0)),
@@ -2215,6 +2220,8 @@ class AstronomicalWidget(CustomWidgetBase):
             ).to_dict(),
         }
     def _begin_horizon_bake(self):
+        from TerraLab.terrain.ray_precision import ray_count
+
         if not hasattr(self, "horizon_worker"):
             return
         self.horizon_worker.abort_current_job()
@@ -2230,7 +2237,7 @@ class AstronomicalWidget(CustomWidgetBase):
                 "phase": "prepare",
                 "percent": 0.0,
                 "current": 0,
-                "total": int(round(360.0 / 0.5)),
+                "total": ray_count(job["ray_step_deg"]),
             }
         )
         self.request_horizon_bake.emit(job)
@@ -2328,6 +2335,38 @@ class AstronomicalWidget(CustomWidgetBase):
         timer = getattr(self, "terrain_depth_debounce_timer", None)
         if timer is not None:
             timer.start(2000)
+
+    def _update_terrain_ray_precision_label(self, slider_value):
+        if hasattr(self, "lbl_terrain_ray_precision"):
+            from TerraLab.terrain.ray_precision import slider_to_ray_step
+
+            step = slider_to_ray_step(slider_value)
+            value = f"{step:.3f}".rstrip("0").rstrip(".").replace(".", ",")
+            self.lbl_terrain_ray_precision.setText(
+                getTraduction(
+                    "Terrain.RayPrecision", "Rayos: {degrees}\N{DEGREE SIGN}"
+                ).format(
+                    degrees=value
+                )
+            )
+
+    def on_terrain_ray_precision_changed(self, slider_value):
+        from TerraLab.terrain.ray_precision import slider_to_ray_step
+
+        self._pending_terrain_ray_step_deg = slider_to_ray_step(slider_value)
+        self._update_terrain_ray_precision_label(slider_value)
+        timer = getattr(self, "terrain_ray_precision_debounce_timer", None)
+        if timer is not None:
+            timer.start(2000)
+
+    def _apply_pending_terrain_ray_precision(self):
+        from TerraLab.common.utils import set_config_value
+        from TerraLab.terrain.ray_precision import normalize_ray_step_deg
+
+        step = normalize_ray_step_deg(self._pending_terrain_ray_step_deg)
+        set_config_value("horizon_ray_step_deg", step)
+        self._pending_terrain_ray_step_deg = step
+        self._begin_horizon_bake()
 
     def _profile_for_terrain_depth(self, profile, radius_km):
         from TerraLab.terrain.engine import limit_profile_radius

@@ -405,8 +405,15 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.terrain_depth_debounce_timer.setSingleShot(True)
     self.terrain_depth_debounce_timer.setInterval(2000)
     self.terrain_depth_debounce_timer.timeout.connect(self._apply_pending_terrain_depth)
+    self.terrain_ray_precision_debounce_timer = QTimer(self)
+    self.terrain_ray_precision_debounce_timer.setSingleShot(True)
+    self.terrain_ray_precision_debounce_timer.setInterval(2000)
+    self.terrain_ray_precision_debounce_timer.timeout.connect(
+        self._apply_pending_terrain_ray_precision
+    )
     self._full_horizon_profile = None
     self._pending_terrain_depth_km = None
+    self._pending_terrain_ray_step_deg = None
     self._last_horizon_progress_text = ""
     QTimer.singleShot(0, lambda: self._set_scene_load_stage("base_sky"))
     QTimer.singleShot(200, self._start_async_bootstrap)
