@@ -5,6 +5,8 @@ from PyQt5.QtGui import QColor
 
 from TerraLab.terrain.overlay import (
     HorizonOverlay,
+    _apply_horizon_coverage,
+    _geometry_horizon_y,
     _interpolate_triangle_values,
     _qcolor_from_rgba,
     _rasterize_terrain_triangles,
@@ -267,3 +269,68 @@ def test_interpolation_is_continuous_across_the_shared_diagonal():
     )
     assert np.all(covered)
     np.testing.assert_allclose(values, expected, atol=1e-6)
+
+
+def _diagonal_horizon_fixture():
+    triangles = np.asarray(
+        (
+            ((0.0, 1.0), (8.0, 5.0), (0.0, 8.0)),
+            ((8.0, 5.0), (8.0, 8.0), (0.0, 8.0)),
+        ),
+        dtype=np.float64,
+    )
+    depth = np.ones((2, 3), dtype=np.float64)
+    _depth, triangle_id, _u, _v = _rasterize_terrain_triangles(
+        triangles, depth, 8, 8, supersample=1
+    )
+    rgba = np.zeros((8, 8, 4), dtype=np.uint8)
+    rgba[triangle_id >= 0] = (40, 90, 150, 255)
+    return triangles, triangle_id, rgba
+
+
+def test_horizon_geometry_retains_float_precision_for_diagonal_line():
+    triangles, triangle_id, _rgba = _diagonal_horizon_fixture()
+
+    horizon = _geometry_horizon_y(triangle_id, triangles)
+    expected = 1.0 + 0.5 * (np.arange(8) + 0.5)
+
+    np.testing.assert_allclose(horizon, expected, atol=1e-6)
+
+
+def test_horizon_coverage_antialiases_only_configured_edge_band():
+    triangles, triangle_id, rgba = _diagonal_horizon_fixture()
+
+    antialiased = _apply_horizon_coverage(
+        rgba,
+        triangle_id,
+        triangles,
+        filter_width_px=1.0,
+        supersampling_factor=1,
+    )
+
+    partial = (antialiased[..., 3] > 0) & (antialiased[..., 3] < 255)
+    assert np.count_nonzero(partial) >= 6
+    for column, boundary in enumerate(1.0 + 0.5 * (np.arange(8) + 0.5)):
+        interior_start = min(8, int(np.ceil(boundary + 1.0)))
+        np.testing.assert_array_equal(
+            antialiased[interior_start:, column],
+            rgba[interior_start:, column],
+        )
+
+
+def test_horizon_coverage_uses_terrain_rgb_without_light_or_dark_halo():
+    triangles, triangle_id, rgba = _diagonal_horizon_fixture()
+
+    antialiased = _apply_horizon_coverage(
+        rgba,
+        triangle_id,
+        triangles,
+        filter_width_px=1.25,
+        supersampling_factor=4,
+    )
+    affected = antialiased[..., 3] > 0
+
+    np.testing.assert_array_equal(
+        antialiased[..., :3][affected],
+        np.broadcast_to((40, 90, 150), antialiased[..., :3][affected].shape),
+    )

@@ -369,6 +369,111 @@ def _interpolate_triangle_values(
     return result, covered
 
 
+def _triangle_vertical_minimum_y(vertices, sample_x: float) -> float:
+    intersections = []
+    triangle = np.asarray(vertices, dtype=np.float64)
+    for index in range(3):
+        x0, y0 = triangle[index]
+        x1, y1 = triangle[(index + 1) % 3]
+        minimum_x = min(x0, x1) - 1e-9
+        maximum_x = max(x0, x1) + 1e-9
+        if sample_x < minimum_x or sample_x > maximum_x:
+            continue
+        delta_x = x1 - x0
+        if abs(delta_x) <= 1e-12:
+            if abs(sample_x - x0) <= 1e-9:
+                intersections.extend((float(y0), float(y1)))
+            continue
+        t = (sample_x - x0) / delta_x
+        if -1e-9 <= t <= 1.0 + 1e-9:
+            intersections.append(float(y0 + t * (y1 - y0)))
+    return min(intersections) if intersections else float("nan")
+
+
+def _geometry_horizon_y(triangle_id, triangle_xy) -> np.ndarray:
+    """Resolve one geometric subpixel terrain/sky boundary per image column."""
+
+    ids = np.asarray(triangle_id, dtype=np.int32)
+    triangles = np.asarray(triangle_xy, dtype=np.float64)
+    horizon = np.full(ids.shape[1], np.nan, dtype=np.float64)
+    screen_width = ids.shape[1]
+    for triangle in triangles:
+        minimum_column = max(
+            0, int(math.ceil(float(np.min(triangle[:, 0])) - 0.5))
+        )
+        maximum_column = min(
+            screen_width - 1,
+            int(math.floor(float(np.max(triangle[:, 0])) - 0.5)),
+        )
+        if minimum_column > maximum_column:
+            continue
+        columns = np.arange(minimum_column, maximum_column + 1, dtype=np.int32)
+        sample_x = columns.astype(np.float64) + 0.5
+        edge_y = np.full((3, columns.size), np.nan, dtype=np.float64)
+        for edge in range(3):
+            x0, y0 = triangle[edge]
+            x1, y1 = triangle[(edge + 1) % 3]
+            delta_x = x1 - x0
+            if abs(delta_x) <= 1e-12:
+                continue
+            t = (sample_x - x0) / delta_x
+            on_edge = (t >= -1e-9) & (t <= 1.0 + 1e-9)
+            edge_y[edge, on_edge] = y0 + t[on_edge] * (y1 - y0)
+        finite = np.any(np.isfinite(edge_y), axis=0)
+        if not np.any(finite):
+            continue
+        local_minimum = np.min(
+            np.where(np.isfinite(edge_y), edge_y, np.inf), axis=0
+        )
+        target_columns = columns[finite]
+        current = horizon[target_columns]
+        horizon[target_columns] = np.where(
+            np.isfinite(current),
+            np.minimum(current, local_minimum[finite]),
+            local_minimum[finite],
+        )
+    return horizon
+
+
+def _apply_horizon_coverage(
+    rgba,
+    triangle_id,
+    triangle_xy,
+    *,
+    filter_width_px: float = 1.0,
+    supersampling_factor: int = 1,
+) -> np.ndarray:
+    """Apply localized vertical coverage using the original triangle geometry."""
+
+    result = np.asarray(rgba, dtype=np.uint8).copy()
+    if result.ndim != 3 or result.shape[2] != 4:
+        raise ValueError("Horizon coverage expects an RGBA image")
+    horizon = _geometry_horizon_y(triangle_id, triangle_xy)
+    width = max(0.25, float(filter_width_px))
+    samples = max(1, int(supersampling_factor))
+    height = result.shape[0]
+    for column in np.flatnonzero(np.isfinite(horizon)):
+        boundary = float(horizon[column])
+        start = max(0, int(math.floor(boundary)))
+        stop = min(height, int(math.ceil(boundary + width)))
+        if start >= stop:
+            continue
+        source_rows = np.flatnonzero(result[:, column, 3] > 0)
+        if source_rows.size == 0:
+            continue
+        source_row = int(source_rows[0])
+        base_rgba = result[source_row, column].copy()
+        rows = np.arange(start, stop, dtype=np.float64)
+        coverage = np.clip((rows + 1.0 - boundary) / width, 0.0, 1.0)
+        if samples > 1:
+            coverage = np.rint(coverage * samples) / samples
+        result[start:stop, column, :3] = base_rgba[:3]
+        result[start:stop, column, 3] = np.clip(
+            np.rint(float(base_rgba[3]) * coverage), 0.0, 255.0
+        ).astype(np.uint8)
+    return result
+
+
 def _local_extrema_mask(values: np.ndarray) -> np.ndarray:
     """Return finite local extrema, including plateaus only at their edges."""
 
@@ -3029,6 +3134,9 @@ class HorizonOverlay(QObject):
             render_height,
             supersample,
         )
+        scaled_xy = np.asarray(geometry.xy, dtype=np.float64).copy()
+        scaled_xy[:, :, 0] *= float(render_width) / float(width)
+        scaled_xy[:, :, 1] *= float(render_height) / float(height)
         if (
             PERFORMANCE_FLAGS.relief_cached
             and raster_key == self._terrain_raster_cache_key
@@ -3036,9 +3144,6 @@ class HorizonOverlay(QObject):
         ):
             triangle_id, bary_u, bary_v = self._terrain_raster_cache
         else:
-            scaled_xy = np.asarray(geometry.xy, dtype=np.float64).copy()
-            scaled_xy[:, :, 0] *= float(render_width) / float(width)
-            scaled_xy[:, :, 1] *= float(render_height) / float(height)
             _depth, triangle_id, bary_u, bary_v = _rasterize_terrain_triangles(
                 scaled_xy,
                 geometry.depth,
@@ -3078,6 +3183,25 @@ class HorizonOverlay(QObject):
             rgba_high[covered] = np.clip(
                 np.rint(interpolated_grid[covered]), 0, 255
             ).astype(np.uint8)
+
+        settings = self.render_settings
+        if (
+            settings.horizon_antialiasing_enabled
+            and settings.horizon_antialiasing_mode != "off"
+            and supersample == 1
+        ):
+            coverage_samples = (
+                settings.horizon_supersampling_factor
+                if settings.horizon_antialiasing_mode == "supersample"
+                else 1
+            )
+            rgba_high = _apply_horizon_coverage(
+                rgba_high,
+                triangle_id,
+                scaled_xy,
+                filter_width_px=settings.horizon_filter_width_px,
+                supersampling_factor=coverage_samples,
+            )
 
         if supersample > 1:
             # Average premultiplied sub-samples, then return to straight RGBA.
