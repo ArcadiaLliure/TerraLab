@@ -1717,7 +1717,18 @@ class HorizonOverlay(QObject):
 
         if use_3d_relief:
             rendered = False
-            if self.render_settings.terrain_shading_mode == "interpolated":
+            # Preserve subclass hooks and synthetic mesh-only profiles used by
+            # integrations: they have no colour-band context from which the
+            # enhanced per-vertex base colours can be derived reliably.
+            supports_interpolated = (
+                bool(self._layers)
+                and type(self)._draw_terrain_surface_2d
+                is HorizonOverlay._draw_terrain_surface_2d
+            )
+            if (
+                self.render_settings.terrain_shading_mode == "interpolated"
+                and supports_interpolated
+            ):
                 rendered = self._draw_terrain_interpolated(
                     painter,
                     terrain_mesh,
@@ -2172,6 +2183,8 @@ class HorizonOverlay(QObject):
             not terrain_shading_enabled
             or not settings.terrain_lighting_enabled
             or sun_vec is None
+            or sun_alt is None
+            or float(sun_alt) <= 0.0
             or not np.all(np.isfinite(sun_vec))
         ):
             return np.ones(nx.shape, dtype=np.float32)
@@ -2197,6 +2210,12 @@ class HorizonOverlay(QObject):
             float(settings.terrain_ambient_strength)
             + float(settings.terrain_diffuse_strength) * lambert
         )
+        # Distant terrain loses directional-light contrast before its colour is
+        # mixed with the atmosphere.  This also keeps the legacy vertex/gradient
+        # route visually consistent with the interpolated composition stage.
+        haze = _distance_haze_factors(distance_m)
+        contrast = np.maximum(0.18, 1.0 - 0.78 * haze)
+        factor = 1.0 + (factor - 1.0) * contrast
         return np.clip(
             factor,
             settings.terrain_min_brightness,
@@ -2676,7 +2695,12 @@ class HorizonOverlay(QObject):
         normal_y = asset.normal_y
         normal_z = asset.normal_z
 
-        sun_alt, sun_az, sun_vec = self._configured_light()
+        if self._layers:
+            sun_alt, sun_az, sun_vec = self._configured_light()
+        else:
+            # Mesh-only synthetic/integration profiles predate the configurable
+            # terrain light and explicitly provide the astronomical direction.
+            sun_vec = self._sun_vector_enu(sun_alt, sun_az)
         terrain_shading_enabled = bool(
             terrain_shading_enabled
             and self.render_settings.terrain_lighting_enabled
