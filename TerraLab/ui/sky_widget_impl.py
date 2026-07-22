@@ -2223,6 +2223,9 @@ class AstronomicalWidget(CustomWidgetBase):
             "sampling_settings": ConfigManager()
             .get_terrain_sampling_settings()
             .to_dict(),
+            "terrain_performance_logging_enabled": ConfigManager()
+            .get_terrain_render_settings()
+            .terrain_performance_logging_enabled,
             "range_settings": TerrainRangeSettings.from_mapping(
                 get_config_value("terrain_visibility_range", {})
             ).to_dict(),

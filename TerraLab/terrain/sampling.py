@@ -180,9 +180,13 @@ def adaptive_refine_ray(
     queried = int(distances.size)
     maxima = np.zeros(3, dtype=np.float64)
     minimum_step = float(settings.sampling_near_step_m)
+    active_intervals = np.ones(max(0, distances.size - 1), dtype=bool)
 
     for _depth in range(settings.sampling_max_subdivision_depth):
-        candidates = np.flatnonzero(np.diff(distances) > minimum_step + 1e-9)
+        candidates = np.flatnonzero(
+            active_intervals
+            & (np.diff(distances) > minimum_step + 1e-9)
+        )
         if candidates.size == 0:
             break
         midpoints = 0.5 * (distances[candidates] + distances[candidates + 1])
@@ -236,6 +240,7 @@ def adaptive_refine_ray(
         next_distances = []
         next_elevations = []
         next_valid = []
+        next_active = []
         for index in range(distances.size - 1):
             next_distances.append(float(distances[index]))
             next_elevations.append(float(elevations[index]))
@@ -245,12 +250,16 @@ def adaptive_refine_ray(
                 next_distances.append(distance)
                 next_elevations.append(elevation)
                 next_valid.append(is_valid)
+                next_active.extend((True, True))
+            else:
+                next_active.append(False)
         next_distances.append(float(distances[-1]))
         next_elevations.append(float(elevations[-1]))
         next_valid.append(bool(valid[-1]))
         distances = np.asarray(next_distances, dtype=np.float64)
         elevations = np.asarray(next_elevations, dtype=np.float64)
         valid = np.asarray(next_valid, dtype=bool)
+        active_intervals = np.asarray(next_active, dtype=bool)
         if distances.size >= settings.sampling_max_samples_per_ray:
             break
 

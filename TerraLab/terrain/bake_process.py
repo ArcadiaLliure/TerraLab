@@ -732,6 +732,9 @@ def main(argv=None):
     parser.add_argument("--sampling-settings-json", default="{}")
     parser.add_argument("--viewport-height-px", type=int, default=1080)
     parser.add_argument("--view-zoom-level", type=float, default=1.0)
+    parser.add_argument(
+        "--terrain-performance-logging-enabled", type=int, default=0
+    )
     args = parser.parse_args(argv)
     from TerraLab.terrain.ray_precision import normalize_ray_step_deg, ray_count
     ray_step_deg = normalize_ray_step_deg(args.ray_step_deg)
@@ -797,6 +800,9 @@ def main(argv=None):
             (float(args.viewport_height_px) / 45.0)
             * max(0.001, float(args.view_zoom_level))
             * (180.0 / math.pi),
+        )
+        baker.performance_logging_enabled = bool(
+            args.terrain_performance_logging_enabled
         )
         ground_h, sampled_source_id, has_runtime_provenance = _observer_elevation_sample(
             provider, x_utm, y_utm

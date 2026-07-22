@@ -786,6 +786,17 @@ class HorizonWorker(QObject):
             str(max(1, int(job.get("viewport_height_px", 1080)))),
             "--view-zoom-level",
             str(max(0.001, float(job.get("view_zoom_level", 1.0)))),
+            "--terrain-performance-logging-enabled",
+            "1"
+            if bool(
+                job.get(
+                    "terrain_performance_logging_enabled",
+                    ConfigManager()
+                    .get_terrain_render_settings()
+                    .terrain_performance_logging_enabled,
+                )
+            )
+            else "0",
         ]
         cmd.extend(
             [

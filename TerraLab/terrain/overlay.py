@@ -37,6 +37,7 @@ from TerraLab.common.performance import (
     DEFAULT_PERFORMANCE_BUDGET,
     PERFORMANCE_FLAGS,
 )
+from TerraLab.common.perf_events import append_perf_event
 from TerraLab.config import ConfigManager
 from TerraLab.terrain.render_pipeline import (
     atmospheric_fog_factor,
@@ -390,11 +391,54 @@ def _triangle_vertical_minimum_y(vertices, sample_x: float) -> float:
     return min(intersections) if intersections else float("nan")
 
 
+def _geometry_horizon_impl(triangles, screen_width):
+    """Compiled scalar envelope; work scales with crossed columns, not pixels."""
+
+    horizon = np.full(int(screen_width), np.nan, dtype=np.float64)
+    for triangle_index in range(triangles.shape[0]):
+        triangle = triangles[triangle_index]
+        minimum_x = min(triangle[0, 0], triangle[1, 0], triangle[2, 0])
+        maximum_x = max(triangle[0, 0], triangle[1, 0], triangle[2, 0])
+        minimum_column = max(0, int(math.ceil(minimum_x - 0.5)))
+        maximum_column = min(
+            int(screen_width) - 1, int(math.floor(maximum_x - 0.5))
+        )
+        for column in range(minimum_column, maximum_column + 1):
+            sample_x = float(column) + 0.5
+            local_minimum = np.inf
+            for edge in range(3):
+                next_edge = (edge + 1) % 3
+                x0 = triangle[edge, 0]
+                y0 = triangle[edge, 1]
+                x1 = triangle[next_edge, 0]
+                y1 = triangle[next_edge, 1]
+                delta_x = x1 - x0
+                if abs(delta_x) <= 1e-12:
+                    continue
+                parameter = (sample_x - x0) / delta_x
+                if -1e-9 <= parameter <= 1.0 + 1e-9:
+                    candidate = y0 + parameter * (y1 - y0)
+                    if candidate < local_minimum:
+                        local_minimum = candidate
+            if local_minimum != np.inf:
+                current = horizon[column]
+                if not np.isfinite(current) or local_minimum < current:
+                    horizon[column] = local_minimum
+    return horizon
+
+
+_geometry_horizon_fast = (
+    njit(cache=True, nogil=True)(_geometry_horizon_impl) if njit is not None else None
+)
+
+
 def _geometry_horizon_y(triangle_id, triangle_xy) -> np.ndarray:
     """Resolve one geometric subpixel terrain/sky boundary per image column."""
 
     ids = np.asarray(triangle_id, dtype=np.int32)
     triangles = np.asarray(triangle_xy, dtype=np.float64)
+    if _geometry_horizon_fast is not None:
+        return _geometry_horizon_fast(triangles, int(ids.shape[1]))
     horizon = np.full(ids.shape[1], np.nan, dtype=np.float64)
     screen_width = ids.shape[1]
     for triangle in triangles:
@@ -1148,6 +1192,10 @@ class HorizonOverlay(QObject):
         self._last_surface2d_max_error_px = 0.0
         self._last_surface2d_geometry_s = 0.0
         self._last_surface2d_paint_s = 0.0
+        self._last_terrain_color_s = 0.0
+        self._last_terrain_raster_s = 0.0
+        self._last_horizon_antialias_s = 0.0
+        self._last_terrain_total_s = 0.0
         self._terrain_geometry_cache_key = None
         self._terrain_geometry_cache = None
         self._terrain_polygon_cache_key = None
@@ -1169,6 +1217,9 @@ class HorizonOverlay(QObject):
         self._terrain_normal_cache = None
         self._terrain_render_asset = None
         self._terrain_shade_cache = ByteLRU(
+            max(16 * 1024**2, DEFAULT_PERFORMANCE_BUDGET.transient_bytes // 4)
+        )
+        self._terrain_color_cache = ByteLRU(
             max(16 * 1024**2, DEFAULT_PERFORMANCE_BUDGET.transient_bytes // 4)
         )
         self.render_settings = ConfigManager().get_terrain_render_settings()
@@ -1240,6 +1291,7 @@ class HorizonOverlay(QObject):
         self._terrain_raster_cache_key = None
         self._terrain_raster_cache = None
         self._terrain_shade_cache.clear()
+        self._terrain_color_cache.clear()
         self.request_update.emit()
 
     def set_profile(self, profile, layer_defs=None):
@@ -1277,6 +1329,7 @@ class HorizonOverlay(QObject):
             else None
         )
         self._terrain_shade_cache.clear()
+        self._terrain_color_cache.clear()
 
         effective_defs = layer_defs if layer_defs is not None else LAYER_DEFS
 
@@ -1329,6 +1382,7 @@ class HorizonOverlay(QObject):
         self._terrain_surface_image_geometry = None
         self._terrain_render_asset = None
         self._terrain_shade_cache.clear()
+        self._terrain_color_cache.clear()
         self._layers.clear()
         self._loaded = False
         if self.allow_procedural_fallback:
@@ -2850,6 +2904,7 @@ class HorizonOverlay(QObject):
                         projected_valid[row, column] = True
 
         original_valid = np.asarray(asset.valid[:, order], dtype=bool)
+        original_visible = np.asarray(asset.visible[:, order], dtype=bool)
         vertex_valid = original_valid & projected_valid & np.isfinite(sx) & np.isfinite(sy)
         az_delta = np.diff(unwrapped_az)
         finite_steps = az_delta[np.isfinite(az_delta) & (az_delta > 1e-9)]
@@ -2864,6 +2919,17 @@ class HorizonOverlay(QObject):
             & vertex_valid[:-1, 1:]
             & adjacent[None, :]
         )
+        # A cell whose four angular samples remain below a nearer running
+        # maximum cannot contribute to the final image.  Keeping every cell
+        # touching a visible vertex supplies a one-cell transition band while
+        # avoiding work the z-buffer would deterministically discard.
+        cell_visible = (
+            original_visible[:-1, :-1]
+            | original_visible[1:, :-1]
+            | original_visible[1:, 1:]
+            | original_visible[:-1, 1:]
+        )
+        cell_valid &= cell_visible
         cell_rows, cell_columns = np.nonzero(cell_valid)
         if cell_rows.size == 0:
             result = _TerrainTriangleGeometry(
@@ -2991,6 +3057,7 @@ class HorizonOverlay(QObject):
     ) -> bool:
         """Render the relief with shared per-vertex colours and a z-buffer."""
 
+        frame_started = time.perf_counter()
         asset = self._terrain_render_asset
         if asset is None or asset.mesh_id != id(mesh):
             asset = self._prepare_terrain_render_asset(mesh)
@@ -3018,17 +3085,10 @@ class HorizonOverlay(QObject):
             else None
         )
         if shade_grid is None:
-            sun_visibility = self._terrain_sun_visibility(
-                mesh,
-                asset.elevations,
-                asset.valid,
-                asset.visible,
-                asset.distances,
-                asset.azimuths,
-                light_alt,
-                light_az,
-                terrain_shading_enabled=lighting_enabled,
-            )
+            # The enhanced path deliberately uses the requested local Lambert
+            # model.  The legacy ray-marched sun-visibility calculation remains
+            # available to the compatibility renderer, but is neither required
+            # for normal lighting nor affordable on every interactive update.
             shade_grid = self._terrain_light_factor(
                 asset.normal_x,
                 asset.normal_y,
@@ -3037,7 +3097,7 @@ class HorizonOverlay(QObject):
                 light_vector,
                 light_alt,
                 terrain_shading_enabled=lighting_enabled,
-                sun_visibility=sun_visibility,
+                sun_visibility=None,
             )
             shade_grid = self._smooth_light_grid(
                 shade_grid,
@@ -3063,21 +3123,33 @@ class HorizonOverlay(QObject):
         if geometry is None or geometry.xy.size == 0:
             return False
 
-        base_rgba = self._terrain_vertex_base_rgba(asset, t_night)
-        vertex_rgba = compose_vertex_rgba(
-            base_rgba,
-            shade_grid,
-            asset.distances[:, None],
-            self.render_settings,
-            maximum_distance_m=self._maximum_terrain_distance_m()
-            or float(asset.distances[-1]),
-        )
         color_key = (
             shade_key,
             round(float(t_night) * 256.0) / 256.0,
             id(getattr(getattr(self, "profile", None), "surface_samples", None)),
             bool(self.terrain_surface_opaque),
         )
+        color_started = time.perf_counter()
+        vertex_rgba = (
+            self._terrain_color_cache.get(color_key)
+            if PERFORMANCE_FLAGS.relief_cached
+            else None
+        )
+        if vertex_rgba is None:
+            base_rgba = self._terrain_vertex_base_rgba(asset, t_night)
+            vertex_rgba = compose_vertex_rgba(
+                base_rgba,
+                shade_grid,
+                asset.distances[:, None],
+                self.render_settings,
+                maximum_distance_m=self._maximum_terrain_distance_m()
+                or float(asset.distances[-1]),
+            )
+            if PERFORMANCE_FLAGS.relief_cached:
+                self._terrain_color_cache.put(
+                    color_key, vertex_rgba, int(vertex_rgba.nbytes)
+                )
+        self._last_terrain_color_s = time.perf_counter() - color_started
         self._paint_terrain_triangles(
             painter,
             geometry,
@@ -3087,6 +3159,25 @@ class HorizonOverlay(QObject):
             color_key,
             interaction_active=interaction_active,
         )
+        self._last_terrain_total_s = time.perf_counter() - frame_started
+        if self.render_settings.terrain_performance_logging_enabled:
+            append_perf_event(
+                "terrain.render",
+                geometry_s=round(float(geometry.metrics.elapsed_s), 6),
+                colors_s=round(float(self._last_terrain_color_s), 6),
+                rasterization_s=round(float(self._last_terrain_raster_s), 6),
+                horizon_antialias_s=round(
+                    float(self._last_horizon_antialias_s), 6
+                ),
+                total_s=round(float(self._last_terrain_total_s), 6),
+                rays=int(asset.azimuths.size),
+                samples=int(asset.elevations.size),
+                vertices=int(asset.elevations.size),
+                triangles=int(geometry.xy.shape[0]),
+                width=int(width),
+                height=int(height),
+                shading_mode=self.render_settings.terrain_shading_mode,
+            )
         return True
 
     def _paint_terrain_triangles(
@@ -3126,8 +3217,11 @@ class HorizonOverlay(QObject):
         ):
             painter.drawImage(0, 0, self._terrain_surface_image_cache)
             self._last_surface2d_paint_s = time.perf_counter() - paint_started
+            self._last_terrain_raster_s = 0.0
+            self._last_horizon_antialias_s = 0.0
             return
 
+        raster_started = time.perf_counter()
         raster_key = (
             id(geometry),
             render_width,
@@ -3183,8 +3277,10 @@ class HorizonOverlay(QObject):
             rgba_high[covered] = np.clip(
                 np.rint(interpolated_grid[covered]), 0, 255
             ).astype(np.uint8)
+        self._last_terrain_raster_s = time.perf_counter() - raster_started
 
         settings = self.render_settings
+        antialias_started = time.perf_counter()
         if (
             settings.horizon_antialiasing_enabled
             and settings.horizon_antialiasing_mode != "off"
@@ -3202,6 +3298,9 @@ class HorizonOverlay(QObject):
                 filter_width_px=settings.horizon_filter_width_px,
                 supersampling_factor=coverage_samples,
             )
+        self._last_horizon_antialias_s = (
+            time.perf_counter() - antialias_started
+        )
 
         if supersample > 1:
             # Average premultiplied sub-samples, then return to straight RGBA.

@@ -1501,6 +1501,9 @@ class HorizonBaker:
         self.sampling_pixels_per_radian = max(
             1.0, float(sampling_pixels_per_radian)
         )
+        self.performance_logging_enabled = False
+        self.last_sampling_metrics: dict[str, object] = {}
+        self.last_mesh_metrics: dict[str, object] = {}
         self._ray_miss_exit_threshold = 8
         self._ray_iteration_guard = 1_000_000
         self._vector_azimuth_batch = 64
@@ -1656,6 +1659,9 @@ class HorizonBaker:
                 "distances": np.asarray(base_distances, dtype=np.float64).copy(),
                 "elevations": np.asarray(base_elevations[index], dtype=np.float64).copy(),
                 "valid": np.asarray(base_valid[index], dtype=bool).copy(),
+                "active": np.ones(
+                    max(0, np.asarray(base_distances).size - 1), dtype=bool
+                ),
             }
             for index in range(len(az_indices))
         ]
@@ -1681,7 +1687,11 @@ class HorizonBaker:
                 if remaining <= 0:
                     continue
                 intervals = np.flatnonzero(
-                    np.diff(profile["distances"]) > minimum_step + 1e-9
+                    profile["active"]
+                    & (
+                        np.diff(profile["distances"])
+                        > minimum_step + 1e-9
+                    )
                 )
                 for interval in intervals:
                     candidate_rays.append(ray_index)
@@ -1759,7 +1769,14 @@ class HorizonBaker:
             if not selected_by_ray:
                 break
 
-            for ray_index, positions in selected_by_ray.items():
+            # Every evaluated interval has reached a terminal state unless it
+            # was split.  Rebuild all profiles, including rays with no chosen
+            # midpoint, so rejected intervals are not queried again at the
+            # next subdivision depth.
+            for ray_index in range(len(profiles)):
+                positions = selected_by_ray.get(
+                    ray_index, np.empty(0, dtype=np.int64)
+                )
                 profile = profiles[ray_index]
                 insertion_by_interval = {
                     int(candidate_intervals[position]): (
@@ -1772,6 +1789,7 @@ class HorizonBaker:
                 next_distances = []
                 next_elevations = []
                 next_valid = []
+                next_active = []
                 for interval in range(profile["distances"].size - 1):
                     next_distances.append(profile["distances"][interval])
                     next_elevations.append(profile["elevations"][interval])
@@ -1783,12 +1801,16 @@ class HorizonBaker:
                         next_distances.append(distance)
                         next_elevations.append(elevation)
                         next_valid.append(is_valid)
+                        next_active.extend((True, True))
+                    else:
+                        next_active.append(False)
                 next_distances.append(profile["distances"][-1])
                 next_elevations.append(profile["elevations"][-1])
                 next_valid.append(profile["valid"][-1])
                 profile["distances"] = np.asarray(next_distances, dtype=np.float64)
                 profile["elevations"] = np.asarray(next_elevations, dtype=np.float64)
                 profile["valid"] = np.asarray(next_valid, dtype=bool)
+                profile["active"] = np.asarray(next_active, dtype=bool)
 
         band_results = [
             {
@@ -2376,6 +2398,7 @@ class HorizonBaker:
                 valid[:] = field.valid[distance_indices, :]
                 reused_field = True
 
+        sampling_started_ns = __import__("time").perf_counter_ns()
         if not reused_field and self._supports_batch_sampling():
             # Keep each provider request below the shared million-sample cap.
             azimuth_batch = max(
@@ -2407,8 +2430,12 @@ class HorizonBaker:
                         continue
                     elevations[d_idx, az_idx] = float(h_terr)
                     valid[d_idx, az_idx] = True
+        sampling_elapsed_s = (
+            __import__("time").perf_counter_ns() - sampling_started_ns
+        ) / 1e9
 
         # Bound temporary matrices by processing azimuth columns in chunks.
+        generation_started_ns = __import__("time").perf_counter_ns()
         distance64 = distances.astype(np.float64)[:, None]
         mesh_column_batch = 256
         visible = np.zeros_like(valid, dtype=bool)
@@ -2428,6 +2455,10 @@ class HorizonBaker:
             visible[:, start:stop] = self._compute_mesh_visibility(
                 chunk_altitudes, chunk_valid
             )
+        generation_elapsed_s = (
+            __import__("time").perf_counter_ns() - generation_started_ns
+        ) / 1e9
+        normals_started_ns = __import__("time").perf_counter_ns()
         if n_az < 8 or mesh_delta_az_deg >= 30.0:
             normal_step_m = self._normal_sample_step_m()
             for d_idx, az_idx in np.argwhere(valid):
@@ -2461,24 +2492,40 @@ class HorizonBaker:
                 normal_x[:, start:stop] = chunk_nx[:, 1:-1]
                 normal_y[:, start:stop] = chunk_ny[:, 1:-1]
                 normal_z[:, start:stop] = chunk_nz[:, 1:-1]
+        normals_elapsed_s = (
+            __import__("time").perf_counter_ns() - normals_started_ns
+        ) / 1e9
 
         mesh_elapsed_s = (
             __import__("time").perf_counter_ns() - mesh_started_ns
         ) / 1e9
         rss_bytes, peak_rss_bytes = process_memory_bytes()
-        append_perf_event(
-            "terrain.mesh",
-            elapsed_s=round(mesh_elapsed_s, 6),
-            azimuths=int(n_az),
-            distance_rings=int(n_d),
-            samples=int(n_az * n_d),
-            reused_field=bool(reused_field),
-            requested_delta_az_deg=requested_delta_az_deg,
-            delta_az_deg=mesh_delta_az_deg,
-            d_max_m=float(d_max),
-            rss_bytes=int(rss_bytes),
-            peak_rss_bytes=int(peak_rss_bytes),
+        valid_cells = (
+            valid[:-1, :-1]
+            & valid[1:, :-1]
+            & valid[:-1, 1:]
+            & valid[1:, 1:]
         )
+        mesh_metrics = {
+            "elapsed_s": round(mesh_elapsed_s, 6),
+            "sampling_s": round(float(sampling_elapsed_s), 6),
+            "mesh_generation_s": round(float(generation_elapsed_s), 6),
+            "normals_s": round(float(normals_elapsed_s), 6),
+            "azimuths": int(n_az),
+            "distance_rings": int(n_d),
+            "samples": int(n_az * n_d),
+            "vertices": int(n_az * n_d),
+            "triangles": int(np.count_nonzero(valid_cells) * 2),
+            "reused_field": bool(reused_field),
+            "requested_delta_az_deg": requested_delta_az_deg,
+            "delta_az_deg": mesh_delta_az_deg,
+            "d_max_m": float(d_max),
+            "rss_bytes": int(rss_bytes),
+            "peak_rss_bytes": int(peak_rss_bytes),
+        }
+        self.last_mesh_metrics = mesh_metrics
+        if self.performance_logging_enabled:
+            append_perf_event("terrain.mesh", **mesh_metrics)
 
         return {
             "version": 2,
@@ -2835,8 +2882,7 @@ class HorizonBaker:
         elapsed = time.time() - t0
         io_after = self._raster_io_metrics()
         rss_bytes, peak_rss_bytes = process_memory_bytes()
-        append_perf_event(
-            "terrain.raycast",
+        sampling_metrics = dict(
             backend=effective_backend,
             requested_backend=requested_backend,
             elapsed_s=round(float(elapsed), 6),
@@ -2895,6 +2941,9 @@ class HorizonBaker:
             rss_bytes=int(rss_bytes),
             peak_rss_bytes=int(peak_rss_bytes),
         )
+        self.last_sampling_metrics = sampling_metrics
+        if self.performance_logging_enabled:
+            append_perf_event("terrain.raycast", **sampling_metrics)
         return (
             azimuths,
             bands,
