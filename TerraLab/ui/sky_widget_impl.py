@@ -2194,6 +2194,7 @@ class AstronomicalWidget(CustomWidgetBase):
         QTimer.singleShot(15000, self._try_start_catalog_loader_deferred)
     def _build_horizon_bake_job(self) -> dict:
         from TerraLab.common.utils import get_config_value
+        from TerraLab.config import ConfigManager
         from TerraLab.terrain.visibility_range import TerrainRangeSettings
         import uuid
         try:
@@ -2215,6 +2216,13 @@ class AstronomicalWidget(CustomWidgetBase):
             "view_azimuth": float(getattr(self.canvas, "azimuth_offset", 180.0)) % 360.0,
             "view_fov_deg": float(current_fov),
             "view_elevation": float(getattr(self.canvas, "elevation_angle", 0.0)),
+            "viewport_height_px": max(1, int(self.canvas.height())),
+            "view_zoom_level": max(
+                0.001, float(getattr(self.canvas, "zoom_level", 1.0))
+            ),
+            "sampling_settings": ConfigManager()
+            .get_terrain_sampling_settings()
+            .to_dict(),
             "range_settings": TerrainRangeSettings.from_mapping(
                 get_config_value("terrain_visibility_range", {})
             ).to_dict(),

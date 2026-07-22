@@ -15,6 +15,7 @@ from TerraLab.common.utils import (
     get_config_value,
     set_config_value,
 )
+from TerraLab.config import ConfigManager
 from TerraLab.terrain.engine import HorizonProfile, generate_bands
 from TerraLab.terrain.data_sources import DataSourceRegistry, LayerSelectionService
 
@@ -773,6 +774,18 @@ class HorizonWorker(QObject):
             str(float(job.get("view_elevation", 0.0))),
             "--range-settings-json",
             json.dumps(job.get("range_settings", {}), sort_keys=True),
+            "--sampling-settings-json",
+            json.dumps(
+                job.get(
+                    "sampling_settings",
+                    ConfigManager().get_terrain_sampling_settings().to_dict(),
+                ),
+                sort_keys=True,
+            ),
+            "--viewport-height-px",
+            str(max(1, int(job.get("viewport_height_px", 1080)))),
+            "--view-zoom-level",
+            str(max(0.001, float(job.get("view_zoom_level", 1.0)))),
         ]
         cmd.extend(
             [

@@ -729,6 +729,9 @@ def main(argv=None):
     parser.add_argument("--view-fov-deg", type=float, default=90.0)
     parser.add_argument("--view-elevation", type=float, default=0.0)
     parser.add_argument("--range-settings-json", default="{}")
+    parser.add_argument("--sampling-settings-json", default="{}")
+    parser.add_argument("--viewport-height-px", type=int, default=1080)
+    parser.add_argument("--view-zoom-level", type=float, default=1.0)
     args = parser.parse_args(argv)
     from TerraLab.terrain.ray_precision import normalize_ray_step_deg, ray_count
     ray_step_deg = normalize_ray_step_deg(args.ray_step_deg)
@@ -780,6 +783,21 @@ def main(argv=None):
         grid_convergence_deg = meridian_convergence_degrees(args.lon, args.lat)
         baker = HorizonBaker(provider)
         baker.grid_convergence_deg = grid_convergence_deg
+        from TerraLab.terrain.render_pipeline import TerrainSamplingSettings
+
+        try:
+            sampling_payload = json.loads(args.sampling_settings_json or "{}")
+        except json.JSONDecodeError:
+            sampling_payload = {}
+        baker.sampling_settings = TerrainSamplingSettings.from_mapping(
+            sampling_payload
+        )
+        baker.sampling_pixels_per_radian = max(
+            1.0,
+            (float(args.viewport_height_px) / 45.0)
+            * max(0.001, float(args.view_zoom_level))
+            * (180.0 / math.pi),
+        )
         ground_h, sampled_source_id, has_runtime_provenance = _observer_elevation_sample(
             provider, x_utm, y_utm
         )

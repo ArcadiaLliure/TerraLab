@@ -38,8 +38,13 @@ from TerraLab.terrain.representation import (
     normalize_terrain_representation_mode,
 )
 from TerraLab.terrain.render_pipeline import (
+    TerrainSamplingSettings,
     apparent_elevation_degrees,
     apparent_elevation_radians,
+)
+from TerraLab.terrain.sampling import (
+    build_adaptive_base_distances,
+    evaluate_refinement_intervals,
 )
 
 # --- Constants ---
@@ -1483,11 +1488,19 @@ class HorizonBaker:
         eye_height: float = 1.7,
         R: float = R_EARTH,
         grid_convergence_deg: float = 0.0,
+        sampling_settings: TerrainSamplingSettings | None = None,
+        sampling_pixels_per_radian: float = 1000.0,
     ):
         self.provider = provider
         self.eye_height = eye_height
         self.R = R
         self.grid_convergence_deg = float(grid_convergence_deg)
+        self.sampling_settings = sampling_settings or TerrainSamplingSettings(
+            adaptive_sampling_enabled=False
+        )
+        self.sampling_pixels_per_radian = max(
+            1.0, float(sampling_pixels_per_radian)
+        )
         self._ray_miss_exit_threshold = 8
         self._ray_iteration_guard = 1_000_000
         self._vector_azimuth_batch = 64
@@ -1619,6 +1632,227 @@ class HorizonBaker:
             raise ValueError("Provider batch result shape mismatch")
         valid &= np.isfinite(values)
         return values, valid
+
+    def _refine_azimuth_chunk(
+        self,
+        *,
+        az_indices: np.ndarray,
+        obs_x: float,
+        obs_y: float,
+        h_eye_abs: float,
+        base_distances: np.ndarray,
+        base_elevations: np.ndarray,
+        base_valid: np.ndarray,
+        band_defs: List[Dict],
+        sin_az: np.ndarray,
+        cos_az: np.ndarray,
+    ) -> tuple[list[dict], dict[str, float | int]]:
+        """Refine independent ray profiles while batching midpoint DEM reads."""
+
+        started_ns = __import__("time").perf_counter_ns()
+        settings = self.sampling_settings
+        profiles = [
+            {
+                "distances": np.asarray(base_distances, dtype=np.float64).copy(),
+                "elevations": np.asarray(base_elevations[index], dtype=np.float64).copy(),
+                "valid": np.asarray(base_valid[index], dtype=bool).copy(),
+            }
+            for index in range(len(az_indices))
+        ]
+        queried_samples = 0
+        valid_queries = 0
+        maximum_errors = np.zeros(3, dtype=np.float64)
+        minimum_step = float(settings.sampling_near_step_m)
+
+        for _depth in range(settings.sampling_max_subdivision_depth):
+            candidate_rays = []
+            candidate_intervals = []
+            candidate_d0 = []
+            candidate_d1 = []
+            candidate_h0 = []
+            candidate_h1 = []
+            candidate_v0 = []
+            candidate_v1 = []
+            for ray_index, profile in enumerate(profiles):
+                remaining = (
+                    settings.sampling_max_samples_per_ray
+                    - profile["distances"].size
+                )
+                if remaining <= 0:
+                    continue
+                intervals = np.flatnonzero(
+                    np.diff(profile["distances"]) > minimum_step + 1e-9
+                )
+                for interval in intervals:
+                    candidate_rays.append(ray_index)
+                    candidate_intervals.append(int(interval))
+                    candidate_d0.append(profile["distances"][interval])
+                    candidate_d1.append(profile["distances"][interval + 1])
+                    candidate_h0.append(profile["elevations"][interval])
+                    candidate_h1.append(profile["elevations"][interval + 1])
+                    candidate_v0.append(profile["valid"][interval])
+                    candidate_v1.append(profile["valid"][interval + 1])
+            if not candidate_rays:
+                break
+
+            candidate_rays = np.asarray(candidate_rays, dtype=np.int32)
+            candidate_intervals = np.asarray(candidate_intervals, dtype=np.int32)
+            d0 = np.asarray(candidate_d0, dtype=np.float64)
+            d1 = np.asarray(candidate_d1, dtype=np.float64)
+            midpoint_distances = 0.5 * (d0 + d1)
+            global_azimuth_indices = np.asarray(az_indices, dtype=np.int32)[
+                candidate_rays
+            ]
+            x = (
+                float(obs_x)
+                + sin_az[global_azimuth_indices] * midpoint_distances
+            )
+            y = (
+                float(obs_y)
+                + cos_az[global_azimuth_indices] * midpoint_distances
+            )
+            midpoint_elevations, midpoint_valid = self._sample_provider_batch(x, y)
+            midpoint_elevations = np.asarray(midpoint_elevations, dtype=np.float64)
+            midpoint_valid = np.asarray(midpoint_valid, dtype=bool)
+            queried_samples += int(midpoint_distances.size)
+            valid_queries += int(np.count_nonzero(midpoint_valid))
+
+            evaluation = evaluate_refinement_intervals(
+                d0,
+                np.asarray(candidate_h0),
+                np.asarray(candidate_v0),
+                d1,
+                np.asarray(candidate_h1),
+                np.asarray(candidate_v1),
+                midpoint_distances,
+                midpoint_elevations,
+                midpoint_valid,
+                observer_eye_elevation_m=float(h_eye_abs),
+                earth_radius_m=float(self.R),
+                pixels_per_radian=float(self.sampling_pixels_per_radian),
+                settings=settings,
+            )
+            maximum_errors = np.maximum(
+                maximum_errors,
+                (
+                    float(np.max(evaluation.elevation_error_m, initial=0.0)),
+                    float(np.max(evaluation.projected_error_px, initial=0.0)),
+                    float(np.max(evaluation.slope_delta_deg, initial=0.0)),
+                ),
+            )
+            selected_by_ray: dict[int, np.ndarray] = {}
+            for ray_index in range(len(profiles)):
+                positions = np.flatnonzero(
+                    (candidate_rays == ray_index) & evaluation.should_refine
+                )
+                remaining = (
+                    settings.sampling_max_samples_per_ray
+                    - profiles[ray_index]["distances"].size
+                )
+                if positions.size > remaining:
+                    order = np.argsort(
+                        evaluation.score[positions], kind="stable"
+                    )[::-1]
+                    positions = positions[order[:remaining]]
+                if positions.size:
+                    selected_by_ray[ray_index] = positions
+            if not selected_by_ray:
+                break
+
+            for ray_index, positions in selected_by_ray.items():
+                profile = profiles[ray_index]
+                insertion_by_interval = {
+                    int(candidate_intervals[position]): (
+                        float(midpoint_distances[position]),
+                        float(midpoint_elevations[position]),
+                        bool(midpoint_valid[position]),
+                    )
+                    for position in positions
+                }
+                next_distances = []
+                next_elevations = []
+                next_valid = []
+                for interval in range(profile["distances"].size - 1):
+                    next_distances.append(profile["distances"][interval])
+                    next_elevations.append(profile["elevations"][interval])
+                    next_valid.append(profile["valid"][interval])
+                    if interval in insertion_by_interval:
+                        distance, elevation, is_valid = insertion_by_interval[
+                            interval
+                        ]
+                        next_distances.append(distance)
+                        next_elevations.append(elevation)
+                        next_valid.append(is_valid)
+                next_distances.append(profile["distances"][-1])
+                next_elevations.append(profile["elevations"][-1])
+                next_valid.append(profile["valid"][-1])
+                profile["distances"] = np.asarray(next_distances, dtype=np.float64)
+                profile["elevations"] = np.asarray(next_elevations, dtype=np.float64)
+                profile["valid"] = np.asarray(next_valid, dtype=bool)
+
+        band_results = [
+            {
+                "angles": np.full(len(profiles), -np.inf, dtype=np.float32),
+                "dists": np.zeros(len(profiles), dtype=np.float32),
+                "heights": np.zeros(len(profiles), dtype=np.float32),
+                "surface_angles": np.full(
+                    len(profiles), -np.inf, dtype=np.float32
+                ),
+                "surface_dists": np.zeros(len(profiles), dtype=np.float32),
+                "surface_heights": np.zeros(len(profiles), dtype=np.float32),
+            }
+            for _definition in band_defs
+        ]
+        for ray_index, profile in enumerate(profiles):
+            distances = profile["distances"]
+            elevations = profile["elevations"]
+            effective_valid = profile["valid"].copy()
+            threshold = int(self._ray_miss_exit_threshold)
+            if effective_valid.size >= threshold:
+                missing_windows = np.lib.stride_tricks.sliding_window_view(
+                    ~effective_valid, threshold
+                )
+                exits = np.flatnonzero(np.all(missing_windows, axis=1))
+                if exits.size:
+                    effective_valid[int(exits[0]) + threshold - 1 :] = False
+            angles = apparent_elevation_radians(
+                elevations,
+                distances,
+                float(h_eye_abs),
+                float(self.R),
+            )
+            angles = np.where(effective_valid, angles, -np.inf)
+            for band_index, definition in enumerate(band_defs):
+                in_band = (
+                    effective_valid
+                    & (distances >= float(definition["min"]))
+                    & (distances < float(definition["max"]))
+                )
+                indices = np.flatnonzero(in_band)
+                if indices.size == 0:
+                    continue
+                best = int(indices[np.argmax(angles[indices])])
+                last = int(indices[-1])
+                target = band_results[band_index]
+                target["angles"][ray_index] = angles[best]
+                target["dists"][ray_index] = distances[best]
+                target["heights"][ray_index] = elevations[best]
+                target["surface_angles"][ray_index] = angles[last]
+                target["surface_dists"][ray_index] = distances[last]
+                target["surface_heights"][ray_index] = elevations[last]
+
+        elapsed_ns = __import__("time").perf_counter_ns() - started_ns
+        return band_results, {
+            "refinement_ns": int(elapsed_ns),
+            "refinement_queries": int(queried_samples),
+            "refinement_valid_queries": int(valid_queries),
+            "selected_samples": int(
+                sum(profile["distances"].size for profile in profiles)
+            ),
+            "maximum_elevation_error_m": float(maximum_errors[0]),
+            "maximum_projected_error_px": float(maximum_errors[1]),
+            "maximum_slope_delta_deg": float(maximum_errors[2]),
+        }
 
     def _sample_azimuth_chunk_vectorized(
         self,
@@ -2358,7 +2592,14 @@ class HorizonBaker:
     ) -> Tuple[np.ndarray, List[Dict], np.ndarray, np.ndarray, np.ndarray]:
         import time
 
-        ray_distances = self._adaptive_distances(step_m, d_max)
+        adaptive_enabled = bool(
+            self.sampling_settings.adaptive_sampling_enabled
+        )
+        ray_distances = (
+            build_adaptive_base_distances(d_max, self.sampling_settings)
+            if adaptive_enabled
+            else self._adaptive_distances(step_m, d_max)
+        )
         mesh_distances = self._mesh_distance_rings(
             d_max, self._provider_nominal_resolution_m()
         ).astype(np.float64)
@@ -2416,7 +2657,14 @@ class HorizonBaker:
             "angles": 0,
             "bands": 0,
             "light": 0,
+            "refinement": 0,
         }
+        refinement_queries = 0
+        refinement_valid_queries = 0
+        selected_profile_samples = (
+            0 if adaptive_enabled else int(azimuths.size * ray_distances.size)
+        )
+        maximum_refinement_errors = np.zeros(3, dtype=np.float64)
         rows_per_batch = DEFAULT_PERFORMANCE_BUDGET.batch_rows(40)
         batch_size = max(
             1,
@@ -2458,6 +2706,40 @@ class HorizonBaker:
                 cos_az=cos_az,
                 light_sampler=light_sampler,
             )
+            if adaptive_enabled:
+                refined_bands, refinement_metrics = self._refine_azimuth_chunk(
+                    az_indices=chunk_indices,
+                    obs_x=obs_x,
+                    obs_y=obs_y,
+                    h_eye_abs=h_eye_abs,
+                    base_distances=ray_distances,
+                    base_elevations=result["elevations"][:, ray_distance_indices],
+                    base_valid=result["valid"][:, ray_distance_indices],
+                    band_defs=band_defs,
+                    sin_az=sin_az,
+                    cos_az=cos_az,
+                )
+                result["bands"] = refined_bands
+                phase_totals_ns["refinement"] += int(
+                    refinement_metrics["refinement_ns"]
+                )
+                refinement_queries += int(
+                    refinement_metrics["refinement_queries"]
+                )
+                refinement_valid_queries += int(
+                    refinement_metrics["refinement_valid_queries"]
+                )
+                selected_profile_samples += int(
+                    refinement_metrics["selected_samples"]
+                )
+                maximum_refinement_errors = np.maximum(
+                    maximum_refinement_errors,
+                    (
+                        refinement_metrics["maximum_elevation_error_m"],
+                        refinement_metrics["maximum_projected_error_px"],
+                        refinement_metrics["maximum_slope_delta_deg"],
+                    ),
+                )
             chunk_elapsed_ns = time.perf_counter_ns() - chunk_t0
             chunk_metrics_after = self._raster_io_metrics()
             provider_ns = (
@@ -2563,7 +2845,14 @@ class HorizonBaker:
             polar_distances=int(sample_distances.size),
             retained_mesh_distances=int(mesh_distances.size),
             retained_mesh_azimuths=int(mesh_azimuths.size),
-            samples=int(azimuths.size * sample_distances.size),
+            samples=int(
+                azimuths.size * sample_distances.size + refinement_queries
+            ),
+            base_profile_samples=int(azimuths.size * ray_distances.size),
+            refinement_queries=int(refinement_queries),
+            refinement_valid_queries=int(refinement_valid_queries),
+            selected_profile_samples=int(selected_profile_samples),
+            adaptive_sampling_enabled=adaptive_enabled,
             valid_samples=int(sampled_valid_count),
             retained_valid_samples=int(np.count_nonzero(field_valid)),
             step_m=float(step_m),
@@ -2586,6 +2875,16 @@ class HorizonBaker:
             angle_s=round(phase_totals_ns["angles"] / 1e9, 6),
             band_reduction_s=round(phase_totals_ns["bands"] / 1e9, 6),
             light_pollution_s=round(phase_totals_ns["light"] / 1e9, 6),
+            refinement_s=round(phase_totals_ns["refinement"] / 1e9, 6),
+            maximum_elevation_error_m=round(
+                float(maximum_refinement_errors[0]), 6
+            ),
+            maximum_projected_error_px=round(
+                float(maximum_refinement_errors[1]), 6
+            ),
+            maximum_slope_delta_deg=round(
+                float(maximum_refinement_errors[2]), 6
+            ),
             candidate_tiles=int(
                 io_after["candidate_tiles"] - io_before["candidate_tiles"]
             ),
@@ -2679,7 +2978,10 @@ class HorizonBaker:
         print(
             f"[HorizonEngine] Progressive bake {n_az} azimuths, max_dist={d_max / 1000:.0f}km..."
         )
-        if self._supports_batch_sampling():
+        if (
+            self._supports_batch_sampling()
+            or self.sampling_settings.adaptive_sampling_enabled
+        ):
             return self._bake_progressive_vectorized(
                 obs_x=obs_x,
                 obs_y=obs_y,
