@@ -133,3 +133,23 @@ class ConfigManager:
 
     def set_terrain_range_settings(self, settings):
         self.set("terrain_visibility_range", settings.validated().to_dict())
+
+    def get_terrain_render_settings(self):
+        """Return the validated 2.5D colour, shading and horizon settings."""
+        from TerraLab.terrain.render_pipeline import TerrainRenderSettings
+
+        values = {
+            key: self.get(key, getattr(TerrainRenderSettings(), key))
+            for key in TerrainRenderSettings.config_keys()
+        }
+        return TerrainRenderSettings.from_mapping(values)
+
+    def get_terrain_sampling_settings(self):
+        """Return the validated subprocess-safe terrain sampling policy."""
+        from TerraLab.terrain.render_pipeline import TerrainSamplingSettings
+
+        values = {
+            key: self.get(key, getattr(TerrainSamplingSettings(), key))
+            for key in TerrainSamplingSettings.config_keys()
+        }
+        return TerrainSamplingSettings.from_mapping(values)

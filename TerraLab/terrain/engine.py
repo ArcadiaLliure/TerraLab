@@ -37,6 +37,10 @@ from TerraLab.terrain.representation import (
     normalize_terrain_geometry_source,
     normalize_terrain_representation_mode,
 )
+from TerraLab.terrain.render_pipeline import (
+    apparent_elevation_degrees,
+    apparent_elevation_radians,
+)
 
 # --- Constants ---
 R_EARTH = 6_371_000.0
@@ -67,56 +71,96 @@ def compute_polar_mesh_normals(
             np.ones(shape, dtype=np.float32),
         )
 
-    center = np.where(valid, elevations, 0.0).astype(np.float32)
+    azimuth_radians = np.deg2rad(azimuths.astype(np.float64))[None, :]
+    distance_grid = distances.astype(np.float64)[:, None]
+    points = np.stack(
+        np.broadcast_arrays(
+            distance_grid * np.sin(azimuth_radians),
+            distance_grid * np.cos(azimuth_radians),
+            elevations.astype(np.float64),
+        ),
+        axis=-1,
+    )
+
     previous_rows = np.maximum(np.arange(distances.size) - 1, 0)
     next_rows = np.minimum(np.arange(distances.size) + 1, distances.size - 1)
-    previous_height = elevations[previous_rows, :]
-    next_height = elevations[next_rows, :]
-    previous_valid = valid[previous_rows, :]
-    next_valid = valid[next_rows, :]
-    previous_height = np.where(previous_valid, previous_height, center)
-    next_height = np.where(next_valid, next_height, center)
-    radial_span = np.maximum(
-        distances[next_rows] - distances[previous_rows], 1e-3
-    )[:, None]
-    dz_radial = (next_height - previous_height) / radial_span
-
-    left_height = np.roll(elevations, 1, axis=1)
-    right_height = np.roll(elevations, -1, axis=1)
-    left_valid = np.roll(valid, 1, axis=1)
-    right_valid = np.roll(valid, -1, axis=1)
-    left_height = np.where(left_valid, left_height, center)
-    right_height = np.where(right_valid, right_height, center)
-    az_diffs = np.diff(azimuths)
-    az_diffs = az_diffs[np.isfinite(az_diffs) & (az_diffs > 0.0)]
-    az_step_rad = math.radians(
-        float(np.median(az_diffs)) if az_diffs.size else 360.0
+    previous_points = points[previous_rows]
+    next_points = points[next_rows]
+    previous_valid = valid[previous_rows] & valid
+    next_valid = valid[next_rows] & valid
+    radial = np.where(
+        (previous_valid & next_valid)[..., None],
+        next_points - previous_points,
+        np.where(
+            next_valid[..., None],
+            next_points - points,
+            np.where(previous_valid[..., None], points - previous_points, 0.0),
+        ),
     )
-    tangential_span = np.maximum(
-        2.0 * distances[:, None] * az_step_rad, 1e-3
-    )
-    dz_tangential = (right_height - left_height) / tangential_span
 
-    az_radians = np.deg2rad(azimuths)[None, :]
-    sin_azimuth = np.sin(az_radians)
-    cos_azimuth = np.cos(az_radians)
-    gradient_x = dz_radial * sin_azimuth + dz_tangential * cos_azimuth
-    gradient_y = dz_radial * cos_azimuth - dz_tangential * sin_azimuth
-
-    normal_x = -gradient_x
-    normal_y = -gradient_y
-    normal_z = np.ones_like(normal_x, dtype=np.float32)
-    norm = np.sqrt(
-        normal_x * normal_x + normal_y * normal_y + normal_z * normal_z
+    left_points = np.roll(points, 1, axis=1)
+    right_points = np.roll(points, -1, axis=1)
+    left_valid = np.roll(valid, 1, axis=1) & valid
+    right_valid = np.roll(valid, -1, axis=1) & valid
+    angular = np.where(
+        (left_valid & right_valid)[..., None],
+        right_points - left_points,
+        np.where(
+            right_valid[..., None],
+            right_points - points,
+            np.where(left_valid[..., None], points - left_points, 0.0),
+        ),
     )
-    safe_norm = np.maximum(norm, 1e-6)
-    normal_x = np.where(valid, normal_x / safe_norm, 0.0)
-    normal_y = np.where(valid, normal_y / safe_norm, 0.0)
-    normal_z = np.where(valid, normal_z / safe_norm, 1.0)
+
+    radial_length = np.linalg.norm(radial, axis=-1)
+    radial_fallback = np.broadcast_to(
+        np.stack(
+            (
+                np.sin(azimuth_radians[0]),
+                np.cos(azimuth_radians[0]),
+                np.zeros(azimuths.size),
+            ),
+            axis=-1,
+        )[None, :, :],
+        points.shape,
+    )
+    radial = np.where((radial_length > 1e-9)[..., None], radial, radial_fallback)
+
+    angular_length = np.linalg.norm(angular, axis=-1)
+    angular_fallback = np.broadcast_to(
+        np.stack(
+            (
+                np.cos(azimuth_radians[0]),
+                -np.sin(azimuth_radians[0]),
+                np.zeros(azimuths.size),
+            ),
+            axis=-1,
+        )[None, :, :],
+        points.shape,
+    )
+    angular = np.where(
+        (angular_length > 1e-9)[..., None], angular, angular_fallback
+    )
+
+    normals = np.cross(angular, radial)
+    normals = np.where((normals[..., 2] < 0.0)[..., None], -normals, normals)
+    norm = np.linalg.norm(normals, axis=-1, keepdims=True)
+    normals = np.divide(
+        normals,
+        np.maximum(norm, 1e-9),
+        out=np.zeros_like(normals),
+        where=norm > 1e-9,
+    )
+    fallback = np.asarray((0.0, 0.0, 1.0), dtype=np.float64)
+    normals = np.where(
+        (valid & np.isfinite(norm[..., 0]) & (norm[..., 0] > 1e-9))[..., None],
+        normals,
+        fallback,
+    )
     return (
-        normal_x.astype(np.float32),
-        normal_y.astype(np.float32),
-        normal_z.astype(np.float32),
+        normals[..., 0].astype(np.float32),
+        normals[..., 1].astype(np.float32),
+        normals[..., 2].astype(np.float32),
     )
 
 
@@ -258,6 +302,7 @@ class HorizonProfile:
     geometry_crs: str = CRS_TERRAIN_INTERNAL
     observer_x: Optional[float] = None
     observer_y: Optional[float] = None
+    grid_convergence_deg: float = 0.0
     surface_samples: object = None
 
     def __post_init__(self) -> None:
@@ -321,6 +366,7 @@ class HorizonProfile:
             "azimuths": self.azimuths,
             "observer_lat": self.observer_lat,
             "observer_lon": self.observer_lon,
+            "grid_convergence_deg": np.asarray(float(self.grid_convergence_deg)),
             "n_bands": len(self.bands),
             "light_domes": self.light_domes,
             "light_peak_distances": self.light_peak_distances,
@@ -540,6 +586,11 @@ class HorizonProfile:
             observer_y = (
                 float(np.asarray(d["observer_y"]).item()) if "observer_y" in d else None
             )
+            grid_convergence_deg = (
+                float(np.asarray(d["grid_convergence_deg"]).item())
+                if "grid_convergence_deg" in d
+                else 0.0
+            )
 
         return HorizonProfile(
             azimuths=azimuths,
@@ -561,6 +612,7 @@ class HorizonProfile:
             geometry_crs=geometry_crs,
             observer_x=observer_x,
             observer_y=observer_y,
+            grid_convergence_deg=grid_convergence_deg,
         )
 
     def covers_radius(self, requested_radius_m: float) -> bool:
@@ -1425,10 +1477,17 @@ class HorizonBaker:
     whatever silhouette data was already gathered.
     """
 
-    def __init__(self, provider, eye_height: float = 1.7, R: float = R_EARTH):
+    def __init__(
+        self,
+        provider,
+        eye_height: float = 1.7,
+        R: float = R_EARTH,
+        grid_convergence_deg: float = 0.0,
+    ):
         self.provider = provider
         self.eye_height = eye_height
         self.R = R
+        self.grid_convergence_deg = float(grid_convergence_deg)
         self._ray_miss_exit_threshold = 8
         self._ray_iteration_guard = 1_000_000
         self._vector_azimuth_batch = 64
@@ -1613,10 +1672,11 @@ class HorizonBaker:
             effective_valid = valid
 
         ray_d = np.asarray(ray_distances, dtype=np.float64)
-        drop = (ray_d * ray_d) / (2.0 * float(self.R))
-        angles = np.arctan2(
-            elevations.astype(np.float64) - drop[None, :] - float(h_eye_abs),
+        angles = apparent_elevation_radians(
+            elevations.astype(np.float64),
             ray_d[None, :],
+            float(h_eye_abs),
+            float(self.R),
         )
         angles = np.where(effective_valid, angles, -np.inf)
         angle_ns = __import__("time").perf_counter_ns() - angle_started_ns
@@ -1829,9 +1889,9 @@ class HorizonBaker:
                 continue
             miss_streak = 0
 
-            drop = (d * d) / (2.0 * self.R)
-            h_visual = h_terr - drop - h_eye_abs
-            ang = math.atan2(h_visual, d)
+            ang = float(
+                apparent_elevation_radians(h_terr, d, h_eye_abs, self.R)
+            )
 
             if ang > max_ang_so_far:
                 max_ang_so_far = ang
@@ -2054,7 +2114,9 @@ class HorizonBaker:
         normal_z = np.ones((n_d, n_az), dtype=np.float32)
         valid = np.zeros((n_d, n_az), dtype=bool)
 
-        az_rads = np.deg2rad(azimuths.astype(np.float64))
+        az_rads = np.deg2rad(
+            azimuths.astype(np.float64) - self.grid_convergence_deg
+        )
         sin_az = np.sin(az_rads)
         cos_az = np.cos(az_rads)
 
@@ -2114,7 +2176,6 @@ class HorizonBaker:
 
         # Bound temporary matrices by processing azimuth columns in chunks.
         distance64 = distances.astype(np.float64)[:, None]
-        drop = (distance64 * distance64) / (2.0 * self.R)
         mesh_column_batch = 256
         visible = np.zeros_like(valid, dtype=bool)
         for start in range(0, n_az, mesh_column_batch):
@@ -2122,13 +2183,11 @@ class HorizonBaker:
                 raise InterruptedError("Mesh build aborted")
             stop = min(n_az, start + mesh_column_batch)
             chunk_valid = valid[:, start:stop]
-            computed = np.degrees(
-                np.arctan2(
-                    elevations[:, start:stop].astype(np.float64)
-                    - drop
-                    - float(h_eye_abs),
-                    distance64,
-                )
+            computed = apparent_elevation_degrees(
+                elevations[:, start:stop].astype(np.float64),
+                distance64,
+                float(h_eye_abs),
+                float(self.R),
             ).astype(np.float32)
             chunk_altitudes = np.where(chunk_valid, computed, -90.0)
             altitudes[:, start:stop] = chunk_altitudes
@@ -2251,9 +2310,9 @@ class HorizonBaker:
                     continue
                 miss_streak = 0
 
-                drop = (d * d) / (2.0 * R)
-                h_visual = h_terr - drop - h_eye_abs
-                ang = math.atan2(h_visual, d)
+                ang = float(
+                    apparent_elevation_radians(h_terr, d, h_eye_abs, R)
+                )
 
                 while (
                     b_idx + 1 < n_bands and d >= band_defs_simple[b_idx][1]
@@ -2595,7 +2654,9 @@ class HorizonBaker:
 
         bands = self._build_band_buffers(n_az, band_defs)
 
-        az_rads = np.deg2rad(azimuths)
+        az_rads = np.deg2rad(
+            azimuths.astype(np.float64) - self.grid_convergence_deg
+        )
         sin_az = np.sin(az_rads)
         cos_az = np.cos(az_rads)
 
@@ -2782,7 +2843,9 @@ class HorizonBaker:
                 }
             )
 
-        az_rads = np.deg2rad(azimuths)
+        az_rads = np.deg2rad(
+            azimuths.astype(np.float64) - self.grid_convergence_deg
+        )
         sin_az = np.sin(az_rads)
         cos_az = np.cos(az_rads)
 
@@ -2843,9 +2906,11 @@ class HorizonBaker:
                         continue
                     miss_streak = 0
 
-                    drop = (d * d) / (2.0 * self.R)
-                    h_visual = h_terr - drop - h_eye_abs
-                    ang = math.atan2(h_visual, d)
+                    ang = float(
+                        apparent_elevation_radians(
+                            h_terr, d, h_eye_abs, self.R
+                        )
+                    )
 
                     if ang > max_ang_so_far:
                         max_ang_so_far = ang

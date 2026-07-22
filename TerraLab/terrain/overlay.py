@@ -37,6 +37,12 @@ from TerraLab.common.performance import (
     DEFAULT_PERFORMANCE_BUDGET,
     PERFORMANCE_FLAGS,
 )
+from TerraLab.config import ConfigManager
+from TerraLab.terrain.render_pipeline import (
+    atmospheric_fog_factor,
+    compose_vertex_rgba,
+    light_direction_enu,
+)
 from TerraLab.terrain.representation import (
     TerrainGeometrySource,
     TerrainRepresentationMode,
@@ -960,6 +966,7 @@ class HorizonOverlay(QObject):
         self._terrain_shade_cache = ByteLRU(
             max(16 * 1024**2, DEFAULT_PERFORMANCE_BUDGET.transient_bytes // 4)
         )
+        self.render_settings = ConfigManager().get_terrain_render_settings()
 
         if not HORIZON_ENGINE_AVAILABLE:
             print(
@@ -1015,6 +1022,19 @@ class HorizonOverlay(QObject):
         self._terrain_surface_image_geometry = None
         self._terrain_raster_cache_key = None
         self._terrain_raster_cache = None
+        self.request_update.emit()
+
+    def reload_render_settings(self) -> None:
+        """Reload terrain-only settings and invalidate colour-derived caches."""
+
+        self.render_settings = ConfigManager().get_terrain_render_settings()
+        self._terrain_shadow_cache_key = None
+        self._terrain_shadow_cache = None
+        self._terrain_surface_image_cache_key = None
+        self._terrain_surface_image_cache = None
+        self._terrain_raster_cache_key = None
+        self._terrain_raster_cache = None
+        self._terrain_shade_cache.clear()
         self.request_update.emit()
 
     def set_profile(self, profile, layer_defs=None):
@@ -1530,10 +1550,9 @@ class HorizonOverlay(QObject):
         self, base_color: QColor, sky_color: QColor, band_pts, t_night: float
     ) -> QColor:
         band_max_m = float(getattr(band_pts, "band_max", 0.0) or 0.0)
-        haze = _distance_haze_factor(band_max_m)
-        haze *= 1.0 - 0.22 * _clamp01(t_night)
-        haze_color = _atmospheric_haze_color(sky_color, t_night)
-        return _lerp_color(base_color, haze_color, haze)
+        return self._apply_terrain_atmosphere(
+            base_color, band_max_m, sky_color, t_night
+        )
 
     def _terrain_shade_values(
         self, az_arr, h_arr, sun_alt, sun_az, band_pts
@@ -1571,6 +1590,31 @@ class HorizonOverlay(QObject):
             ],
             dtype=np.float32,
         )
+
+    def _configured_light(self) -> tuple[float, float, np.ndarray | None]:
+        settings = self.render_settings
+        if not settings.terrain_lighting_enabled:
+            return (
+                settings.terrain_light_elevation_deg,
+                settings.terrain_light_azimuth_deg,
+                None,
+            )
+        return (
+            settings.terrain_light_elevation_deg,
+            settings.terrain_light_azimuth_deg,
+            light_direction_enu(
+                settings.terrain_light_azimuth_deg,
+                settings.terrain_light_elevation_deg,
+            ),
+        )
+
+    def _maximum_terrain_distance_m(self) -> float | None:
+        value = getattr(getattr(self, "profile", None), "resolved_radius_m", None)
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            return None
+        return value if np.isfinite(value) and value > 0.0 else None
 
     @staticmethod
     def _sample_polar_elevations(
@@ -1847,17 +1891,13 @@ class HorizonOverlay(QObject):
             np.asarray(normal_y, dtype=np.float32),
             np.asarray(normal_z, dtype=np.float32),
         )
+        settings = self.render_settings
         if (
             not terrain_shading_enabled
+            or not settings.terrain_lighting_enabled
             or sun_vec is None
             or not np.all(np.isfinite(sun_vec))
         ):
-            return np.ones(nx.shape, dtype=np.float32)
-
-        direct_strength = _terrain_direct_strength(
-            float(sun_alt) if sun_alt is not None else -90.0
-        )
-        if direct_strength <= 0.001:
             return np.ones(nx.shape, dtype=np.float32)
 
         norm = np.sqrt(nx * nx + ny * ny + nz * nz)
@@ -1877,12 +1917,15 @@ class HorizonOverlay(QObject):
                 np.asarray(sun_visibility, dtype=np.float32), nx.shape
             )
             lambert *= np.clip(direct_visibility, 0.0, 1.0)
-        raw = 0.84 + 0.26 * lambert
-
-        haze = np.broadcast_to(_distance_haze_factors(distance_m), nx.shape)
-        distance_contrast = np.clip(1.0 - 0.72 * haze, 0.30, 1.0)
-        factor = 1.0 + (raw - 1.0) * direct_strength * distance_contrast
-        return np.clip(factor, 0.84, 1.10).astype(np.float32)
+        factor = (
+            float(settings.terrain_ambient_strength)
+            + float(settings.terrain_diffuse_strength) * lambert
+        )
+        return np.clip(
+            factor,
+            settings.terrain_min_brightness,
+            settings.terrain_max_brightness,
+        ).astype(np.float32)
 
     @staticmethod
     def _smooth_light_grid(
@@ -2002,31 +2045,33 @@ class HorizonOverlay(QObject):
     def _apply_terrain_light(
         self, color: QColor, light_factor: float, sky_color: QColor, t_night: float
     ) -> QColor:
-        factor = max(0.84, min(1.10, float(light_factor)))
-        if factor < 1.0:
-            shadow_day = QColor(30, 50, 46)
-            shadow_night = QColor(9, 13, 22)
-            shadow = _lerp_color(shadow_day, shadow_night, _clamp01(t_night))
-            amount = min(0.24, ((1.0 - factor) / 0.16) * 0.24)
-            return _lerp_color(color, shadow, amount)
-        if factor > 1.0:
-            warm_day = QColor(184, 176, 138)
-            warm_night = _atmospheric_haze_color(sky_color, t_night)
-            highlight = _lerp_color(warm_day, warm_night, _clamp01(t_night))
-            amount = min(0.16, ((factor - 1.0) / 0.10) * 0.16)
-            return _lerp_color(color, highlight, amount)
-        return color
+        del sky_color, t_night
+        if not self.render_settings.terrain_lighting_enabled:
+            return QColor(color)
+        factor = max(
+            self.render_settings.terrain_min_brightness,
+            min(self.render_settings.terrain_max_brightness, float(light_factor)),
+        )
+        return QColor(
+            max(0, min(255, round(color.red() * factor))),
+            max(0, min(255, round(color.green() * factor))),
+            max(0, min(255, round(color.blue() * factor))),
+            color.alpha(),
+        )
 
     def _apply_terrain_atmosphere(
         self, color: QColor, distance_m: float, sky_color: QColor, t_night: float
     ) -> QColor:
-        haze = _distance_haze_factor(distance_m)
-        haze_mix = haze * (1.0 - 0.20 * _clamp01(t_night))
-        return _lerp_color(
-            color,
-            _atmospheric_haze_color(sky_color, t_night),
-            haze_mix,
+        del sky_color, t_night
+        base = np.asarray(color.getRgb(), dtype=np.uint8)
+        result = compose_vertex_rgba(
+            base,
+            1.0,
+            float(distance_m),
+            self.render_settings,
+            maximum_distance_m=self._maximum_terrain_distance_m(),
         )
+        return _qcolor_from_rgba(result)
 
     def _compose_terrain_color(
         self,
@@ -2057,7 +2102,13 @@ class HorizonOverlay(QObject):
         light_factor=None,
         base_color=None,
     ):
-        haze = _distance_haze_factor(distance_m)
+        haze = float(
+            atmospheric_fog_factor(
+                distance_m,
+                self.render_settings,
+                maximum_distance_m=self._maximum_terrain_distance_m(),
+            )
+        )
         palette_t = _clamp01(1.0 - haze)
         night_c, day_c = _palette_color(palette_t)
         base = QColor(base_color) if base_color is not None else _lerp_color(day_c, night_c, t_night)
@@ -2103,7 +2154,13 @@ class HorizonOverlay(QObject):
             terrain_shading_enabled=terrain_shading_enabled,
             light_factor=light_factor,
         )
-        haze = _distance_haze_factor(distance_m)
+        haze = float(
+            atmospheric_fog_factor(
+                distance_m,
+                self.render_settings,
+                maximum_distance_m=self._maximum_terrain_distance_m(),
+            )
+        )
         calm_night, calm_day = _palette_color(
             _clamp01(0.62 + 0.18 * (1.0 - haze))
         )
@@ -2315,12 +2372,17 @@ class HorizonOverlay(QObject):
         normal_y = asset.normal_y
         normal_z = asset.normal_z
 
-        sun_vec = self._sun_vector_enu(sun_alt, sun_az)
+        sun_alt, sun_az, sun_vec = self._configured_light()
+        terrain_shading_enabled = bool(
+            terrain_shading_enabled
+            and self.render_settings.terrain_lighting_enabled
+        )
         shade_key = (
             asset.mesh_id,
             bool(terrain_shading_enabled),
             None if sun_alt is None else round(float(sun_alt) * 4.0) / 4.0,
             None if sun_az is None else round(float(sun_az) * 4.0) / 4.0,
+            repr(self.render_settings),
         )
         shade_grid = (
             self._terrain_shade_cache.get(shade_key)
@@ -2349,7 +2411,12 @@ class HorizonOverlay(QObject):
                 terrain_shading_enabled=terrain_shading_enabled,
                 sun_visibility=sun_visibility,
             )
-            shade_grid = self._smooth_light_grid(shade_grid, valid & visible)
+            shade_grid = self._smooth_light_grid(
+                shade_grid,
+                valid & visible,
+                min_value=self.render_settings.terrain_min_brightness,
+                max_value=self.render_settings.terrain_max_brightness,
+            )
             if PERFORMANCE_FLAGS.relief_cached:
                 self._terrain_shade_cache.put(
                     shade_key, shade_grid, int(shade_grid.nbytes)

@@ -925,7 +925,12 @@ class SurfaceSamplingService:
         if band_indices.size and profile_azimuth_indices.size:
             sampled_bands = [bands[index] for index in band_indices]
             sampled_azimuths = azimuths[profile_azimuth_indices]
-            azimuth_radians = np.deg2rad(sampled_azimuths)[None, :]
+            convergence = float(
+                getattr(profile, "grid_convergence_deg", 0.0) or 0.0
+            )
+            azimuth_radians = np.deg2rad(
+                sampled_azimuths - convergence
+            )[None, :]
             distances = np.stack(
                 [
                     np.asarray(
@@ -981,7 +986,12 @@ class SurfaceSamplingService:
                 )
                 selected_distances = mesh_distances[relief_distance_indices]
                 selected_azimuths = mesh_azimuths[relief_azimuth_indices]
-                azimuth_radians = np.deg2rad(selected_azimuths)[None, :]
+                convergence = float(
+                    getattr(profile, "grid_convergence_deg", 0.0) or 0.0
+                )
+                azimuth_radians = np.deg2rad(
+                    selected_azimuths - convergence
+                )[None, :]
                 x = observer_x + selected_distances[:, None] * np.sin(azimuth_radians)
                 y = observer_y + selected_distances[:, None] * np.cos(azimuth_radians)
                 samples = self.sample_rgba_points(x, y, input_crs=geometry_crs)

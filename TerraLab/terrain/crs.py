@@ -16,7 +16,7 @@ from functools import lru_cache
 from typing import Any, Tuple
 
 import numpy as np
-from pyproj import CRS, Geod, Transformer
+from pyproj import CRS, Geod, Proj, Transformer
 
 
 CRS_GEOGRAPHIC = "EPSG:4326"
@@ -214,6 +214,30 @@ class CoordinateTransformService:
 DEFAULT_TRANSFORM_SERVICE = CoordinateTransformService()
 
 
+@lru_cache(maxsize=512)
+def meridian_convergence_degrees(
+    longitude_deg: float,
+    latitude_deg: float,
+    projected_crs: Any = CRS_TERRAIN_INTERNAL,
+) -> float:
+    """Return grid-north minus true-north rotation at a geographic point.
+
+    PyProj reports convergence with the sign required by
+    ``grid_azimuth = true_azimuth - convergence``.
+    """
+
+    try:
+        crs = normalize_crs(projected_crs)
+        with PYPROJ_TRANSFORMER_LOCK:
+            factors = Proj(crs).get_factors(
+                float(longitude_deg), float(latitude_deg)
+            )
+        value = float(factors.meridian_convergence)
+        return value if math.isfinite(value) else 0.0
+    except Exception:
+        return 0.0
+
+
 __all__ = [
     "CRS_GEOGRAPHIC",
     "CRS_TERRAIN_INTERNAL",
@@ -221,5 +245,6 @@ __all__ = [
     "CoordinateFrame",
     "CoordinateTransformService",
     "DEFAULT_TRANSFORM_SERVICE",
+    "meridian_convergence_degrees",
     "normalize_crs",
 ]

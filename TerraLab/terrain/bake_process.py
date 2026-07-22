@@ -395,8 +395,13 @@ def _legacy_main():
                     job_id, "prepare", 0.0, 15.0
                 ),
             )
-            baker = HorizonBaker(provider)
             x_utm, y_utm = provider.transform_coordinates(args.lat, args.lon)
+            from TerraLab.terrain.crs import meridian_convergence_degrees
+
+            baker = HorizonBaker(provider)
+            baker.grid_convergence_deg = meridian_convergence_degrees(
+                args.lon, args.lat
+            )
             from TerraLab.terrain.visibility_range import EARTH_RADIUS_M, TerrainRangeSettings, resolve_visibility_range
             settings = TerrainRangeSettings.from_mapping(json.loads(args.range_settings_json))
             baker.R = EARTH_RADIUS_M * (
@@ -769,8 +774,12 @@ def main(argv=None):
             provider_input,
             progress_callback=_phase_progress(job_id, "prepare", 0.0, 15.0),
         )
-        baker = HorizonBaker(provider)
         x_utm, y_utm = provider.transform_coordinates(args.lat, args.lon)
+        from TerraLab.terrain.crs import meridian_convergence_degrees
+
+        grid_convergence_deg = meridian_convergence_degrees(args.lon, args.lat)
+        baker = HorizonBaker(provider)
+        baker.grid_convergence_deg = grid_convergence_deg
         ground_h, sampled_source_id, has_runtime_provenance = _observer_elevation_sample(
             provider, x_utm, y_utm
         )
@@ -871,6 +880,7 @@ def main(argv=None):
                     elevation_source_status=source_status,
                     observer_x=float(x_utm),
                     observer_y=float(y_utm),
+                    grid_convergence_deg=grid_convergence_deg,
                 )
                 snapshot_path = _unique_preview_path(
                     preview_path, current
@@ -939,6 +949,7 @@ def main(argv=None):
             elevation_source_status=source_status,
             observer_x=float(x_utm),
             observer_y=float(y_utm),
+            grid_convergence_deg=grid_convergence_deg,
         )
         _atomic_save_profile(final, output_path)
         # Preserve the historical fixed preview path for tooling that inspects
