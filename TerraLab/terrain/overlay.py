@@ -253,13 +253,79 @@ def _rasterize_triangles_impl(xy, depth_values, width, height, supersample):
     return depth, triangle_id, bary_u, bary_v
 
 
+def _rasterize_triangles_numpy(xy, depth_values, width, height, supersample):
+    """Portable rasterizer with vectorized bounding boxes and no pixel loop."""
+
+    xy = np.asarray(xy, dtype=np.float64)
+    depth_values = np.asarray(depth_values, dtype=np.float64)
+    out_width = int(width) * int(supersample)
+    out_height = int(height) * int(supersample)
+    depth = np.full((out_height, out_width), np.inf, dtype=np.float64)
+    triangle_id = np.full((out_height, out_width), -1, dtype=np.int32)
+    bary_u = np.zeros((out_height, out_width), dtype=np.float32)
+    bary_v = np.zeros((out_height, out_width), dtype=np.float32)
+    scale = float(supersample)
+    for triangle in range(xy.shape[0]):
+        vertices = xy[triangle] * scale
+        x0, y0 = vertices[0]
+        x1, y1 = vertices[1]
+        x2, y2 = vertices[2]
+        denominator = (y1 - y2) * (x0 - x2) + (x2 - x1) * (y0 - y2)
+        if not np.isfinite(denominator) or abs(denominator) <= 1e-12:
+            continue
+        min_x = max(0, int(math.ceil(float(np.min(vertices[:, 0])) - 0.5)))
+        max_x = min(
+            out_width - 1,
+            int(math.floor(float(np.max(vertices[:, 0])) - 0.5)),
+        )
+        min_y = max(0, int(math.ceil(float(np.min(vertices[:, 1])) - 0.5)))
+        max_y = min(
+            out_height - 1,
+            int(math.floor(float(np.max(vertices[:, 1])) - 0.5)),
+        )
+        if min_x > max_x or min_y > max_y:
+            continue
+        sample_x = np.arange(min_x, max_x + 1, dtype=np.float64)[None, :] + 0.5
+        sample_y = np.arange(min_y, max_y + 1, dtype=np.float64)[:, None] + 0.5
+        inverse = 1.0 / denominator
+        u = (
+            (y1 - y2) * (sample_x - x2)
+            + (x2 - x1) * (sample_y - y2)
+        ) * inverse
+        v = (
+            (y2 - y0) * (sample_x - x2)
+            + (x0 - x2) * (sample_y - y2)
+        ) * inverse
+        w = 1.0 - u - v
+        covered = (u >= -1e-10) & (v >= -1e-10) & (w >= -1e-10)
+        if not np.any(covered):
+            continue
+        candidate = (
+            u * depth_values[triangle, 0]
+            + v * depth_values[triangle, 1]
+            + w * depth_values[triangle, 2]
+        )
+        depth_view = depth[min_y : max_y + 1, min_x : max_x + 1]
+        nearer = covered & (candidate < depth_view)
+        if not np.any(nearer):
+            continue
+        depth_view[nearer] = candidate[nearer]
+        triangle_view = triangle_id[min_y : max_y + 1, min_x : max_x + 1]
+        triangle_view[nearer] = triangle
+        u_view = bary_u[min_y : max_y + 1, min_x : max_x + 1]
+        v_view = bary_v[min_y : max_y + 1, min_x : max_x + 1]
+        u_view[nearer] = u[nearer]
+        v_view[nearer] = v[nearer]
+    return depth, triangle_id, bary_u, bary_v
+
+
 _rasterize_triangles_fast = (
     njit(cache=True, nogil=True)(_rasterize_triangles_impl) if njit is not None else None
 )
 
 
 def _rasterize_terrain_triangles(xy, depth, width, height, supersample=2):
-    rasterizer = _rasterize_triangles_fast or _rasterize_triangles_impl
+    rasterizer = _rasterize_triangles_fast or _rasterize_triangles_numpy
     return rasterizer(
         np.asarray(xy, dtype=np.float64),
         np.asarray(depth, dtype=np.float64),
@@ -267,6 +333,40 @@ def _rasterize_terrain_triangles(xy, depth, width, height, supersample=2):
         int(height),
         int(supersample),
     )
+
+
+def _interpolate_triangle_values(
+    triangle_id,
+    bary_u,
+    bary_v,
+    triangle_values,
+    *,
+    flat: bool = False,
+):
+    """Interpolate arbitrary per-vertex channels on a rasterized triangle map."""
+
+    ids_grid = np.asarray(triangle_id, dtype=np.int32)
+    values = np.asarray(triangle_values, dtype=np.float64)
+    if values.ndim != 3 or values.shape[1] != 3:
+        raise ValueError("Triangle values must have shape (triangles, 3, channels)")
+    result = np.zeros(ids_grid.shape + (values.shape[2],), dtype=np.float64)
+    covered = ids_grid >= 0
+    if not np.any(covered):
+        return result, covered
+    ids = ids_grid[covered]
+    selected = values[ids]
+    if flat:
+        result[covered] = np.mean(selected, axis=1)
+        return result, covered
+    u = np.asarray(bary_u, dtype=np.float64)[covered]
+    v = np.asarray(bary_v, dtype=np.float64)[covered]
+    w = 1.0 - u - v
+    result[covered] = (
+        u[:, None] * selected[:, 0]
+        + v[:, None] * selected[:, 1]
+        + w[:, None] * selected[:, 2]
+    )
+    return result, covered
 
 
 def _local_extrema_mask(values: np.ndarray) -> np.ndarray:
@@ -1457,24 +1557,41 @@ class HorizonOverlay(QObject):
             return
 
         if use_3d_relief:
-            self._draw_terrain_surface_2d(
-                painter,
-                terrain_mesh,
-                projection_fn,
-                width,
-                height,
-                px_per_alt_deg,
-                current_azimuth,
-                az_min,
-                az_max,
-                t_night,
-                sky_ref,
-                sun_alt,
-                sun_az,
-                True,
-                projection_fn_numpy=projection_fn_numpy,
-                interaction_active=interaction_active,
-            )
+            rendered = False
+            if self.render_settings.terrain_shading_mode == "interpolated":
+                rendered = self._draw_terrain_interpolated(
+                    painter,
+                    terrain_mesh,
+                    projection_fn,
+                    width,
+                    height,
+                    current_azimuth,
+                    az_min,
+                    az_max,
+                    t_night,
+                    sky_ref,
+                    projection_fn_numpy=projection_fn_numpy,
+                    interaction_active=interaction_active,
+                )
+            if not rendered:
+                self._draw_terrain_surface_2d(
+                    painter,
+                    terrain_mesh,
+                    projection_fn,
+                    width,
+                    height,
+                    px_per_alt_deg,
+                    current_azimuth,
+                    az_min,
+                    az_max,
+                    t_night,
+                    sky_ref,
+                    sun_alt,
+                    sun_az,
+                    True,
+                    projection_fn_numpy=projection_fn_numpy,
+                    interaction_active=interaction_active,
+                )
         elif terrain_3d_enabled and has_terrain_mesh and not self._layers:
             self._draw_terrain_mesh(
                 painter,
@@ -2042,6 +2159,30 @@ class HorizonOverlay(QObject):
             )
         return result_rgba, result_valid
 
+    def _terrain_vertex_base_rgba(self, asset, t_night):
+        """Return one stable base RGBA value for every shared mesh vertex."""
+
+        shape = asset.elevations.shape
+        maximum = max(1.0, float(asset.distances[-1]))
+        fallback = np.empty(shape + (4,), dtype=np.uint8)
+        for row, distance in enumerate(asset.distances):
+            palette_position = _clamp01(1.0 - float(distance) / maximum)
+            night_color, day_color = _palette_color(palette_position)
+            fallback[row, :, :] = _lerp_color(
+                day_color, night_color, t_night
+            ).getRgb()
+
+        rows, columns = np.indices(shape, dtype=np.int32)
+        sampled, sampled_valid = self._relief_surface_samples(
+            rows, columns, shape
+        )
+        result = np.where(sampled_valid[..., None], sampled, fallback).astype(
+            np.uint8
+        )
+        if self.terrain_surface_opaque:
+            result[..., 3] = 255
+        return result
+
     def _apply_terrain_light(
         self, color: QColor, light_factor: float, sky_color: QColor, t_night: float
     ) -> QColor:
@@ -2211,7 +2352,11 @@ class HorizonOverlay(QObject):
         shade_values = np.asarray(segment_shade[finite], dtype=np.float32)
         x_min = float(np.min(x_values))
         x_max = float(np.max(x_values))
-        if x_max - x_min < 1.0 or np.ptp(shade_values) < 0.006:
+        if (
+            self.render_settings.terrain_shading_mode == "flat"
+            or x_max - x_min < 1.0
+            or np.ptp(shade_values) < 0.006
+        ):
             light_factor = float(np.mean(shade_values))
             return QBrush(
                 self._terrain_surface_color(
@@ -2723,19 +2868,130 @@ class HorizonOverlay(QObject):
             self._terrain_geometry_cache = result
         return result
 
+    def _draw_terrain_interpolated(
+        self,
+        painter,
+        mesh,
+        projection_fn,
+        width,
+        height,
+        cur_az,
+        az_min,
+        az_max,
+        t_night,
+        sky_color,
+        *,
+        projection_fn_numpy=None,
+        interaction_active=False,
+    ) -> bool:
+        """Render the relief with shared per-vertex colours and a z-buffer."""
+
+        asset = self._terrain_render_asset
+        if asset is None or asset.mesh_id != id(mesh):
+            asset = self._prepare_terrain_render_asset(mesh)
+            if PERFORMANCE_FLAGS.relief_cached:
+                self._terrain_render_asset = asset
+        if asset is None:
+            return False
+
+        light_alt, light_az, light_vector = self._configured_light()
+        lighting_enabled = bool(
+            self.render_settings.terrain_lighting_enabled
+            and light_vector is not None
+        )
+        shade_key = (
+            "vertex-light-v1",
+            asset.mesh_id,
+            lighting_enabled,
+            round(float(light_alt) * 4.0) / 4.0,
+            round(float(light_az) * 4.0) / 4.0,
+            repr(self.render_settings),
+        )
+        shade_grid = (
+            self._terrain_shade_cache.get(shade_key)
+            if PERFORMANCE_FLAGS.relief_cached
+            else None
+        )
+        if shade_grid is None:
+            sun_visibility = self._terrain_sun_visibility(
+                mesh,
+                asset.elevations,
+                asset.valid,
+                asset.visible,
+                asset.distances,
+                asset.azimuths,
+                light_alt,
+                light_az,
+                terrain_shading_enabled=lighting_enabled,
+            )
+            shade_grid = self._terrain_light_factor(
+                asset.normal_x,
+                asset.normal_y,
+                asset.normal_z,
+                asset.distances[:, None],
+                light_vector,
+                light_alt,
+                terrain_shading_enabled=lighting_enabled,
+                sun_visibility=sun_visibility,
+            )
+            shade_grid = self._smooth_light_grid(
+                shade_grid,
+                asset.valid,
+                min_value=self.render_settings.terrain_min_brightness,
+                max_value=self.render_settings.terrain_max_brightness,
+            )
+            if PERFORMANCE_FLAGS.relief_cached:
+                self._terrain_shade_cache.put(
+                    shade_key, shade_grid, int(shade_grid.nbytes)
+                )
+
+        geometry = self._terrain_triangles_for_view(
+            asset,
+            projection_fn,
+            width,
+            height,
+            cur_az,
+            az_min,
+            az_max,
+            projection_fn_numpy=projection_fn_numpy,
+        )
+        if geometry is None or geometry.xy.size == 0:
+            return False
+
+        base_rgba = self._terrain_vertex_base_rgba(asset, t_night)
+        vertex_rgba = compose_vertex_rgba(
+            base_rgba,
+            shade_grid,
+            asset.distances[:, None],
+            self.render_settings,
+            maximum_distance_m=self._maximum_terrain_distance_m()
+            or float(asset.distances[-1]),
+        )
+        color_key = (
+            shade_key,
+            round(float(t_night) * 256.0) / 256.0,
+            id(getattr(getattr(self, "profile", None), "surface_samples", None)),
+            bool(self.terrain_surface_opaque),
+        )
+        self._paint_terrain_triangles(
+            painter,
+            geometry,
+            vertex_rgba,
+            width,
+            height,
+            color_key,
+            interaction_active=interaction_active,
+        )
+        return True
+
     def _paint_terrain_triangles(
         self,
         painter,
         geometry,
-        shade_grid,
+        vertex_rgba,
         width,
         height,
-        t_night,
-        sky_color,
-        sun_vec,
-        sun_alt,
-        terrain_shading_enabled,
-        shade_key,
+        color_key,
         interaction_active=False,
     ):
         """Resolve exact screen visibility and compose the cached RGBA surface."""
@@ -2748,17 +3004,13 @@ class HorizonOverlay(QObject):
         render_scale = 0.5 if interaction_active else 1.0
         render_width = max(1, int(math.ceil(float(width) * render_scale)))
         render_height = max(1, int(math.ceil(float(height) * render_scale)))
-        supersample = 1 if interaction_active else 2
-        quantized_night = round(float(t_night) * 256.0) / 256.0
+        supersample = 1
         cache_key = (
-            "zbuffer-v2",
+            "zbuffer-v3",
             int(width),
             int(height),
             bool(interaction_active),
-            shade_key,
-            quantized_night,
-            int(sky_color.rgba()),
-            bool(terrain_shading_enabled),
+            color_key,
             bool(self.terrain_surface_opaque),
         )
         if (
@@ -2807,42 +3059,24 @@ class HorizonOverlay(QObject):
             dtype=np.uint8,
         )
         if np.any(covered):
-            ids = triangle_id[covered]
-            u = bary_u[covered].astype(np.float64)
-            v = bary_v[covered].astype(np.float64)
-            w = 1.0 - u - v
-            rows = geometry.vertex_rows[ids]
-            columns = geometry.vertex_columns[ids]
-            vertex_shades = np.asarray(shade_grid[rows, columns], dtype=np.float64)
-            interpolated_shade = (
-                u * vertex_shades[:, 0]
-                + v * vertex_shades[:, 1]
-                + w * vertex_shades[:, 2]
+            # A shared mesh index always supplies byte-identical RGBA to both
+            # incident triangles.
+            values = np.asarray(
+                vertex_rgba[
+                    geometry.vertex_rows,
+                    geometry.vertex_columns,
+                ],
+                dtype=np.float64,
             )
-            vertex_depth = geometry.depth[ids]
-            interpolated_depth = (
-                u * vertex_depth[:, 0] + v * vertex_depth[:, 1] + w * vertex_depth[:, 2]
+            interpolated_grid, _ = _interpolate_triangle_values(
+                triangle_id,
+                bary_u,
+                bary_v,
+                values,
+                flat=self.render_settings.terrain_shading_mode == "flat",
             )
-            # Quantized lookup preserves the existing colour model without a
-            # Python QColor call for every covered sub-sample.
-            distance_bins = np.round(interpolated_depth / 25.0).astype(np.int64)
-            shade_bins = np.round(interpolated_shade * 200.0).astype(np.int64)
-            keys = np.column_stack((distance_bins, shade_bins))
-            unique_keys, inverse = np.unique(keys, axis=0, return_inverse=True)
-            palette = np.empty((unique_keys.shape[0], 4), dtype=np.float64)
-            for index, (distance_bin, shade_bin) in enumerate(unique_keys):
-                color = self._terrain_surface_color(
-                    float(distance_bin) * 25.0,
-                    float(shade_bin) / 200.0,
-                    quantized_night,
-                    sky_color,
-                    sun_vec,
-                    sun_alt,
-                    terrain_shading_enabled,
-                )
-                palette[index] = color.getRgb()
             rgba_high[covered] = np.clip(
-                np.rint(palette[inverse]), 0, 255
+                np.rint(interpolated_grid[covered]), 0, 255
             ).astype(np.uint8)
 
         if supersample > 1:

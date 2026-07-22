@@ -5,7 +5,9 @@ from PyQt5.QtGui import QColor
 
 from TerraLab.terrain.overlay import (
     HorizonOverlay,
+    _interpolate_triangle_values,
     _qcolor_from_rgba,
+    _rasterize_terrain_triangles,
     _resolve_terrain_render_path,
 )
 from TerraLab.terrain.representation import (
@@ -212,3 +214,56 @@ def test_distance_changes_only_the_post_lighting_atmospheric_stage():
     assert _rgb(near) == _rgb(base)
     assert _rgb(far) == _rgb(expected_far)
     assert _rgb(far) != _rgb(base)
+
+
+def _rasterized_square(reverse_order=False):
+    triangles = np.asarray(
+        (
+            ((0.0, 0.0), (4.0, 0.0), (0.0, 4.0)),
+            ((4.0, 0.0), (4.0, 4.0), (0.0, 4.0)),
+        ),
+        dtype=np.float64,
+    )
+    values = np.asarray(
+        (
+            ((0.0,), (4.0,), (4.0,)),
+            ((4.0,), (8.0,), (4.0,)),
+        ),
+        dtype=np.float64,
+    )
+    if reverse_order:
+        triangles = triangles[::-1]
+        values = values[::-1]
+    depth = np.ones((2, 3), dtype=np.float64)
+    _depth, triangle_id, bary_u, bary_v = _rasterize_terrain_triangles(
+        triangles, depth, 4, 4, supersample=1
+    )
+    interpolated, covered = _interpolate_triangle_values(
+        triangle_id, bary_u, bary_v, values
+    )
+    return interpolated[..., 0], covered
+
+
+def test_adjacent_interpolated_triangles_have_no_coverage_seam():
+    _values, covered = _rasterized_square()
+
+    assert np.all(covered)
+
+
+def test_shared_vertex_values_are_independent_of_triangulation_order():
+    forward, forward_covered = _rasterized_square()
+    reverse, reverse_covered = _rasterized_square(reverse_order=True)
+
+    np.testing.assert_array_equal(forward_covered, reverse_covered)
+    np.testing.assert_allclose(forward, reverse, atol=1e-6)
+
+
+def test_interpolation_is_continuous_across_the_shared_diagonal():
+    values, covered = _rasterized_square()
+
+    expected = np.add.outer(
+        np.arange(4, dtype=np.float64) + 0.5,
+        np.arange(4, dtype=np.float64) + 0.5,
+    )
+    assert np.all(covered)
+    np.testing.assert_allclose(values, expected, atol=1e-6)
