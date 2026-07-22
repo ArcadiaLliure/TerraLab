@@ -33,8 +33,9 @@ from TerraLab.terrain.representation import (
     normalize_terrain_representation_mode,
 )
 
-CATALOG_SCHEMA_VERSION = 1
+CATALOG_SCHEMA_VERSION = 2
 LEGACY_PATHS_MIGRATION = "legacy_paths_v1"
+LAND_COVER_TYPE_MIGRATION = "land_cover_types_v2"
 _CATALOG_IO_LOCK = threading.RLock()
 
 
@@ -49,8 +50,12 @@ class LayerType(_StableStringEnum):
     """Semantic type of a geospatial dataset."""
 
     ELEVATION = "elevation"
-    SURFACE_CATEGORICAL = "surface_categorical"
-    SURFACE_RGB = "surface_rgb"
+    LAND_COVER_CATEGORICAL = "land_cover_categorical"
+    LAND_COVER_RGB = "land_cover_rgb"
+    # Source-compatible names retained for Python callers.  Persisted values
+    # use the explicit semantic ``land_cover_*`` identifiers from schema v2.
+    SURFACE_CATEGORICAL = "land_cover_categorical"
+    SURFACE_RGB = "land_cover_rgb"
     LIGHT_POLLUTION = "light_pollution"
 
 
@@ -93,6 +98,14 @@ def _coerce_layer_type(value: LayerType | str) -> LayerType:
     if isinstance(value, LayerType):
         return value
     normalized = str(value or "").strip().lower()
+    legacy_aliases = {
+        "surface_categorical": LayerType.LAND_COVER_CATEGORICAL,
+        "surface_rgb": LayerType.LAND_COVER_RGB,
+        "categorical_land_cover": LayerType.LAND_COVER_CATEGORICAL,
+        "rgb_land_cover": LayerType.LAND_COVER_RGB,
+    }
+    if normalized in legacy_aliases:
+        return legacy_aliases[normalized]
     for member in LayerType:
         if normalized in {member.value, member.name.lower()}:
             return member
@@ -587,7 +600,8 @@ class DataSourceRegistry:
             existed = self._path.exists()
             if existed:
                 self._load()
-            migrated = self._migrate_legacy_paths()
+            migrated = self._migrate_land_cover_types()
+            migrated = self._migrate_legacy_paths() or migrated
             if migrated or not existed:
                 self.save()
 
@@ -1118,6 +1132,20 @@ class DataSourceRegistry:
             self._migrations.add(LEGACY_PATHS_MIGRATION)
             return True
 
+    def _migrate_land_cover_types(self) -> bool:
+        """Rewrite legacy ``surface_*`` values using schema-v2 identifiers.
+
+        ``DataSource.from_dict`` already coerces the old strings while loading;
+        marking this migration forces one atomic save even in catalogues whose
+        unrelated legacy-path migration had completed in an earlier release.
+        """
+
+        with self._lock:
+            if LAND_COVER_TYPE_MIGRATION in self._migrations:
+                return False
+            self._migrations.add(LAND_COVER_TYPE_MIGRATION)
+            return True
+
 
 class LayerSelectionService:
     """Resolve deterministic applicable source chains for observer positions."""
@@ -1154,6 +1182,9 @@ class LayerSelectionService:
     @staticmethod
     def _sort_key(source: DataSource) -> tuple[int, int, float, str]:
         surface_rank = {
+            # Preserve the established immediate-visual automatic default.
+            # The catalogue/UI still recommends categorical for future
+            # procedural materials, and either product can be chosen manually.
             LayerType.SURFACE_RGB: 0,
             LayerType.SURFACE_CATEGORICAL: 1,
         }.get(source.layer_type, 0)
@@ -1163,6 +1194,75 @@ class LayerSelectionService:
             else math.inf
         )
         return surface_rank, -int(source.priority), resolution, source.id
+
+    @staticmethod
+    def _surface_semantic_key(source: DataSource) -> tuple[Any, ...] | None:
+        metadata = source.metadata if isinstance(source.metadata, Mapping) else {}
+        product_id = str(metadata.get("product_id", "") or "").strip().casefold()
+        if not product_id:
+            return None
+
+        def extent_token(value: Extent | None) -> tuple[float, ...] | None:
+            if value is None:
+                return None
+            return tuple(round(float(item), 7) for item in value)
+
+        version = str(
+            metadata.get(
+                "product_version",
+                metadata.get("source_version", metadata.get("version", "")),
+            )
+            or ""
+        ).strip().casefold()
+        resolution = (
+            round(float(source.resolution_m), 6)
+            if source.resolution_m is not None
+            else None
+        )
+        return (
+            source.layer_type.value,
+            product_id,
+            version,
+            str(source.crs or metadata.get("nominal_crs", "")).strip().upper(),
+            extent_token(source.bounds or source.coverage),
+            resolution,
+        )
+
+    @classmethod
+    def _deduplicate_surface_sources(
+        cls,
+        candidates: Sequence[DataSource],
+        *,
+        configured_id: str | None,
+    ) -> list[DataSource]:
+        groups: dict[tuple[Any, ...], list[DataSource]] = {}
+        positions: dict[tuple[Any, ...], int] = {}
+        passthrough: list[tuple[int, DataSource]] = []
+        for position, source in enumerate(candidates):
+            key = cls._surface_semantic_key(source)
+            if key is None:
+                passthrough.append((position, source))
+                continue
+            positions.setdefault(key, position)
+            groups.setdefault(key, []).append(source)
+
+        selected: list[tuple[int, DataSource]] = list(passthrough)
+        for key, sources in groups.items():
+            manual = next(
+                (source for source in sources if source.id == configured_id), None
+            )
+            managed = next(
+                (
+                    source
+                    for source in sources
+                    if bool(source.metadata.get("managed", False))
+                    or source.provenance.strip().casefold() == "managed"
+                ),
+                None,
+            )
+            selected.append((positions[key], manual or managed or sources[0]))
+        selected.sort(key=lambda item: item[0])
+        return [source for _position, source in selected]
 
     def _select(
         self,
@@ -1212,6 +1312,16 @@ class LayerSelectionService:
                 else:
                     reason = f"{reason}_no_fallback"
 
+        if role is LayerRole.SURFACE:
+            candidates = self._deduplicate_surface_sources(
+                candidates,
+                configured_id=(
+                    configured.id
+                    if selection.mode is SelectionMode.MANUAL and configured is not None
+                    else None
+                ),
+            )
+
         chain = tuple(candidates)
         effective = chain[0] if chain else None
         if selection.mode is SelectionMode.AUTOMATIC and effective is None:
@@ -1251,6 +1361,7 @@ class LayerSelectionService:
 __all__ = [
     "CATALOG_SCHEMA_VERSION",
     "LEGACY_PATHS_MIGRATION",
+    "LAND_COVER_TYPE_MIGRATION",
     "DataSource",
     "DataSourceRegistry",
     "LayerRole",

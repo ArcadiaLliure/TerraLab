@@ -18,6 +18,7 @@ from TerraLab.terrain.providers import (
     AscRasterProvider,
     ElevationProviderChain,
     GeoTiffElevationProvider,
+    RasterSamplingCancelled,
     create_elevation_provider,
 )
 from TerraLab.terrain.surface import (
@@ -332,7 +333,7 @@ def test_elevation_reads_bounded_blocks_instead_of_whole_raster(tmp_path):
         provider.close()
 
 
-def test_rgb_is_bilinear_and_categorical_is_nearest(tmp_path):
+def test_rgb_and_categorical_are_sampled_with_nearest_neighbour(tmp_path):
     red = np.fromfunction(lambda row, col: row * 10 + col * 20, (4, 4), dtype=int).astype(np.uint8)
     rgb_path = _write_raster(
         tmp_path / "ortho.tif",
@@ -344,7 +345,7 @@ def test_rgb_is_bilinear_and_categorical_is_nearest(tmp_path):
     try:
         sample = rgb.sample_rgba(1.0, 3.0)
         assert bool(sample.valid)
-        assert sample.rgba.tolist() == [15, 40, 80, 255]
+        assert sample.rgba.tolist() == [30, 40, 80, 255]
     finally:
         rgb.close()
 
@@ -539,6 +540,67 @@ def test_surface_factory_uses_typed_data_source_kinds(tmp_path):
             provider.close()
 
 
+def test_continental_surface_sampling_reports_blocks_and_is_cancellable(tmp_path):
+    path = _write_raster(
+        tmp_path / "categorical-tiled.tif",
+        np.full((128, 128), 73, dtype=np.uint8),
+        tiled=True,
+    )
+    provider = CategoricalSurfaceProvider(path)
+    provider.initialize()
+    progress = []
+    cancelled = [False]
+
+    def record_progress(fraction, phase):
+        progress.append((float(fraction), str(phase)))
+        if float(fraction) > 0.0:
+            cancelled[0] = True
+
+    grid = np.linspace(0.5, 127.5, 32)
+    x, row = np.meshgrid(grid, grid)
+    y = 128.0 - row
+    try:
+        with pytest.raises(RasterSamplingCancelled):
+            provider.sample_classes(
+                x,
+                y,
+                input_crs="EPSG:25831",
+                progress_callback=record_progress,
+                abort_check=lambda: cancelled[0],
+            )
+        assert progress[0][0] == 0.0
+        assert any(fraction > 0.0 for fraction, _phase in progress)
+    finally:
+        provider.close()
+
+
+def test_striped_continental_raster_is_batched_into_local_virtual_windows(tmp_path):
+    path = _write_raster(
+        tmp_path / "wide-striped.tif",
+        np.full((128, 10_000), 73, dtype=np.uint8),
+    )
+    provider = CategoricalSurfaceProvider(path)
+    provider.initialize()
+    dataset = provider._datasets[0]
+    rows = np.arange(0.5, 127.5, dtype=np.float64)
+    x = np.full(rows.shape, 5_000.5, dtype=np.float64)
+    y = 128.0 - rows
+    try:
+        assert dataset.native_block_width == 10_000
+        assert dataset.native_block_height <= 4
+        assert dataset.virtual_blocks is True
+        assert dataset.block_height > dataset.native_block_height
+
+        result = provider.sample_classes(x, y, input_crs="EPSG:25831")
+
+        assert result.valid.all()
+        assert np.all(result.classes == 73)
+        # One grouped local window replaces one GDAL call for every scanline.
+        assert dataset.cache_misses < len(rows) // 8
+    finally:
+        provider.close()
+
+
 def test_surface_cache_uses_real_profile_and_mesh_coordinates_and_is_immutable():
     class RecordingRgbProvider(RgbSurfaceProvider):
         def __init__(self):
@@ -576,10 +638,14 @@ def test_surface_cache_uses_real_profile_and_mesh_coordinates_and_is_immutable()
             }
         ],
         terrain_mesh={
+            "version": 3,
             "azimuths": azimuths,
             "distances": np.asarray([5.0, 15.0], dtype=np.float32),
             "altitudes": np.zeros((2, 4), dtype=np.float32),
             "valid": np.ones((2, 4), dtype=bool),
+            "near_patch_eastings": np.asarray([-1.0, 0.0, 1.0], dtype=np.float32),
+            "near_patch_northings": np.asarray([-1.0, 0.0, 1.0], dtype=np.float32),
+            "near_patch_valid": np.ones((3, 3), dtype=bool),
         },
     )
 
@@ -587,7 +653,25 @@ def test_surface_cache_uses_real_profile_and_mesh_coordinates_and_is_immutable()
     assert cache.profile_rgba.shape == (1, 4, 4)
     assert cache.relief_rgba.shape == (2, 4, 4)
     assert cache.profile_valid.all() and cache.relief_valid.all()
-    profile_x, profile_y, profile_crs = provider.calls[0]
+    observer_x, observer_y, observer_crs = provider.calls[0]
+    assert observer_crs == "EPSG:25831"
+    assert float(observer_x) == pytest.approx(0.0)
+    assert float(observer_y) == pytest.approx(0.0)
+    assert cache.observer_valid is True
+    assert cache.observer_rgba.tolist() == [128, 60, 30, 255]
+    assert cache.near_patch_rgba.shape == (3, 3, 4)
+    assert cache.near_patch_valid.all()
+    near_x, near_y, near_crs = provider.calls[1]
+    assert near_crs == "EPSG:25831"
+    np.testing.assert_allclose(
+        near_x,
+        [[-1.0, 0.0, 1.0], [-1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]],
+    )
+    np.testing.assert_allclose(
+        near_y,
+        [[-1.0, -1.0, -1.0], [0.0, 0.0, 0.0], [1.0, 1.0, 1.0]],
+    )
+    profile_x, profile_y, profile_crs = provider.calls[2]
     assert profile_crs == "EPSG:25831"
     assert profile_x[0].tolist() == pytest.approx([0.0, 20.0, 0.0, -40.0], abs=1e-6)
     assert profile_y[0].tolist() == pytest.approx([10.0, 0.0, -30.0, 0.0], abs=1e-6)
@@ -599,7 +683,7 @@ def test_surface_cache_uses_real_profile_and_mesh_coordinates_and_is_immutable()
     same = service.sample_profile(profile, geometry_id="geometry-a")
     different = service.sample_profile(profile, geometry_id="geometry-b")
     assert same is cache
-    assert len(provider.calls) == calls_before_cache_hit + 2
+    assert len(provider.calls) == calls_before_cache_hit + 4
     assert same.cache_id == cache.cache_id
     assert different.cache_id != cache.cache_id
 

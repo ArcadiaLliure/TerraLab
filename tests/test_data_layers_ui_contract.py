@@ -128,3 +128,37 @@ def test_surface_only_catalogue_change_recolors_latest_profile_without_bake():
     assert ("surface", ()) in calls
     assert not any(name in {"abort", "relocate"} for name, _args in calls)
     assert dummy._effective_data_sources_payload is None
+
+
+def test_checked_surface_layer_requests_initial_refresh_once():
+    calls = []
+    dummy = SimpleNamespace(
+        chk_surface_layer=_CheckedBox(True),
+        _initial_surface_refresh_requested=False,
+        on_surface_layer_toggled=lambda checked: calls.append(bool(checked)),
+    )
+
+    AstronomicalWidget._activate_checked_surface_layer_startup(dummy)
+    AstronomicalWidget._activate_checked_surface_layer_startup(dummy)
+
+    assert calls == [True]
+    assert dummy._initial_surface_refresh_requested is True
+
+
+def test_disabling_surface_layer_does_not_start_sampling():
+    refresh_calls = []
+    cancel_calls = []
+    dummy = SimpleNamespace(
+        terrain_coordinator=SimpleNamespace(
+            request_surface_refresh=lambda **kwargs: refresh_calls.append(kwargs),
+            cancel_surface_refresh=lambda: cancel_calls.append(True),
+        ),
+        canvas=SimpleNamespace(update=lambda: None),
+        _persist_visibility_state=lambda *_args: None,
+        _surface_refresh_view_kwargs=lambda: {"view_fov_deg": 75.0},
+    )
+
+    AstronomicalWidget.on_surface_layer_toggled(dummy, False)
+
+    assert refresh_calls == []
+    assert cancel_calls == [True]

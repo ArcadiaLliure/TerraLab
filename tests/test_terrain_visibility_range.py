@@ -1,6 +1,7 @@
 import math
 
 import numpy as np
+import pytest
 
 from TerraLab.terrain.engine import HorizonBaker, HorizonProfile, generate_bands, limit_profile_radius
 from TerraLab.terrain.visibility_range import (
@@ -50,6 +51,45 @@ def test_bands_and_mesh_reach_same_resolved_radius_with_bounded_lod():
         assert len(rings) <= 395
 
 
+def test_relief_mesh_starts_inside_the_overlapping_cartesian_near_patch():
+    for resolution in (5.0, 10.0, 30.0, 90.0):
+        rings = HorizonBaker._mesh_distance_rings(150_000.0, resolution)
+        assert float(rings[0]) == 40.0
+        assert len(rings) <= 395
+
+    axis = HorizonBaker._near_patch_axis()
+    assert float(axis[0]) == -80.0
+    assert float(axis[-1]) == 80.0
+    assert 0.0 in axis
+    center = int(np.flatnonzero(axis == 0.0)[0])
+    assert float(axis[center + 1] - axis[center]) == 0.5
+    assert np.array_equal(axis, -axis[::-1])
+
+
+def test_view_mesh_contains_real_cartesian_geometry_below_the_observer():
+    class FlatDem:
+        @staticmethod
+        def get_elevation(_x, _y):
+            return 100.0
+
+    mesh = HorizonBaker(FlatDem(), eye_height=1.7).build_view_mesh(
+        0.0,
+        0.0,
+        100.0,
+        d_max=250.0,
+        delta_az_deg=90.0,
+    )
+
+    assert mesh["version"] == 3
+    assert mesh["distances"][0] == 40.0
+    axis = mesh["near_patch_eastings"]
+    assert mesh["near_patch_altitudes"].shape == (axis.size, axis.size)
+    centre = int(np.flatnonzero(axis == 0.0)[0])
+    assert mesh["near_patch_valid"].all()
+    assert mesh["near_patch_altitudes"][centre, centre] == pytest.approx(-90.0)
+    assert mesh["near_patch_normal_z"][centre, centre] == pytest.approx(1.0)
+
+
 def test_profile_radius_metadata_invalidates_legacy_and_short_cache(tmp_path):
     base = dict(azimuths=np.array([0.0]), bands=[])
     legacy_path = tmp_path / "legacy.npz"
@@ -60,6 +100,18 @@ def test_profile_radius_metadata_invalidates_legacy_and_short_cache(tmp_path):
     loaded = HorizonProfile.load(str(ranged_path))
     assert loaded.covers_radius(300_000.0)
     assert not loaded.covers_radius(300_001.0)
+
+
+def test_profile_radius_invalidates_pre_cartesian_relief_mesh():
+    profile = HorizonProfile(
+        azimuths=np.asarray([0.0], dtype=np.float32),
+        bands=[],
+        resolved_radius_m=300_000.0,
+        terrain_mesh={"version": 2},
+    )
+    assert not profile.covers_radius(100_000.0)
+    profile.terrain_mesh = {"version": 3}
+    assert profile.covers_radius(100_000.0)
 
 
 def test_range_settings_are_serialized_for_the_bake_subprocess():

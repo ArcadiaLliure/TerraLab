@@ -303,8 +303,8 @@ class _DurableChangeEvent(QObject):
 
 _TYPE_LABELS = {
     LayerType.ELEVATION: "Elevació",
-    LayerType.SURFACE_RGB: "Superfície RGB / ortofoto",
-    LayerType.SURFACE_CATEGORICAL: "Superfície categòrica",
+    LayerType.SURFACE_RGB: "Cobertura del sòl — RGB",
+    LayerType.SURFACE_CATEGORICAL: "Cobertura del sòl — categòrica",
     LayerType.LIGHT_POLLUTION: "Contaminació lumínica",
 }
 

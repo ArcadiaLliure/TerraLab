@@ -1106,5 +1106,6 @@ def build_deferred_controls_ui(widget):
         self.build_search_index()
     self._refresh_climate_status_indicator()
     self._refresh_stars_status_indicator()
+    QTimer.singleShot(0, self._activate_checked_surface_layer_startup)
     QTimer.singleShot(0, self._validate_checked_assets_startup)
     QTimer.singleShot(0, self._update_button_pos)

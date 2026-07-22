@@ -11,6 +11,8 @@ import urllib.request
 import urllib.parse
 import zipfile
 import math
+import tempfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -27,6 +29,14 @@ from TerraLab.terrain.data_sources import (
     SourceHealthStatus,
 )
 from TerraLab.terrain.source_inspection import inspect_data_source
+from TerraLab.data.resumable_download import (
+    DownloadCancelled,
+    DownloadProgress,
+    PartialDownload,
+    ResumableDownloader,
+    human_bytes,
+    progress_message,
+)
 from TerraLab.util.gaia_importer import build_gaia_catalog_spawned
 from TerraLab.util.milkyway_importer import convert_milkyway_fits_to_png
 
@@ -46,6 +56,37 @@ class AssetSpec:
     credits: str = ""
     allow_multiple: bool = False
     auto_download_url: Optional[str] = None
+    provider: str = ""
+    semantic_type: str = ""
+    nominal_resolution_m: float | None = None
+    nominal_crs: str = ""
+    geographic_extent: str = ""
+    approximate_download_bytes: int = 0
+    expected_download_bytes: int = 0
+    expected_extracted_bytes: int = 0
+    citation: str = ""
+    license_note: str = ""
+
+
+S2GLC_PRODUCT = "S2GLC Land Cover Map of Europe 2017"
+S2GLC_PROVIDER = (
+    "CBK PAN, Space Research Centre of the Polish Academy of Sciences"
+)
+S2GLC_SOURCE_URL = "https://s2glc.cbk.waw.pl/extension"
+S2GLC_CITATION = (
+    "Malinowski et al. (2020), Automated Production of a Land Cover/Use "
+    "Map of Europe Based on Sentinel-2 Imagery, Remote Sensing 12(21), "
+    "3523. https://doi.org/10.3390/rs12213523"
+)
+S2GLC_CREDITS = (
+    f"{S2GLC_PRODUCT}. {S2GLC_PROVIDER}. Projecte finançat per l'ESA. "
+    f"{S2GLC_CITATION}"
+)
+S2GLC_LICENSE_NOTE = (
+    "Descàrrega gratuïta des de la font oficial. La font no declara "
+    "expressament una llicència oberta de redistribució; consulteu les "
+    "condicions del proveïdor."
+)
 
 
 def _progress(
@@ -66,6 +107,7 @@ class AssetManager:
         self.data_sources = DataSourceRegistry(
             self.layout["data_source_catalog"]
         )
+        self.downloader = ResumableDownloader(self.layout["downloads_partial"])
         self.specs: Dict[str, AssetSpec] = {
             "climate_metno": AssetSpec(
                 asset_id="climate_metno",
@@ -123,21 +165,41 @@ class AssetManager:
             ),
             "surface_rgb": AssetSpec(
                 asset_id="surface_rgb",
-                title="Tipus de sol (RGB)",
-                source_url="https://www.eea.europa.eu/en/datahub/datahubitem-view/d62ade7a-9c9c-405e-b88e-6ce0410d6a4f",
-                accepted_formats="GeoTIFF/VRT/IMG/JP2/PNG/JPEG",
-                credits="Copernicus Land Monitoring Service / user supplied data.",
+                title="Cobertura del sòl — RGB",
+                source_url=S2GLC_SOURCE_URL,
+                accepted_formats="GeoTIFF RGB de tres bandes (o RGB amb alfa), també ZIP oficial",
+                credits=S2GLC_CREDITS,
                 allow_multiple=True,
-                auto_download_url=None,
+                auto_download_url="https://users.cbk.waw.pl/~mkrupinski/S2GLC_Europe_2017_v1.2_RGB.zip",
+                provider=S2GLC_PROVIDER,
+                semantic_type=LayerType.LAND_COVER_RGB.value,
+                nominal_resolution_m=10.0,
+                nominal_crs="EPSG:3035 (verificat en instal·lar)",
+                geographic_extent="Europa (extensió detectada del GeoTIFF)",
+                approximate_download_bytes=16_200_000_000,
+                expected_download_bytes=16_992_946_811,
+                expected_extracted_bytes=17_423_097_171,
+                citation=S2GLC_CITATION,
+                license_note=S2GLC_LICENSE_NOTE,
             ),
             "surface_categorical": AssetSpec(
                 asset_id="surface_categorical",
-                title="Tipus de sol (categories)",
-                source_url="https://geoserver.geoville.com/geoserver/clcp/ows?service=WMS&version=1.3.0&request=GetCapabilities",
-                accepted_formats="GeoTIFF/VRT/IMG/JP2 categoric local; WMS pendent",
-                credits="Copernicus Land Monitoring Service / user supplied data.",
+                title="Cobertura del sòl — categòrica",
+                source_url=S2GLC_SOURCE_URL,
+                accepted_formats="GeoTIFF d'una banda de codis enters, també ZIP oficial",
+                credits=S2GLC_CREDITS,
                 allow_multiple=True,
-                auto_download_url=None,
+                auto_download_url="https://users.cbk.waw.pl/~mkrupinski/S2GLC_Europe_2017_v1.2_grey.zip",
+                provider=S2GLC_PROVIDER,
+                semantic_type=LayerType.LAND_COVER_CATEGORICAL.value,
+                nominal_resolution_m=10.0,
+                nominal_crs="EPSG:3035 (verificat en instal·lar)",
+                geographic_extent="Europa (extensió detectada del GeoTIFF)",
+                approximate_download_bytes=8_000_000_000,
+                expected_download_bytes=7_950_798_367,
+                expected_extracted_bytes=8_445_672_037,
+                citation=S2GLC_CITATION,
+                license_note=S2GLC_LICENSE_NOTE,
             ),
             "ngc_catalog": AssetSpec(
                 asset_id="ngc_catalog",
@@ -177,6 +239,73 @@ class AssetManager:
         set_config_value(f"assets.{asset_id}.ready", bool(ready))
         set_config_value(f"assets.{asset_id}.updated_utc", now_utc)
 
+    def _mark_install_state(
+        self,
+        asset_id: str,
+        state: str,
+        *,
+        error: str = "",
+        **details,
+    ) -> None:
+        library = getattr(self, "library", None)
+        if library is None:
+            return
+        library.update_asset(
+            asset_id,
+            install_state=str(state),
+            install_error=str(error or ""),
+            install_updated_utc=datetime.now(timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            **details,
+        )
+
+    def _download_target(self, asset_id: str) -> Path | None:
+        spec = self.get_spec(asset_id)
+        if not spec.auto_download_url:
+            return None
+        name = Path(urllib.parse.urlsplit(spec.auto_download_url).path).name
+        download_dir = Path(
+            self.layout.get(
+                "downloads",
+                Path(self.layout.get("tmp", Path.cwd())) / "downloads",
+            )
+        )
+        return download_dir / (name or f"{asset_id}.bin")
+
+    def partial_download(self, asset_id: str):
+        target = self._download_target(asset_id)
+        downloader = getattr(self, "downloader", None)
+        partial = (
+            downloader.partial_for(target)
+            if target is not None and downloader is not None
+            else None
+        )
+        if partial is not None:
+            return partial
+        # Cancelling verification/extraction happens after the atomic .part ->
+        # ZIP promotion. Treat that archive as resumable preparation so an
+        # application restart does not needlessly download another 8/17 GB.
+        if target is not None and target.is_file():
+            spec = self.get_spec(asset_id)
+            expected = int(spec.expected_download_bytes or 0)
+            actual = int(target.stat().st_size)
+            if expected > 0 and actual == expected:
+                return PartialDownload(
+                    url=str(spec.auto_download_url or ""),
+                    target_path=str(target),
+                    partial_path=str(target),
+                    metadata_path=str(
+                        target.with_suffix(target.suffix + ".part.json")
+                    ),
+                    downloaded_bytes=actual,
+                    expected_size=expected,
+                    etag="",
+                    last_modified="",
+                    status="downloaded",
+                )
+        return None
+
     def get_specs(self) -> List[AssetSpec]:
         return list(self.specs.values())
 
@@ -195,6 +324,7 @@ class AssetManager:
             "climate_metno",
             "elevation_dem",
             "surface_categorical",
+            "surface_rgb",
             "light_pollution",
         ]
 
@@ -326,6 +456,24 @@ class AssetManager:
                 if source.health_status is SourceHealthStatus.INVALID
             ]
             effective = available[0] if available else None
+            partial = self.partial_download(asset_id)
+            library = getattr(self, "library", None)
+            manifest_state = (
+                library.asset_state(asset_id) if library is not None else {}
+            )
+            install_state = str(
+                manifest_state.get("install_state", "") or ""
+            )
+            if effective is not None:
+                install_state = "prepared"
+            elif partial is not None and partial.downloaded_bytes > 0:
+                install_state = {
+                    "downloading": "downloading",
+                    "paused": "paused",
+                    "error": "error",
+                }.get(partial.status, "partial")
+            elif not install_state:
+                install_state = "not_configured"
             return {
                 "ready": bool(effective),
                 "reason": (
@@ -336,6 +484,19 @@ class AssetManager:
                 "path": str(effective.path) if effective is not None else "",
                 "source_id": str(effective.id) if effective is not None else "",
                 "source_count": len(sources),
+                "install_state": install_state,
+                "install_error": str(
+                    manifest_state.get("install_error", "") or ""
+                ),
+                "partial_bytes": int(
+                    partial.downloaded_bytes if partial is not None else 0
+                ),
+                "expected_bytes": int(
+                    partial.expected_size
+                    if partial is not None
+                    else self.get_spec(asset_id).expected_download_bytes
+                ),
+                "resumable": bool(partial is not None and partial.resumable),
             }
         if asset_id == "ngc_catalog":
             p = self._manifest_asset_path(asset_id) or (
@@ -667,19 +828,143 @@ class AssetManager:
         candidate.mkdir(parents=True, exist_ok=False)
         return candidate
 
+    @classmethod
+    def _unique_dataset_path(cls, parent: Path, name: str, fallback: str) -> Path:
+        base = cls._dataset_slug(name, fallback)
+        candidate = parent / base
+        suffix = 2
+        while candidate.exists():
+            candidate = parent / f"{base}_{suffix}"
+            suffix += 1
+        return candidate
+
+    def _geospatial_metadata(
+        self,
+        asset_id: str,
+        *,
+        managed: bool,
+    ) -> dict[str, object]:
+        spec = self.get_spec(asset_id)
+        metadata: dict[str, object] = {
+            "managed": bool(managed),
+            "asset_id": str(asset_id),
+            "semantic_type": str(spec.semantic_type or ""),
+            "provider": str(spec.provider or ""),
+            "official_url": str(spec.source_url or ""),
+            "nominal_resolution_m": spec.nominal_resolution_m,
+            "nominal_crs": str(spec.nominal_crs or ""),
+            "geographic_extent_description": str(spec.geographic_extent or ""),
+            "citation": str(spec.citation or ""),
+            "license_note": str(spec.license_note or ""),
+        }
+        if asset_id in {"surface_rgb", "surface_categorical"}:
+            metadata.update(
+                {
+                    "product_id": "s2glc-europe-2017-v1.2",
+                    "product_name": S2GLC_PRODUCT,
+                    "reference_year": 2017,
+                }
+            )
+        if asset_id == "surface_rgb":
+            metadata["rgb_interpolation"] = "linear_light"
+        if asset_id == "surface_categorical":
+            metadata["legend_id"] = "s2glc_europe_2017"
+        return metadata
+
     @staticmethod
-    def _safe_extract_zip(archive: Path, destination: Path) -> None:
+    def _validate_and_extract_zip(
+        archive: Path,
+        destination: Path,
+        *,
+        progress_callback: Optional[ProgressFn] = None,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> None:
+        """CRC-validate first, then stream a path-safe extraction."""
+
         destination_root = destination.resolve(strict=False)
+        _progress(progress_callback, 73.0, "Verificant l'estructura i els CRC del ZIP…")
+        try:
+            with zipfile.ZipFile(archive, "r") as probe:
+                probe.infolist()
+        except zipfile.BadZipFile as exc:
+            raise ValueError(f"ZIP corrupte: {exc}") from exc
         with zipfile.ZipFile(archive, "r") as handle:
-            for member in handle.infolist():
+            members = handle.infolist()
+            if not members:
+                raise ValueError("El ZIP és buit.")
+            for member in members:
                 target = (destination / member.filename).resolve(strict=False)
                 try:
                     target.relative_to(destination_root)
                 except ValueError as exc:
                     raise ValueError(
-                        f"Unsafe path in ZIP archive: {member.filename}"
+                        f"Ruta no segura dins del ZIP: {member.filename}"
                     ) from exc
-            handle.extractall(destination)
+            verify_total = max(
+                1, sum(max(0, int(item.file_size)) for item in members)
+            )
+            verified = 0
+            try:
+                for member in members:
+                    if member.is_dir():
+                        continue
+                    with handle.open(member, "r") as source:
+                        while True:
+                            if cancelled is not None and cancelled():
+                                raise AssetOperationCancelled(
+                                    "Verificació pausada; el ZIP es conserva."
+                                )
+                            chunk = source.read(4 * 1024 * 1024)
+                            if not chunk:
+                                break
+                            verified += len(chunk)
+                            _progress(
+                                progress_callback,
+                                73.0 + 6.0 * min(1.0, verified / verify_total),
+                                "Verificant ZIP: "
+                                f"{human_bytes(verified)} / {human_bytes(verify_total)}",
+                            )
+            except zipfile.BadZipFile as exc:
+                raise ValueError(f"ZIP corrupte: {exc}") from exc
+        if cancelled is not None and cancelled():
+            raise AssetOperationCancelled(
+                "Extracció pausada després de verificar; el ZIP es conserva."
+            )
+
+        _progress(progress_callback, 80.0, "Extraient el GeoTIFF en segon pla…")
+        with zipfile.ZipFile(archive, "r") as handle:
+            members = handle.infolist()
+            total = max(1, sum(max(0, int(item.file_size)) for item in members))
+            extracted = 0
+            for member in members:
+                if cancelled is not None and cancelled():
+                    raise AssetOperationCancelled(
+                        "Extracció pausada; el ZIP complet es conserva per reprendre."
+                    )
+                target = destination / member.filename
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with handle.open(member, "r") as source, target.open("wb") as output:
+                    while True:
+                        if cancelled is not None and cancelled():
+                            raise AssetOperationCancelled(
+                                "Extracció pausada; el ZIP complet es conserva per reprendre."
+                            )
+                        chunk = source.read(4 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        output.write(chunk)
+                        extracted += len(chunk)
+                        _progress(
+                            progress_callback,
+                            80.0 + 13.0 * min(1.0, extracted / total),
+                            "Extraient: "
+                            f"{human_bytes(extracted)} / {human_bytes(total)}",
+                        )
+                    output.flush()
+                    os.fsync(output.fileno())
 
     @staticmethod
     def _safe_extract_7z(archive: Path, destination: Path) -> None:
@@ -761,7 +1046,9 @@ class AssetManager:
             display_name=display_name or candidate.stem or candidate.name,
             priority=int(priority),
             provenance="external",
-            metadata={"managed": False},
+            metadata=self._geospatial_metadata(asset_id, managed=False),
+            attribution=self.get_spec(asset_id).credits,
+            license=self.get_spec(asset_id).license_note,
         )
         self._mark_asset_state(asset_id, True, "")
         return source
@@ -825,81 +1112,42 @@ class AssetManager:
         expected_size: int | None = None,
         expected_md5: str | None = None,
         cancelled: Callable[[], bool] | None = None,
+        extracted_size: int = 0,
     ) -> Path:
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        partial_root = Path(self.layout.get("downloads_partial", target_path.parent))
-        partial_root.mkdir(parents=True, exist_ok=True)
-        partial_path = partial_root / f"{target_path.name}.part"
-        downloaded = partial_path.stat().st_size if partial_path.exists() else 0
-        headers = {
-            "User-Agent": "TerraLab/1.0 (layer library downloader)",
-            "Accept": "*/*",
-        }
-        if downloaded:
-            headers["Range"] = f"bytes={downloaded}-"
-        if cancelled is not None and cancelled():
-            raise AssetOperationCancelled("Descàrrega cancel·lada.")
-        _progress(progress_callback, 2.0, f"Descarregant {url}")
-        req = urllib.request.Request(
-            url,
-            headers=headers,
-        )
-        with urllib.request.urlopen(req, timeout=60) as response:
-            resumed = downloaded > 0 and int(response.getcode() or 0) == 206
-            if downloaded and not resumed:
-                downloaded = 0
-            response_size = int(response.headers.get("Content-Length", "0") or "0")
-            total = int(expected_size or 0) or (
-                downloaded + response_size if response_size else 0
+        def report(event: DownloadProgress) -> None:
+            if event.phase == "downloading":
+                percent = (
+                    2.0 + 68.0 * event.downloaded_bytes / event.total_bytes
+                    if event.total_bytes > 0
+                    else -1.0
+                )
+            else:
+                percent = 1.0 if event.phase == "connecting" else -1.0
+            _progress(progress_callback, percent, progress_message(event))
+
+        try:
+            result = self.downloader.download(
+                url,
+                target_path,
+                expected_size=int(expected_size or 0),
+                extracted_size=int(extracted_size or 0),
+                progress=report,
+                cancelled=cancelled,
+                safety_margin_bytes=(
+                    None if int(extracted_size or 0) > 0 else 0
+                ),
             )
-            if total:
-                free = shutil.disk_usage(partial_root).free
-                remaining = max(0, total - downloaded)
-                if free < remaining:
-                    raise OSError(
-                        f"Espai insuficient: calen {remaining} bytes i només n'hi ha {free}."
-                    )
-            mode = "ab" if resumed else "wb"
-            with partial_path.open(mode) as out:
-                while True:
-                    if cancelled is not None and cancelled():
-                        raise AssetOperationCancelled(
-                            "Descàrrega cancel·lada; es conserva el fitxer .part per reprendre-la."
-                        )
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    out.write(chunk)
-                    downloaded += len(chunk)
-                    if total > 0:
-                        pct = 2.0 + 78.0 * min(1.0, float(downloaded) / float(total))
-                        _progress(
-                            progress_callback,
-                            pct,
-                            f"Descarregat {downloaded}/{total} bytes",
-                        )
-                    else:
-                        pct = min(
-                            80.0, 2.0 + (downloaded / (1024.0 * 1024.0)) * 0.25
-                        )
-                        _progress(progress_callback, pct, f"Descarregat {downloaded} bytes")
-                out.flush()
-                os.fsync(out.fileno())
-        if expected_size and partial_path.stat().st_size != int(expected_size):
-            raise IOError(
-                f"Mida incorrecta: {partial_path.stat().st_size} != {expected_size}."
-            )
+        except DownloadCancelled as exc:
+            raise AssetOperationCancelled(str(exc)) from exc
         if expected_md5:
             digest = hashlib.md5()  # noqa: S324 - provider publishes MD5 metadata.
-            with partial_path.open("rb") as handle:
+            with result.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                     digest.update(chunk)
             if digest.hexdigest().lower() != str(expected_md5).lower():
                 raise IOError("La suma MD5 de la descàrrega no coincideix.")
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(partial_path, target_path)
-        _progress(progress_callback, 82.0, "Descarrega completada.")
-        return target_path
+        _progress(progress_callback, 72.0, "Descàrrega completada; verificant arxiu.")
+        return result
 
     @staticmethod
     def _latest_dvnl_download(metadata_url: str) -> Dict[str, object]:
@@ -946,7 +1194,8 @@ class AssetManager:
                 f"Asset {asset_id} does not support automatic download."
             )
         download_url = spec.auto_download_url
-        expected_size = None
+        expected_size = int(spec.expected_download_bytes or 0) or None
+        extracted_size = int(spec.expected_extracted_bytes or 0)
         expected_md5 = None
         if asset_id == "light_pollution":
             resolved = self._latest_dvnl_download(download_url)
@@ -959,22 +1208,55 @@ class AssetManager:
             filename = filename or f"{asset_id}.bin"
         download_dir = Path(self.layout.get("downloads", self.layout["tmp"]))
         tmp_path = download_dir / filename
-        downloaded = self._download_file(
-            download_url,
-            tmp_path,
-            progress_callback=progress_callback,
-            expected_size=expected_size,
-            expected_md5=expected_md5,
-            cancelled=cancelled,
-        )
-        if cancelled is not None and cancelled():
-            raise AssetOperationCancelled("Preparació cancel·lada.")
-        return self.import_files(
-            asset_id,
-            [str(downloaded)],
-            progress_callback=progress_callback,
-            options=options,
-        )
+        self._mark_install_state(asset_id, "downloading")
+        try:
+            reuse_archive = bool(
+                expected_size
+                and tmp_path.is_file()
+                and int(tmp_path.stat().st_size) == int(expected_size)
+            )
+            if reuse_archive:
+                self.downloader.ensure_space(
+                    archive_size=int(expected_size or 0),
+                    extracted_size=extracted_size,
+                    downloaded_bytes=int(expected_size or 0),
+                )
+                downloaded = tmp_path
+                _progress(
+                    progress_callback,
+                    72.0,
+                    "Verificant l'arxiu descarregat abans de reprendre...",
+                )
+            else:
+                downloaded = self._download_file(
+                    download_url,
+                    tmp_path,
+                    progress_callback=progress_callback,
+                    expected_size=expected_size,
+                    expected_md5=expected_md5,
+                    cancelled=cancelled,
+                    extracted_size=extracted_size,
+                )
+            if cancelled is not None and cancelled():
+                raise AssetOperationCancelled("Preparació pausada.")
+            result = self.import_files(
+                asset_id,
+                [str(downloaded)],
+                progress_callback=progress_callback,
+                options=options,
+                cancelled=cancelled,
+            )
+            if bool(dict(options or {}).get("remove_archive", False)):
+                downloaded.unlink(missing_ok=True)
+                result["archive_removed"] = True
+            self._mark_install_state(asset_id, "prepared")
+            return result
+        except AssetOperationCancelled:
+            self._mark_install_state(asset_id, "paused")
+            raise
+        except Exception as exc:
+            self._mark_install_state(asset_id, "error", error=str(exc))
+            raise
 
     def import_files(
         self,
@@ -982,6 +1264,7 @@ class AssetManager:
         files: Iterable[str],
         progress_callback: Optional[ProgressFn] = None,
         options: Optional[Dict[str, object]] = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> Dict[str, object]:
         opts = dict(options or {})
         paths = [Path(p) for p in files if str(p).strip()]
@@ -1116,16 +1399,27 @@ class AssetManager:
                 )
             )
             parent = Path(self.layout.get(parent_key, fallback_parent))
+            parent.mkdir(parents=True, exist_ok=True)
             display_name = str(opts.get("display_name") or paths[0].stem)
-            dataset_dir = self._unique_dataset_dir(
+            dataset_dir = self._unique_dataset_path(
                 parent,
                 display_name,
                 layer_type.value,
             )
+            staging_dir = Path(
+                tempfile.mkdtemp(
+                    prefix=f".{self._dataset_slug(display_name, layer_type.value)}-",
+                    dir=str(parent),
+                )
+            ).resolve(strict=False)
             copied = 0
             try:
                 total = max(1, len(paths))
                 for idx, src in enumerate(paths):
+                    if cancelled is not None and cancelled():
+                        raise AssetOperationCancelled(
+                            "Importació pausada abans de copiar."
+                        )
                     if not src.exists():
                         raise FileNotFoundError(str(src))
                     _progress(
@@ -1135,30 +1429,46 @@ class AssetManager:
                     )
                     if src.is_dir():
                         for child in src.rglob("*"):
+                            if cancelled is not None and cancelled():
+                                raise AssetOperationCancelled(
+                                    "Importació pausada durant la còpia."
+                                )
                             if child.is_file():
-                                destination = dataset_dir / child.relative_to(src)
+                                destination = staging_dir / child.relative_to(src)
                                 self._copy_file(child, destination)
                     elif src.suffix.lower() == ".zip":
-                        self._safe_extract_zip(src, dataset_dir)
+                        self._mark_install_state(asset_id, "extracting")
+                        self._validate_and_extract_zip(
+                            src,
+                            staging_dir,
+                            progress_callback=progress_callback,
+                            cancelled=cancelled,
+                        )
                     elif src.suffix.lower() == ".7z":
-                        self._safe_extract_7z(src, dataset_dir)
+                        self._safe_extract_7z(src, staging_dir)
                     elif src.suffix.lower() in {".tif", ".tiff"}:
-                        self._copy_raster_with_sidecars(src, dataset_dir / src.name)
+                        self._copy_raster_with_sidecars(
+                            src, staging_dir / src.name
+                        )
                     else:
-                        self._copy_file(src, dataset_dir / src.name)
+                        self._copy_file(src, staging_dir / src.name)
                     copied += 1
 
                 raster_candidates = sorted(
                     (
                         child
-                        for child in dataset_dir.rglob("*")
+                        for child in staging_dir.rglob("*")
                         if child.is_file()
                         and child.suffix.lower()
                         in {".tif", ".tiff", ".asc", ".txt", ".npy", ".vrt", ".img", ".jp2"}
                     ),
                     key=lambda child: child.name.lower(),
                 )
-                registered_path: Path = dataset_dir
+                if not raster_candidates:
+                    raise ValueError(
+                        "No s'ha trobat cap raster compatible després d'extreure o copiar."
+                    )
+                staging_registered_path: Path = staging_dir
                 if layer_type is LayerType.LIGHT_POLLUTION:
                     tiffs = [
                         child
@@ -1167,7 +1477,65 @@ class AssetManager:
                     ]
                     if not tiffs:
                         raise ValueError("L'arxiu no conté cap GeoTIFF DVNL.")
-                    registered_path = tiffs[-1]
+                    staging_registered_path = tiffs[-1]
+
+                metadata = self._geospatial_metadata(asset_id, managed=True)
+                self._mark_install_state(asset_id, "registering")
+                _progress(
+                    progress_callback,
+                    94.0,
+                    "Indexant i validant bandes, dtype, CRS, transformació, "
+                    "límits, resolució i nodata…",
+                )
+                registered_relative = staging_registered_path.relative_to(
+                    staging_dir
+                )
+                native_register = (
+                    getattr(self._register_data_source, "__func__", None)
+                    is AssetManager._register_data_source
+                )
+                if native_register:
+                    try:
+                        inspected = inspect_data_source(
+                            str(staging_registered_path),
+                            layer_type,
+                            source_id=f"{asset_id}-validation",
+                            metadata=metadata,
+                        )
+                    except Exception:
+                        # Keep an invalid linked/imported source diagnosable in
+                        # the catalogue. It remains disabled and is never
+                        # considered prepared by _register_data_source.
+                        os.replace(staging_dir, dataset_dir)
+                        staging_dir = None
+                        invalid_path = (
+                            dataset_dir / registered_relative
+                            if layer_type is LayerType.LIGHT_POLLUTION
+                            else dataset_dir
+                        )
+                        self._register_data_source(
+                            invalid_path,
+                            layer_type,
+                            display_name=display_name,
+                            priority=int(opts.get("priority", 0) or 0),
+                            provenance="managed",
+                            attribution=self.get_spec(asset_id).credits,
+                            license=self.get_spec(asset_id).license_note,
+                            metadata=metadata,
+                        )
+                        raise
+                    metadata = dict(inspected.metadata)
+                    metadata["inspection_status"] = (
+                        SourceHealthStatus.HEALTHY.value
+                    )
+                # Publish the fully validated tree in one filesystem operation.
+                os.replace(staging_dir, dataset_dir)
+                staging_dir = None
+                registered_path: Path = (
+                    dataset_dir / registered_relative
+                    if layer_type is LayerType.LIGHT_POLLUTION
+                    else dataset_dir
+                )
                 source = self._register_data_source(
                     registered_path,
                     layer_type,
@@ -1175,7 +1543,8 @@ class AssetManager:
                     priority=int(opts.get("priority", 0) or 0),
                     provenance="managed",
                     attribution=self.get_spec(asset_id).credits,
-                    metadata={"managed": True},
+                    license=self.get_spec(asset_id).license_note,
+                    metadata=metadata,
                 )
 
                 asc_caches = []
@@ -1195,7 +1564,12 @@ class AssetManager:
                     )
                     observer_auto = self._auto_configure_observer_from_dem(dataset_dir)
                 self._mark_asset_state(asset_id, True, "")
-                _progress(progress_callback, 100.0, "Font registrada a la biblioteca.")
+                self._mark_install_state(asset_id, "prepared")
+                _progress(
+                    progress_callback,
+                    100.0,
+                    "Completat: font registrada a la biblioteca.",
+                )
                 return {
                     "ok": True,
                     "stored_in": str(
@@ -1208,8 +1582,21 @@ class AssetManager:
                     "asc_caches": int(len(asc_caches)),
                     "observer_auto": observer_auto,
                 }
-            except Exception:
-                self._mark_asset_state(asset_id, False, "")
+            except Exception as exc:
+                if staging_dir is not None and staging_dir.exists():
+                    try:
+                        resolved_parent = parent.resolve(strict=False)
+                        resolved_staging = staging_dir.resolve(strict=False)
+                        resolved_staging.relative_to(resolved_parent)
+                        if resolved_staging.name.startswith("."):
+                            shutil.rmtree(resolved_staging)
+                    except (OSError, ValueError):
+                        pass
+                if isinstance(exc, AssetOperationCancelled):
+                    self._mark_install_state(asset_id, "paused")
+                else:
+                    self._mark_asset_state(asset_id, False, "")
+                    self._mark_install_state(asset_id, "error", error=str(exc))
                 raise
 
         if asset_id == "ngc_catalog":

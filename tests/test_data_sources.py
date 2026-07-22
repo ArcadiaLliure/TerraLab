@@ -8,6 +8,7 @@ import pytest
 from TerraLab.common.app_paths import data_source_catalog_path, runtime_layout
 from TerraLab.terrain.data_sources import (
     CATALOG_SCHEMA_VERSION,
+    LAND_COVER_TYPE_MIGRATION,
     LEGACY_PATHS_MIGRATION,
     DataSourceRegistry,
     LayerRole,
@@ -159,6 +160,40 @@ def test_legacy_reader_supports_nested_mapping(tmp_path):
     assert [source.path for source in registry.list_sources()] == [
         str(dem.resolve())
     ]
+
+
+def test_legacy_surface_types_are_atomically_rewritten_to_land_cover(tmp_path):
+    path = tmp_path / "catalog" / "data_sources.json"
+    raster = _touch(tmp_path, "surface/legacy.tif")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "sources": [
+                    {
+                        "id": "legacy-rgb",
+                        "display_name": "Tipus de sòl",
+                        "layer_type": "surface_rgb",
+                        "path": str(raster),
+                        "format": "geotiff",
+                    }
+                ],
+                "selections": {},
+                "migrations": {LEGACY_PATHS_MIGRATION: True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    registry = DataSourceRegistry(path, legacy_reader={})
+    loaded = registry.get("legacy-rgb")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert loaded.layer_type is LayerType.LAND_COVER_RGB
+    assert payload["version"] == CATALOG_SCHEMA_VERSION
+    assert payload["sources"][0]["layer_type"] == "land_cover_rgb"
+    assert payload["migrations"][LAND_COVER_TYPE_MIGRATION] is True
 
 
 def test_duplicate_registration_returns_existing_source(tmp_path):

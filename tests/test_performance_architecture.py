@@ -418,7 +418,7 @@ def test_preview_payload_is_resolved_only_and_capped_to_1440_azimuths():
     assert np.all(np.diff(reduced[0]) > 0.0)
 
 
-def test_relief_mesh_reuses_the_polar_field_without_new_dem_reads():
+def test_relief_mesh_reuses_polar_field_and_batches_only_cartesian_patch():
     provider = _BatchSyntheticProvider()
     baker = HorizonBaker(provider)
     baker.bake_progressive(
@@ -438,7 +438,9 @@ def test_relief_mesh_reuses_the_polar_field_without_new_dem_reads():
         d_max=2_000.0,
         delta_az_deg=10.0,
     )
-    assert provider.batch_calls == calls_after_bake
+    assert provider.batch_calls == calls_after_bake + 1
+    assert baker.last_mesh_metrics["reused_field"] is True
+    assert baker.last_mesh_metrics["near_patch_vertices"] < 5_000
     assert mesh["altitudes"].shape == mesh["valid"].shape
 
 
@@ -473,7 +475,8 @@ def test_fine_raycast_retains_only_capped_relief_azimuths():
         d_max=200.0,
         delta_az_deg=0.025,
     )
-    assert provider.batch_calls == calls_after_bake
+    assert provider.batch_calls == calls_after_bake + 1
+    assert baker.last_mesh_metrics["reused_field"] is True
     assert mesh["azimuths"].size == 7_200
 
 

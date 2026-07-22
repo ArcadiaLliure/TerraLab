@@ -2447,7 +2447,9 @@ class AstronomicalWidget(CustomWidgetBase):
             if self.lbl_loading.isHidden():
                 self.lbl_loading.show()
                 self.lbl_loading.raise_()
-            self.lbl_loading.repaint()
+            # Queue one paint for the next event-loop turn.  A synchronous
+            # repaint for every raster-row progress event can starve all input.
+            self.lbl_loading.update()
     def _poll_horizon_progress(self):
         if not hasattr(self, "horizon_worker"):
             return
@@ -3511,14 +3513,46 @@ class AstronomicalWidget(CustomWidgetBase):
             self.chk_enable_village.blockSignals(False)
         self._persist_visibility_state("topografia", checked)
         self.canvas.update()
+    def _surface_refresh_view_kwargs(self):
+        canvas = getattr(self, "canvas", None)
+        radius_km = float(getattr(self, "_pending_terrain_depth_km", 0.0) or 0.0)
+        slider = getattr(self, "slider_terrain_depth", None)
+        if radius_km <= 0.0 and slider is not None:
+            try:
+                radius_km = float(slider.value())
+            except Exception:
+                radius_km = 0.0
+        return {
+            "visible_radius_m": radius_km * 1000.0 if radius_km > 0.0 else None,
+            "view_azimuth_deg": float(getattr(canvas, "azimuth_offset", 180.0)) % 360.0,
+            "view_fov_deg": 100.0
+            / max(0.001, float(getattr(canvas, "zoom_level", 1.0))),
+        }
+
     def on_surface_layer_toggled(self, checked):
         checked = bool(checked)
         self._persist_visibility_state("superficie", checked)
         coordinator = getattr(self, "terrain_coordinator", None)
         refresh = getattr(coordinator, "request_surface_refresh", None)
-        if callable(refresh):
-            refresh()
+        if checked and callable(refresh):
+            view_context = getattr(self, "_surface_refresh_view_kwargs", None)
+            refresh(
+                profile=getattr(self, "_full_horizon_profile", None),
+                **(view_context() if callable(view_context) else {}),
+            )
+        elif not checked:
+            cancel = getattr(coordinator, "cancel_surface_refresh", None)
+            if callable(cancel):
+                cancel()
         self.canvas.update()
+    def _activate_checked_surface_layer_startup(self):
+        if bool(getattr(self, "_initial_surface_refresh_requested", False)):
+            return
+        checkbox = getattr(self, "chk_surface_layer", None)
+        if checkbox is None or not bool(checkbox.isChecked()):
+            return
+        self._initial_surface_refresh_requested = True
+        self.on_surface_layer_toggled(True)
     def on_solar_system_toggled(self, checked):
         checked = bool(checked)
         self._persist_visibility_state("sistema_solar", checked)
@@ -3572,7 +3606,8 @@ class AstronomicalWidget(CustomWidgetBase):
         if bool(changes.surface):
             refresh = getattr(coordinator, "request_surface_refresh", None)
             if callable(refresh):
-                refresh()
+                view_context = getattr(self, "_surface_refresh_view_kwargs", None)
+                refresh(**(view_context() if callable(view_context) else {}))
         if bool(changes.elevation or changes.representation):
             abort = getattr(coordinator, "abort_current_job", None)
             if callable(abort):

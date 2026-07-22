@@ -36,6 +36,7 @@ class PerformanceFlags:
     raycast_vectorized: bool = True
     relief_cached: bool = True
     gaia_out_of_core: bool = True
+    surface_lod_cache: bool = True
 
     @classmethod
     def from_environment(cls) -> "PerformanceFlags":
@@ -44,6 +45,7 @@ class PerformanceFlags:
             raycast_vectorized=_environment_flag("TERRALAB_RAYCAST_VECTORIZED"),
             relief_cached=_environment_flag("TERRALAB_RELIEF_CACHED"),
             gaia_out_of_core=_environment_flag("TERRALAB_GAIA_OUT_OF_CORE"),
+            surface_lod_cache=_environment_flag("TERRALAB_SURFACE_LOD_CACHE"),
         )
 
 

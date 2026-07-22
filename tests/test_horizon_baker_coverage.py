@@ -92,7 +92,7 @@ def test_build_view_mesh_samples_dem_normals() -> None:
         len(mesh["distances"]),
         len(mesh["azimuths"]),
     )
-    assert mesh["version"] == 2
+    assert mesh["version"] == 3
     assert mesh["visible"].shape == mesh["altitudes"].shape
     assert mesh["visible"].dtype == bool
     assert bool(np.all(mesh["valid"]))

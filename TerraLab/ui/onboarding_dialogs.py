@@ -210,6 +210,7 @@ class _AssetJobWorker(QObject):
                     self.files,
                     progress_callback=_cb,
                     options=self.options,
+                    cancelled=self._cancel_event.is_set,
                 )
             self.completed.emit(result)
         except Exception as exc:
@@ -294,10 +295,26 @@ class AssetOnboardingDialog(QDialog):
                 "Opcional (avancat): pots executar-ho manualment amb:\n"
                 "python tools/download_gaia_tiles.py --mag-limit 0 --tile-size-deg 10"
             )
+        product_help = ""
+        if self.spec.provider and self.spec.nominal_resolution_m:
+            product_help = (
+                f"Proveïdor:\n{self.spec.provider}\n\n"
+                f"Tipus semàntic: {self.spec.semantic_type}\n"
+                f"Resolució nominal: {self.spec.nominal_resolution_m:g} m\n"
+                f"CRS nominal: {self.spec.nominal_crs}\n"
+                f"Extensió: {self.spec.geographic_extent}\n\n"
+            )
+        conditions_help = (
+            f"Condicions:\n{self.spec.license_note}\n\n"
+            if self.spec.license_note
+            else ""
+        )
         details.setText(
             f"Font oficial:\n{self.spec.source_url}\n\n"
+            f"{product_help}"
             f"Formats admesos:\n{self.spec.accepted_formats}\n\n"
             f"Credits:\n{self.spec.credits}\n\n"
+            f"{conditions_help}"
             "Per defecte pots enllaçar dades pròpies a la seva ubicació original. "
             "Si tries preparar/copiar, els datasets i derivats es guarden a la biblioteca seleccionada.\n"
             f"Biblioteca activa: {self.manager.library.root}"
@@ -334,6 +351,23 @@ class AssetOnboardingDialog(QDialog):
         self.milkyway_block.setVisible(self.asset_id == "milkyway_texture")
         root.addWidget(self.milkyway_block)
 
+        self.s2glc_block = QWidget()
+        s2glc_layout = QVBoxLayout(self.s2glc_block)
+        s2glc_layout.setContentsMargins(0, 0, 0, 0)
+        self.chk_remove_archive = QCheckBox(
+            "Eliminar el ZIP després de validar i instal·lar el GeoTIFF"
+        )
+        self.chk_remove_archive.setChecked(False)
+        self.chk_remove_archive.setToolTip(
+            "Allibera espai només després que el GeoTIFF final s'hagi obert "
+            "i registrat correctament. No elimina el GeoTIFF."
+        )
+        s2glc_layout.addWidget(self.chk_remove_archive)
+        self.s2glc_block.setVisible(
+            self.asset_id in {"surface_rgb", "surface_categorical"}
+        )
+        root.addWidget(self.s2glc_block)
+
         actions = QHBoxLayout()
         self.btn_open_source = QPushButton(
             getTraduction("Onboarding.OpenSource", "Obrir font oficial")
@@ -347,6 +381,9 @@ class AssetOnboardingDialog(QDialog):
             )
         )
         self.btn_auto_download.setEnabled(self._supports_auto_download())
+        partial = self.manager.partial_download(self.asset_id)
+        if partial is not None and partial.resumable:
+            self.btn_auto_download.setText("Reprendre descàrrega")
         self.btn_auto_download.clicked.connect(self._auto_download)
         actions.addWidget(self.btn_auto_download)
 
@@ -380,6 +417,8 @@ class AssetOnboardingDialog(QDialog):
         footer = QHBoxLayout()
         footer.addStretch(1)
         self.btn_cancel = QPushButton("Cancel·lar tasca")
+        if self.asset_id in {"surface_rgb", "surface_categorical"}:
+            self.btn_cancel.setText("Pausar descàrrega")
         self.btn_cancel.setVisible(False)
         self.btn_cancel.clicked.connect(self._cancel_job)
         footer.addWidget(self.btn_cancel)
@@ -498,6 +537,31 @@ class AssetOnboardingDialog(QDialog):
             return
         if not self.spec.auto_download_url:
             return
+        if self.asset_id in {"surface_rgb", "surface_categorical"}:
+            partial = self.manager.partial_download(self.asset_id)
+            resume_line = ""
+            if partial is not None and partial.resumable:
+                resume_line = (
+                    "\n\nEs reprendrà el fitxer parcial existent "
+                    f"({partial.downloaded_bytes / 1024**3:.2f} GiB)."
+                )
+            expected = self.spec.expected_download_bytes
+            extracted = self.spec.expected_extracted_bytes
+            answer = QMessageBox.question(
+                self,
+                "Descàrrega S2GLC europea",
+                f"Es descarregarà el ZIP oficial de {self.spec.title}.\n\n"
+                f"ZIP: {expected / 1024**3:.2f} GiB\n"
+                f"GeoTIFF extret: {extracted / 1024**3:.2f} GiB\n"
+                "TerraLab comprovarà l'espai per als dos fitxers i un marge, "
+                "validarà el ZIP i no activarà la capa fins que el GeoTIFF "
+                "s'hagi obert correctament."
+                f"{resume_line}\n\nVols continuar?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         if self.asset_id == "elevation_dem":
             answer = QMessageBox.question(
                 self,
@@ -1198,6 +1262,11 @@ class AssetOnboardingDialog(QDialog):
             return {
                 "remove_stars": bool(self.chk_remove_stars.isChecked()),
             }
+        if self.asset_id in {"surface_rgb", "surface_categorical"}:
+            return {
+                "remove_archive": bool(self.chk_remove_archive.isChecked()),
+                "display_name": self.spec.title,
+            }
         return {}
 
     def _start_job(
@@ -1211,6 +1280,8 @@ class AssetOnboardingDialog(QDialog):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.lbl_status.setText("Preparant tasca en segon pla...")
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
 
         thread = QThread(self)
         worker = _AssetJobWorker(
@@ -1309,8 +1380,12 @@ class AssetOnboardingDialog(QDialog):
         self.btn_close.setEnabled(True)
         self.btn_cancel.setVisible(False)
         self.progress.setRange(0, 100)
-        if "cancel" in str(error_message).lower():
-            self.lbl_status.setText("Tasca cancel·lada; es podrà reprendre.")
+        if any(
+            token in str(error_message).lower()
+            for token in ("cancel", "paus")
+        ):
+            self.lbl_status.setText("Tasca pausada; es podrà reprendre.")
+            self.btn_auto_download.setText("Reprendre descàrrega")
             QMessageBox.information(self, "TerraLab", str(error_message))
         else:
             self.lbl_status.setText("Error durant la preparacio de dades.")

@@ -1,5 +1,6 @@
 import argparse
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -874,6 +875,29 @@ def main(argv=None):
 
         band_defs = generate_bands(max(1, int(args.bands)), max_dist_m=vis_radius)
         azimuths = [index * ray_step_deg for index in range(ray_count(ray_step_deg))]
+        elevation_version = hashlib.blake2s(
+            json.dumps(
+                [
+                    {
+                        "id": str(item.get("id", "")),
+                        "fingerprint": str(item.get("fingerprint", "")),
+                    }
+                    for item in (source_snapshot or [])
+                    if isinstance(item, dict)
+                ],
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8"),
+            digest_size=10,
+        ).hexdigest()
+        real_geometry_id = (
+            "real:v3:"
+            f"{float(args.lat):.9f}:{float(args.lon):.9f}:"
+            f"{float(vis_radius):.3f}:{float(ray_step_deg):.9f}:"
+            f"{getattr(mode, 'value', mode)}:{float(args.observer_offset):.3f}:"
+            f"{float(grid_convergence_deg):.9f}:{effective_source_id or ''}:"
+            f"{elevation_version}"
+        )
         latest_preview = {"profile": None}
 
         def preview_callback(current, total, az_arr, bands_arr, domes, peaks, resolved):
@@ -898,7 +922,7 @@ def main(argv=None):
                     resolved_radius_m=vis_radius,
                     representation_mode=mode,
                     geometry_source=TerrainGeometrySource.REAL_ELEVATION,
-                    geometry_id=f"real:{job_id}",
+                    geometry_id=real_geometry_id,
                     elevation_source_ids=source_ids,
                     effective_elevation_source_id=effective_source_id,
                     elevation_source_status=source_status,
@@ -967,7 +991,7 @@ def main(argv=None):
             resolved_radius_m=vis_radius,
             representation_mode=mode,
             geometry_source=TerrainGeometrySource.REAL_ELEVATION,
-            geometry_id=f"real:{job_id}",
+            geometry_id=real_geometry_id,
             elevation_source_ids=source_ids,
             effective_elevation_source_id=effective_source_id,
             elevation_source_status=source_status,

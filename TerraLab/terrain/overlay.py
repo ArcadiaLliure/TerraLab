@@ -81,6 +81,14 @@ class _TerrainRenderAsset:
     normal_x: np.ndarray
     normal_y: np.ndarray
     normal_z: np.ndarray
+    near_patch_eastings: np.ndarray
+    near_patch_northings: np.ndarray
+    near_patch_altitudes: np.ndarray
+    near_patch_elevations: np.ndarray
+    near_patch_valid: np.ndarray
+    near_patch_normal_x: np.ndarray
+    near_patch_normal_y: np.ndarray
+    near_patch_normal_z: np.ndarray
 
     def __post_init__(self) -> None:
         for name in (
@@ -97,6 +105,14 @@ class _TerrainRenderAsset:
             "normal_x",
             "normal_y",
             "normal_z",
+            "near_patch_eastings",
+            "near_patch_northings",
+            "near_patch_altitudes",
+            "near_patch_elevations",
+            "near_patch_valid",
+            "near_patch_normal_x",
+            "near_patch_normal_y",
+            "near_patch_normal_z",
         ):
             np.asarray(getattr(self, name)).setflags(write=False)
 
@@ -199,10 +215,18 @@ class _TerrainTriangleGeometry:
     depth: np.ndarray
     vertex_rows: np.ndarray
     vertex_columns: np.ndarray
+    # 0 indexes the polar colour grid; 1 indexes the Cartesian near patch.
+    vertex_domain: np.ndarray
     metrics: _TerrainGeometryMetrics
 
     def __post_init__(self) -> None:
-        for name in ("xy", "depth", "vertex_rows", "vertex_columns"):
+        for name in (
+            "xy",
+            "depth",
+            "vertex_rows",
+            "vertex_columns",
+            "vertex_domain",
+        ):
             value = np.asarray(getattr(self, name))
             value.setflags(write=False)
             object.__setattr__(self, name, value)
@@ -1998,6 +2022,42 @@ class HorizonOverlay(QObject):
             valid = np.isfinite(altitudes)
         if visible.shape != shape:
             visible = valid.copy()
+        surface_cache = getattr(getattr(self, "profile", None), "surface_samples", None)
+        visual_distances = _sample_cache_value(surface_cache, "visual_distances")
+        visual_azimuths = _sample_cache_value(surface_cache, "visual_azimuths")
+        visual_altitudes = _sample_cache_value(surface_cache, "visual_altitudes")
+        visual_elevations = _sample_cache_value(surface_cache, "visual_elevations")
+        visual_valid = _sample_cache_value(surface_cache, "visual_valid")
+        visual_visible = _sample_cache_value(surface_cache, "visual_visible")
+        visual_shape = (
+            len(visual_distances) if visual_distances is not None else 0,
+            len(visual_azimuths) if visual_azimuths is not None else 0,
+        )
+        if (
+            _sample_cache_value(surface_cache, "completion_state", "complete")
+            == "complete"
+            and
+            visual_shape[0] >= 2
+            and visual_shape[1] >= 2
+            and np.shape(visual_altitudes) == visual_shape
+            and np.shape(visual_elevations) == visual_shape
+            and np.shape(visual_valid) == visual_shape
+        ):
+            # Subdivide only the visual mesh. Heights/angles were interpolated
+            # from the DEM in the worker, so geometry gains no fictitious
+            # topographic information while a finer land-cover raster retains
+            # detail between original DEM vertices.
+            azimuths = np.asarray(visual_azimuths, dtype=np.float32)
+            distances = np.asarray(visual_distances, dtype=np.float32)
+            altitudes = np.asarray(visual_altitudes, dtype=np.float32)
+            elevations = np.asarray(visual_elevations, dtype=np.float32)
+            valid = np.asarray(visual_valid, dtype=bool)
+            visible = (
+                np.asarray(visual_visible, dtype=bool)
+                if np.shape(visual_visible) == visual_shape
+                else valid.copy()
+            )
+            shape = visual_shape
         computed = compute_polar_mesh_normals(
             elevations, valid, distances, azimuths
         )
@@ -2017,8 +2077,67 @@ class HorizonOverlay(QObject):
         azimuths_closed = np.concatenate(
             [azimuths, [azimuths[0] + 360.0]]
         ).astype(np.float32)
+        patch_eastings = np.asarray(
+            mesh.get("near_patch_eastings", ()), dtype=np.float32
+        )
+        patch_northings = np.asarray(
+            mesh.get("near_patch_northings", ()), dtype=np.float32
+        )
+        patch_shape = (patch_northings.size, patch_eastings.size)
+        patch_altitudes = np.asarray(
+            mesh.get("near_patch_altitudes", ()), dtype=np.float32
+        )
+        patch_elevations = np.asarray(
+            mesh.get("near_patch_elevations", ()), dtype=np.float32
+        )
+        patch_valid = np.asarray(mesh.get("near_patch_valid", ()), dtype=bool)
+        patch_normals = tuple(
+            np.asarray(mesh.get(name, ()), dtype=np.float32)
+            for name in (
+                "near_patch_normal_x",
+                "near_patch_normal_y",
+                "near_patch_normal_z",
+            )
+        )
+        if (
+            patch_shape[0] < 2
+            or patch_shape[1] < 2
+            or patch_altitudes.shape != patch_shape
+            or patch_elevations.shape != patch_shape
+            or patch_valid.shape != patch_shape
+        ):
+            patch_eastings = np.empty(0, dtype=np.float32)
+            patch_northings = np.empty(0, dtype=np.float32)
+            patch_altitudes = np.empty((0, 0), dtype=np.float32)
+            patch_elevations = np.empty((0, 0), dtype=np.float32)
+            patch_valid = np.empty((0, 0), dtype=bool)
+            patch_normals = (
+                np.empty((0, 0), dtype=np.float32),
+                np.empty((0, 0), dtype=np.float32),
+                np.empty((0, 0), dtype=np.float32),
+            )
+        elif not all(value.shape == patch_shape for value in patch_normals):
+            filled = np.where(patch_valid, patch_elevations, 0.0).astype(np.float64)
+            gradient_north, gradient_east = np.gradient(
+                filled,
+                patch_northings.astype(np.float64),
+                patch_eastings.astype(np.float64),
+                edge_order=1,
+            )
+            patch_nx = -gradient_east
+            patch_ny = -gradient_north
+            patch_nz = np.ones(patch_shape, dtype=np.float64)
+            patch_norm = np.sqrt(
+                patch_nx * patch_nx + patch_ny * patch_ny + patch_nz * patch_nz
+            )
+            patch_normals = tuple(
+                np.where(patch_valid, value / np.maximum(patch_norm, 1e-12), fallback).astype(np.float32)
+                for value, fallback in ((patch_nx, 0.0), (patch_ny, 0.0), (patch_nz, 1.0))
+            )
         return _TerrainRenderAsset(
-            mesh_id=id(mesh),
+            mesh_id=hash((id(mesh), id(visual_altitudes)))
+            if visual_shape == shape and visual_shape[0] >= 2
+            else id(mesh),
             azimuths=azimuths,
             azimuths_closed=azimuths_closed,
             distances=distances,
@@ -2032,6 +2151,14 @@ class HorizonOverlay(QObject):
             normal_x=normals[0],
             normal_y=normals[1],
             normal_z=normals[2],
+            near_patch_eastings=patch_eastings,
+            near_patch_northings=patch_northings,
+            near_patch_altitudes=patch_altitudes,
+            near_patch_elevations=patch_elevations,
+            near_patch_valid=patch_valid,
+            near_patch_normal_x=patch_normals[0],
+            near_patch_normal_y=patch_normals[1],
+            near_patch_normal_z=patch_normals[2],
         )
 
     def _terrain_surface_normals(
@@ -2279,6 +2406,7 @@ class HorizonOverlay(QObject):
             return np.zeros(shape + (4,), dtype=np.uint8), np.zeros(shape, dtype=bool)
         rgba = np.asarray(rgba, dtype=np.uint8)
         valid = np.asarray(valid, dtype=bool)
+        loaded = _sample_cache_value(cache, "profile_loaded")
         sources = _sample_cache_value(cache, "profile_source_indices")
         band_indices = np.asarray(
             _sample_cache_value(cache, "profile_band_indices", np.arange(rgba.shape[0])),
@@ -2302,12 +2430,38 @@ class HorizonOverlay(QObject):
         nearest = np.argmin(distance, axis=-1)
         result_rgba = rgba[sampled_row, nearest]
         result_valid = valid[sampled_row, nearest]
+        if loaded is not None:
+            result_valid &= np.asarray(loaded, dtype=bool)[sampled_row, nearest]
+        if _sample_cache_value(cache, "completion_state", "complete") == "visible_partial":
+            result_valid &= np.isin(
+                np.mod(np.rint(requested * 1_000_000.0).astype(np.int64), 360_000_000),
+                np.mod(
+                    np.rint(sampled_angles * 1_000_000.0).astype(np.int64),
+                    360_000_000,
+                ),
+            )
         if sources is not None:
             result_valid = result_valid & (np.asarray(sources)[sampled_row, nearest] >= 0)
         return result_rgba, result_valid
 
     def _relief_surface_samples(self, row_indices, column_indices, mesh_shape):
         cache = getattr(getattr(self, "profile", None), "surface_samples", None)
+        visual_rgba = _sample_cache_value(cache, "visual_rgba")
+        visual_valid = _sample_cache_value(cache, "visual_valid")
+        if (
+            visual_rgba is not None
+            and visual_valid is not None
+            and np.shape(visual_rgba) == tuple(mesh_shape) + (4,)
+            and np.shape(visual_valid) == tuple(mesh_shape)
+        ):
+            rows = np.asarray(row_indices, dtype=np.int32)
+            columns = np.asarray(column_indices, dtype=np.int32) % max(
+                1, int(mesh_shape[1])
+            )
+            return (
+                np.asarray(visual_rgba, dtype=np.uint8)[rows, columns],
+                np.asarray(visual_valid, dtype=bool)[rows, columns],
+            )
         rgba = _sample_cache_value(cache, "relief_rgba")
         valid = _sample_cache_value(cache, "relief_valid")
         rows = np.asarray(row_indices, dtype=np.int32)
@@ -2316,6 +2470,7 @@ class HorizonOverlay(QObject):
             return np.zeros(rows.shape + (4,), dtype=np.uint8), np.zeros(rows.shape, dtype=bool)
         rgba = np.asarray(rgba, dtype=np.uint8)
         valid = np.asarray(valid, dtype=bool)
+        loaded = _sample_cache_value(cache, "relief_loaded")
         sampled_rows = np.asarray(
             _sample_cache_value(cache, "relief_distance_indices", np.arange(rgba.shape[0])),
             dtype=np.int32,
@@ -2330,6 +2485,14 @@ class HorizonOverlay(QObject):
         nearest_columns = np.argmin(circular, axis=-1)
         result_rgba = rgba[nearest_rows, nearest_columns]
         result_valid = valid[nearest_rows, nearest_columns]
+        if loaded is not None:
+            result_valid &= np.asarray(loaded, dtype=bool)[
+                nearest_rows, nearest_columns
+            ]
+        if _sample_cache_value(cache, "completion_state", "complete") == "visible_partial":
+            result_valid &= np.isin(rows, sampled_rows) & np.isin(
+                columns, sampled_columns
+            )
         sources = _sample_cache_value(cache, "relief_source_indices")
         if sources is not None:
             result_valid = result_valid & (
@@ -2357,6 +2520,36 @@ class HorizonOverlay(QObject):
         result = np.where(sampled_valid[..., None], sampled, fallback).astype(
             np.uint8
         )
+        if self.terrain_surface_opaque:
+            result[..., 3] = 255
+        return result
+
+    def _near_patch_vertex_base_rgba(self, asset, t_night):
+        """Return display colours for the Cartesian patch without altering classes."""
+
+        shape = asset.near_patch_elevations.shape
+        night_color, day_color = _palette_color(1.0)
+        fallback_color = np.asarray(
+            _lerp_color(day_color, night_color, t_night).getRgb(),
+            dtype=np.uint8,
+        )
+        fallback = np.broadcast_to(fallback_color, shape + (4,)).copy()
+        cache = getattr(getattr(self, "profile", None), "surface_samples", None)
+        sampled = _sample_cache_value(cache, "near_patch_rgba")
+        sampled_valid = _sample_cache_value(cache, "near_patch_valid")
+        if (
+            sampled is not None
+            and sampled_valid is not None
+            and np.shape(sampled) == shape + (4,)
+            and np.shape(sampled_valid) == shape
+        ):
+            result = np.where(
+                np.asarray(sampled_valid, dtype=bool)[..., None],
+                np.asarray(sampled, dtype=np.uint8),
+                fallback,
+            ).astype(np.uint8)
+        else:
+            result = fallback
         if self.terrain_surface_opaque:
             result[..., 3] = 255
         return result
@@ -2679,7 +2872,14 @@ class HorizonOverlay(QObject):
         self._last_surface2d_geometry_s = 0.0
         self._last_surface2d_paint_s = 0.0
         asset = self._terrain_render_asset
-        if asset is None or asset.mesh_id != id(mesh):
+        surface_cache = getattr(getattr(self, "profile", None), "surface_samples", None)
+        visual_altitudes = _sample_cache_value(surface_cache, "visual_altitudes")
+        mesh_token = (
+            hash((id(mesh), id(visual_altitudes)))
+            if visual_altitudes is not None
+            else id(mesh)
+        )
+        if asset is None or asset.mesh_id != mesh_token:
             asset = self._prepare_terrain_render_asset(mesh)
             if PERFORMANCE_FLAGS.relief_cached:
                 self._terrain_render_asset = asset
@@ -2955,64 +3155,141 @@ class HorizonOverlay(QObject):
         )
         cell_valid &= cell_visible
         cell_rows, cell_columns = np.nonzero(cell_valid)
-        if cell_rows.size == 0:
-            result = _TerrainTriangleGeometry(
-                np.empty((0, 3, 2), dtype=np.float64),
-                np.empty((0, 3), dtype=np.float64),
-                np.empty((0, 3), dtype=np.int32),
-                np.empty((0, 3), dtype=np.int32),
-                _TerrainGeometryMetrics(elapsed_s=time.perf_counter() - started),
+        if cell_rows.size:
+            triangle_rows = np.empty((cell_rows.size * 2, 3), dtype=np.int32)
+            triangle_columns_sorted = np.empty_like(triangle_rows)
+            triangle_rows[0::2] = np.column_stack(
+                (cell_rows, cell_rows + 1, cell_rows + 1)
             )
-            return result
+            triangle_columns_sorted[0::2] = np.column_stack(
+                (cell_columns, cell_columns, cell_columns + 1)
+            )
+            triangle_rows[1::2] = np.column_stack(
+                (cell_rows, cell_rows + 1, cell_rows)
+            )
+            triangle_columns_sorted[1::2] = np.column_stack(
+                (cell_columns, cell_columns + 1, cell_columns + 1)
+            )
+            triangle_columns = order[triangle_columns_sorted].astype(np.int32)
+            triangle_x = sx[triangle_rows, triangle_columns_sorted]
+            triangle_y = sy[triangle_rows, triangle_columns_sorted]
+            xy = np.stack((triangle_x, triangle_y), axis=2)
+            depth = np.asarray(asset.distances, dtype=np.float64)[triangle_rows]
+            vertex_domain = np.zeros(triangle_rows.shape, dtype=np.uint8)
+        else:
+            xy = np.empty((0, 3, 2), dtype=np.float64)
+            depth = np.empty((0, 3), dtype=np.float64)
+            triangle_rows = np.empty((0, 3), dtype=np.int32)
+            triangle_columns = np.empty((0, 3), dtype=np.int32)
+            vertex_domain = np.empty((0, 3), dtype=np.uint8)
 
-        triangle_rows = np.empty((cell_rows.size * 2, 3), dtype=np.int32)
-        triangle_columns_sorted = np.empty_like(triangle_rows)
-        triangle_rows[0::2] = np.column_stack(
-            (cell_rows, cell_rows + 1, cell_rows + 1)
-        )
-        triangle_columns_sorted[0::2] = np.column_stack(
-            (cell_columns, cell_columns, cell_columns + 1)
-        )
-        triangle_rows[1::2] = np.column_stack(
-            (cell_rows, cell_rows + 1, cell_rows)
-        )
-        triangle_columns_sorted[1::2] = np.column_stack(
-            (cell_columns, cell_columns + 1, cell_columns + 1)
-        )
-        triangle_columns = order[triangle_columns_sorted].astype(np.int32)
-        triangle_x = sx[triangle_rows, triangle_columns_sorted]
-        triangle_y = sy[triangle_rows, triangle_columns_sorted]
-        xy = np.stack((triangle_x, triangle_y), axis=2)
-        depth = np.asarray(asset.distances, dtype=np.float64)[triangle_rows]
-
-        # Close the near edge of the sampled mesh against the bottom of the
-        # viewport. This is a screen-space cap for the unsampled area between
-        # the observer and the first radial ring, not an altitude projection.
-        near_pairs = np.flatnonzero(
-            vertex_valid[0, :-1] & vertex_valid[0, 1:] & adjacent
-        )
-        if near_pairs.size:
-            cap_xy = np.empty((near_pairs.size * 2, 3, 2), dtype=np.float64)
-            cap_rows = np.zeros((near_pairs.size * 2, 3), dtype=np.int32)
-            cap_sorted_columns = np.empty_like(cap_rows)
-            bottom = float(height) + 1.0
-            for index, column in enumerate(near_pairs):
-                left = (sx[0, column], sy[0, column])
-                right = (sx[0, column + 1], sy[0, column + 1])
-                cap_xy[index * 2] = (left, (right[0], bottom), (left[0], bottom))
-                cap_xy[index * 2 + 1] = (left, right, (right[0], bottom))
-                cap_sorted_columns[index * 2] = (column, column + 1, column)
-                cap_sorted_columns[index * 2 + 1] = (column, column + 1, column + 1)
-            cap_columns = order[cap_sorted_columns].astype(np.int32)
-            cap_depth = np.full(
-                (cap_xy.shape[0], 3), float(asset.distances[0]), dtype=np.float64
+        # The field immediately below the observer is a genuine Cartesian ENU
+        # mesh. Unlike a polar fan it has no collapsed azimuthal edge and thus
+        # remains well-conditioned when the camera points at the nadir.
+        patch_shape = np.shape(asset.near_patch_altitudes)
+        patch_vertex_count = int(np.prod(patch_shape)) if len(patch_shape) == 2 else 0
+        if patch_shape[0] >= 2 and patch_shape[1] >= 2:
+            patch_east, patch_north = np.meshgrid(
+                np.asarray(asset.near_patch_eastings, dtype=np.float64),
+                np.asarray(asset.near_patch_northings, dtype=np.float64),
             )
-            xy = np.concatenate((xy, cap_xy), axis=0)
-            depth = np.concatenate((depth, cap_depth), axis=0)
-            triangle_rows = np.concatenate((triangle_rows, cap_rows), axis=0)
-            triangle_columns = np.concatenate(
-                (triangle_columns, cap_columns), axis=0
+            patch_distance = np.hypot(patch_east, patch_north)
+            convergence = float(
+                getattr(getattr(self, "profile", None), "grid_convergence_deg", 0.0)
+                or 0.0
             )
+            patch_azimuth = (
+                np.degrees(np.arctan2(patch_east, patch_north)) + convergence
+            ) % 360.0
+            patch_relative = (
+                patch_azimuth - float(cur_az) + 180.0
+            ) % 360.0 - 180.0
+            patch_unwrapped = float(cur_az) + patch_relative
+            patch_unwrapped = np.where(
+                patch_distance <= 1e-9, float(cur_az), patch_unwrapped
+            )
+            patch_altitudes = np.asarray(
+                asset.near_patch_altitudes, dtype=np.float64
+            )
+            if projection_fn_numpy is not None:
+                patch_projected = projection_fn_numpy(
+                    patch_altitudes, patch_unwrapped
+                )
+                patch_sx = np.asarray(patch_projected[0], dtype=np.float64)
+                patch_sy = np.asarray(patch_projected[1], dtype=np.float64)
+                patch_projected_valid = np.ones(patch_shape, dtype=bool)
+                if len(patch_projected) >= 3:
+                    patch_projected_valid &= np.asarray(
+                        patch_projected[2], dtype=bool
+                    )
+            else:
+                patch_sx = np.full(patch_shape, np.nan, dtype=np.float64)
+                patch_sy = np.full(patch_shape, np.nan, dtype=np.float64)
+                patch_projected_valid = np.zeros(patch_shape, dtype=bool)
+                for patch_row, patch_column in np.ndindex(patch_shape):
+                    point = projection_fn(
+                        float(patch_altitudes[patch_row, patch_column]),
+                        float(patch_unwrapped[patch_row, patch_column]),
+                    )
+                    if point is not None and np.all(np.isfinite(point[:2])):
+                        patch_sx[patch_row, patch_column] = point[0]
+                        patch_sy[patch_row, patch_column] = point[1]
+                        patch_projected_valid[patch_row, patch_column] = True
+            patch_vertex_valid = (
+                np.asarray(asset.near_patch_valid, dtype=bool)
+                & patch_projected_valid
+                & np.isfinite(patch_sx)
+                & np.isfinite(patch_sy)
+            )
+            patch_cells = (
+                patch_vertex_valid[:-1, :-1]
+                & patch_vertex_valid[1:, :-1]
+                & patch_vertex_valid[1:, 1:]
+                & patch_vertex_valid[:-1, 1:]
+            )
+            patch_rows, patch_columns = np.nonzero(patch_cells)
+            if patch_rows.size:
+                patch_triangle_rows = np.empty(
+                    (patch_rows.size * 2, 3), dtype=np.int32
+                )
+                patch_triangle_columns = np.empty_like(patch_triangle_rows)
+                patch_triangle_rows[0::2] = np.column_stack(
+                    (patch_rows, patch_rows + 1, patch_rows + 1)
+                )
+                patch_triangle_columns[0::2] = np.column_stack(
+                    (patch_columns, patch_columns, patch_columns + 1)
+                )
+                patch_triangle_rows[1::2] = np.column_stack(
+                    (patch_rows, patch_rows + 1, patch_rows)
+                )
+                patch_triangle_columns[1::2] = np.column_stack(
+                    (patch_columns, patch_columns + 1, patch_columns + 1)
+                )
+                patch_xy = np.stack(
+                    (
+                        patch_sx[patch_triangle_rows, patch_triangle_columns],
+                        patch_sy[patch_triangle_rows, patch_triangle_columns],
+                    ),
+                    axis=2,
+                )
+                patch_depth = patch_distance[
+                    patch_triangle_rows, patch_triangle_columns
+                ]
+                xy = np.concatenate((xy, patch_xy), axis=0)
+                depth = np.concatenate((depth, patch_depth), axis=0)
+                triangle_rows = np.concatenate(
+                    (triangle_rows, patch_triangle_rows), axis=0
+                )
+                triangle_columns = np.concatenate(
+                    (triangle_columns, patch_triangle_columns), axis=0
+                )
+                vertex_domain = np.concatenate(
+                    (
+                        vertex_domain,
+                        np.ones(patch_triangle_rows.shape, dtype=np.uint8),
+                    ),
+                    axis=0,
+                )
 
         twice_area = (
             (xy[:, 1, 0] - xy[:, 0, 0]) * (xy[:, 2, 1] - xy[:, 0, 1])
@@ -3046,17 +3323,23 @@ class HorizonOverlay(QObject):
         depth = depth[keep]
         triangle_rows = triangle_rows[keep]
         triangle_columns = triangle_columns[keep]
+        vertex_domain = vertex_domain[keep]
         elapsed = float(time.perf_counter() - started)
         metrics = _TerrainGeometryMetrics(
             spans=int(xy.shape[0]),
-            source_samples=int(altitudes.size),
+            source_samples=int(altitudes.size + patch_vertex_count),
             invalid_samples=int(altitudes.size - np.count_nonzero(vertex_valid)),
             output_vertices=int(xy.shape[0] * 3),
             max_error_px=0.0,
             elapsed_s=elapsed,
         )
         result = _TerrainTriangleGeometry(
-            xy, depth, triangle_rows, triangle_columns, metrics
+            xy,
+            depth,
+            triangle_rows,
+            triangle_columns,
+            vertex_domain,
+            metrics,
         )
         if PERFORMANCE_FLAGS.relief_cached:
             self._terrain_geometry_cache_key = cache_key
@@ -3083,7 +3366,14 @@ class HorizonOverlay(QObject):
 
         frame_started = time.perf_counter()
         asset = self._terrain_render_asset
-        if asset is None or asset.mesh_id != id(mesh):
+        surface_cache = getattr(getattr(self, "profile", None), "surface_samples", None)
+        visual_altitudes = _sample_cache_value(surface_cache, "visual_altitudes")
+        mesh_token = (
+            hash((id(mesh), id(visual_altitudes)))
+            if visual_altitudes is not None
+            else id(mesh)
+        )
+        if asset is None or asset.mesh_id != mesh_token:
             asset = self._prepare_terrain_render_asset(mesh)
             if PERFORMANCE_FLAGS.relief_cached:
                 self._terrain_render_asset = asset
@@ -3134,6 +3424,41 @@ class HorizonOverlay(QObject):
                     shade_key, shade_grid, int(shade_grid.nbytes)
                 )
 
+        patch_east, patch_north = np.meshgrid(
+            np.asarray(asset.near_patch_eastings, dtype=np.float32),
+            np.asarray(asset.near_patch_northings, dtype=np.float32),
+        )
+        patch_distances = np.hypot(patch_east, patch_north).astype(np.float32)
+        patch_shade_key = shade_key + ("near-patch",)
+        patch_shade = (
+            self._terrain_shade_cache.get(patch_shade_key)
+            if PERFORMANCE_FLAGS.relief_cached
+            else None
+        )
+        if patch_shade is None and patch_distances.size == 0:
+            patch_shade = np.empty(patch_distances.shape, dtype=np.float32)
+        elif patch_shade is None:
+            patch_shade = self._terrain_light_factor(
+                asset.near_patch_normal_x,
+                asset.near_patch_normal_y,
+                asset.near_patch_normal_z,
+                patch_distances,
+                light_vector,
+                light_alt,
+                terrain_shading_enabled=lighting_enabled,
+                sun_visibility=None,
+            )
+            patch_shade = self._smooth_light_grid(
+                patch_shade,
+                asset.near_patch_valid,
+                min_value=self.render_settings.terrain_min_brightness,
+                max_value=self.render_settings.terrain_max_brightness,
+            )
+            if PERFORMANCE_FLAGS.relief_cached:
+                self._terrain_shade_cache.put(
+                    patch_shade_key, patch_shade, int(patch_shade.nbytes)
+                )
+
         geometry = self._terrain_triangles_for_view(
             asset,
             projection_fn,
@@ -3154,12 +3479,14 @@ class HorizonOverlay(QObject):
             bool(self.terrain_surface_opaque),
         )
         color_started = time.perf_counter()
-        vertex_rgba = (
+        cached_colors = (
             self._terrain_color_cache.get(color_key)
             if PERFORMANCE_FLAGS.relief_cached
             else None
         )
-        if vertex_rgba is None:
+        if isinstance(cached_colors, tuple) and len(cached_colors) == 2:
+            vertex_rgba, patch_vertex_rgba = cached_colors
+        else:
             base_rgba = self._terrain_vertex_base_rgba(asset, t_night)
             vertex_rgba = compose_vertex_rgba(
                 base_rgba,
@@ -3169,15 +3496,27 @@ class HorizonOverlay(QObject):
                 maximum_distance_m=self._maximum_terrain_distance_m()
                 or float(asset.distances[-1]),
             )
+            patch_base_rgba = self._near_patch_vertex_base_rgba(asset, t_night)
+            patch_vertex_rgba = compose_vertex_rgba(
+                patch_base_rgba,
+                patch_shade,
+                patch_distances,
+                self.render_settings,
+                maximum_distance_m=self._maximum_terrain_distance_m()
+                or float(asset.distances[-1]),
+            )
             if PERFORMANCE_FLAGS.relief_cached:
                 self._terrain_color_cache.put(
-                    color_key, vertex_rgba, int(vertex_rgba.nbytes)
+                    color_key,
+                    (vertex_rgba, patch_vertex_rgba),
+                    int(vertex_rgba.nbytes + patch_vertex_rgba.nbytes),
                 )
         self._last_terrain_color_s = time.perf_counter() - color_started
         self._paint_terrain_triangles(
             painter,
             geometry,
             vertex_rgba,
+            patch_vertex_rgba,
             width,
             height,
             color_key,
@@ -3209,6 +3548,7 @@ class HorizonOverlay(QObject):
         painter,
         geometry,
         vertex_rgba,
+        patch_vertex_rgba,
         width,
         height,
         color_key,
@@ -3284,13 +3624,30 @@ class HorizonOverlay(QObject):
         if np.any(covered):
             # A shared mesh index always supplies byte-identical RGBA to both
             # incident triangles.
+            vertex_rows = np.asarray(geometry.vertex_rows, dtype=np.int32)
+            vertex_domain = np.asarray(geometry.vertex_domain, dtype=np.uint8)
+            polar_vertices = vertex_domain == 0
+            polar_rows = np.where(polar_vertices, vertex_rows, 0)
+            polar_columns = np.where(
+                polar_vertices, geometry.vertex_columns, 0
+            )
             values = np.asarray(
                 vertex_rgba[
-                    geometry.vertex_rows,
-                    geometry.vertex_columns,
+                    polar_rows,
+                    polar_columns,
                 ],
                 dtype=np.float64,
             )
+            patch_vertices = vertex_domain == 1
+            if np.any(patch_vertices):
+                values = values.copy()
+                values[patch_vertices] = np.asarray(
+                    patch_vertex_rgba[
+                        vertex_rows[patch_vertices],
+                        geometry.vertex_columns[patch_vertices],
+                    ],
+                    dtype=np.float64,
+                )
             interpolated_grid, _ = _interpolate_triangle_values(
                 triangle_id,
                 bary_u,

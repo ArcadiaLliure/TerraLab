@@ -29,6 +29,10 @@ CRS_TERRAIN_INTERNAL = "EPSG:25831"
 PYPROJ_TRANSFORMER_LOCK = threading.Lock()
 
 
+class RasterSamplingCancelled(InterruptedError):
+    """Raised between bounded GDAL reads when a sampling job is cancelled."""
+
+
 def _terrain_materialized_root(kind: str) -> Path:
     try:
         root = DataLibrary.current(create=True).root
@@ -382,6 +386,14 @@ class _GeoRasterDataset:
         self.cache_hits = 0
         self.cache_misses = 0
         self.bytes_read = 0
+        self.lod_rows_read = 0
+        self.lod_intervals_read = 0
+        self.lod_requested = 0
+        self.lod_unique = 0
+        self.lod_cache_hits = 0
+        self.lod_identity = _path_fingerprint(
+            (self.path,), namespace="categorical-lod", configuration=declared_crs
+        )
 
     def open(self) -> bool:
         import rasterio
@@ -409,15 +421,87 @@ class _GeoRasterDataset:
         self.colorinterp = tuple(
             str(getattr(value, "name", value)).lower() for value in dataset.colorinterp
         )
+        self.mask_flags = tuple(
+            tuple(
+                str(getattr(flag, "name", flag)).lower()
+                for flag in band_flags
+            )
+            for band_flags in dataset.mask_flag_enums
+        )
+        self._requires_mask_read = any(
+            flag not in {"all_valid", "nodata"}
+            for band_flags in self.mask_flags
+            for flag in band_flags
+        )
+        self.overviews = tuple(
+            tuple(int(level) for level in dataset.overviews(band))
+            for band in range(1, self.count + 1)
+        )
+        try:
+            self.dataset_tags = dict(dataset.tags())
+        except Exception:
+            self.dataset_tags = {}
+        self.band_tags = []
+        self.colormaps = []
+        for band in range(1, self.count + 1):
+            try:
+                self.band_tags.append(dict(dataset.tags(band)))
+            except Exception:
+                self.band_tags.append({})
+            try:
+                color_map = dataset.colormap(band)
+            except Exception:
+                color_map = {}
+            self.colormaps.append(
+                {
+                    str(int(code)): [int(channel) for channel in color]
+                    for code, color in color_map.items()
+                }
+            )
         self.resolution_m = self.transform_service.resolution_metres(
             self.native_crs, self.transform, self.width, self.height
         )
         block_shapes = tuple(dataset.block_shapes or ())
-        self.block_height, self.block_width = (
+        self.native_block_height, self.native_block_width = (
             tuple(int(value) for value in block_shapes[0])
             if block_shapes
             else (min(256, self.height), min(256, self.width))
         )
+        self.block_height = self.native_block_height
+        self.block_width = self.native_block_width
+        self.virtual_blocks = bool(
+            self.native_block_height <= 4
+            and self.native_block_width >= 8192
+        )
+        if self.virtual_blocks:
+            # S2GLC is distributed as one 404k-pixel-wide compressed strip per
+            # row.  Treating those native strips as random-access blocks caused
+            # one GDAL call per queried row.  Wide local windows amortise that
+            # decompression and Python/GDAL overhead across many terrain rows.
+            self.block_width = min(self.width, 65_536)
+            bytes_per_pixel = max(
+                1,
+                sum(np.dtype(name).itemsize for name in self.dtypes)
+                + (self.count if self._requires_mask_read else 1),
+            )
+            target_window_bytes = 16 * 1024**2
+            self.block_height = min(
+                self.height,
+                max(
+                    32,
+                    min(
+                        512,
+                        target_window_bytes
+                        // max(1, self.block_width * bytes_per_pixel),
+                    ),
+                ),
+            )
+            print(
+                "[TEMPORAL][RasterWindowing] "
+                f"path={self.path} "
+                f"native={self.native_block_height}x{self.native_block_width} "
+                f"sampling={self.block_height}x{self.block_width}"
+            )
         self.metadata = RasterMetadata(
             native_crs=self.native_crs,
             bounds=self.bounds,
@@ -429,8 +513,34 @@ class _GeoRasterDataset:
             extra={
                 "width": self.width,
                 "height": self.height,
-                "block_width": self.block_width,
-                "block_height": self.block_height,
+                "block_width": self.native_block_width,
+                "block_height": self.native_block_height,
+                "sampling_block_width": self.block_width,
+                "sampling_block_height": self.block_height,
+                "virtual_sampling_blocks": self.virtual_blocks,
+                "dtypes": list(self.dtypes),
+                "colorinterp": list(self.colorinterp),
+                "mask_flags": [list(flags) for flags in self.mask_flags],
+                "scales": list(self.scales),
+                "offsets": list(self.offsets),
+                "transform": [
+                    float(self.transform.a),
+                    float(self.transform.b),
+                    float(self.transform.c),
+                    float(self.transform.d),
+                    float(self.transform.e),
+                    float(self.transform.f),
+                ],
+                "resolution_x": float(
+                    math.hypot(self.transform.a, self.transform.d)
+                ),
+                "resolution_y": float(
+                    math.hypot(self.transform.b, self.transform.e)
+                ),
+                "overviews": [list(levels) for levels in self.overviews],
+                "tags": self.dataset_tags,
+                "band_tags": self.band_tags,
+                "colormaps": self.colormaps,
             },
         )
         self.materialized_dir.mkdir(parents=True, exist_ok=True)
@@ -505,8 +615,12 @@ class _GeoRasterDataset:
         lock = self._read_lock if os.name == "nt" else threading.Lock()
         with lock:
             data = np.asarray(reader.read(bands, window=window))
-            masks = np.asarray(reader.read_masks(bands, window=window)) > 0
-        valid = np.all(masks, axis=0)
+            if self._requires_mask_read:
+                masks = np.asarray(reader.read_masks(bands, window=window)) > 0
+                valid = np.all(masks, axis=0)
+            else:
+                masks = None
+                valid = np.ones(data.shape[1:], dtype=bool)
         for local_band, band in enumerate(bands):
             nodata = self.nodatavals[band - 1]
             if nodata is None:
@@ -516,14 +630,18 @@ class _GeoRasterDataset:
             else:
                 valid &= data[local_band] != nodata
         value = (data, valid, row_off, col_off)
-        try:
-            self.materialized_dir.mkdir(parents=True, exist_ok=True)
-            temporary = self.materialized_path.with_suffix(".tmp.npy")
-            np.save(temporary, data, allow_pickle=False)
-            os.replace(temporary, self.materialized_path)
-        except OSError:
-            pass
-        self.bytes_read += int(data.nbytes + masks.nbytes)
+        # Keep the compatibility materialization marker, but write it at most
+        # once.  Replacing this file for every sampled continental block caused
+        # synchronous disk churn; reusable blocks live in the byte-bounded LRU.
+        if not self.materialized_path.exists():
+            try:
+                self.materialized_dir.mkdir(parents=True, exist_ok=True)
+                temporary = self.materialized_path.with_suffix(".tmp.npy")
+                np.save(temporary, data, allow_pickle=False)
+                os.replace(temporary, self.materialized_path)
+            except OSError:
+                pass
+        self.bytes_read += int(data.nbytes + valid.nbytes)
         self._cache_put(key, value)
         return value
 
@@ -534,6 +652,8 @@ class _GeoRasterDataset:
         *,
         bands: tuple[int, ...] = (1,),
         interpolation: str = "bilinear",
+        progress_callback=None,
+        abort_check=None,
     ) -> tuple[np.ndarray, np.ndarray]:
         if self.dataset is None:
             raise RuntimeError("Raster dataset is not initialized")
@@ -555,7 +675,9 @@ class _GeoRasterDataset:
         safe_col = np.where(valid, col, 0.0)
         safe_row = np.where(valid, row, 0.0)
 
-        nearest = str(interpolation).lower() == "nearest"
+        interpolation_mode = str(interpolation).lower()
+        nearest = interpolation_mode == "nearest"
+        linear_light_rgb = interpolation_mode == "bilinear_srgb"
         if nearest:
             col0 = np.floor(safe_col + 0.5).astype(np.int64, copy=False)
             row0 = np.floor(safe_row + 0.5).astype(np.int64, copy=False)
@@ -565,12 +687,17 @@ class _GeoRasterDataset:
         else:
             col0 = np.floor(safe_col).astype(np.int64, copy=False)
             row0 = np.floor(safe_row).astype(np.int64, copy=False)
+            # Bilinear interpolation extends the outermost pixel value to the
+            # raster edge.  This keeps valid coverage at the first/last half
+            # pixel without ever sampling beyond the dataset.
             valid &= (
-                (col0 >= 0)
-                & (row0 >= 0)
-                & (col0 < self.width - 1)
-                & (row0 < self.height - 1)
+                (safe_col >= -0.5)
+                & (safe_row >= -0.5)
+                & (safe_col <= self.width - 0.5)
+                & (safe_row <= self.height - 0.5)
             )
+            col0 = np.clip(col0, 0, max(0, self.width - 1))
+            row0 = np.clip(row0, 0, max(0, self.height - 1))
 
         candidate_indices = np.flatnonzero(valid)
         if candidate_indices.size == 0:
@@ -590,6 +717,9 @@ class _GeoRasterDataset:
             bc = int(col0[indices[0]] // self.block_width)
             groups.append((indices, br, bc))
 
+        if callable(progress_callback):
+            progress_callback(0.0, "reading-raster-blocks")
+
         def _apply_group(indices, block) -> None:
             data, data_valid, row_off, col_off = block
             local_row = row0[indices] - row_off
@@ -601,8 +731,8 @@ class _GeoRasterDataset:
                     output[:, chosen] = data[:, local_row[point_valid], local_col[point_valid]]
                 valid[indices] &= point_valid
                 return
-            r1 = local_row + 1
-            c1 = local_col + 1
+            r1 = np.minimum(local_row + 1, self.height - 1 - row_off)
+            c1 = np.minimum(local_col + 1, self.width - 1 - col_off)
             point_valid = (
                 data_valid[local_row, local_col]
                 & data_valid[local_row, c1]
@@ -613,17 +743,53 @@ class _GeoRasterDataset:
             if chosen.size:
                 lr = local_row[point_valid]
                 lc = local_col[point_valid]
-                rr = lr + 1
-                cc = lc + 1
-                dc = (col[chosen] - col0[chosen]).astype(np.float32)
-                dr = (row[chosen] - row0[chosen]).astype(np.float32)
+                rr = r1[point_valid]
+                cc = c1[point_valid]
+                dc = np.clip(col[chosen] - col0[chosen], 0.0, 1.0).astype(
+                    np.float32
+                )
+                dr = np.clip(row[chosen] - row0[chosen], 0.0, 1.0).astype(
+                    np.float32
+                )
                 v00 = data[:, lr, lc].astype(np.float32, copy=False)
                 v01 = data[:, lr, cc].astype(np.float32, copy=False)
                 v10 = data[:, rr, lc].astype(np.float32, copy=False)
                 v11 = data[:, rr, cc].astype(np.float32, copy=False)
+                channel_maximum = None
+                if linear_light_rgb:
+                    maxima = []
+                    for band in bands:
+                        dtype = np.dtype(self.dtypes[band - 1])
+                        maxima.append(
+                            float(np.iinfo(dtype).max)
+                            if np.issubdtype(dtype, np.integer)
+                            else 1.0
+                        )
+                    channel_maximum = np.asarray(maxima, dtype=np.float32)[:, None]
+
+                    def _decode_srgb(values):
+                        encoded = np.clip(values / channel_maximum, 0.0, 1.0)
+                        return np.where(
+                            encoded <= 0.04045,
+                            encoded / 12.92,
+                            ((encoded + 0.055) / 1.055) ** 2.4,
+                        )
+
+                    v00 = _decode_srgb(v00)
+                    v01 = _decode_srgb(v01)
+                    v10 = _decode_srgb(v10)
+                    v11 = _decode_srgb(v11)
                 top = v00 * (1.0 - dc) + v01 * dc
                 bottom = v10 * (1.0 - dc) + v11 * dc
-                output[:, chosen] = top * (1.0 - dr) + bottom * dr
+                interpolated = top * (1.0 - dr) + bottom * dr
+                if linear_light_rgb:
+                    encoded = np.where(
+                        interpolated <= 0.0031308,
+                        interpolated * 12.92,
+                        1.055 * np.power(interpolated, 1.0 / 2.4) - 0.055,
+                    )
+                    interpolated = encoded * channel_maximum
+                output[:, chosen] = interpolated
             valid[indices] &= point_valid
 
         window_size = max(1, self._io_workers * 2)
@@ -637,6 +803,8 @@ class _GeoRasterDataset:
                     )
                 executor = self._prefetch_executor
         for window_start in range(0, len(groups), window_size):
+            if callable(abort_check) and abort_check():
+                raise RasterSamplingCancelled("Raster sampling cancelled")
             window = groups[window_start : window_start + window_size]
             if executor is None:
                 blocks = [self._read_block(br, bc, bands) for _indices, br, bc in window]
@@ -648,6 +816,318 @@ class _GeoRasterDataset:
                 blocks = [future.result() for future in futures]
             for (indices, _br, _bc), block in zip(window, blocks):
                 _apply_group(indices, block)
+            if callable(progress_callback):
+                progress_callback(
+                    min(1.0, (window_start + len(window)) / max(1, len(groups))),
+                    "reading-raster-blocks",
+                )
+        if callable(abort_check) and abort_check():
+            raise RasterSamplingCancelled("Raster sampling cancelled")
+        return output.reshape((len(bands),) + shape), valid.reshape(shape)
+
+    def sample_native_lod(
+        self,
+        native_x: Any,
+        native_y: Any,
+        lod_factors: Any,
+        *,
+        bands: tuple[int, ...] = (1,),
+        tile_store: Any = None,
+        progress_callback=None,
+        abort_check=None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Nearest-neighbour categorical sampling through sparse 256px LOD tiles.
+
+        Continental S2GLC files are compressed as one very wide strip per
+        source row.  This path quantizes distant samples to a suitable LOD,
+        deduplicates them, then reads each required source row once and only
+        the column interval containing requested pixels.  Sparse tile entries
+        are persisted by ``AtomicNpzStore`` and filled on demand.
+        """
+
+        if self.dataset is None:
+            raise RuntimeError("Raster dataset is not initialized")
+        bands = tuple(int(value) for value in bands)
+        if not bands or min(bands) < 1 or max(bands) > self.count:
+            raise ValueError("Requested raster band is unavailable")
+        x_arr, y_arr, factor_arr = np.broadcast_arrays(
+            np.asarray(native_x, dtype=np.float64),
+            np.asarray(native_y, dtype=np.float64),
+            np.asarray(lod_factors, dtype=np.int16),
+        )
+        shape = x_arr.shape
+        flat_x = x_arr.ravel()
+        flat_y = y_arr.ravel()
+        factors = np.asarray(factor_arr, dtype=np.int64).ravel()
+        allowed = np.asarray((1, 2, 4, 8, 16, 32, 64, 128), dtype=np.int64)
+        factors = allowed[
+            np.clip(np.searchsorted(allowed, np.maximum(1, factors), side="right") - 1, 0, len(allowed) - 1)
+        ]
+
+        inv = self.inverse_transform
+        col_float = inv.a * flat_x + inv.b * flat_y + inv.c - 0.5
+        row_float = inv.d * flat_x + inv.e * flat_y + inv.f - 0.5
+        finite = np.isfinite(col_float) & np.isfinite(row_float)
+        native_cols = np.floor(np.where(finite, col_float, 0.0) + 0.5).astype(np.int64)
+        native_rows = np.floor(np.where(finite, row_float, 0.0) + 0.5).astype(np.int64)
+        valid = finite & (
+            (native_cols >= 0)
+            & (native_rows >= 0)
+            & (native_cols < self.width)
+            & (native_rows < self.height)
+        )
+        output = np.zeros((len(bands), flat_x.size), dtype=np.float32)
+        candidates = np.flatnonzero(valid)
+        self.lod_requested += int(candidates.size)
+        if not candidates.size:
+            return output.reshape((len(bands),) + shape), valid.reshape(shape)
+
+        coarse_rows = native_rows[candidates] // factors[candidates]
+        coarse_cols = native_cols[candidates] // factors[candidates]
+        query_keys = np.column_stack((factors[candidates], coarse_rows, coarse_cols))
+        unique_keys, inverse = np.unique(query_keys, axis=0, return_inverse=True)
+        self.lod_unique += int(len(unique_keys))
+        unique_values = np.zeros((len(bands), len(unique_keys)), dtype=np.float32)
+        unique_valid = np.zeros(len(unique_keys), dtype=bool)
+
+        # First resolve sparse entries already present in persistent 256x256
+        # tiles.  Sort/group in NumPy so Python work scales with the number of
+        # touched tiles, not with hundreds of thousands of sample points.
+        unique_factors = unique_keys[:, 0].astype(np.int64, copy=False)
+        unique_rows = unique_keys[:, 1].astype(np.int64, copy=False)
+        unique_cols = unique_keys[:, 2].astype(np.int64, copy=False)
+        tile_rows = unique_rows // 256
+        tile_cols = unique_cols // 256
+        tile_order = np.lexsort((tile_cols, tile_rows, unique_factors))
+        ordered_tile_keys = np.column_stack(
+            (
+                unique_factors[tile_order],
+                tile_rows[tile_order],
+                tile_cols[tile_order],
+            )
+        )
+        tile_starts = np.r_[
+            0,
+            np.flatnonzero(
+                np.any(ordered_tile_keys[1:] != ordered_tile_keys[:-1], axis=1)
+            )
+            + 1,
+        ]
+        tile_stops = np.r_[tile_starts[1:], len(tile_order)]
+
+        tile_state: dict[
+            tuple[int, int, int], tuple[np.ndarray, np.ndarray, np.ndarray]
+        ] = {}
+        missing_parts: list[np.ndarray] = []
+        band_token = "-".join(str(value) for value in bands)
+        for start, stop in zip(tile_starts, tile_stops):
+            unique_indices = tile_order[start:stop]
+            factor, tile_row, tile_col = (
+                int(value) for value in ordered_tile_keys[start]
+            )
+            tile_key = (factor, tile_row, tile_col)
+            stored_positions = np.asarray([], dtype=np.int32)
+            stored_values = np.empty((len(bands), 0), dtype=np.float32)
+            stored_valid = np.asarray([], dtype=bool)
+            relative = (
+                f"tiles/{self.lod_identity}/{band_token}/f{factor}/"
+                f"r{tile_row}_c{tile_col}"
+            )
+            loaded = tile_store.load(relative) if tile_store is not None else None
+            if loaded is not None:
+                metadata, arrays = loaded
+                if (
+                    int(metadata.get("schema", 0)) == 1
+                    and str(metadata.get("dataset", "")) == self.lod_identity
+                    and tuple(int(value) for value in metadata.get("bands", ())) == bands
+                ):
+                    stored_positions = np.asarray(arrays.get("positions", ()), dtype=np.int32)
+                    stored_values = np.asarray(
+                        arrays.get("values", np.empty((len(bands), 0))), dtype=np.float32
+                    )
+                    stored_valid = np.asarray(arrays.get("valid", ()), dtype=bool)
+                    if stored_values.shape != (len(bands), len(stored_positions)) or stored_valid.shape != stored_positions.shape:
+                        stored_positions = np.asarray([], dtype=np.int32)
+                        stored_values = np.empty((len(bands), 0), dtype=np.float32)
+                        stored_valid = np.asarray([], dtype=bool)
+            tile_state[tile_key] = (stored_positions, stored_values, stored_valid)
+            local_positions = (
+                (unique_rows[unique_indices] % 256) * 256
+                + unique_cols[unique_indices] % 256
+            ).astype(np.int32, copy=False)
+            if stored_positions.size:
+                stored_indices = np.searchsorted(stored_positions, local_positions)
+                bounded = np.minimum(stored_indices, len(stored_positions) - 1)
+                hits = (stored_indices < len(stored_positions)) & (
+                    stored_positions[bounded] == local_positions
+                )
+            else:
+                stored_indices = np.zeros(len(unique_indices), dtype=np.int64)
+                hits = np.zeros(len(unique_indices), dtype=bool)
+            if np.any(hits):
+                hit_indices = unique_indices[hits]
+                hit_stored = stored_indices[hits]
+                unique_values[:, hit_indices] = stored_values[:, hit_stored]
+                unique_valid[hit_indices] = stored_valid[hit_stored]
+                self.lod_cache_hits += int(np.count_nonzero(hits))
+            if not np.all(hits):
+                missing_parts.append(unique_indices[~hits])
+
+        missing = (
+            np.concatenate(missing_parts).astype(np.int64, copy=False)
+            if missing_parts
+            else np.asarray([], dtype=np.int64)
+        )
+
+        # Group cache misses by their real source row.  Each LZW strip is
+        # decoded once; only the min..max requested column interval is retained.
+        missing_factors = unique_factors[missing]
+        source_rows = np.minimum(
+            self.height - 1,
+            unique_rows[missing] * missing_factors + missing_factors // 2,
+        )
+        source_cols = np.minimum(
+            self.width - 1,
+            unique_cols[missing] * missing_factors + missing_factors // 2,
+        )
+        row_order = np.argsort(source_rows, kind="stable")
+        ordered_rows = source_rows[row_order]
+        if ordered_rows.size:
+            row_starts = np.r_[
+                0, np.flatnonzero(ordered_rows[1:] != ordered_rows[:-1]) + 1
+            ]
+            row_stops = np.r_[row_starts[1:], len(row_order)]
+        else:
+            row_starts = row_stops = np.asarray([], dtype=np.int64)
+
+        if callable(progress_callback):
+            progress_callback(0.0, "reading-lod-rows")
+        progress_last_emit = time.perf_counter()
+        from rasterio.windows import Window
+
+        reader = self._reader()
+        if reader is None:
+            raise RuntimeError("Raster dataset is closed")
+        group_count = max(1, len(row_starts))
+        for group_position, (start, stop) in enumerate(zip(row_starts, row_stops)):
+            if callable(abort_check) and abort_check():
+                raise RasterSamplingCancelled("Raster LOD sampling cancelled")
+            ordered_group = row_order[start:stop]
+            unique_indices = missing[ordered_group]
+            columns = source_cols[ordered_group]
+            source_row = int(ordered_rows[start])
+            col_off = int(np.min(columns))
+            width = int(np.max(columns) - col_off + 1)
+            window = Window(col_off, source_row, width, 1)
+            lock = self._read_lock if os.name == "nt" else threading.Lock()
+            with lock:
+                data = np.asarray(reader.read(bands, window=window))
+                if self._requires_mask_read:
+                    data_valid = np.all(
+                        np.asarray(reader.read_masks(bands, window=window)) > 0,
+                        axis=0,
+                    )
+                else:
+                    data_valid = np.ones((1, width), dtype=bool)
+            for local_band, band in enumerate(bands):
+                nodata = self.nodatavals[band - 1]
+                if nodata is None or (isinstance(nodata, float) and math.isnan(nodata)):
+                    data_valid &= np.isfinite(data[local_band])
+                else:
+                    data_valid &= data[local_band] != nodata
+            local_cols = (columns - col_off).astype(np.int64, copy=False)
+            point_valid = data_valid[0, local_cols]
+            unique_valid[unique_indices] = point_valid
+            if np.any(point_valid):
+                unique_values[:, unique_indices[point_valid]] = data[
+                    :, 0, local_cols[point_valid]
+                ]
+            read_bytes = int(data.nbytes + data_valid.nbytes)
+            self.bytes_read += read_bytes
+            self.lod_rows_read += 1
+            self.lod_intervals_read += 1
+            if callable(progress_callback) and (
+                group_position + 1 >= group_count
+                or time.perf_counter() - progress_last_emit >= 0.10
+            ):
+                progress_callback(
+                    (group_position + 1.0) / group_count, "reading-lod-rows"
+                )
+                progress_last_emit = time.perf_counter()
+
+        if tile_store is not None and missing.size:
+            missing_tile_order = np.lexsort(
+                (
+                    tile_cols[missing],
+                    tile_rows[missing],
+                    unique_factors[missing],
+                )
+            )
+            ordered_missing = missing[missing_tile_order]
+            ordered_missing_keys = np.column_stack(
+                (
+                    unique_factors[ordered_missing],
+                    tile_rows[ordered_missing],
+                    tile_cols[ordered_missing],
+                )
+            )
+            missing_starts = np.r_[
+                0,
+                np.flatnonzero(
+                    np.any(
+                        ordered_missing_keys[1:] != ordered_missing_keys[:-1],
+                        axis=1,
+                    )
+                )
+                + 1,
+            ]
+            missing_stops = np.r_[missing_starts[1:], len(ordered_missing)]
+            for start, stop in zip(missing_starts, missing_stops):
+                new_indices = ordered_missing[start:stop]
+                factor, tile_row, tile_col = (
+                    int(value) for value in ordered_missing_keys[start]
+                )
+                tile_key = (factor, tile_row, tile_col)
+                positions, values, validity = tile_state[tile_key]
+                new_positions = (
+                    (unique_rows[new_indices] % 256) * 256
+                    + unique_cols[new_indices] % 256
+                ).astype(np.int32, copy=False)
+                merged_positions = np.concatenate((positions, new_positions))
+                merged_values = np.concatenate((values, unique_values[:, new_indices]), axis=1)
+                merged_valid = np.concatenate((validity, unique_valid[new_indices]))
+                order = np.argsort(merged_positions, kind="stable")
+                relative = (
+                    f"tiles/{self.lod_identity}/{band_token}/f{factor}/"
+                    f"r{tile_row}_c{tile_col}"
+                )
+                try:
+                    tile_store.save(
+                        relative,
+                        {"schema": 1, "dataset": self.lod_identity, "bands": list(bands)},
+                        {
+                            "positions": merged_positions[order],
+                            "values": merged_values[:, order],
+                            "valid": merged_valid[order],
+                        },
+                        durable=False,
+                        prune_after=False,
+                    )
+                except (OSError, ValueError):
+                    # A full or unavailable cache must not make the source
+                    # unusable; the freshly sampled values remain valid.
+                    pass
+            try:
+                tile_store.prune()
+            except OSError:
+                pass
+
+        candidate_values = unique_values[:, inverse]
+        candidate_valid = unique_valid[inverse]
+        output[:, candidates] = candidate_values
+        valid[candidates] &= candidate_valid
+        if callable(progress_callback):
+            progress_callback(1.0, "lod-ready")
         return output.reshape((len(bands),) + shape), valid.reshape(shape)
 
     def close(self) -> None:

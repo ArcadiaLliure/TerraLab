@@ -50,6 +50,8 @@ from TerraLab.terrain.sampling import (
 # --- Constants ---
 R_EARTH = 6_371_000.0
 MIN_RELIEF_MESH_AZIMUTH_STEP_DEG = 0.05
+TERRAIN_MESH_VERSION = 3
+NEAR_PATCH_HALF_EXTENT_M = 80.0
 
 
 def compute_polar_mesh_normals(
@@ -402,6 +404,14 @@ class HorizonProfile:
                 "normal_z",
                 "valid",
                 "visible",
+                "near_patch_eastings",
+                "near_patch_northings",
+                "near_patch_altitudes",
+                "near_patch_elevations",
+                "near_patch_normal_x",
+                "near_patch_normal_y",
+                "near_patch_normal_z",
+                "near_patch_valid",
             ):
                 if key in mesh:
                     data[f"terrain_mesh_{key}"] = np.asarray(mesh[key])
@@ -529,6 +539,21 @@ class HorizonProfile:
                     .astype(bool)
                     .copy(),
                 }
+                for key, dtype in (
+                    ("near_patch_eastings", np.float32),
+                    ("near_patch_northings", np.float32),
+                    ("near_patch_altitudes", np.float32),
+                    ("near_patch_elevations", np.float32),
+                    ("near_patch_normal_x", np.float32),
+                    ("near_patch_normal_y", np.float32),
+                    ("near_patch_normal_z", np.float32),
+                    ("near_patch_valid", bool),
+                ):
+                    stored_key = f"terrain_mesh_{key}"
+                    if stored_key in d:
+                        terrain_mesh[key] = np.asarray(
+                            d[stored_key], dtype=dtype
+                        ).copy()
 
             observer_lat = (
                 float(np.asarray(d["observer_lat"]).item())
@@ -622,6 +647,12 @@ class HorizonProfile:
 
     def covers_radius(self, requested_radius_m: float) -> bool:
         """Return false for legacy profiles whose coverage is unknown."""
+        if self.terrain_mesh:
+            try:
+                if int(self.terrain_mesh.get("version", 1)) < TERRAIN_MESH_VERSION:
+                    return False
+            except (TypeError, ValueError):
+                return False
         return self.resolved_radius_m is not None and self.resolved_radius_m + 0.5 >= float(requested_radius_m)
 
 
@@ -2306,8 +2337,9 @@ class HorizonBaker:
             and resolution_m > 0
             else 30.0
         )
-        # At most 395 rings: high detail to 5 km, then progressively sparser
-        # medium/low/silhouette LOD out to the resolved radius.
+        # The polar mesh starts where the Cartesian near patch is already
+        # present.  This avoids the polar singularity below the observer while
+        # retaining a generous overlap for the z-buffer at the transition.
         zones = ((40.0, 5_000.0, 150), (5_000.0, 25_000.0, 100),
                  (25_000.0, 100_000.0, 75), (100_000.0, 250_000.0, 45),
                  (250_000.0, visual_max, 25))
@@ -2322,6 +2354,112 @@ class HorizonBaker:
         rings = np.unique(np.round(np.concatenate(segments)).astype(np.float32))
         rings = rings[rings <= visual_max]
         return rings[rings > 0]
+
+    @staticmethod
+    def _near_patch_axis(
+        half_extent_m: float = NEAR_PATCH_HALF_EXTENT_M,
+    ) -> np.ndarray:
+        """Return a symmetric ENU axis dense at the eye and coarse outside.
+
+        A uniform DEM-sized cell next to the eye still projects as a giant
+        triangle when looking down.  The nested spacings bound that projection
+        error without pretending that the DEM contains sub-metre relief: the
+        extra vertices only interpolate/query the same continuous DEM surface.
+        """
+
+        extent = max(40.0, float(half_extent_m))
+        positive = np.unique(
+            np.concatenate(
+                (
+                    np.arange(0.0, min(4.0, extent) + 0.25, 0.5),
+                    np.arange(5.0, min(12.0, extent) + 0.5, 1.0),
+                    np.arange(14.0, min(24.0, extent) + 1.0, 2.0),
+                    np.arange(28.0, min(40.0, extent) + 2.0, 4.0),
+                    np.arange(48.0, extent + 4.0, 8.0),
+                    np.asarray([extent]),
+                )
+            )
+        )
+        positive = positive[(positive >= 0.0) & (positive <= extent)]
+        return np.concatenate((-positive[:0:-1], positive)).astype(np.float32)
+
+    def _build_near_patch(
+        self,
+        obs_x: float,
+        obs_y: float,
+        h_eye_abs: float,
+        *,
+        abort_check=None,
+    ) -> Dict[str, np.ndarray]:
+        """Sample a real Cartesian DEM patch around the observer."""
+
+        eastings = self._near_patch_axis()
+        northings = eastings.copy()
+        east, north = np.meshgrid(
+            eastings.astype(np.float64),
+            northings.astype(np.float64),
+        )
+        x = float(obs_x) + east
+        y = float(obs_y) + north
+        if abort_check and abort_check():
+            raise InterruptedError("Near terrain patch build aborted")
+        if self._supports_batch_sampling():
+            elevations, valid = self._sample_provider_batch(x, y)
+        else:
+            elevations = np.zeros(x.shape, dtype=np.float32)
+            valid = np.zeros(x.shape, dtype=bool)
+            for row, column in np.ndindex(x.shape):
+                if abort_check and abort_check():
+                    raise InterruptedError("Near terrain patch build aborted")
+                value = self.provider.get_elevation(
+                    float(x[row, column]), float(y[row, column])
+                )
+                if value is not None and np.isfinite(value):
+                    elevations[row, column] = float(value)
+                    valid[row, column] = True
+
+        distance = np.hypot(east, north)
+        computed_altitudes = apparent_elevation_degrees(
+            elevations.astype(np.float64),
+            distance,
+            float(h_eye_abs),
+            float(self.R),
+        ).astype(np.float32)
+        altitudes = np.where(valid, computed_altitudes, -90.0).astype(np.float32)
+
+        # Gradients are calculated in the projected Cartesian grid. Invalid
+        # vertices never form triangles; using the eye height as a finite fill
+        # merely keeps neighbouring normal calculations numerically stable.
+        finite_elevations = np.where(
+            valid, elevations, float(h_eye_abs) - float(self.eye_height)
+        ).astype(np.float64)
+        gradient_north, gradient_east = np.gradient(
+            finite_elevations,
+            northings.astype(np.float64),
+            eastings.astype(np.float64),
+            edge_order=1,
+        )
+        nx_grid = -gradient_east
+        ny_grid = -gradient_north
+        convergence = math.radians(float(self.grid_convergence_deg))
+        normal_x = nx_grid * math.cos(convergence) + ny_grid * math.sin(convergence)
+        normal_y = -nx_grid * math.sin(convergence) + ny_grid * math.cos(convergence)
+        normal_z = np.ones_like(normal_x)
+        norm = np.sqrt(normal_x * normal_x + normal_y * normal_y + normal_z * normal_z)
+        normal_x = np.where(valid, normal_x / np.maximum(norm, 1e-12), 0.0)
+        normal_y = np.where(valid, normal_y / np.maximum(norm, 1e-12), 0.0)
+        normal_z = np.where(valid, normal_z / np.maximum(norm, 1e-12), 1.0)
+
+        return {
+            "near_patch_eastings": eastings,
+            "near_patch_northings": northings,
+            "near_patch_altitudes": altitudes,
+            "near_patch_elevations": elevations.astype(np.float32),
+            "near_patch_normal_x": normal_x.astype(np.float32),
+            "near_patch_normal_y": normal_y.astype(np.float32),
+            "near_patch_normal_z": normal_z.astype(np.float32),
+            "near_patch_valid": valid,
+        }
 
     @staticmethod
     def _compute_mesh_visibility(
@@ -2356,6 +2494,12 @@ class HorizonBaker:
         mesh_delta_az_deg = self._mesh_azimuth_step(requested_delta_az_deg)
         h_eye_abs = float(obs_h_ground) + float(self.eye_height)
         resolution_m = self._provider_nominal_resolution_m()
+        near_patch = self._build_near_patch(
+            obs_x,
+            obs_y,
+            h_eye_abs,
+            abort_check=abort_check,
+        )
         distances = self._mesh_distance_rings(d_max, resolution_m)
         azimuths = np.arange(
             0.0, 360.0, mesh_delta_az_deg, dtype=np.float32
@@ -2506,6 +2650,14 @@ class HorizonBaker:
             & valid[:-1, 1:]
             & valid[1:, 1:]
         )
+        near_valid = np.asarray(near_patch["near_patch_valid"], dtype=bool)
+        near_valid_cells = (
+            near_valid[:-1, :-1]
+            & near_valid[1:, :-1]
+            & near_valid[:-1, 1:]
+            & near_valid[1:, 1:]
+        )
+        near_vertex_count = int(near_valid.size)
         mesh_metrics = {
             "elapsed_s": round(mesh_elapsed_s, 6),
             "sampling_s": round(float(sampling_elapsed_s), 6),
@@ -2513,9 +2665,13 @@ class HorizonBaker:
             "normals_s": round(float(normals_elapsed_s), 6),
             "azimuths": int(n_az),
             "distance_rings": int(n_d),
-            "samples": int(n_az * n_d),
-            "vertices": int(n_az * n_d),
-            "triangles": int(np.count_nonzero(valid_cells) * 2),
+            "samples": int(n_az * n_d + near_vertex_count),
+            "vertices": int(n_az * n_d + near_vertex_count),
+            "near_patch_vertices": near_vertex_count,
+            "triangles": int(
+                (np.count_nonzero(valid_cells) + np.count_nonzero(near_valid_cells))
+                * 2
+            ),
             "reused_field": bool(reused_field),
             "requested_delta_az_deg": requested_delta_az_deg,
             "delta_az_deg": mesh_delta_az_deg,
@@ -2528,7 +2684,7 @@ class HorizonBaker:
             append_perf_event("terrain.mesh", **mesh_metrics)
 
         return {
-            "version": 2,
+            "version": TERRAIN_MESH_VERSION,
             "azimuths": azimuths,
             "distances": distances.astype(np.float32),
             "altitudes": altitudes,
@@ -2538,6 +2694,7 @@ class HorizonBaker:
             "normal_z": normal_z,
             "valid": valid,
             "visible": visible,
+            **near_patch,
         }
 
     def _raycast_chunk(self, args):

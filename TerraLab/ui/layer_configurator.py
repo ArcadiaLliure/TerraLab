@@ -31,6 +31,7 @@ from TerraLab.ui.data_library_dialog import (
     configure_data_library,
     library_free_space,
 )
+from TerraLab.data.resumable_download import human_bytes
 
 
 _STATE_ICON = {
@@ -39,6 +40,10 @@ _STATE_ICON = {
     LayerState.MISSING: "○",
     LayerState.INVALID: "!",
     LayerState.PLANNED: "…",
+    LayerState.DOWNLOADING: "⇣",
+    LayerState.PAUSED: "‖",
+    LayerState.EXTRACTING: "⚙",
+    LayerState.ERROR: "!",
 }
 
 
@@ -73,6 +78,12 @@ class _LayerRow(QFrame):
         self.message.setObjectName("subtitleLabel")
         root.addWidget(self.message)
 
+        self.product_details = QLabel()
+        self.product_details.setWordWrap(True)
+        self.product_details.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.product_details.setStyleSheet("color: #aebed8; font-size: 10px;")
+        root.addWidget(self.product_details)
+
         self.resources = QLabel()
         self.resources.setWordWrap(True)
         self.resources.setStyleSheet("color: #c8d8f3; font-size: 10px;")
@@ -106,12 +117,27 @@ class _LayerRow(QFrame):
         self.link_folder_button = QPushButton("Enllaçar carpeta…")
         self.link_folder_button.clicked.connect(self._link_folder)
         self.link_folder_button.setVisible(
-            layer_id in {LayerId.EARTH_TERRAIN, LayerId.EARTH_SURFACE}
+            layer_id
+            in {
+                LayerId.EARTH_TERRAIN,
+                LayerId.EARTH_SURFACE_CATEGORICAL,
+                LayerId.EARTH_SURFACE_RGB,
+            }
         )
         actions.addWidget(self.link_folder_button)
         self.prepare_button = QPushButton("Preparar / copiar…")
         self.prepare_button.clicked.connect(self._open_asset_wizard)
         actions.addWidget(self.prepare_button)
+        self.activate_button = QPushButton("Fer activa")
+        self.activate_button.clicked.connect(self._activate_surface)
+        self.activate_button.setVisible(
+            layer_id
+            in {
+                LayerId.EARTH_SURFACE_CATEGORICAL,
+                LayerId.EARTH_SURFACE_RGB,
+            }
+        )
+        actions.addWidget(self.activate_button)
         root.addLayout(actions)
         self.refresh()
 
@@ -129,17 +155,50 @@ class _LayerRow(QFrame):
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
         self.message.setText(status.message)
+        spec = self.manager.assets.get_spec(self.descriptor.asset_id)
+        details = []
+        if spec.provider:
+            details.append(f"Proveïdor: {spec.provider}")
+        if spec.nominal_resolution_m:
+            details.append(f"Resolució nominal: {spec.nominal_resolution_m:g} m")
+        if spec.approximate_download_bytes:
+            details.append(
+                f"Descàrrega aproximada: {human_bytes(spec.approximate_download_bytes)}"
+            )
+        if spec.nominal_crs:
+            details.append(f"CRS: {spec.nominal_crs}")
+        if spec.geographic_extent:
+            details.append(f"Extensió: {spec.geographic_extent}")
+        if spec.credits:
+            details.append(f"Crèdits: {spec.credits}")
+        if spec.license_note:
+            details.append(f"Condicions: {spec.license_note}")
+        self.product_details.setText("\n".join(details))
+        self.product_details.setVisible(bool(details))
         resource_lines = []
         for resource in status.resources:
             state = "disponible" if resource.ready else "no disponible"
             location = f" · {resource.path}" if resource.path else ""
-            resource_lines.append(f"{resource.name}: {state}{location}")
+            details = f" · {resource.details}" if resource.details else ""
+            active = (
+                " · ACTIVA"
+                if resource.ready and resource.name == status.effective_source
+                else ""
+            )
+            resource_lines.append(
+                f"{resource.name}: {state}{active}{details}{location}"
+            )
         self.resources.setText("\n".join(resource_lines))
         self.resources.setVisible(bool(resource_lines))
         for child, checkbox in self.child_checks.items():
             checkbox.blockSignals(True)
             checkbox.setChecked(self.manager.child_visible(child))
             checkbox.blockSignals(False)
+        if self.activate_button.isVisible():
+            source_ids = {resource.id for resource in status.resources if resource.ready}
+            active = bool(status.effective_source)
+            self.activate_button.setText("Activa" if active else "Fer activa")
+            self.activate_button.setEnabled(bool(source_ids) and not active)
 
     def _visibility_changed(self, checked: bool) -> None:
         self.manager.set_visible(self.layer_id, checked)
@@ -196,6 +255,15 @@ class _LayerRow(QFrame):
             self.refresh()
             self.changed.emit(self.layer_id.value, "source")
 
+    def _activate_surface(self) -> None:
+        status = self.manager.status(self.layer_id)
+        ready = [resource for resource in status.resources if resource.ready]
+        if not ready:
+            return
+        self.manager.set_source(self.layer_id, ready[0].id)
+        self.refresh()
+        self.changed.emit(self.layer_id.value, "selection")
+
 
 class LayerConfiguratorWidget(QWidget):
     """Complete, scrollable layer library with sky/earth grouping."""
@@ -244,12 +312,17 @@ class LayerConfiguratorWidget(QWidget):
             for descriptor in manager.list_layers(group):
                 row = _LayerRow(manager, descriptor.id, content)
                 row.changed.connect(self.layerChanged)
+                row.changed.connect(self._row_changed)
                 self._rows[descriptor.id] = row
                 layout.addWidget(row)
             layout.addStretch(1)
             scroll.setWidget(content)
             tabs.addTab(scroll, title)
         self.refresh()
+
+    def _row_changed(self, _layer_id: str, change: str) -> None:
+        if change in {"visibility", "selection"}:
+            self.refresh()
 
     def refresh(self) -> None:
         free = library_free_space(self.manager.library)

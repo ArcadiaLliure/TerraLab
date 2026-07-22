@@ -26,6 +26,7 @@ from TerraLab.terrain.overlay import (
     _rasterize_terrain_triangles,
     _simplify_projected_boundaries,
 )
+from TerraLab.terrain.render_pipeline import TerrainRenderSettings
 from TerraLab.terrain.worker import HorizonWorker
 from TerraLab.widgets.sky_widget import AstronomicalWidget
 from TerraLab.widgets.telescope_runtime import on_telescope_view_enabled
@@ -645,7 +646,7 @@ def test_horizon_profile_roundtrip_preserves_surface_points():
 def test_horizon_profile_roundtrip_preserves_terrain_mesh():
     temp_path = _workspace_temp_path("_test_horizon_mesh.npz")
     mesh = {
-        "version": 2,
+        "version": 3,
         "azimuths": np.array([0.0, 1.0], dtype=np.float32),
         "distances": np.array([100.0, 200.0], dtype=np.float32),
         "altitudes": np.array([[1.0, 1.1], [1.3, 1.4]], dtype=np.float32),
@@ -655,6 +656,14 @@ def test_horizon_profile_roundtrip_preserves_terrain_mesh():
         "normal_z": np.ones((2, 2), dtype=np.float32),
         "valid": np.ones((2, 2), dtype=bool),
         "visible": np.array([[True, True], [False, True]], dtype=bool),
+        "near_patch_eastings": np.array([-1.0, 0.0, 1.0], dtype=np.float32),
+        "near_patch_northings": np.array([-1.0, 0.0, 1.0], dtype=np.float32),
+        "near_patch_altitudes": np.full((3, 3), -45.0, dtype=np.float32),
+        "near_patch_elevations": np.full((3, 3), 100.0, dtype=np.float32),
+        "near_patch_normal_x": np.zeros((3, 3), dtype=np.float32),
+        "near_patch_normal_y": np.zeros((3, 3), dtype=np.float32),
+        "near_patch_normal_z": np.ones((3, 3), dtype=np.float32),
+        "near_patch_valid": np.ones((3, 3), dtype=bool),
     }
     profile = HorizonProfile(
         azimuths=np.array([0.0, 0.5], dtype=np.float32),
@@ -667,11 +676,13 @@ def test_horizon_profile_roundtrip_preserves_terrain_mesh():
         profile.save(temp_path)
         loaded = HorizonProfile.load(temp_path)
         assert loaded.terrain_mesh is not None
-        assert loaded.terrain_mesh["version"] == 2
+        assert loaded.terrain_mesh["version"] == 3
         assert np.allclose(loaded.terrain_mesh["distances"], [100.0, 200.0])
         assert loaded.terrain_mesh["valid"].dtype == bool
         assert loaded.terrain_mesh["visible"].dtype == bool
         assert loaded.terrain_mesh["visible"].tolist() == [[True, True], [False, True]]
+        assert loaded.terrain_mesh["near_patch_altitudes"].shape == (3, 3)
+        assert loaded.terrain_mesh["near_patch_valid"].all()
     finally:
         temp_path.unlink(missing_ok=True)
 
@@ -765,6 +776,117 @@ def test_horizon_overlay_draws_terrain_mesh_offscreen():
     assert image.width() == 240
     assert overlay._last_surface2d_quads > 0
     assert overlay._last_surface2d_quads <= overlay._max_terrain_surface_quads
+
+
+def test_cartesian_near_patch_covers_nadir_without_a_polar_cap_or_hole():
+    azimuths = np.asarray([0.0, 90.0, 180.0, 270.0], dtype=np.float32)
+    distances = np.asarray([40.0, 100.0], dtype=np.float32)
+    altitudes = np.degrees(
+        np.arctan2(-1.7, distances[:, None])
+    ).astype(np.float32)
+    altitudes = np.broadcast_to(altitudes, (2, 4)).copy()
+    patch_axis = np.asarray([-4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0], dtype=np.float32)
+    patch_east, patch_north = np.meshgrid(patch_axis, patch_axis)
+    patch_distance = np.hypot(patch_east, patch_north)
+    patch_altitudes = np.degrees(
+        np.arctan2(-1.7, np.maximum(patch_distance, 1e-9))
+    ).astype(np.float32)
+    mesh = {
+        "version": 3,
+        "azimuths": azimuths,
+        "distances": distances,
+        "altitudes": altitudes,
+        "elevations": np.full_like(altitudes, 200.0),
+        "valid": np.ones_like(altitudes, dtype=bool),
+        "visible": np.ones_like(altitudes, dtype=bool),
+        "near_patch_eastings": patch_axis,
+        "near_patch_northings": patch_axis,
+        "near_patch_altitudes": patch_altitudes,
+        "near_patch_elevations": np.full_like(patch_altitudes, 200.0),
+        "near_patch_normal_x": np.zeros_like(patch_altitudes),
+        "near_patch_normal_y": np.zeros_like(patch_altitudes),
+        "near_patch_normal_z": np.ones_like(patch_altitudes),
+        "near_patch_valid": np.ones_like(patch_altitudes, dtype=bool),
+    }
+    relief_rgba = np.full((2, 4, 4), (230, 120, 20, 255), dtype=np.uint8)
+    near_rgba = np.full(patch_altitudes.shape + (4,), (24, 48, 72, 255), dtype=np.uint8)
+    surface_cache = SimpleNamespace(
+        near_patch_rgba=near_rgba,
+        near_patch_valid=np.ones_like(patch_altitudes, dtype=bool),
+        relief_rgba=relief_rgba,
+        relief_valid=np.ones((2, 4), dtype=bool),
+        relief_source_indices=np.zeros((2, 4), dtype=np.int16),
+        relief_distance_indices=np.arange(2, dtype=np.int32),
+        relief_azimuth_indices=np.arange(4, dtype=np.int32),
+        visual_altitudes=None,
+        visual_rgba=None,
+    )
+    profile = HorizonProfile(
+        azimuths=np.asarray([], dtype=np.float32),
+        bands=[],
+        observer_lat=42.58,
+        observer_lon=1.0,
+        terrain_mesh=mesh,
+        surface_samples=surface_cache,
+    )
+    overlay = HorizonOverlay(
+        horizon_profile_path=None, allow_procedural_fallback=False
+    )
+    overlay.render_settings = TerrainRenderSettings.from_mapping(
+        {
+            "terrain_lighting_enabled": False,
+            "atmospheric_perspective_enabled": False,
+            "horizon_antialiasing_enabled": False,
+        }
+    )
+    overlay.set_profile(profile, layer_defs=[])
+    width, height = 320, 180
+    camera = Camera(
+        azimuth_offset=180.0,
+        elevation_angle=-51.0,
+        zoom_level=1.0,
+        vertical_offset_ratio=0.0,
+    )
+    image = QImage(width, height, QImage.Format_ARGB32)
+    image.fill(0)
+    painter = QPainter(image)
+
+    def project(altitude, azimuth):
+        return project_universal_stereo_point(
+            altitude, azimuth, width, height, camera
+        )
+
+    def project_np(altitude, azimuth):
+        return project_universal_stereo_numpy(
+            altitude, azimuth, width, height, camera
+        )
+
+    try:
+        rendered = overlay._draw_terrain_interpolated(
+            painter,
+            mesh,
+            project,
+            width,
+            height,
+            180.0,
+            0.0,
+            360.0,
+            0.0,
+            QColor(120, 170, 210),
+            projection_fn_numpy=project_np,
+        )
+    finally:
+        painter.end()
+
+    assert rendered is True
+    geometry = overlay._terrain_geometry_cache
+    assert not np.any(geometry.vertex_rows < 0)
+    assert np.any(geometry.vertex_domain == 1)
+    centre = QColor.fromRgba(image.pixel(width // 2, height - 2))
+    expected = np.asarray((24, 48, 72), dtype=np.int16)
+    np.testing.assert_allclose(
+        np.asarray(centre.getRgb()[:3]), expected, atol=5
+    )
 
 
 def test_horizon_overlay_does_not_truncate_visible_surface_spans_offscreen():

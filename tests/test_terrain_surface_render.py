@@ -151,6 +151,50 @@ def test_relief_cache_maps_sparse_indices_and_wraps_mesh_columns():
     np.testing.assert_array_equal(valid, np.asarray([True, False, True]))
 
 
+def test_partial_surface_cache_leaves_unloaded_azimuths_for_topographic_fallback():
+    overlay = _overlay()
+    color = (40, 120, 60, 255)
+    overlay.profile = SimpleNamespace(
+        azimuths=np.asarray([0.0, 90.0, 180.0, 270.0]),
+        surface_samples=SimpleNamespace(
+            completion_state="visible_partial",
+            profile_rgba=np.asarray([[color]], dtype=np.uint8),
+            profile_valid=np.asarray([[True]]),
+            profile_loaded=np.asarray([[True]]),
+            profile_source_indices=np.asarray([[0]], dtype=np.int16),
+            profile_band_indices=np.asarray([0], dtype=np.int32),
+            profile_azimuth_indices=np.asarray([1], dtype=np.int32),
+        ),
+    )
+
+    _rgba, valid = overlay._profile_surface_samples(
+        SimpleNamespace(band_index=0), np.asarray([90.0, 180.0])
+    )
+
+    np.testing.assert_array_equal(valid, np.asarray([True, False]))
+
+
+def test_partial_relief_cache_does_not_stretch_fov_across_pending_mesh():
+    overlay = _overlay()
+    overlay.profile = SimpleNamespace(
+        surface_samples={
+            "completion_state": "visible_partial",
+            "relief_rgba": np.asarray([[[40, 120, 60, 255]]], dtype=np.uint8),
+            "relief_valid": np.asarray([[True]]),
+            "relief_loaded": np.asarray([[True]]),
+            "relief_source_indices": np.asarray([[0]], dtype=np.int16),
+            "relief_distance_indices": np.asarray([1]),
+            "relief_azimuth_indices": np.asarray([2]),
+        }
+    )
+
+    _rgba, valid = overlay._relief_surface_samples(
+        np.asarray([1, 1]), np.asarray([2, 3]), (4, 8)
+    )
+
+    np.testing.assert_array_equal(valid, np.asarray([True, False]))
+
+
 def test_cached_rgba_remains_the_base_color_without_light_or_haze():
     overlay = _overlay()
     sampled = _qcolor_from_rgba(np.asarray([17, 91, 203, 255], dtype=np.uint8))

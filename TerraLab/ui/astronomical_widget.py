@@ -6,6 +6,7 @@ Manté compatibilitat temporal amb implementacio legacy de sky_widget_impl.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 try:
@@ -81,6 +82,15 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
         self.terrain_coordinator = TerrainCoordinator(
             tiles_dir=str(getattr(self, "runtime_layout", {}).get("data_elevation", "") or "")
         )
+        self.terrain_coordinator.horizon_ready.connect(
+            self._on_terrain_coordinator_ready
+        )
+        self.terrain_coordinator.horizon_progress.connect(
+            self._on_terrain_coordinator_progress
+        )
+        self.terrain_coordinator.horizon_error.connect(
+            self._on_terrain_coordinator_error
+        )
         self.ephemeris_coordinator = EphemerisCoordinator()
         self.ephemeris_coordinator.ephemeris_ready.connect(
             self._on_async_ephemeris_ready
@@ -104,6 +114,100 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
         # El worker legacy es crea de manera diferida al bootstrap.
         QTimer.singleShot(700, self._try_connect_horizon_worker)
         QTimer.singleShot(1600, self._try_connect_horizon_worker)
+
+    def _on_terrain_coordinator_progress(self, state) -> None:
+        """Show surface-raster progress without treating it as a DEM bake."""
+
+        if not isinstance(state, dict) or state.get("kind") != "surface":
+            return
+        percent = max(0.0, min(100.0, float(state.get("percent", 0.0))))
+        raw_phase = str(state.get("phase", "") or "")
+        phase = raw_phase.rsplit(":", 1)[-1]
+        now = time.perf_counter()
+        previous_phase = str(
+            getattr(self, "_surface_progress_ui_phase", "") or ""
+        )
+        previous_emit = float(
+            getattr(self, "_surface_progress_ui_ts", 0.0) or 0.0
+        )
+        terminal = percent >= 99.9 or raw_phase == "completed"
+        if (
+            not terminal
+            and raw_phase == previous_phase
+            and now - previous_emit < 0.10
+        ):
+            return
+        self._surface_progress_ui_ts = now
+        self._surface_progress_ui_phase = raw_phase
+        labels = {
+            "queued": "preparant",
+            "discovering-sources": "detectant fonts",
+            "opening-geotiff": "obrint el GeoTIFF",
+            "preparing": "preparant coordenades",
+            "transforming-coordinates": "transformant coordenades",
+            "profile-ready": "perfil preparat",
+            "relief-ready": "relleu preparat",
+            "subdividing-visual-grid": "refinant la malla visual",
+            "sampling-visual-detail": "mostrejant detall visual",
+            "registering-cache": "registrant la memòria cau",
+            "cache-ready": "memòria cau preparada",
+            "persistent-cache-ready": "memòria cau persistent preparada",
+            "completed": "completat",
+        }
+        detail = labels.get(phase, "llegint blocs del mosaic")
+        percent_text = f"{percent:.1f}".rstrip("0").rstrip(".")
+        self.on_horizon_progress(
+            f"Carregant cobertura del sòl: {percent_text}% · {detail}"
+        )
+
+    def _on_terrain_coordinator_error(self, message: str) -> None:
+        text = str(message or "").strip()
+        if text:
+            self.on_horizon_progress(text)
+
+    def _on_terrain_coordinator_ready(self, payload) -> None:
+        """Publish a completed surface cache atomically on the GUI thread."""
+
+        if not isinstance(payload, dict) or payload.get("kind") != "surface":
+            return
+        profile = payload.get("profile")
+        if profile is None:
+            return
+        self._full_horizon_profile = profile
+        requested_km = float(
+            getattr(self, "_pending_terrain_depth_km", None)
+            or (
+                self.slider_terrain_depth.value()
+                if hasattr(self, "slider_terrain_depth")
+                else 0.0
+            )
+        )
+        visible_profile = (
+            self._profile_for_terrain_depth(profile, requested_km)
+            if requested_km > 0.0
+            else profile
+        )
+        layer_defs = None
+        band_defs = getattr(visible_profile, "_band_defs", None)
+        if band_defs is not None:
+            try:
+                from TerraLab.terrain.overlay import generate_layer_defs
+
+                layer_defs = generate_layer_defs(band_defs)
+            except Exception as exc:
+                print(
+                    "[AstroWidget] Warning: Could not generate surface "
+                    f"layer_defs: {exc}"
+                )
+        overlay = getattr(getattr(self, "canvas", None), "horizon_overlay", None)
+        if overlay is not None:
+            overlay.set_profile(visible_profile, layer_defs=layer_defs)
+        village = getattr(getattr(self, "canvas", None), "village", None)
+        if village is not None:
+            village.set_profile(visible_profile)
+        self.on_horizon_progress("")
+        if hasattr(self, "canvas"):
+            self.canvas.update()
 
     def _on_async_ephemeris_ready(self, _snapshot) -> None:
         canvas = getattr(self, "canvas", None)
@@ -348,6 +452,9 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
                 self.terrain_coordinator.ingest_preview_payload
             )
             self._horizon_worker_bridge_connected = True
+            existing_profile = getattr(self, "_full_horizon_profile", None)
+            if existing_profile is not None:
+                self.terrain_coordinator.ingest_profile_payload(existing_profile)
         except Exception:
             pass
 

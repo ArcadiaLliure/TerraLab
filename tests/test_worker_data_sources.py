@@ -1,4 +1,6 @@
 from pathlib import Path
+import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -205,6 +207,105 @@ def test_terrain_coordinator_shutdown_never_leaves_worker_thread_running():
     assert coordinator.thread.isRunning() is False
 
 
+def test_terrain_coordinator_never_runs_surface_refresh_on_gui_thread(monkeypatch):
+    app = QCoreApplication.instance() or QCoreApplication([])
+    entered = threading.Event()
+    release = threading.Event()
+    execution_threads = []
+
+    def slow_surface_refresh(_worker, _payload):
+        execution_threads.append(threading.get_ident())
+        entered.set()
+        release.wait(timeout=2.0)
+
+    monkeypatch.setattr(
+        HorizonWorker,
+        "request_surface_refresh",
+        slow_surface_refresh,
+    )
+    coordinator = TerrainCoordinator()
+    gui_thread_id = threading.get_ident()
+    try:
+        started = time.perf_counter()
+        coordinator.request_surface_refresh(object())
+        assert time.perf_counter() - started < 0.1
+
+        deadline = time.monotonic() + 2.0
+        while not entered.is_set() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+
+        assert entered.is_set()
+        assert len(execution_threads) == 1
+        assert execution_threads[0] != gui_thread_id
+    finally:
+        release.set()
+        coordinator.shutdown()
+
+
+def test_terrain_coordinator_runs_pending_surface_refresh_when_profile_arrives(
+    monkeypatch,
+):
+    app = QCoreApplication.instance() or QCoreApplication([])
+    entered = threading.Event()
+    received = []
+
+    def record_surface_refresh(_worker, payload):
+        received.append(payload)
+        entered.set()
+
+    monkeypatch.setattr(
+        HorizonWorker,
+        "request_surface_refresh",
+        record_surface_refresh,
+    )
+    coordinator = TerrainCoordinator()
+    profile = object()
+    try:
+        coordinator.request_surface_refresh(
+            visible_radius_m=42_000.0,
+            view_azimuth_deg=135.0,
+            view_fov_deg=80.0,
+        )
+        assert coordinator._surface_request_generation == 0
+
+        coordinator.ingest_profile_payload(profile)
+        deadline = time.monotonic() + 2.0
+        while not entered.is_set() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+
+        assert entered.is_set()
+        assert len(received) == 1
+        assert received[0]["profile"] is profile
+        assert received[0]["visible_radius_m"] == 42_000.0
+        assert received[0]["view_azimuth_deg"] == 135.0
+        assert received[0]["view_fov_deg"] == 80.0
+    finally:
+        coordinator.shutdown()
+
+
+def test_terrain_coordinator_can_cancel_pending_surface_refresh(monkeypatch):
+    received = []
+
+    monkeypatch.setattr(
+        HorizonWorker,
+        "request_surface_refresh",
+        lambda _worker, payload: received.append(payload),
+    )
+    coordinator = TerrainCoordinator()
+    try:
+        coordinator.request_surface_refresh(view_fov_deg=80.0)
+        coordinator.cancel_surface_refresh()
+        coordinator.ingest_profile_payload(object())
+
+        assert coordinator._pending_surface_request is None
+        assert coordinator._surface_request_generation == 0
+        assert received == []
+    finally:
+        coordinator.shutdown()
+
+
 def test_surface_runtime_source_uses_first_provider_with_valid_samples():
     cache = SimpleNamespace(
         source_ids=("rgb", "categorical"),
@@ -217,6 +318,44 @@ def test_surface_runtime_source_uses_first_provider_with_valid_samples():
 
     cache.profile_valid[:] = False
     assert HorizonWorker._effective_surface_source_id(cache) is None
+
+
+def test_rgb_and_categorical_are_alternative_persisted_active_products(
+    monkeypatch, tmp_path
+):
+    registry = DataSourceRegistry(tmp_path / "sources.json", legacy_reader={})
+    rgb = registry.register_path(
+        _raster_placeholder(tmp_path / "s2glc-rgb.tif"),
+        LayerType.LAND_COVER_RGB,
+        source_id="rgb",
+    )
+    categorical = registry.register_path(
+        _raster_placeholder(tmp_path / "s2glc-codes.tif"),
+        LayerType.LAND_COVER_CATEGORICAL,
+        source_id="categorical",
+    )
+    monkeypatch.setattr(
+        "TerraLab.terrain.worker.get_config_value",
+        lambda key, default=None: True
+        if key == "ui.visibility.earth.surface"
+        else default,
+    )
+    worker = HorizonWorker()
+    worker.data_source_registry = registry
+    worker.layer_selection = LayerSelectionService(registry)
+
+    automatic, automatic_sources = worker._surface_selection(41.0, 2.0)
+    assert automatic.effective.id == rgb.id
+    assert [source.id for source in automatic_sources] == [rgb.id]
+
+    registry.set_selection("surface", categorical.id)
+    reloaded = DataSourceRegistry(tmp_path / "sources.json", legacy_reader={})
+    worker.data_source_registry = reloaded
+    worker.layer_selection = LayerSelectionService(reloaded)
+    manual, manual_sources = worker._surface_selection(41.0, 2.0)
+    assert manual.effective.id == categorical.id
+    assert [source.id for source in manual_sources] == [categorical.id]
+    worker.shutdown()
 
 
 def test_queued_surface_refresh_resolves_latest_worker_profile(monkeypatch):
@@ -239,4 +378,82 @@ def test_queued_surface_refresh_resolves_latest_worker_profile(monkeypatch):
 
     assert sampled == [latest]
     assert worker._last_profile is latest
+    worker.shutdown()
+
+
+def test_surface_refresh_publishes_visible_fov_before_complete_background(monkeypatch):
+    worker = HorizonWorker()
+    profile = build_flat_horizon_profile(
+        observer_lat=42.0,
+        observer_lon=3.0,
+        geometry_id="progressive",
+    )
+    requests = []
+    published = []
+
+    def prepare(target, *, surface_request=None, progress_callback=None, abort_check=None):
+        requests.append(surface_request)
+        target.surface_samples = SimpleNamespace(
+            completion_state=surface_request.stage,
+            source_ids=(),
+        )
+        if progress_callback is not None:
+            progress_callback(100.0, "completed")
+        return target
+
+    monkeypatch.setattr(worker, "_prepare_surface_samples", prepare)
+    monkeypatch.setattr(worker, "_publish_effective_sources", lambda *_: None)
+    worker.profile_ready.connect(published.append)
+
+    worker.request_surface_refresh(
+        {
+            "profile": profile,
+            "generation": 0,
+            "view_azimuth_deg": 180.0,
+            "view_fov_deg": 90.0,
+            "visible_radius_m": 50_000.0,
+        }
+    )
+
+    assert [request.stage for request in requests] == [
+        "visible_partial",
+        "complete",
+    ]
+    assert [payload["stage"] for payload in published] == [
+        "visible_partial",
+        "complete",
+    ]
+    assert published[0]["profile"] is not profile
+    assert published[1]["profile"] is profile
+    worker.shutdown()
+
+
+def test_surface_row_progress_is_throttled_before_entering_the_qt_queue(monkeypatch):
+    worker = HorizonWorker()
+    emitted = []
+    text_emitted = []
+    worker.progress_state.connect(emitted.append)
+    worker.progress_message.connect(text_emitted.append)
+    clock = iter([0.0, *[0.01 * value for value in range(1, 101)], 2.0])
+    monkeypatch.setattr(
+        "TerraLab.terrain.worker.time.perf_counter", lambda: next(clock)
+    )
+
+    for percent in np.linspace(2.0, 6.0, 101):
+        worker._emit_progress_state(
+            {
+                "kind": "surface",
+                "phase": "complete:relief:reading-lod-rows",
+                "percent": float(percent),
+            }
+        )
+    worker._emit_progress_state(
+        {"kind": "surface", "phase": "completed", "percent": 100.0}
+    )
+
+    assert len(emitted) <= 7
+    assert emitted[0]["percent"] == 2.0
+    assert emitted[-1]["percent"] == 100.0
+    assert text_emitted == []
+    assert worker.get_progress_state()["percent"] == 100.0
     worker.shutdown()

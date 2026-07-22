@@ -1,4 +1,6 @@
+import copy
 import json
+import inspect
 import os
 import subprocess
 import sys
@@ -15,6 +17,7 @@ from TerraLab.common.utils import (
     get_config_value,
     set_config_value,
 )
+from TerraLab.common.perf_events import append_perf_event
 from TerraLab.config import ConfigManager
 from TerraLab.terrain.engine import HorizonProfile, generate_bands
 from TerraLab.terrain.data_sources import DataSourceRegistry, LayerSelectionService
@@ -71,6 +74,14 @@ class HorizonWorker(QObject):
         self._surface_service = None
         self._surface_source_signature = None
         self._last_profile = None
+        self._surface_generation_lock = threading.Lock()
+        self._surface_request_generation = 0
+        self._surface_cancel_event = threading.Event()
+        self._surface_performance_logging = False
+        self._surface_progress_last_emit = 0.0
+        self._surface_progress_last_phase = ""
+        self._surface_progress_last_percent = -1.0
+        self._surface_progress_min_interval_s = 0.20
 
     def _ensure_light_sampler_for_location(self, lat: float, lon: float):
         enabled = bool(get_config_value("light_pollution_enabled", True))
@@ -100,7 +111,17 @@ class HorizonWorker(QObject):
     def _surface_selection(self, lat: float, lon: float):
         selection = self.layer_selection.select_surface(lat, lon)
         visible = bool(get_config_value("ui.visibility.earth.surface", True))
-        return selection, list(selection.chain) if visible else []
+        if not visible or selection.effective is None:
+            return selection, []
+        # RGB and categorical datasets are alternative active products.  Keep
+        # fallbacks within the selected semantic type so installing both never
+        # composes them implicitly.
+        active_type = selection.effective.layer_type
+        return selection, [
+            source
+            for source in selection.chain
+            if source.layer_type is active_type
+        ]
 
     @staticmethod
     def _effective_surface_source_id(cache):
@@ -108,6 +129,10 @@ class HorizonWorker(QObject):
             return None
         get = cache.get if isinstance(cache, dict) else lambda key, default=None: getattr(cache, key, default)
         source_ids = tuple(get("source_ids", ()) or ())
+        if bool(get("observer_valid", False)):
+            observer_index = int(get("observer_source_index", -1))
+            if 0 <= observer_index < len(source_ids):
+                return source_ids[observer_index]
         for valid_name, index_name in (
             ("profile_valid", "profile_source_indices"),
             ("relief_valid", "relief_source_indices"),
@@ -124,9 +149,35 @@ class HorizonWorker(QObject):
                 return source_ids[index] if 0 <= index < len(source_ids) else None
         return None
 
-    def _prepare_surface_samples(self, profile):
+    def set_surface_request_generation(self, generation: int) -> None:
+        """Publish the newest refresh generation without waiting on Qt events."""
+
+        with self._surface_generation_lock:
+            self._surface_request_generation = int(generation)
+            self._surface_cancel_event.clear()
+
+    def cancel_surface_sampling(self) -> None:
+        """Cooperatively stop the current bounded raster sampling operation."""
+
+        self._surface_cancel_event.set()
+
+    def _surface_request_cancelled(self, generation: int) -> bool:
+        with self._surface_generation_lock:
+            current = self._surface_request_generation
+        return self._surface_cancel_event.is_set() or int(generation) != current
+
+    def _prepare_surface_samples(
+        self,
+        profile,
+        *,
+        surface_request=None,
+        progress_callback=None,
+        abort_check=None,
+    ):
         if profile is None:
             return None
+        if callable(progress_callback):
+            progress_callback(1.0, "discovering-sources")
         selection, sources = self._surface_selection(
             float(getattr(profile, "observer_lat", 0.0)),
             float(getattr(profile, "observer_lon", 0.0)),
@@ -144,21 +195,65 @@ class HorizonWorker(QObject):
                 self._surface_service.close()
             self._surface_service = None
             if sources:
+                if callable(progress_callback):
+                    progress_callback(2.0, "opening-geotiff")
                 from TerraLab.terrain.surface import (
                     SurfaceSamplingService,
                     create_surface_providers,
                 )
+                from TerraLab.common.app_paths import cache_dir
 
+                service_kwargs = {}
+                service_parameters = inspect.signature(
+                    SurfaceSamplingService
+                ).parameters
+                if "persistent_cache_dir" in service_parameters:
+                    service_kwargs["persistent_cache_dir"] = cache_dir(
+                        "terrain", "surface"
+                    )
+                if "persistent_cache_bytes" in service_parameters:
+                    service_kwargs["persistent_cache_bytes"] = 2 * 1024**3
+                try:
+                    performance_logging = bool(
+                        ConfigManager()
+                        .get_terrain_render_settings()
+                        .terrain_performance_logging_enabled
+                    )
+                except Exception:
+                    performance_logging = False
+                self._surface_performance_logging = performance_logging
+                if "performance_logging" in service_parameters:
+                    service_kwargs["performance_logging"] = performance_logging
+                opening_started = time.perf_counter()
                 self._surface_service = SurfaceSamplingService(
-                    create_surface_providers(sources)
+                    create_surface_providers(sources), **service_kwargs
                 )
+                if performance_logging:
+                    append_perf_event(
+                        "surface.sampling",
+                        phase="opening",
+                        source_count=len(sources),
+                        elapsed_ms=int(
+                            (time.perf_counter() - opening_started) * 1000.0
+                        ),
+                    )
             self._surface_source_signature = signature
         if self._surface_service is None:
             profile.surface_samples = None
             return profile
         geometry_id = str(getattr(profile, "geometry_id", "") or "")
+        sample_kwargs = {"geometry_id": geometry_id}
+        sample_parameters = inspect.signature(
+            self._surface_service.sample_profile
+        ).parameters
+        if surface_request is not None and "request" in sample_parameters:
+            sample_kwargs["request"] = surface_request
+        if progress_callback is not None:
+            sample_kwargs["progress_callback"] = progress_callback
+        if abort_check is not None:
+            sample_kwargs["abort_check"] = abort_check
         profile.surface_samples = self._surface_service.sample_profile(
-            profile, geometry_id=geometry_id
+            profile, **sample_kwargs
         )
         profile.effective_surface_source_id = self._effective_surface_source_id(
             profile.surface_samples
@@ -180,15 +275,133 @@ class HorizonWorker(QObject):
 
     @pyqtSlot(object)
     def request_surface_refresh(self, profile=None):
-        target = profile or self._last_profile
+        generation = None
+        target = profile
+        visible_radius_m = None
+        view_azimuth_deg = 0.0
+        view_fov_deg = 360.0
+        if isinstance(profile, dict) and "profile" in profile:
+            target = profile.get("profile")
+            generation = profile.get("generation")
+            visible_radius_m = profile.get("visible_radius_m")
+            view_azimuth_deg = float(profile.get("view_azimuth_deg", 0.0) or 0.0)
+            view_fov_deg = float(profile.get("view_fov_deg", 360.0) or 360.0)
+        if generation is None:
+            with self._surface_generation_lock:
+                generation = self._surface_request_generation
+        generation = int(generation)
+        if self._surface_request_cancelled(generation):
+            return
+        target = target or self._last_profile
         if target is None:
             return
-        self._prepare_surface_samples(target)
-        self._last_profile = target
-        self._publish_effective_sources(target)
-        self.profile_ready.emit({"job_id": "surface-refresh", "profile": target})
+        job_id = f"surface-refresh-{generation}"
+
+        def progress(percent, phase):
+            self._emit_progress_state(
+                {
+                    "job_id": job_id,
+                    "kind": "surface",
+                    "phase": str(phase),
+                    "percent": float(percent),
+                    "current": int(round(float(percent))),
+                    "total": 100,
+                }
+            )
+
+        try:
+            progress(0.0, "queued")
+            prepare_method = self._prepare_surface_samples
+            prepare_parameters = inspect.signature(prepare_method).parameters
+            from TerraLab.terrain.surface import SurfaceSamplingRequest
+
+            def prepare_stage(stage_profile, stage, start_percent, span_percent):
+                prepare_kwargs = {}
+                if "progress_callback" in prepare_parameters:
+                    prepare_kwargs["progress_callback"] = (
+                        lambda percent, phase: progress(
+                            start_percent + span_percent * float(percent) / 100.0,
+                            f"{stage}:{phase}",
+                        )
+                    )
+                if "abort_check" in prepare_parameters:
+                    prepare_kwargs["abort_check"] = (
+                        lambda: self._surface_request_cancelled(generation)
+                    )
+                if "surface_request" in prepare_parameters:
+                    prepare_kwargs["surface_request"] = SurfaceSamplingRequest(
+                        profile=stage_profile,
+                        visible_radius_m=visible_radius_m,
+                        view_azimuth_deg=view_azimuth_deg,
+                        view_fov_deg=view_fov_deg,
+                        generation=generation,
+                        stage=stage,
+                    )
+                return prepare_method(stage_profile, **prepare_kwargs)
+
+            publish_partial = max(0.0, min(360.0, view_fov_deg)) < 340.0
+            if publish_partial:
+                partial_profile = copy.copy(target)
+                prepare_stage(partial_profile, "visible_partial", 1.0, 24.0)
+                if self._surface_request_cancelled(generation):
+                    return
+                self.profile_ready.emit(
+                    {
+                        "job_id": job_id,
+                        "kind": "surface",
+                        "stage": "visible_partial",
+                        "profile": partial_profile,
+                    }
+                )
+                if self._surface_performance_logging:
+                    append_perf_event(
+                        "surface.publication",
+                        stage="visible_partial",
+                        generation=generation,
+                        view_azimuth_deg=view_azimuth_deg,
+                        view_fov_deg=view_fov_deg,
+                        visible_radius_m=visible_radius_m,
+                    )
+            prepare_stage(
+                target,
+                "complete",
+                25.0 if publish_partial else 1.0,
+                74.0 if publish_partial else 98.0,
+            )
+            if self._surface_request_cancelled(generation):
+                return
+            self._last_profile = target
+            self._publish_effective_sources(target)
+            progress(100.0, "completed")
+            self.profile_ready.emit(
+                {
+                    "job_id": job_id,
+                    "kind": "surface",
+                    "stage": "complete",
+                    "profile": target,
+                }
+            )
+            if self._surface_performance_logging:
+                append_perf_event(
+                    "surface.publication",
+                    stage="complete",
+                    generation=generation,
+                    visible_radius_m=visible_radius_m,
+                )
+        except InterruptedError:
+            # Cancellation is expected when a new source selection supersedes
+            # an in-flight refresh.  Keep the previous surface cache visible.
+            return
+        except Exception as exc:
+            self.error_occurred.emit(
+                f"No s'ha pogut carregar la cobertura del sòl: {exc}"
+            )
+        finally:
+            self._store_progress(None)
+            self.progress_message.emit("")
 
     def shutdown(self) -> None:
+        self.cancel_surface_sampling()
         self.abort_current_job()
         for resource_name in ("_surface_service", "light_sampler", "provider"):
             resource = getattr(self, resource_name, None)
@@ -855,6 +1068,25 @@ class HorizonWorker(QObject):
             percent_text = percent_text[:-2]
         current = state.get("current")
         total = state.get("total")
+        if str(state.get("kind", "") or "") == "surface":
+            phase = str(state.get("phase", "") or "")
+            phase_labels = {
+                "queued": "preparant",
+                "discovering-sources": "detectant fonts",
+                "opening-geotiff": "obrint GeoTIFF",
+                "preparing": "preparant coordenades",
+                "transforming-coordinates": "transformant coordenades",
+                "profile-ready": "perfil preparat",
+                "relief-ready": "relleu preparat",
+                "subdividing-visual-grid": "refinant la malla visual",
+                "sampling-visual-detail": "mostrejant detall visual",
+                "registering-cache": "registrant la memòria cau",
+                "cache-ready": "memòria cau preparada",
+                "completed": "completat",
+            }
+            root_phase = phase.split(":", 1)[0]
+            detail = phase_labels.get(root_phase, "mostrejant el mosaic")
+            return f"Carregant cobertura del sòl: {percent_text}% · {detail}"
         base = getTraduction(
             "Horizon.CalculatingHorizon", "Calculating horizon: {pct}%"
         ).format(pct=percent_text)
@@ -875,8 +1107,28 @@ class HorizonWorker(QObject):
     def _emit_progress_state(self, state: dict) -> None:
         state = dict(state)
         self._store_progress(state)
+        is_surface = str(state.get("kind", "") or "") == "surface"
+        if is_surface:
+            now = time.perf_counter()
+            phase = str(state.get("phase", "") or "")
+            percent = float(state.get("percent", 0.0) or 0.0)
+            phase_changed = phase != self._surface_progress_last_phase
+            terminal = percent >= 99.9 or phase in {"completed", "error"}
+            interval_elapsed = (
+                now - self._surface_progress_last_emit
+                >= self._surface_progress_min_interval_s
+            )
+            if not terminal and not phase_changed and not interval_elapsed:
+                return
+            self._surface_progress_last_emit = now
+            self._surface_progress_last_phase = phase
+            self._surface_progress_last_percent = percent
         self.progress_state.emit(state)
-        self.progress_message.emit(self._format_progress_text(state))
+        # Surface progress has one structured owner: TerrainCoordinator and
+        # AstronomicalWidget.  The legacy text signal is retained for horizon
+        # bake consumers but would duplicate every surface event.
+        if not is_surface:
+            self.progress_message.emit(self._format_progress_text(state))
 
     @pyqtSlot(object)
     def request_bake(self, job: object):
