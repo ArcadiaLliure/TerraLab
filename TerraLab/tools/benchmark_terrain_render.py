@@ -164,13 +164,12 @@ def _render_profile(
     overlay = HorizonOverlay(allow_procedural_fallback=False)
     overlay.render_settings = settings
     overlay.set_profile(profile, generate_layer_defs(profile.bands))
-    scalar_projection, vector_projection = _projection(
-        width, height, azimuth, fov
-    )
-
     def render_once(
         view_azimuth: float = azimuth, *, interaction_active: bool = False
     ) -> tuple[QImage, float]:
+        scalar_projection, vector_projection = _projection(
+            width, height, view_azimuth, fov
+        )
         image = QImage(width, height, QImage.Format_ARGB32_Premultiplied)
         image.fill(QColor(151, 190, 219))
         painter = QPainter(image)
@@ -204,20 +203,37 @@ def _render_profile(
         "triangles_in_view": int(overlay._last_surface2d_quads),
         "triangle_indices_in_view": int(overlay._last_surface2d_vertices),
     }
-    # A slightly shifted view invalidates projected geometry/raster buffers but
-    # retains process-level JIT code.  It represents steady interactive motion.
-    _warm_image, warm_uncached_s = render_once(azimuth + 0.25)
+    # Shift the real projection for each sample. Three trials make the reported
+    # steady-state result less sensitive to scheduling and filesystem activity.
+    warm_trials = []
+    warm_detail_trials = []
+    for offset in (0.25, 0.50, 0.75):
+        _warm_image, elapsed = render_once(azimuth + offset)
+        warm_trials.append(float(elapsed))
+        warm_detail_trials.append(
+            (
+                float(overlay._last_surface2d_geometry_s),
+                float(overlay._last_terrain_color_s),
+                float(overlay._last_terrain_raster_s),
+                float(overlay._last_horizon_antialias_s),
+                float(overlay._last_terrain_total_s),
+            )
+        )
+    warm_medians = np.median(np.asarray(warm_detail_trials), axis=0)
     warm_metrics = {
-        "warm_geometry_s": float(overlay._last_surface2d_geometry_s),
-        "warm_colors_s": float(overlay._last_terrain_color_s),
-        "warm_rasterization_s": float(overlay._last_terrain_raster_s),
-        "warm_horizon_antialias_s": float(overlay._last_horizon_antialias_s),
-        "warm_terrain_total_s": float(overlay._last_terrain_total_s),
+        "warm_geometry_s": float(warm_medians[0]),
+        "warm_colors_s": float(warm_medians[1]),
+        "warm_rasterization_s": float(warm_medians[2]),
+        "warm_horizon_antialias_s": float(warm_medians[3]),
+        "warm_terrain_total_s": float(warm_medians[4]),
     }
-    _cached_image, cached_s = render_once(azimuth + 0.25)
-    _interaction_image, interaction_s = render_once(
-        azimuth + 0.50, interaction_active=True
-    )
+    _cached_image, cached_s = render_once(azimuth + 0.75)
+    interaction_trials = []
+    for offset in (1.00, 1.25, 1.50):
+        _interaction_image, elapsed = render_once(
+            azimuth + offset, interaction_active=True
+        )
+        interaction_trials.append(float(elapsed))
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not image.save(str(output_path)):
         raise RuntimeError(f"Could not save {output_path}")
@@ -225,9 +241,11 @@ def _render_profile(
     vertex_count = int(np.asarray(mesh.get("altitudes", ())).size)
     return {
         "cold_render_s": float(cold_s),
-        "warm_uncached_render_s": float(warm_uncached_s),
+        "warm_uncached_render_s": float(np.median(warm_trials)),
+        "warm_uncached_render_trials_s": warm_trials,
         "cached_render_s": float(cached_s),
-        "interactive_motion_render_s": float(interaction_s),
+        "interactive_motion_render_s": float(np.median(interaction_trials)),
+        "interactive_motion_render_trials_s": interaction_trials,
         **cold_metrics,
         **warm_metrics,
         "vertices": vertex_count,
