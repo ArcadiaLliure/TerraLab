@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import os
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +14,10 @@ from pyproj import Transformer
 from rasterio.enums import ColorInterp
 from rasterio.transform import from_origin
 
-from TerraLab.terrain.crs import CoordinateTransformService
+from TerraLab.terrain.crs import (
+    PYPROJ_TRANSFORMER_LOCK,
+    CoordinateTransformService,
+)
 from TerraLab.terrain.data_sources import DataSource, LayerType
 from TerraLab.terrain.engine import build_flat_horizon_profile
 from TerraLab.terrain.providers import (
@@ -20,6 +26,9 @@ from TerraLab.terrain.providers import (
     GeoTiffElevationProvider,
     RasterSamplingCancelled,
     create_elevation_provider,
+)
+from TerraLab.terrain.providers import (
+    PYPROJ_TRANSFORMER_LOCK as PROVIDER_PYPROJ_TRANSFORMER_LOCK,
 )
 from TerraLab.terrain.surface import (
     CategoricalSurfaceProvider,
@@ -756,3 +765,51 @@ def test_crs_service_vectorizes_without_hard_coding_the_internal_frame():
     lon, lat = service.transform_xy(x, y, "EPSG:3035", "EPSG:4326")
     assert lon.tolist() == pytest.approx([2.17, 2.18], abs=1e-8)
     assert lat.tolist() == pytest.approx([41.38, 41.39], abs=1e-8)
+
+
+def test_all_terrain_providers_share_the_process_wide_pyproj_lock():
+    assert PROVIDER_PYPROJ_TRANSFORMER_LOCK is PYPROJ_TRANSFORMER_LOCK
+
+
+def test_crs_services_serialize_shared_transformers_across_threads(monkeypatch):
+    state = {
+        "active": 0,
+        "maximum": 0,
+        "caller_threads": set(),
+        "execution_threads": set(),
+    }
+    state_lock = threading.Lock()
+    start_gate = threading.Barrier(4)
+
+    class _InstrumentedTransformer:
+        def transform(self, x, y):
+            with state_lock:
+                state["active"] += 1
+                state["maximum"] = max(state["maximum"], state["active"])
+                state["execution_threads"].add(threading.get_ident())
+            time.sleep(0.02)
+            with state_lock:
+                state["active"] -= 1
+            return x, y
+
+    transformer = _InstrumentedTransformer()
+    monkeypatch.setattr(
+        CoordinateTransformService,
+        "_build_transformer",
+        staticmethod(lambda _source, _target: transformer),
+    )
+
+    def run(service):
+        start_gate.wait()
+        with state_lock:
+            state["caller_threads"].add(threading.get_ident())
+        return service.transform_xy(1.0, 2.0, "EPSG:4326", "EPSG:3035")
+
+    services = [CoordinateTransformService() for _ in range(4)]
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        results = list(executor.map(run, services))
+
+    assert results == [(1.0, 2.0)] * 4
+    assert state["maximum"] == 1
+    assert len(state["execution_threads"]) == 1
+    assert state["execution_threads"].isdisjoint(state["caller_threads"])

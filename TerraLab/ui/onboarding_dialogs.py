@@ -133,20 +133,39 @@ QProgressBar::chunk {
 
 
 _GAIA_BACKGROUND_PROCESSES = []
+_GAIA_BACKGROUND_DOWNLOADS: dict[tuple[str, str], QProcess] = {}
+_BACKGROUND_ASSET_JOBS = {}
 
 
-def _keep_gaia_process_alive(proc: QProcess) -> None:
+def _background_job_key(manager: AssetManager, asset_id: str) -> tuple[str, str]:
+    try:
+        root = str(Path(manager.library.root).expanduser().resolve())
+    except Exception:
+        root = str(getattr(getattr(manager, "library", None), "root", ""))
+    return os.path.normcase(root), str(asset_id)
+
+
+def _keep_gaia_process_alive(
+    proc: QProcess, key: tuple[str, str] | None = None
+) -> None:
     if proc is None:
         return
     if proc in _GAIA_BACKGROUND_PROCESSES:
+        if key is not None:
+            _GAIA_BACKGROUND_DOWNLOADS[key] = proc
         return
     _GAIA_BACKGROUND_PROCESSES.append(proc)
+    if key is not None:
+        _GAIA_BACKGROUND_DOWNLOADS[key] = proc
 
     def _cleanup(*_args):
         try:
             _GAIA_BACKGROUND_PROCESSES.remove(proc)
         except Exception:
             pass
+        for stored_key, stored_proc in tuple(_GAIA_BACKGROUND_DOWNLOADS.items()):
+            if stored_proc is proc:
+                _GAIA_BACKGROUND_DOWNLOADS.pop(stored_key, None)
         try:
             proc.deleteLater()
         except Exception:
@@ -217,6 +236,108 @@ class _AssetJobWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class _AssetBackgroundJob(QObject):
+    """Application-owned asset task whose UI can be detached and restored."""
+
+    progress = pyqtSignal(float, str)
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        manager: AssetManager,
+        mode: str,
+        asset_id: str,
+        files: Optional[Iterable[str]] = None,
+        options: Optional[dict] = None,
+    ) -> None:
+        super().__init__()
+        self.manager = manager
+        self.mode = str(mode)
+        self.asset_id = str(asset_id)
+        self.key = _background_job_key(manager, asset_id)
+        self.percent = 0.0
+        self.message = "Preparant tasca en segon pla..."
+        self.running = True
+        self.thread = QThread()
+        self.worker = _AssetJobWorker(
+            manager,
+            mode=self.mode,
+            asset_id=self.asset_id,
+            files=files,
+            options=options,
+        )
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.completed.connect(self._on_completed)
+        self.worker.failed.connect(self._on_failed)
+        self.worker.completed.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.finished.connect(self._on_thread_finished)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def cancel(self) -> None:
+        self.worker.cancel()
+
+    def _on_progress(self, percent: float, message: str) -> None:
+        self.percent = float(percent)
+        self.message = str(message)
+        self.progress.emit(self.percent, self.message)
+
+    def _on_completed(self, result: object) -> None:
+        self.running = False
+        self.percent = 100.0
+        self.message = "Dades preparades correctament."
+        self.completed.emit(result)
+
+    def _on_failed(self, error_message: str) -> None:
+        self.running = False
+        self.message = str(error_message)
+        self.failed.emit(self.message)
+
+    def _on_thread_finished(self) -> None:
+        if _BACKGROUND_ASSET_JOBS.get(self.key) is self:
+            _BACKGROUND_ASSET_JOBS.pop(self.key, None)
+
+
+def _active_asset_job(
+    manager: AssetManager, asset_id: str
+) -> Optional[_AssetBackgroundJob]:
+    job = _BACKGROUND_ASSET_JOBS.get(_background_job_key(manager, asset_id))
+    return job if job is not None and bool(job.running) else None
+
+
+def _start_asset_job(
+    manager: AssetManager,
+    mode: str,
+    asset_id: str,
+    files: Optional[Iterable[str]] = None,
+    options: Optional[dict] = None,
+    *,
+    start_immediately: bool = True,
+) -> _AssetBackgroundJob:
+    key = _background_job_key(manager, asset_id)
+    current = _BACKGROUND_ASSET_JOBS.get(key)
+    if current is not None and bool(current.running):
+        return current
+    job = _AssetBackgroundJob(
+        manager,
+        mode=mode,
+        asset_id=asset_id,
+        files=files,
+        options=options,
+    )
+    _BACKGROUND_ASSET_JOBS[key] = job
+    if start_immediately:
+        job.start()
+    return job
+
+
 class AssetOnboardingDialog(QDialog):
     """Mini-onboarding shown when a layer is enabled but required data is missing."""
 
@@ -228,6 +349,8 @@ class AssetOnboardingDialog(QDialog):
         self._completed = False
         self._thread = None
         self._worker = None
+        self._job: Optional[_AssetBackgroundJob] = None
+        self._job_detached = False
         self._gaia_tap_process: Optional[QProcess] = None
         self._gaia_tap_out_buffer = ""
         self._gaia_tap_log_path: Optional[Path] = None
@@ -416,6 +539,14 @@ class AssetOnboardingDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.addStretch(1)
+        self.btn_background = QPushButton("Continuar en segon pla")
+        self.btn_background.setToolTip(
+            "Tanca aquesta finestra i manté la descàrrega activa. "
+            "En tornar-la a obrir es recuperarà el progrés actual."
+        )
+        self.btn_background.setVisible(False)
+        self.btn_background.clicked.connect(self._continue_in_background)
+        footer.addWidget(self.btn_background)
         self.btn_cancel = QPushButton("Cancel·lar tasca")
         if self.asset_id in {"surface_rgb", "surface_categorical"}:
             self.btn_cancel.setText("Pausar descàrrega")
@@ -438,10 +569,101 @@ class AssetOnboardingDialog(QDialog):
             self.btn_attach.setEnabled(False)
             self.btn_attach_folder.setEnabled(False)
 
+        self._restore_active_download()
+
     def _supports_auto_download(self) -> bool:
         if self.asset_id == "gaia_catalog":
             return True
         return bool(self.spec.auto_download_url)
+
+    def _set_running_controls(self, *, allow_background: bool) -> None:
+        self.btn_open_source.setEnabled(False)
+        self.btn_attach.setEnabled(False)
+        self.btn_attach_folder.setEnabled(False)
+        self.btn_auto_download.setEnabled(False)
+        self.btn_close.setEnabled(False)
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
+        self.btn_background.setVisible(bool(allow_background))
+        self.btn_background.setEnabled(bool(allow_background))
+
+    def _bind_asset_job(self, job: _AssetBackgroundJob) -> None:
+        self._job = job
+        self._thread = job.thread
+        self._worker = job.worker
+        job.progress.connect(self._on_progress)
+        job.completed.connect(self._on_completed)
+        job.failed.connect(self._on_failed)
+
+    def _disconnect_asset_job(self) -> None:
+        job = self._job
+        if job is None:
+            return
+        for signal, callback in (
+            (job.progress, self._on_progress),
+            (job.completed, self._on_completed),
+            (job.failed, self._on_failed),
+        ):
+            try:
+                signal.disconnect(callback)
+            except (TypeError, RuntimeError):
+                pass
+        self._job = None
+        self._thread = None
+        self._worker = None
+
+    def _restore_active_download(self) -> None:
+        """Reconnect a reopened dialog to the application-owned task."""
+
+        job = _active_asset_job(self.manager, self.asset_id)
+        if job is not None:
+            self._bind_asset_job(job)
+            self._set_running_controls(allow_background=job.mode == "download")
+            self._on_progress(job.percent, job.message)
+            return
+        if self.asset_id != "gaia_catalog":
+            return
+        key = _background_job_key(self.manager, self.asset_id)
+        process = _GAIA_BACKGROUND_DOWNLOADS.get(key)
+        if process is None or process.state() == QProcess.NotRunning:
+            _GAIA_BACKGROUND_DOWNLOADS.pop(key, None)
+            return
+        self._gaia_tap_process = process
+        self._gaia_process_detached = False
+        self._gaia_tap_log_path = self._resolve_gaia_tap_log_path()
+        self._gaia_tap_state_path = self._resolve_gaia_tap_state_path()
+        process.readyReadStandardOutput.connect(self._on_gaia_tap_output)
+        process.finished.connect(self._on_gaia_tap_finished)
+        process.errorOccurred.connect(self._on_gaia_tap_error)
+        self._set_running_controls(allow_background=True)
+        self.txt_process_log.setVisible(True)
+        state = self._load_gaia_tap_state()
+        percent = self._state_progress_percent(state)
+        if isinstance(state, dict):
+            self.lbl_status.setText(
+                self._gaia_state_status_text(state, percent)
+            )
+        else:
+            self.lbl_status.setText("Descarregant Gaia en segon pla...")
+        if percent > 0.0:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(max(0, min(100, int(round(percent)))))
+        else:
+            self.progress.setRange(0, 0)
+
+    def _continue_in_background(self) -> None:
+        """Detach the progress window without stopping the active download."""
+
+        process = self._gaia_tap_process
+        if process is not None and process.state() != QProcess.NotRunning:
+            self._detach_gaia_tap_process_for_background()
+        elif self._job is not None and bool(self._job.running):
+            self._disconnect_asset_job()
+        else:
+            return
+        self._job_detached = True
+        self._stop_gaia_state_watch_timer()
+        QDialog.reject(self)
 
     @property
     def completed(self) -> bool:
@@ -709,13 +931,7 @@ class AssetOnboardingDialog(QDialog):
         process.finished.connect(self._on_gaia_tap_finished)
         process.errorOccurred.connect(self._on_gaia_tap_error)
 
-        self.btn_open_source.setEnabled(False)
-        self.btn_attach.setEnabled(False)
-        self.btn_attach_folder.setEnabled(False)
-        self.btn_auto_download.setEnabled(False)
-        self.btn_close.setEnabled(False)
-        self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(True)
+        self._set_running_controls(allow_background=True)
         if resume:
             resume_state = self._load_gaia_tap_state()
             resume_pct = self._state_progress_percent(resume_state)
@@ -761,6 +977,7 @@ class AssetOnboardingDialog(QDialog):
             self.btn_auto_download.setEnabled(self._supports_auto_download())
             self.btn_close.setEnabled(True)
             self.btn_cancel.setVisible(False)
+            self.btn_background.setVisible(False)
             QMessageBox.critical(
                 self, "TerraLab", f"{err_txt}\n\n{self._gaia_tap_log_hint()}"
             )
@@ -916,9 +1133,6 @@ class AssetOnboardingDialog(QDialog):
         """Actualitza progrés del diàleg des de fitxer d'estat Gaia."""
         if self.asset_id != "gaia_catalog":
             return
-        if self._gaia_tap_process is not None:
-            # Quan el procés llançat per aquest diàleg està viu, el progrés ja arriba per stdout.
-            return
         state = self._load_gaia_tap_state()
         if not self._gaia_state_is_pending(state):
             return
@@ -978,6 +1192,13 @@ class AssetOnboardingDialog(QDialog):
         proc = self._gaia_tap_process
         if proc is None:
             return
+        for key, stored_proc in tuple(_GAIA_BACKGROUND_DOWNLOADS.items()):
+            if stored_proc is proc:
+                _GAIA_BACKGROUND_DOWNLOADS.pop(key, None)
+        try:
+            _GAIA_BACKGROUND_PROCESSES.remove(proc)
+        except ValueError:
+            pass
         try:
             proc.readyReadStandardOutput.disconnect(self._on_gaia_tap_output)
         except Exception:
@@ -1019,7 +1240,9 @@ class AssetOnboardingDialog(QDialog):
                 proc.setParent(app)
         except Exception:
             pass
-        _keep_gaia_process_alive(proc)
+        _keep_gaia_process_alive(
+            proc, _background_job_key(self.manager, self.asset_id)
+        )
         self._gaia_tap_process = None
         self._gaia_tap_out_buffer = ""
         self._gaia_process_detached = True
@@ -1187,6 +1410,7 @@ class AssetOnboardingDialog(QDialog):
         state = self._load_gaia_tap_state()
         self._cleanup_gaia_tap_process()
         self.btn_cancel.setVisible(False)
+        self.btn_background.setVisible(False)
 
         self.progress.setRange(0, 100)
         ok = (
@@ -1248,6 +1472,7 @@ class AssetOnboardingDialog(QDialog):
         log_hint = self._gaia_tap_log_hint()
         self._cleanup_gaia_tap_process()
         self.btn_cancel.setVisible(False)
+        self.btn_background.setVisible(False)
         self.progress.setRange(0, 100)
         self.btn_open_source.setEnabled(True)
         self.btn_attach.setEnabled(True)
@@ -1272,42 +1497,28 @@ class AssetOnboardingDialog(QDialog):
     def _start_job(
         self, mode: str, files: Iterable[str], options: Optional[dict] = None
     ):
-        self.btn_open_source.setEnabled(False)
-        self.btn_attach.setEnabled(False)
-        self.btn_attach_folder.setEnabled(False)
-        self.btn_auto_download.setEnabled(False)
-        self.btn_close.setEnabled(False)
+        self._set_running_controls(allow_background=str(mode) == "download")
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.lbl_status.setText("Preparant tasca en segon pla...")
-        self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(True)
 
-        thread = QThread(self)
-        worker = _AssetJobWorker(
+        job = _start_asset_job(
             self.manager,
             mode=mode,
             asset_id=self.asset_id,
             files=files,
             options=options,
+            start_immediately=False,
         )
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.progress.connect(self._on_progress)
-        worker.completed.connect(self._on_completed)
-        worker.failed.connect(self._on_failed)
-        worker.completed.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        self._thread = thread
-        self._worker = worker
-        thread.start()
+        self._bind_asset_job(job)
+        if not job.thread.isRunning():
+            job.start()
 
     def _cancel_job(self) -> None:
         process = getattr(self, "_gaia_tap_process", None)
         if process is not None and process.state() != QProcess.NotRunning:
             self.btn_cancel.setEnabled(False)
+            self.btn_background.setEnabled(False)
             self.lbl_status.setText(
                 "Cancel·lant Gaia… El progrés i les descàrregues parcials es conservaran."
             )
@@ -1319,11 +1530,16 @@ class AssetOnboardingDialog(QDialog):
 
             QTimer.singleShot(3000, force_stop)
             return
+        job = getattr(self, "_job", None)
         worker = getattr(self, "_worker", None)
-        if worker is None:
+        if job is None and worker is None:
             return
-        worker.cancel()
+        if job is not None:
+            job.cancel()
+        else:
+            worker.cancel()
         self.btn_cancel.setEnabled(False)
+        self.btn_background.setEnabled(False)
         self.lbl_status.setText(
             "Cancel·lant… La descàrrega parcial es conservarà per reprendre-la."
         )
@@ -1340,10 +1556,12 @@ class AssetOnboardingDialog(QDialog):
         self.lbl_status.setText(str(message))
 
     def _on_completed(self, result: object):
+        self._disconnect_asset_job()
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self._completed = True
         self.btn_cancel.setVisible(False)
+        self.btn_background.setVisible(False)
         self.lbl_status.setText("Dades preparades correctament.")
         self.btn_close.setEnabled(True)
         extra = ""
@@ -1373,12 +1591,14 @@ class AssetOnboardingDialog(QDialog):
         self.accept()
 
     def _on_failed(self, error_message: str):
+        self._disconnect_asset_job()
         self.btn_open_source.setEnabled(True)
         self.btn_attach.setEnabled(True)
         self.btn_attach_folder.setEnabled(True)
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         self.btn_close.setEnabled(True)
         self.btn_cancel.setVisible(False)
+        self.btn_background.setVisible(False)
         self.progress.setRange(0, 100)
         if any(
             token in str(error_message).lower()
@@ -1400,6 +1620,14 @@ class AssetOnboardingDialog(QDialog):
         Retorna:
         - None.
         """
+        process = self._gaia_tap_process
+        job = self._job
+        if (
+            process is not None
+            and process.state() != QProcess.NotRunning
+        ) or (job is not None and bool(job.running)):
+            self._continue_in_background()
+            return
         self._stop_gaia_state_watch_timer()
         proc = self._gaia_tap_process
         if proc is not None:

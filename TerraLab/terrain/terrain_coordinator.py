@@ -52,7 +52,7 @@ class TerrainCoordinator(QObject):
 
         self._current_profile: Any = None
         self._surface_request_generation = 0
-        self._pending_surface_request: dict[str, float | None] | None = None
+        self._pending_surface_request: dict[str, Any] | None = None
 
     def shutdown(self) -> None:
         """Atura el worker de terreny i allibera recursos."""
@@ -106,11 +106,15 @@ class TerrainCoordinator(QObject):
         visible_radius_m: float | None = None,
         view_azimuth_deg: float = 0.0,
         view_fov_deg: float = 360.0,
+        surface_layer_type: str | None = None,
+        atomic_surface_swap: bool = False,
     ) -> None:
         request_context = {
             "visible_radius_m": visible_radius_m,
             "view_azimuth_deg": float(view_azimuth_deg),
             "view_fov_deg": float(view_fov_deg),
+            "surface_layer_type": str(surface_layer_type or "").strip() or None,
+            "atomic_surface_swap": bool(atomic_surface_swap),
         }
         target = profile or self._current_profile
         if target is None:

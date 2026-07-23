@@ -969,10 +969,71 @@ def build_deferred_controls_ui(widget):
         self._load_visibility_state("superficie", True)
     )
     self.chk_surface_layer.toggled.connect(self.on_surface_layer_toggled)
-    v_earth.addWidget(self.chk_surface_layer)
+    h_surface = QHBoxLayout()
+    h_surface.setContentsMargins(0, 0, 0, 0)
+    h_surface.setSpacing(6)
+    h_surface.addWidget(self.chk_surface_layer)
+    self.surface_mode_selector = QWidget()
+    self.surface_mode_selector.setObjectName("surfaceModeSelector")
+    h_surface_mode = QHBoxLayout(self.surface_mode_selector)
+    h_surface_mode.setContentsMargins(0, 0, 0, 0)
+    h_surface_mode.setSpacing(4)
+    self.lbl_surface_mode_rgb = QLabel("RGB")
+    self.lbl_surface_mode_rgb.setStyleSheet("font-size: 9px;")
+    h_surface_mode.addWidget(self.lbl_surface_mode_rgb)
+    self.slider_surface_mode = QSlider(Qt.Horizontal)
+    self.slider_surface_mode.setObjectName("surfaceModeSwitch")
+    self.slider_surface_mode.setRange(0, 1)
+    self.slider_surface_mode.setSingleStep(1)
+    self.slider_surface_mode.setPageStep(1)
+    self.slider_surface_mode.setFixedSize(38, 18)
+    self.slider_surface_mode.setFocusPolicy(Qt.StrongFocus)
+    self.slider_surface_mode.setAccessibleName(
+        "Mode de tipus de sòl: RGB o categòric"
+    )
+    self.slider_surface_mode.setAccessibleDescription(
+        "Posició esquerra: RGB. Posició dreta: categòric."
+    )
+    self.slider_surface_mode.setStyleSheet(
+        "QSlider::groove:horizontal {"
+        " height: 8px; background: #9b9384; border: 1px solid #625c52;"
+        " border-radius: 4px; }"
+        "QSlider::handle:horizontal {"
+        " width: 12px; margin: -3px 0; background: #f4efe5;"
+        " border: 1px solid #4d4942; border-radius: 6px; }"
+        "QSlider::handle:horizontal:hover { background: #ffffff; }"
+        "QSlider::handle:horizontal:focus { border: 2px solid #2b6ca3; }"
+    )
+    self.slider_surface_mode.valueChanged.connect(self.on_surface_mode_changed)
+    h_surface_mode.addWidget(self.slider_surface_mode)
+    self.lbl_surface_mode_categorical = QLabel("Categòric")
+    self.lbl_surface_mode_categorical.setStyleSheet("font-size: 9px;")
+    h_surface_mode.addWidget(self.lbl_surface_mode_categorical)
+    h_surface.addWidget(self.surface_mode_selector)
+    h_surface.addStretch(1)
+    v_earth.addLayout(h_surface)
+    self._sync_surface_mode_control()
     # Compatibility alias for integrations that used a surface checkbox name.
     self.chk_surface = self.chk_surface_layer
     v_earth.addWidget(self.chk_light_pollution)
+    for checkbox, layer_id in (
+        (self.chk_clima, LayerId.SKY_WEATHER),
+        (self.chk_light_pollution, LayerId.EARTH_LIGHT_POLLUTION),
+        (self.chk_solar_system, LayerId.SKY_SOLAR_SYSTEM),
+        (self.chk_planets, LayerId.SKY_SOLAR_SYSTEM),
+        (self.chk_sun_moon, LayerId.SKY_SOLAR_SYSTEM),
+        (self.chk_enable_sky, LayerId.SKY_STARS),
+        (self.chk_enable_milkyway, LayerId.SKY_MILKY_WAY),
+        (self.chk_enable_planck_dust, LayerId.SKY_PLANCK_DUST),
+        (self.chk_deep_space, LayerId.SKY_NGC),
+        (self.chk_enable_village, LayerId.EARTH_TERRAIN),
+        (self.chk_surface_layer, LayerId.EARTH_SURFACE),
+    ):
+        checkbox.clicked.connect(
+            lambda checked, target=layer_id: self._guide_missing_layer(
+                checked, target
+            )
+        )
     legacy_terrain_3d = self._load_visibility_state("ombres_terreny", True)
     self.chk_terrain_3d = QCheckBox("Relleu tridimensional")
     self.chk_terrain_3d.setToolTip(

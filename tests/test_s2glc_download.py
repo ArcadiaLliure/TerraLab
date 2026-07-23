@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 import numpy as np
 import rasterio
+import truststore
 from rasterio.transform import from_origin
 
 from TerraLab.common.data_library import DataLibrary
@@ -105,6 +106,16 @@ def _downloader(tmp_path: Path) -> ResumableDownloader:
         chunk_size=64 * 1024,
         max_retries=0,
         retry_sleep=lambda _seconds: None,
+    )
+
+
+def test_default_downloader_uses_native_certificate_store(tmp_path):
+    downloader = _downloader(tmp_path)
+    adapter = downloader.session.get_adapter("https://example.test/")
+
+    assert adapter._ssl_context.__class__ is truststore.SSLContext
+    assert adapter.poolmanager.connection_pool_kw["ssl_context"] is (
+        adapter._ssl_context
     )
 
 

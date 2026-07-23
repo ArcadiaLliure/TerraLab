@@ -858,6 +858,7 @@ class SurfaceSamplingRequest:
     generation: int = 0
     stage: str = "complete"
     fov_margin_deg: float = 10.0
+    surface_layer_type: str | None = None
 
     def __post_init__(self) -> None:
         stage = str(self.stage or "complete")
@@ -867,6 +868,8 @@ class SurfaceSamplingRequest:
         object.__setattr__(self, "view_azimuth_deg", float(self.view_azimuth_deg) % 360.0)
         object.__setattr__(self, "view_fov_deg", min(360.0, max(0.0, float(self.view_fov_deg))))
         object.__setattr__(self, "fov_margin_deg", max(0.0, float(self.fov_margin_deg)))
+        normalized_type = str(self.surface_layer_type or "").strip() or None
+        object.__setattr__(self, "surface_layer_type", normalized_type)
         if self.visible_radius_m is not None:
             radius = float(self.visible_radius_m)
             object.__setattr__(
@@ -1639,6 +1642,7 @@ class SurfaceSamplingService:
         policy = (
             f"surface-v{SURFACE_CACHE_POLICY_VERSION}:profile={self.max_profile_samples}:"
             f"relief={self.max_relief_samples}:rgb-nearest:categorical-nearest-lod:"
+            f"mode={request.surface_layer_type or 'automatic'}:"
             f"stage={request.stage}:radius={visible_radius}:"
             f"azimuth={policy_azimuth:.6f}:fov={policy_fov:.6f}:"
             f"margin={policy_margin:.6f}"

@@ -29,6 +29,7 @@ dependencies = [
     "netCDF4>=1.6,<2",
     "cdsapi>=0.7,<1",
     "requests>=2.31,<3",
+    "truststore>=0.10.4,<1",
     "tqdm>=4.66,<5",
     "zstandard>=0.23,<1",
     "py7zr>=0.22,<2",

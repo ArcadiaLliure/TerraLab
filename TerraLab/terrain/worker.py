@@ -108,8 +108,18 @@ class HorizonWorker(QObject):
         self._light_source_signature = signature
         return self.light_sampler
 
-    def _surface_selection(self, lat: float, lon: float):
-        selection = self.layer_selection.select_surface(lat, lon)
+    def _surface_selection(
+        self,
+        lat: float,
+        lon: float,
+        *,
+        surface_layer_type: str | None = None,
+    ):
+        selection = self.layer_selection.select_surface(
+            lat,
+            lon,
+            layer_type=surface_layer_type,
+        )
         visible = bool(get_config_value("ui.visibility.earth.surface", True))
         if not visible or selection.effective is None:
             return selection, []
@@ -181,6 +191,11 @@ class HorizonWorker(QObject):
         selection, sources = self._surface_selection(
             float(getattr(profile, "observer_lat", 0.0)),
             float(getattr(profile, "observer_lon", 0.0)),
+            surface_layer_type=(
+                getattr(surface_request, "surface_layer_type", None)
+                if surface_request is not None
+                else None
+            ),
         )
         signature = tuple(
             (
@@ -280,12 +295,21 @@ class HorizonWorker(QObject):
         visible_radius_m = None
         view_azimuth_deg = 0.0
         view_fov_deg = 360.0
+        surface_layer_type = None
+        atomic_surface_swap = False
         if isinstance(profile, dict) and "profile" in profile:
             target = profile.get("profile")
             generation = profile.get("generation")
             visible_radius_m = profile.get("visible_radius_m")
             view_azimuth_deg = float(profile.get("view_azimuth_deg", 0.0) or 0.0)
             view_fov_deg = float(profile.get("view_fov_deg", 360.0) or 360.0)
+            surface_layer_type = (
+                str(profile.get("surface_layer_type", "") or "").strip()
+                or None
+            )
+            atomic_surface_swap = bool(
+                profile.get("atomic_surface_swap", False)
+            )
         if generation is None:
             with self._surface_generation_lock:
                 generation = self._surface_request_generation
@@ -336,10 +360,14 @@ class HorizonWorker(QObject):
                         view_fov_deg=view_fov_deg,
                         generation=generation,
                         stage=stage,
+                        surface_layer_type=surface_layer_type,
                     )
                 return prepare_method(stage_profile, **prepare_kwargs)
 
-            publish_partial = max(0.0, min(360.0, view_fov_deg)) < 340.0
+            publish_partial = (
+                not atomic_surface_swap
+                and max(0.0, min(360.0, view_fov_deg)) < 340.0
+            )
             if publish_partial:
                 partial_profile = copy.copy(target)
                 prepare_stage(partial_profile, "visible_partial", 1.0, 24.0)
@@ -362,23 +390,26 @@ class HorizonWorker(QObject):
                         view_fov_deg=view_fov_deg,
                         visible_radius_m=visible_radius_m,
                     )
+            complete_profile = (
+                copy.copy(target) if atomic_surface_swap else target
+            )
             prepare_stage(
-                target,
+                complete_profile,
                 "complete",
                 25.0 if publish_partial else 1.0,
                 74.0 if publish_partial else 98.0,
             )
             if self._surface_request_cancelled(generation):
                 return
-            self._last_profile = target
-            self._publish_effective_sources(target)
+            self._last_profile = complete_profile
+            self._publish_effective_sources(complete_profile)
             progress(100.0, "completed")
             self.profile_ready.emit(
                 {
                     "job_id": job_id,
                     "kind": "surface",
                     "stage": "complete",
-                    "profile": target,
+                    "profile": complete_profile,
                 }
             )
             if self._surface_performance_logging:

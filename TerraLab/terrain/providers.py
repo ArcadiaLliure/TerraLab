@@ -13,22 +13,20 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
-from pyproj import Transformer
 
 from TerraLab.common.locks import RASTERIO_LOCK
 from TerraLab.common.data_library import DataLibrary, application_state_root
 from TerraLab.common.performance import DEFAULT_PERFORMANCE_BUDGET, PERFORMANCE_FLAGS
 from TerraLab.terrain.crs import (
     DEFAULT_TRANSFORM_SERVICE,
+    PYPROJ_TRANSFORMER_LOCK,
     CoordinateTransformService,
     normalize_crs,
+    transformer_transform,
 )
 
 CRS_GEOGRAPHIC = "EPSG:4326"
 CRS_TERRAIN_INTERNAL = "EPSG:25831"
-PYPROJ_TRANSFORMER_LOCK = threading.Lock()
-
-
 class RasterSamplingCancelled(InterruptedError):
     """Raised between bounded GDAL reads when a sampling job is cancelled."""
 
@@ -305,11 +303,12 @@ class RasterProvider(abc.ABC):
             Tuple[float, float]: `(x_internal, y_internal)` in `EPSG:25831`.
         """
         if not hasattr(self, "_tr_geo_to_internal"):
-            with PYPROJ_TRANSFORMER_LOCK:
-                self._tr_geo_to_internal = Transformer.from_crs(
-                    CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL, always_xy=True
-                )
-        x_internal, y_internal = self._tr_geo_to_internal.transform(lon, lat)
+            self._tr_geo_to_internal = DEFAULT_TRANSFORM_SERVICE.transformer(
+                CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL
+            )
+        x_internal, y_internal = transformer_transform(
+            self._tr_geo_to_internal, lon, lat
+        )
         return float(x_internal), float(y_internal)
 
     def transform_coordinates_inverse(
@@ -325,11 +324,12 @@ class RasterProvider(abc.ABC):
         """
         try:
             if not hasattr(self, "_tr_internal_to_geo"):
-                with PYPROJ_TRANSFORMER_LOCK:
-                    self._tr_internal_to_geo = Transformer.from_crs(
-                        CRS_TERRAIN_INTERNAL, CRS_GEOGRAPHIC, always_xy=True
-                    )
-            lon, lat = self._tr_internal_to_geo.transform(x, y)
+                self._tr_internal_to_geo = DEFAULT_TRANSFORM_SERVICE.transformer(
+                    CRS_TERRAIN_INTERNAL, CRS_GEOGRAPHIC
+                )
+            lon, lat = transformer_transform(
+                self._tr_internal_to_geo, x, y
+            )
             if (
                 math.isnan(lat)
                 or math.isnan(lon)
@@ -1535,10 +1535,9 @@ class LegacyTiffRasterWindowProvider(RasterProvider):
             self.is_geo = True
 
         self.dest_crs_str = dest_crs
-        with PYPROJ_TRANSFORMER_LOCK:
-            self._tr_internal_to_native = Transformer.from_crs(
-                CRS_TERRAIN_INTERNAL, self.dest_crs_str, always_xy=True
-            )
+        self._tr_internal_to_native = DEFAULT_TRANSFORM_SERVICE.transformer(
+            CRS_TERRAIN_INTERNAL, self.dest_crs_str
+        )
         self.ds_transform = self.dataset.transform
         self.ds_width = self.dataset.width
         self.ds_height = self.dataset.height
@@ -1597,8 +1596,8 @@ class LegacyTiffRasterWindowProvider(RasterProvider):
 
         # Transform terrain internal coordinates to dataset native CRS center.
         try:
-            self.native_cx, self.native_cy = self._tr_internal_to_native.transform(
-                cx, cy
+            self.native_cx, self.native_cy = transformer_transform(
+                self._tr_internal_to_native, cx, cy
             )
         except Exception as e:
             print(

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QObject, QRunnable, Qt, QThreadPool, pyqtSignal
+from PyQt5.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -29,7 +29,7 @@ from PyQt5.QtWidgets import (
 
 from TerraLab.common.utils import getTraduction
 from TerraLab.data.assets_manager import AssetManager
-from TerraLab.data.layer_manager import LayerManager
+from TerraLab.data.layer_manager import LayerId, LayerManager
 from TerraLab.ui.layer_configurator import LayerConfiguratorWidget
 from TerraLab.terrain.data_sources import (
     DataSourceRegistry,
@@ -375,6 +375,7 @@ class DataLayersDialog(QDialog):
         asset_manager: Optional[AssetManager] = None,
         latitude: float = 0.0,
         longitude: float = 0.0,
+        focus_layer_id: LayerId | str | None = None,
     ) -> None:
         super().__init__(parent)
         self.asset_manager = asset_manager or AssetManager()
@@ -401,17 +402,19 @@ class DataLayersDialog(QDialog):
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 12, 12, 10)
         root.setSpacing(10)
-        tabs = QTabWidget()
-        self.layer_configurator = LayerConfiguratorWidget(self.layer_manager, tabs)
+        self.tabs = QTabWidget()
+        self.layer_configurator = LayerConfiguratorWidget(
+            self.layer_manager, self.tabs
+        )
         self.layer_configurator.setObjectName("layerConfiguratorPage")
-        tabs.addTab(self.layer_configurator, "Biblioteca de capes")
+        self.tabs.addTab(self.layer_configurator, "Biblioteca de capes")
         advanced = QWidget()
         advanced.setObjectName("advancedLayersPage")
         advanced_layout = QVBoxLayout(advanced)
         advanced_layout.addWidget(self._build_active_group())
         advanced_layout.addWidget(self._build_installed_group(), 1)
-        tabs.addTab(advanced, "Fonts geoespacials avançades")
-        root.addWidget(tabs, 1)
+        self.tabs.addTab(advanced, "Fonts geoespacials avançades")
+        root.addWidget(self.tabs, 1)
 
         footer = QHBoxLayout()
         footer_note = QLabel(
@@ -430,6 +433,14 @@ class DataLayersDialog(QDialog):
         footer.addWidget(close_button)
         root.addLayout(footer)
         self._refresh()
+        if focus_layer_id is not None:
+            self.tabs.setCurrentWidget(self.layer_configurator)
+            QTimer.singleShot(
+                0,
+                lambda layer_id=focus_layer_id: self.layer_configurator.focus_layer(
+                    layer_id, pulse=True
+                ),
+            )
 
     def done(self, result: int) -> None:
         """Mark the modal session closed before its nested loop unwinds."""

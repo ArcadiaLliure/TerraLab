@@ -12,6 +12,7 @@ import math
 import os
 import re
 import shutil
+import ssl
 import tempfile
 import time
 from dataclasses import asdict, dataclass
@@ -20,10 +21,40 @@ from pathlib import Path
 from typing import Callable, Mapping
 
 import requests
+import truststore
+from requests.adapters import HTTPAdapter
 
 
 DOWNLOAD_METADATA_SCHEMA_VERSION = 1
 _CONTENT_RANGE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+|\*)$", re.I)
+
+
+class _NativeTrustHTTPAdapter(HTTPAdapter):
+    """Use the OS trust engine without weakening TLS verification.
+
+    The S2GLC host does not currently send its intermediate certificate.
+    Native trust engines can retrieve that missing intermediate, while the
+    static CA bundle used by Requests cannot build the certificate chain.
+    """
+
+    def __init__(self, ssl_context: ssl.SSLContext, *args, **kwargs) -> None:
+        self._ssl_context = ssl_context
+        super().__init__(*args, **kwargs)
+
+    def init_poolmanager(self, *args, **kwargs) -> None:
+        kwargs["ssl_context"] = self._ssl_context
+        super().init_poolmanager(*args, **kwargs)
+
+    def proxy_manager_for(self, proxy, **proxy_kwargs):
+        proxy_kwargs["ssl_context"] = self._ssl_context
+        return super().proxy_manager_for(proxy, **proxy_kwargs)
+
+
+def _native_trust_session() -> requests.Session:
+    session = requests.Session()
+    context = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    session.mount("https://", _NativeTrustHTTPAdapter(context))
+    return session
 
 
 class DownloadCancelled(RuntimeError):
@@ -212,7 +243,7 @@ class ResumableDownloader:
     ) -> None:
         self.partial_root = Path(partial_root).expanduser().resolve(strict=False)
         self.partial_root.mkdir(parents=True, exist_ok=True)
-        self.session = session or requests.Session()
+        self.session = session or _native_trust_session()
         self.chunk_size = max(64 * 1024, int(chunk_size))
         self.max_retries = max(0, int(max_retries))
         self.timeout = timeout

@@ -639,11 +639,9 @@ class AssetManager:
         """
         try:
             import rasterio
-            from pyproj import Transformer
-
+            from TerraLab.terrain.crs import DEFAULT_TRANSFORM_SERVICE
             from TerraLab.terrain.providers import (
                 CRS_GEOGRAPHIC,
-                PYPROJ_TRANSFORMER_LOCK,
             )
         except Exception:
             return None
@@ -662,11 +660,12 @@ class AssetManager:
             return None
 
         try:
-            with PYPROJ_TRANSFORMER_LOCK:
-                tr = Transformer.from_crs(
-                    src_crs, CRS_GEOGRAPHIC, always_xy=True
-                )
-            lon, lat = tr.transform(center_x, center_y)
+            lon, lat = DEFAULT_TRANSFORM_SERVICE.transform_xy(
+                center_x,
+                center_y,
+                src_crs,
+                CRS_GEOGRAPHIC,
+            )
         except Exception:
             return None
         if not self._valid_lat_lon(lat, lon):

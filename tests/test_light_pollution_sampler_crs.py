@@ -85,14 +85,13 @@ def test_build_runtime_context_reuses_cached_transformers(monkeypatch) -> None:
         def transform(self, x, y):
             return x, y
 
-    def _fake_from_crs(_src, _dst, always_xy=True):
-        assert bool(always_xy)
+    def _fake_transformer(_src, _dst):
         calls["n"] += 1
         return _DummyTransformer(calls["n"])
 
     monkeypatch.setattr(
-        "TerraLab.terrain.light_pollution_sampler.Transformer.from_crs",
-        _fake_from_crs,
+        "TerraLab.terrain.light_pollution_sampler.DEFAULT_TRANSFORM_SERVICE.transformer",
+        _fake_transformer,
     )
 
     context_1 = sampler._build_runtime_context(src, terrain_crs="EPSG:25831")

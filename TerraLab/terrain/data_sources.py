@@ -1161,10 +1161,27 @@ class LayerSelectionService:
             lon,
         )
 
-    def select_surface(self, lat: float, lon: float) -> LayerSelectionResult:
+    def select_surface(
+        self,
+        lat: float,
+        lon: float,
+        *,
+        layer_type: LayerType | str | None = None,
+    ) -> LayerSelectionResult:
+        allowed_types = (
+            (LayerType.SURFACE_RGB, LayerType.SURFACE_CATEGORICAL)
+            if layer_type is None
+            else (_coerce_layer_type(layer_type),)
+        )
+        if any(
+            candidate
+            not in {LayerType.SURFACE_RGB, LayerType.SURFACE_CATEGORICAL}
+            for candidate in allowed_types
+        ):
+            raise ValueError("Surface selection requires an RGB or categorical type")
         return self._select(
             LayerRole.SURFACE,
-            (LayerType.SURFACE_RGB, LayerType.SURFACE_CATEGORICAL),
+            allowed_types,
             lat,
             lon,
         )
@@ -1291,9 +1308,29 @@ class LayerSelectionService:
             if selection.source_id is not None
             else None
         )
+        if (
+            role is LayerRole.SURFACE
+            and selection.mode is SelectionMode.MANUAL
+            and configured is not None
+            and configured.layer_type in layer_types
+        ):
+            # The RGB/categorical switch is a hard semantic boundary.  A
+            # manual source outside coverage may fall back to another source
+            # of the same type, never to the other surface representation.
+            candidates = [
+                source
+                for source in candidates
+                if source.layer_type is configured.layer_type
+            ]
         reason = "automatic"
         if selection.mode is SelectionMode.MANUAL:
             issue = self._manual_issue(configured, role, lat, lon)
+            if (
+                issue is None
+                and configured is not None
+                and configured.layer_type not in layer_types
+            ):
+                issue = "manual_type_mismatch"
             if issue is None:
                 assert configured is not None
                 candidates = [
@@ -1313,6 +1350,18 @@ class LayerSelectionService:
                     reason = f"{reason}_no_fallback"
 
         if role is LayerRole.SURFACE:
+            # A surface chain represents exactly one rendering mode.  This
+            # also applies in automatic mode: once RGB (or categorical) wins
+            # the policy, nodata fallback stays inside that semantic type.
+            # Otherwise the worker would initialize and sample both products
+            # while the UI advertised only one side of the switch.
+            if candidates:
+                effective_surface_type = candidates[0].layer_type
+                candidates = [
+                    source
+                    for source in candidates
+                    if source.layer_type is effective_surface_type
+                ]
             candidates = self._deduplicate_surface_sources(
                 candidates,
                 configured_id=(

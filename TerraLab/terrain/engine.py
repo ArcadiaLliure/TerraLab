@@ -29,7 +29,6 @@ from TerraLab.common.performance import (
 from TerraLab.terrain.providers import (
     CRS_GEOGRAPHIC,
     CRS_TERRAIN_INTERNAL,
-    PYPROJ_TRANSFORMER_LOCK,
 )
 from TerraLab.terrain.representation import (
     TerrainGeometrySource,
@@ -696,14 +695,13 @@ def build_flat_horizon_profile(
         )
     observer_x = observer_y = None
     try:
-        from pyproj import Transformer
+        from TerraLab.terrain.crs import DEFAULT_TRANSFORM_SERVICE
 
-        with PYPROJ_TRANSFORMER_LOCK:
-            transformer = Transformer.from_crs(
-                CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL, always_xy=True
-            )
-        observer_x, observer_y = transformer.transform(
-            float(observer_lon), float(observer_lat)
+        observer_x, observer_y = DEFAULT_TRANSFORM_SERVICE.transform_xy(
+            float(observer_lon),
+            float(observer_lat),
+            CRS_GEOGRAPHIC,
+            CRS_TERRAIN_INTERNAL,
         )
     except Exception:
         pass
@@ -1368,14 +1366,14 @@ class DemSampler:
         Output CRS:
             - `(lat, lon)` in `EPSG:4326`.
         """
-        from pyproj import Transformer
+        from TerraLab.terrain.crs import DEFAULT_TRANSFORM_SERVICE
 
-        if self._transformer_inv is None:
-            with PYPROJ_TRANSFORMER_LOCK:
-                self._transformer_inv = Transformer.from_crs(
-                    CRS_TERRAIN_INTERNAL, CRS_GEOGRAPHIC, always_xy=True
-                )
-        lon, lat = self._transformer_inv.transform(x, y)
+        lon, lat = DEFAULT_TRANSFORM_SERVICE.transform_xy(
+            x,
+            y,
+            CRS_TERRAIN_INTERNAL,
+            CRS_GEOGRAPHIC,
+        )
         return lat, lon
 
     def sample(self, x: float, y: float) -> Optional[float]:
@@ -3518,14 +3516,15 @@ def bake_and_save(
     """
     if radius is None:
         raise ValueError("radius must be a resolved visibility radius")
-    from pyproj import Transformer
+    from TerraLab.terrain.crs import DEFAULT_TRANSFORM_SERVICE
 
     # Transform observer from geographic to terrain internal coordinates.
-    with PYPROJ_TRANSFORMER_LOCK:
-        transformer = Transformer.from_crs(
-            CRS_GEOGRAPHIC, CRS_TERRAIN_INTERNAL, always_xy=True
-        )
-    x_utm, y_utm = transformer.transform(lon, lat)
+    x_utm, y_utm = DEFAULT_TRANSFORM_SERVICE.transform_xy(
+        lon,
+        lat,
+        CRS_GEOGRAPHIC,
+        CRS_TERRAIN_INTERNAL,
+    )
     print(f"[HorizonEngine] Observer UTM: {x_utm:.2f}, {y_utm:.2f}")
 
     # Build system

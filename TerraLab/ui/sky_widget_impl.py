@@ -50,7 +50,8 @@ from TerraLab.light_pollution.modes import (
     resolve_bortle_class,
 )
 from TerraLab.data.assets_manager import AssetManager
-from TerraLab.data.layer_manager import LayerId, LayerManager
+from TerraLab.data.layer_manager import LayerId, LayerManager, LayerState
+from TerraLab.terrain.data_sources import LayerRole, LayerSelectionService, LayerType
 from TerraLab.ui.data_layers_dialog import DataLayerChanges, DataLayersDialog
 from TerraLab.ui.canvas_input_handler import CanvasInputHandler
 from TerraLab.ui.canvas_selection import CanvasSelection
@@ -2075,6 +2076,7 @@ class AstronomicalWidget(CustomWidgetBase):
             self.horizon_worker.reload_config()
         if str(updated_asset_id or "") == "gaia_catalog" and self.asset_manager.asset_ready("gaia_catalog"):
             self._reload_star_catalog_async()
+        self._sync_surface_mode_control()
     def _reload_star_catalog_async(self):
         return widget_reload_star_catalog_async(self)
     def _ensure_asset_before_enable(self, checkbox: QCheckBox, checked: bool, asset_id: str) -> bool:
@@ -2090,6 +2092,52 @@ class AstronomicalWidget(CustomWidgetBase):
         checkbox.setChecked(False)
         checkbox.blockSignals(False)
         return False
+    def _missing_layer_target(self, layer_id):
+        """Return the library row to guide to, or ``None`` when data is ready."""
+        manager = getattr(self, "layer_manager", None)
+        if manager is None:
+            return None
+        try:
+            normalized = (
+                layer_id
+                if isinstance(layer_id, LayerId)
+                else LayerId(str(layer_id))
+            )
+        except ValueError:
+            return None
+        if normalized in {
+            LayerId.EARTH_SURFACE_CATEGORICAL,
+            LayerId.EARTH_SURFACE_RGB,
+        }:
+            surface_layers = (
+                LayerId.EARTH_SURFACE_CATEGORICAL,
+                LayerId.EARTH_SURFACE_RGB,
+            )
+            if any(
+                manager.status(candidate).state is LayerState.READY
+                for candidate in surface_layers
+            ):
+                return None
+            return normalized
+        return (
+            None
+            if manager.status(normalized).state is LayerState.READY
+            else normalized
+        )
+    def _guide_missing_layer(self, checked: bool, layer_id) -> bool:
+        """Open the layer library at missing data after a user checkbox click."""
+        if not bool(checked):
+            return False
+        target = self._missing_layer_target(layer_id)
+        if target is None:
+            return False
+        QTimer.singleShot(
+            0,
+            lambda target_layer=target: self.open_data_layers_dialog(
+                focus_layer_id=target_layer
+            ),
+        )
+        return True
     def _persist_visibility_state(self, key: str, checked: bool) -> None:
         set_config_value(f"ui.visibility.{key}", bool(checked))
         stable_ids = {
@@ -3545,6 +3593,116 @@ class AstronomicalWidget(CustomWidgetBase):
             if callable(cancel):
                 cancel()
         self.canvas.update()
+    def _usable_surface_mode_sources(self):
+        """Return installed, enabled surface sources grouped by render mode."""
+        grouped = {
+            LayerType.SURFACE_RGB: [],
+            LayerType.SURFACE_CATEGORICAL: [],
+        }
+        manager = getattr(self, "layer_manager", None)
+        registry = getattr(manager, "data_sources", None)
+        if registry is None:
+            return grouped
+        for source in registry.list_sources():
+            if (
+                source.layer_type in grouped
+                and bool(source.enabled)
+                and bool(source.available)
+            ):
+                grouped[source.layer_type].append(source)
+        for sources in grouped.values():
+            sources.sort(
+                key=lambda source: (
+                    -int(source.priority),
+                    source.resolution_m or float("inf"),
+                    source.id,
+                )
+            )
+        return grouped
+    def _sync_surface_mode_control(self):
+        """Show and align the RGB/categorical switch when both can be used."""
+        selector = getattr(self, "surface_mode_selector", None)
+        switch = getattr(self, "slider_surface_mode", None)
+        if selector is None or switch is None:
+            return
+        grouped = self._usable_surface_mode_sources()
+        rgb_sources = grouped[LayerType.SURFACE_RGB]
+        categorical_sources = grouped[LayerType.SURFACE_CATEGORICAL]
+        both_available = bool(rgb_sources and categorical_sources)
+        selector.setVisible(both_available)
+        if not both_available:
+            return
+
+        manager = getattr(self, "layer_manager", None)
+        registry = getattr(manager, "data_sources", None)
+        selected = registry.get_selection(LayerRole.SURFACE)
+        active = registry.get(selected.source_id) if selected.source_id else None
+        usable_ids = {
+            source.id
+            for sources in grouped.values()
+            for source in sources
+        }
+        if active is None or active.id not in usable_ids:
+            active = LayerSelectionService(registry).select_surface(
+                float(getattr(self, "latitude", 0.0)),
+                float(getattr(self, "longitude", 0.0)),
+            ).effective
+        categorical = bool(
+            active is not None
+            and active.layer_type is LayerType.SURFACE_CATEGORICAL
+        )
+        switch.blockSignals(True)
+        switch.setValue(1 if categorical else 0)
+        switch.blockSignals(False)
+        active_label = "categòric" if categorical else "RGB"
+        switch.setToolTip(
+            "Mode de tipus de sòl actiu: "
+            f"{active_label}. Mou l'interruptor per canviar de font."
+        )
+    def on_surface_mode_changed(self, value):
+        """Persist and apply the land-cover product chosen by the switch."""
+        grouped = self._usable_surface_mode_sources()
+        if not all(grouped.values()):
+            self._sync_surface_mode_control()
+            return
+        target_type = (
+            LayerType.SURFACE_CATEGORICAL
+            if int(value)
+            else LayerType.SURFACE_RGB
+        )
+        target_sources = grouped[target_type]
+        manager = getattr(self, "layer_manager", None)
+        registry = getattr(manager, "data_sources", None)
+        selected = registry.get_selection(LayerRole.SURFACE)
+        selected_source = registry.get(selected.source_id) if selected.source_id else None
+        target = (
+            selected_source
+            if selected_source in target_sources
+            else target_sources[0]
+        )
+        target_layer = (
+            LayerId.EARTH_SURFACE_CATEGORICAL
+            if target_type is LayerType.SURFACE_CATEGORICAL
+            else LayerId.EARTH_SURFACE_RGB
+        )
+        manager.set_source(target_layer, target.id)
+        self._effective_data_sources_payload = None
+        self._sync_surface_mode_control()
+
+        checkbox = getattr(self, "chk_surface_layer", None)
+        coordinator = getattr(self, "terrain_coordinator", None)
+        refresh = getattr(coordinator, "request_surface_refresh", None)
+        if checkbox is not None and checkbox.isChecked() and callable(refresh):
+            view_context = getattr(self, "_surface_refresh_view_kwargs", None)
+            refresh(
+                profile=getattr(self, "_full_horizon_profile", None),
+                surface_layer_type=target_type.value,
+                atomic_surface_swap=True,
+                **(view_context() if callable(view_context) else {}),
+            )
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None:
+            canvas.update()
     def _activate_checked_surface_layer_startup(self):
         if bool(getattr(self, "_initial_surface_refresh_requested", False)):
             return
@@ -3561,13 +3719,14 @@ class AstronomicalWidget(CustomWidgetBase):
             if control is not None:
                 control.setEnabled(checked)
         self.canvas.update()
-    def open_data_layers_dialog(self):
+    def open_data_layers_dialog(self, focus_layer_id=None):
         dialog = DataLayersDialog(
             self,
             registry=self.asset_manager.data_sources,
             asset_manager=self.asset_manager,
             latitude=float(self.latitude),
             longitude=float(self.longitude),
+            focus_layer_id=focus_layer_id,
         )
         result = dialog.exec_()
         dialog.post_close_changes.connect(self._apply_data_layer_changes)
@@ -3596,6 +3755,7 @@ class AstronomicalWidget(CustomWidgetBase):
             desired = manager.is_visible(layer_id)
             if checkbox is not None and bool(checkbox.isChecked()) != desired:
                 checkbox.setChecked(desired)
+        self._sync_surface_mode_control()
         if hasattr(self, "canvas"):
             self.canvas.update()
     def _apply_data_layer_changes(self, changes: DataLayerChanges):
@@ -3633,6 +3793,7 @@ class AstronomicalWidget(CustomWidgetBase):
             # refreshes availability after asynchronous inspections.
             for descriptor in manager.list_layers():
                 manager.status(descriptor.id)
+        self._sync_surface_mode_control()
         if hasattr(self, "canvas"):
             self.canvas.update()
     def _effective_layer_label(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from TerraLab.data.layer_manager import LayerId, LayerState
 from TerraLab.light_pollution.modes import LP_MODE_BORTLE
 from TerraLab.ui.data_layers_dialog import DataLayerChanges, _DATA_LAYERS_STYLE
 from TerraLab.ui.sky_widget_impl import AstronomicalWidget
@@ -21,11 +22,54 @@ class _CheckedBox:
         self.checked = bool(checked)
 
 
+class _LayerGuideHarness:
+    _missing_layer_target = AstronomicalWidget._missing_layer_target
+    _guide_missing_layer = AstronomicalWidget._guide_missing_layer
+
+
+class _LayerStatusManager:
+    def __init__(self, states):
+        self.states = dict(states)
+
+    def status(self, layer_id):
+        return SimpleNamespace(state=self.states[layer_id])
+
+
 def test_data_layers_dialog_uses_dark_theme_for_native_qt_surfaces():
     assert "QTabWidget::pane" in _DATA_LAYERS_STYLE
     assert "QTreeWidget::item:selected" in _DATA_LAYERS_STYLE
     assert "QComboBox QAbstractItemView" in _DATA_LAYERS_STYLE
     assert "background-color: #0d1a30" in _DATA_LAYERS_STYLE
+
+
+def test_user_click_on_missing_layer_opens_focused_library(monkeypatch):
+    opened = []
+    widget = _LayerGuideHarness()
+    widget.layer_manager = _LayerStatusManager(
+        {LayerId.SKY_MILKY_WAY: LayerState.MISSING}
+    )
+    widget.open_data_layers_dialog = lambda **kwargs: opened.append(kwargs)
+    monkeypatch.setattr(
+        "TerraLab.ui.sky_widget_impl.QTimer.singleShot",
+        lambda _delay, callback: callback(),
+    )
+
+    guided = widget._guide_missing_layer(True, LayerId.SKY_MILKY_WAY)
+
+    assert guided is True
+    assert opened == [{"focus_layer_id": LayerId.SKY_MILKY_WAY}]
+
+
+def test_surface_checkbox_does_not_prompt_when_either_product_is_ready():
+    widget = _LayerGuideHarness()
+    widget.layer_manager = _LayerStatusManager(
+        {
+            LayerId.EARTH_SURFACE_CATEGORICAL: LayerState.MISSING,
+            LayerId.EARTH_SURFACE_RGB: LayerState.READY,
+        }
+    )
+
+    assert widget._missing_layer_target(LayerId.EARTH_SURFACE) is None
 
 
 def test_light_pollution_can_enable_with_runtime_fallback_without_onboarding(

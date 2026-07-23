@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 import re
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Tuple
@@ -22,9 +23,54 @@ from pyproj import CRS, Geod, Proj, Transformer
 CRS_GEOGRAPHIC = "EPSG:4326"
 CRS_TERRAIN_INTERNAL = "EPSG:25831"
 
-# Kept public for compatibility with modules that serialize pyproj creation.
+# PROJ contexts are process-global native resources.  In particular, the
+# Windows wheels used by the desktop app can access the same authority
+# database while different Qt/Python worker threads create, use, or release
+# transformers.  A per-service lock is therefore insufficient: every in-
+# process pyproj operation must participate in this one re-entrant lock.
 PYPROJ_TRANSFORMER_LOCK = threading.RLock()
 _EPSG_FASTPATH_RE = re.compile(r"^\s*EPSG\s*:\s*(\d+)\s*$", re.IGNORECASE)
+_PYPROJ_EXECUTOR = ThreadPoolExecutor(
+    max_workers=1,
+    thread_name_prefix="TerraLab-PROJ",
+)
+_PYPROJ_THREAD_ID: int | None = None
+
+
+def _execute_pyproj(callable_obj, args, kwargs):
+    global _PYPROJ_THREAD_ID
+    _PYPROJ_THREAD_ID = threading.get_ident()
+    with PYPROJ_TRANSFORMER_LOCK:
+        return callable_obj(*args, **kwargs)
+
+
+def _run_pyproj(callable_obj, *args, **kwargs):
+    """Run native PROJ work on TerraLab's one long-lived owner thread."""
+
+    if threading.get_ident() == _PYPROJ_THREAD_ID:
+        with PYPROJ_TRANSFORMER_LOCK:
+            return callable_obj(*args, **kwargs)
+    return _PYPROJ_EXECUTOR.submit(
+        _execute_pyproj,
+        callable_obj,
+        args,
+        kwargs,
+    ).result()
+
+
+@lru_cache(maxsize=None)
+def _build_crs(value: str) -> CRS:
+    return _run_pyproj(CRS.from_user_input, value)
+
+
+@lru_cache(maxsize=None)
+def _build_geod(ellipsoid: str) -> Geod:
+    return _run_pyproj(Geod, ellps=ellipsoid)
+
+
+@lru_cache(maxsize=None)
+def _build_proj(crs: str) -> Proj:
+    return _run_pyproj(Proj, crs)
 
 
 def _fast_normalize_crs(value: Any) -> str | None:
@@ -53,7 +99,9 @@ def normalize_crs(value: Any, *, fallback: Any | None = None) -> str:
     fast = _fast_normalize_crs(candidate)
     if fast is not None:
         return fast
-    return CRS.from_user_input(candidate).to_string()
+    token = str(candidate).strip()
+    crs = _build_crs(token)
+    return _run_pyproj(crs.to_string)
 
 
 @dataclass(frozen=True)
@@ -67,24 +115,31 @@ class CoordinateFrame:
 
     @property
     def is_geographic(self) -> bool:
-        return bool(CRS.from_user_input(self.crs).is_geographic)
+        crs = _build_crs(self.crs)
+        return bool(_run_pyproj(lambda: crs.is_geographic))
 
 
 class CoordinateTransformService:
     """Thread-safe, cached and vectorized CRS transformations."""
 
     def __init__(self) -> None:
-        self._lock = threading.RLock()
+        # Compatibility attribute for callers/tests that used the old private
+        # lock.  It deliberately aliases the process-wide lock because the
+        # cached Transformer objects below are shared by every service.
+        self._lock = PYPROJ_TRANSFORMER_LOCK
 
     @staticmethod
-    @lru_cache(maxsize=128)
+    @lru_cache(maxsize=None)
     def _build_transformer(source_crs: str, target_crs: str) -> Transformer:
-        with PYPROJ_TRANSFORMER_LOCK:
-            return Transformer.from_crs(
-                source_crs,
-                target_crs,
-                always_xy=True,
-            )
+        # Keep created native contexts alive for the process lifetime.  Apart
+        # from avoiding repeated authority-database work, this prevents a
+        # Transformer finalizer in one worker racing with PROJ in another.
+        return _run_pyproj(
+            Transformer.from_crs,
+            source_crs,
+            target_crs,
+            always_xy=True,
+        )
 
     def transformer(self, source_crs: Any, target_crs: Any) -> Transformer:
         source = normalize_crs(source_crs)
@@ -121,8 +176,11 @@ class CoordinateTransformService:
             )
             transform_x = np.ma.asarray(x_array)
             transform_y = np.ma.asarray(y_array)
-        with self._lock:
-            tx, ty = transformer.transform(transform_x, transform_y)
+        tx, ty = _run_pyproj(
+            transformer.transform,
+            transform_x,
+            transform_y,
+        )
         if scalar:
             return float(tx), float(ty)
         return np.asarray(tx, dtype=np.float64), np.asarray(ty, dtype=np.float64)
@@ -141,14 +199,14 @@ class CoordinateTransformService:
         if source == target:
             return left, bottom, right, top
         transformer = self._build_transformer(source, target)
-        with self._lock:
-            result = transformer.transform_bounds(
-                left,
-                bottom,
-                right,
-                top,
-                densify_pts=max(2, int(densify_points)),
-            )
+        result = _run_pyproj(
+            transformer.transform_bounds,
+            left,
+            bottom,
+            right,
+            top,
+            densify_pts=max(2, int(densify_points)),
+        )
         return tuple(float(value) for value in result)
 
     def metric_circle_bounds(
@@ -201,9 +259,21 @@ class CoordinateTransformService:
                 crs,
                 CRS_GEOGRAPHIC,
             )
-            geod = Geod(ellps="WGS84")
-            _, _, dx = geod.inv(lon[0], lat[0], lon[1], lat[1])
-            _, _, dy = geod.inv(lon[0], lat[0], lon[2], lat[2])
+            geod = _build_geod("WGS84")
+            _, _, dx = _run_pyproj(
+                geod.inv,
+                lon[0],
+                lat[0],
+                lon[1],
+                lat[1],
+            )
+            _, _, dy = _run_pyproj(
+                geod.inv,
+                lon[0],
+                lat[0],
+                lon[2],
+                lat[2],
+            )
             candidates = [abs(float(dx)), abs(float(dy))]
             candidates = [value for value in candidates if math.isfinite(value) and value > 0]
             return min(candidates) if candidates else None
@@ -212,6 +282,16 @@ class CoordinateTransformService:
 
 
 DEFAULT_TRANSFORM_SERVICE = CoordinateTransformService()
+
+
+def transformer_transform(
+    transformer: Transformer,
+    *coordinates: Any,
+    **kwargs: Any,
+) -> tuple[Any, ...]:
+    """Run a cached/raw Transformer under TerraLab's process-wide PROJ lock."""
+
+    return _run_pyproj(transformer.transform, *coordinates, **kwargs)
 
 
 @lru_cache(maxsize=512)
@@ -228,10 +308,12 @@ def meridian_convergence_degrees(
 
     try:
         crs = normalize_crs(projected_crs)
-        with PYPROJ_TRANSFORMER_LOCK:
-            factors = Proj(crs).get_factors(
-                float(longitude_deg), float(latitude_deg)
-            )
+        projection = _build_proj(crs)
+        factors = _run_pyproj(
+            projection.get_factors,
+            float(longitude_deg),
+            float(latitude_deg),
+        )
         value = float(factors.meridian_convergence)
         return value if math.isfinite(value) else 0.0
     except Exception:
@@ -247,4 +329,5 @@ __all__ = [
     "DEFAULT_TRANSFORM_SERVICE",
     "meridian_convergence_degrees",
     "normalize_crs",
+    "transformer_transform",
 ]

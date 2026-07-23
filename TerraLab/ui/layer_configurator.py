@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt5.QtCore import QUrl, Qt, pyqtSignal
-from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtCore import QEvent, QEasingCurve, QPropertyAnimation, QTimer, QUrl, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QDesktopServices
 from PyQt5.QtWidgets import (
     QCheckBox,
     QDialog,
     QFileDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QMessageBox,
@@ -49,6 +50,7 @@ _STATE_ICON = {
 
 class _LayerRow(QFrame):
     changed = pyqtSignal(str, str)
+    interacted = pyqtSignal(str)
 
     def __init__(self, manager: LayerManager, layer_id: LayerId, parent=None) -> None:
         super().__init__(parent)
@@ -139,7 +141,61 @@ class _LayerRow(QFrame):
         )
         actions.addWidget(self.activate_button)
         root.addLayout(actions)
+        self._attention_animation = None
+        self._attention_effect = None
+        for widget in (self, *self.findChildren(QWidget)):
+            widget.installEventFilter(self)
         self.refresh()
+
+    def eventFilter(self, watched, event):
+        """Stop the guided highlight as soon as the user chooses this row."""
+
+        mouse_activation = event.type() == QEvent.MouseButtonPress
+        key_activation = event.type() == QEvent.KeyPress and event.key() in {
+            Qt.Key_Enter,
+            Qt.Key_Return,
+            Qt.Key_Space,
+        }
+        if self._attention_animation is not None and (
+            mouse_activation or key_activation
+        ):
+            self.stop_attention()
+            self.interacted.emit(self.layer_id.value)
+        return super().eventFilter(watched, event)
+
+    def start_attention(self) -> None:
+        """Draw a bright pulsing frame around a row that needs user action."""
+
+        self.stop_attention()
+        self.setStyleSheet(
+            "QFrame#assetRow {"
+            " background-color: #182f50; border: 2px solid #ffe45e;"
+            " border-radius: 8px; }"
+        )
+        effect = QGraphicsDropShadowEffect(self)
+        effect.setOffset(0, 0)
+        effect.setColor(QColor(255, 220, 55, 235))
+        effect.setBlurRadius(9.0)
+        self.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"blurRadius", self)
+        animation.setDuration(900)
+        animation.setStartValue(7.0)
+        animation.setKeyValueAt(0.5, 28.0)
+        animation.setEndValue(7.0)
+        animation.setEasingCurve(QEasingCurve.InOutSine)
+        animation.setLoopCount(-1)
+        self._attention_effect = effect
+        self._attention_animation = animation
+        animation.start()
+
+    def stop_attention(self) -> None:
+        animation = self._attention_animation
+        if animation is not None:
+            animation.stop()
+        self._attention_animation = None
+        self._attention_effect = None
+        self.setGraphicsEffect(None)
+        self.setStyleSheet("")
 
     def refresh(self) -> None:
         status = self.manager.status(self.layer_id)
@@ -251,8 +307,9 @@ class _LayerRow(QFrame):
             self.descriptor.asset_id,
             self,
         )
-        if dialog.exec_() == QDialog.Accepted:
-            self.refresh()
+        result = dialog.exec_()
+        self.refresh()
+        if result == QDialog.Accepted:
             self.changed.emit(self.layer_id.value, "source")
 
     def _activate_surface(self) -> None:
@@ -298,9 +355,11 @@ class LayerConfiguratorWidget(QWidget):
         self.library_status.setObjectName("subtitleLabel")
         root.addWidget(self.library_status)
 
-        tabs = QTabWidget()
-        tabs.setDocumentMode(True)
-        root.addWidget(tabs, 1)
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        root.addWidget(self.tabs, 1)
+        self._group_tabs: dict[LayerGroup, int] = {}
+        self._group_scrolls: dict[LayerGroup, QScrollArea] = {}
         for group, title in ((LayerGroup.SKY, "Cel"), (LayerGroup.EARTH, "Terra")):
             scroll = QScrollArea()
             scroll.setWidgetResizable(True)
@@ -317,8 +376,32 @@ class LayerConfiguratorWidget(QWidget):
                 layout.addWidget(row)
             layout.addStretch(1)
             scroll.setWidget(content)
-            tabs.addTab(scroll, title)
+            self._group_scrolls[group] = scroll
+            self._group_tabs[group] = self.tabs.addTab(scroll, title)
         self.refresh()
+
+    def focus_layer(self, layer_id: LayerId | str, *, pulse: bool = True) -> None:
+        """Open the right group and bring one layer action row into view."""
+
+        try:
+            normalized = (
+                layer_id if isinstance(layer_id, LayerId) else LayerId(str(layer_id))
+            )
+            descriptor = self.manager.descriptor(normalized)
+            row = self._rows[descriptor.id]
+        except (KeyError, ValueError):
+            return
+        self.tabs.setCurrentIndex(self._group_tabs[descriptor.group])
+        if pulse:
+            row.start_attention()
+
+        def _reveal() -> None:
+            scroll = self._group_scrolls.get(descriptor.group)
+            if scroll is not None:
+                scroll.ensureWidgetVisible(row, 12, 24)
+            row.prepare_button.setFocus(Qt.OtherFocusReason)
+
+        QTimer.singleShot(0, _reveal)
 
     def _row_changed(self, _layer_id: str, change: str) -> None:
         if change in {"visibility", "selection"}:

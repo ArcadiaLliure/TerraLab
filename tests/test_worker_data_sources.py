@@ -169,7 +169,7 @@ def test_surface_sampling_service_and_cache_survive_identical_refreshes(
     monkeypatch.setattr(
         worker,
         "_surface_selection",
-        lambda _lat, _lon: (selection, [source]),
+        lambda _lat, _lon, **_kwargs: (selection, [source]),
     )
     profile = build_flat_horizon_profile(
         observer_lat=41.4,
@@ -425,6 +425,57 @@ def test_surface_refresh_publishes_visible_fov_before_complete_background(monkey
     ]
     assert published[0]["profile"] is not profile
     assert published[1]["profile"] is profile
+    worker.shutdown()
+
+
+def test_surface_mode_change_skips_partial_and_swaps_completed_copy_atomically(
+    monkeypatch,
+):
+    worker = HorizonWorker()
+    profile = build_flat_horizon_profile(
+        observer_lat=42.0,
+        observer_lon=3.0,
+        geometry_id="atomic-mode-change",
+    )
+    previous_cache = SimpleNamespace(
+        completion_state="complete",
+        source_ids=("categorical",),
+    )
+    profile.surface_samples = previous_cache
+    requests = []
+    published = []
+
+    def prepare(target, *, surface_request=None, **_kwargs):
+        requests.append(surface_request)
+        target.surface_samples = SimpleNamespace(
+            completion_state=surface_request.stage,
+            source_ids=("rgb",),
+        )
+        return target
+
+    monkeypatch.setattr(worker, "_prepare_surface_samples", prepare)
+    monkeypatch.setattr(worker, "_publish_effective_sources", lambda *_: None)
+    worker.profile_ready.connect(published.append)
+
+    worker.request_surface_refresh(
+        {
+            "profile": profile,
+            "generation": 0,
+            "view_azimuth_deg": 180.0,
+            "view_fov_deg": 90.0,
+            "surface_layer_type": LayerType.SURFACE_RGB.value,
+            "atomic_surface_swap": True,
+        }
+    )
+
+    assert [request.stage for request in requests] == ["complete"]
+    assert requests[0].surface_layer_type == LayerType.SURFACE_RGB.value
+    assert [payload["stage"] for payload in published] == ["complete"]
+    completed = published[0]["profile"]
+    assert completed is not profile
+    assert completed.surface_samples.source_ids == ("rgb",)
+    assert profile.surface_samples is previous_cache
+    assert worker._last_profile is completed
     worker.shutdown()
 
 

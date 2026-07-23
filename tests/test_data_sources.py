@@ -296,7 +296,7 @@ def test_surface_rgb_precedes_categorical_but_manual_selection_wins(tmp_path):
 
     automatic = selector.select_surface(41.5, 2.0)
     assert automatic.effective == rgb
-    assert [source.id for source in automatic.chain] == ["ortho", "clc"]
+    assert [source.id for source in automatic.chain] == ["ortho"]
 
     outside_rgb = selector.select_surface(50.0, 8.0)
     assert outside_rgb.effective == categorical
@@ -306,7 +306,48 @@ def test_surface_rgb_precedes_categorical_but_manual_selection_wins(tmp_path):
     assert manual.reason == "manual"
     assert manual.configured == categorical
     assert manual.effective == categorical
-    assert [source.id for source in manual.chain] == ["clc", "ortho"]
+    assert [source.id for source in manual.chain] == ["clc"]
+
+
+def test_manual_surface_fallback_never_crosses_rgb_categorical_boundary(
+    tmp_path,
+):
+    registry = _registry(tmp_path)
+    categorical = registry.register_path(
+        _touch(tmp_path, "surface/categorical.tif"),
+        LayerType.SURFACE_CATEGORICAL,
+        source_id="categorical",
+        coverage=(-15, 30, 45, 72),
+    )
+    local_rgb = registry.register_path(
+        _touch(tmp_path, "surface/local-rgb.tif"),
+        LayerType.SURFACE_RGB,
+        source_id="local-rgb",
+        priority=100,
+        coverage=(0, 40, 4, 43.5),
+    )
+    europe_rgb = registry.register_path(
+        _touch(tmp_path, "surface/europe-rgb.tif"),
+        LayerType.SURFACE_RGB,
+        source_id="europe-rgb",
+        coverage=(-15, 30, 45, 72),
+    )
+    registry.set_selection(LayerRole.SURFACE, local_rgb.id)
+    selector = LayerSelectionService(registry)
+
+    fallback = selector.select_surface(50.0, 8.0)
+
+    assert fallback.reason == "manual_out_of_coverage_fallback"
+    assert fallback.effective == europe_rgb
+    assert [source.id for source in fallback.chain] == ["europe-rgb"]
+    assert categorical not in fallback.chain
+
+    registry.update(europe_rgb.id, enabled=False)
+    no_rgb_fallback = selector.select_surface(50.0, 8.0)
+
+    assert no_rgb_fallback.reason == "manual_out_of_coverage_no_fallback"
+    assert no_rgb_fallback.effective is None
+    assert no_rgb_fallback.chain == ()
 
 
 def test_disabled_missing_and_removed_sources_fall_back_without_disk_deletion(

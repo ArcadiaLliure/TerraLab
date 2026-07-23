@@ -16,16 +16,18 @@ from typing import Any, Optional, Tuple
 
 import numpy as np
 import rasterio
-from pyproj import Transformer
 from rasterio.crs import CRS
 from rasterio.windows import Window, from_bounds
 
 from TerraLab.common.locks import RASTERIO_LOCK
 from TerraLab.light_pollution.bortle import sqm_to_bortle_class
+from TerraLab.terrain.crs import (
+    DEFAULT_TRANSFORM_SERVICE,
+    transformer_transform,
+)
 from TerraLab.terrain.providers import (
     CRS_GEOGRAPHIC,
     CRS_TERRAIN_INTERNAL,
-    PYPROJ_TRANSFORMER_LOCK,
 )
 
 
@@ -234,13 +236,12 @@ class LightPollutionSampler:
                     "tr_terrain_to_src": self._tr_terrain_to_src,
                 }
 
-        with PYPROJ_TRANSFORMER_LOCK:
-            tr_geo_to_src = Transformer.from_crs(
-                CRS_GEOGRAPHIC, resolved_src_crs, always_xy=True
-            )
-            tr_terrain_to_src = Transformer.from_crs(
-                terrain_crs_final, resolved_src_crs, always_xy=True
-            )
+        tr_geo_to_src = DEFAULT_TRANSFORM_SERVICE.transformer(
+            CRS_GEOGRAPHIC, resolved_src_crs
+        )
+        tr_terrain_to_src = DEFAULT_TRANSFORM_SERVICE.transformer(
+            terrain_crs_final, resolved_src_crs
+        )
 
         return {
             "src_crs": resolved_src_crs,
@@ -468,7 +469,9 @@ class LightPollutionSampler:
                     and self._tr_geo_to_src is not None
                     and self._cached_bounds is not None
                 ):
-                    x_src, y_src = self._tr_geo_to_src.transform(lon, lat)
+                    x_src, y_src = transformer_transform(
+                        self._tr_geo_to_src, lon, lat
+                    )
                     self._debug(
                         f"estimate cache hit try lat/lon=({lat:.6f},{lon:.6f}) "
                         f"-> src=({x_src:.3f},{y_src:.3f})"
@@ -493,7 +496,9 @@ class LightPollutionSampler:
                     context = self._get_cached_context()
                     if context is None:
                         context = self._build_runtime_context(src)
-                    x_src, y_src = context["tr_geo_to_src"].transform(lon, lat)
+                    x_src, y_src = transformer_transform(
+                        context["tr_geo_to_src"], lon, lat
+                    )
                     self._debug(
                         f"estimate direct lat/lon=({lat:.6f},{lon:.6f}) -> "
                         f"src=({x_src:.3f},{y_src:.3f}) src_crs={context['src_crs']}"
@@ -624,7 +629,9 @@ class LightPollutionSampler:
             with RASTERIO_LOCK:
                 with rasterio.open(self.raster_path) as src:
                     context = self._build_runtime_context(src, terrain_crs=input_crs)
-                    x_src, y_src = context["tr_geo_to_src"].transform(lon, lat)
+                    x_src, y_src = transformer_transform(
+                        context["tr_geo_to_src"], lon, lat
+                    )
                     data, trans_win, bounds = self._read_window_around_point(
                         src=src,
                         x_cen=x_src,
@@ -676,8 +683,8 @@ class LightPollutionSampler:
                         context = self._build_runtime_context(
                             src, terrain_crs=input_crs
                         )
-                    x_src, y_src = context["tr_terrain_to_src"].transform(
-                        x_terrain, y_terrain
+                    x_src, y_src = transformer_transform(
+                        context["tr_terrain_to_src"], x_terrain, y_terrain
                     )
                     data, trans_win, bounds = self._read_window_around_point(
                         src=src,
@@ -717,7 +724,9 @@ class LightPollutionSampler:
                     and self._tr_geo_to_src is not None
                     and self._cached_bounds is not None
                 ):
-                    x_src, y_src = self._tr_geo_to_src.transform(lon, lat)
+                    x_src, y_src = transformer_transform(
+                        self._tr_geo_to_src, lon, lat
+                    )
                     val = self._extract_cached_pixel_locked(x_src, y_src)
                     if val is not None:
                         return float(val)
@@ -727,7 +736,9 @@ class LightPollutionSampler:
                     context = self._get_cached_context()
                     if context is None:
                         context = self._build_runtime_context(src)
-                    x_src, y_src = context["tr_geo_to_src"].transform(lon, lat)
+                    x_src, y_src = transformer_transform(
+                        context["tr_geo_to_src"], lon, lat
+                    )
                     with self._lock:
                         self._update_context_locked(context)
                     return float(
@@ -767,8 +778,8 @@ class LightPollutionSampler:
                     and self._tr_terrain_to_src is not None
                     and self._cached_bounds is not None
                 ):
-                    x_src, y_src = self._tr_terrain_to_src.transform(
-                        x_terrain, y_terrain
+                    x_src, y_src = transformer_transform(
+                        self._tr_terrain_to_src, x_terrain, y_terrain
                     )
                     val = self._extract_cached_pixel_locked(x_src, y_src)
                     if val is not None:
@@ -784,8 +795,8 @@ class LightPollutionSampler:
                         context = self._build_runtime_context(
                             src, terrain_crs=input_crs
                         )
-                    x_src, y_src = context["tr_terrain_to_src"].transform(
-                        x_terrain, y_terrain
+                    x_src, y_src = transformer_transform(
+                        context["tr_terrain_to_src"], x_terrain, y_terrain
                     )
                     with self._lock:
                         self._update_context_locked(context)
@@ -814,7 +825,9 @@ class LightPollutionSampler:
                 and self._cached_transform is not None
             )
             if ready:
-                x_src, y_src = self._tr_terrain_to_src.transform(x_arr, y_arr)
+                x_src, y_src = transformer_transform(
+                    self._tr_terrain_to_src, x_arr, y_arr
+                )
                 bounds = self._cached_bounds
                 inside = (
                     (x_src >= bounds[0]) & (x_src <= bounds[2])
@@ -857,8 +870,8 @@ class LightPollutionSampler:
                         context = self._build_runtime_context(
                             src, terrain_crs=input_crs
                         )
-                    x_src, y_src = context["tr_terrain_to_src"].transform(
-                        x_arr, y_arr
+                    x_src, y_src = transformer_transform(
+                        context["tr_terrain_to_src"], x_arr, y_arr
                     )
                     inv = ~src.transform
                     cols, rows = inv * (x_src, y_src)
@@ -1005,9 +1018,13 @@ class LightPollutionSamplerChain:
             with RASTERIO_LOCK, rasterio.open(path) as src:
                 context = sampler._build_runtime_context(src, terrain_crs=input_crs)
                 if input_crs == CRS_GEOGRAPHIC:
-                    x_src, y_src = context["tr_geo_to_src"].transform(second, first)
+                    x_src, y_src = transformer_transform(
+                        context["tr_geo_to_src"], second, first
+                    )
                 else:
-                    x_src, y_src = context["tr_terrain_to_src"].transform(first, second)
+                    x_src, y_src = transformer_transform(
+                        context["tr_terrain_to_src"], first, second
+                    )
                 row, col = src.index(x_src, y_src)
                 if not (0 <= row < src.height and 0 <= col < src.width):
                     return None
