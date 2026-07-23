@@ -46,7 +46,10 @@ from TerraLab.terrain.providers import (
     _source_paths,
     _source_value,
 )
-from TerraLab.terrain.land_cover.legends.s2glc import s2glc_classes_to_rgba
+from TerraLab.terrain.land_cover.legends.s2glc import (
+    S2GLC_LEGEND,
+    s2glc_classes_to_rgba,
+)
 from TerraLab.terrain.surface_store import AtomicNpzStore
 
 
@@ -186,10 +189,12 @@ class SurfaceProvider(abc.ABC):
         self,
         *,
         source_id: str = "",
+        source_name: str = "",
         internal_crs: str = CRS_TERRAIN_INTERNAL,
         transform_service: CoordinateTransformService | None = None,
     ) -> None:
         self.source_id = str(source_id or "")
+        self.source_name = str(source_name or source_id or "")
         self.internal_crs = normalize_crs(internal_crs)
         self.transform_service = transform_service or DEFAULT_TRANSFORM_SERVICE
 
@@ -310,7 +315,12 @@ class _GdalProviderMixin:
         return _path_fingerprint(
             self.paths,
             namespace=self.surface_kind,
-            configuration=(self.declared_crs, getattr(self, "band", None)),
+            configuration=(
+                self.declared_crs,
+                getattr(self, "band", None),
+                self.source_id,
+                self.source_name,
+            ),
         )
 
     def close(self) -> None:
@@ -354,6 +364,7 @@ class RgbSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
         paths: str | os.PathLike | Sequence[str],
         *,
         source_id: str = "",
+        source_name: str = "",
         internal_crs: str = CRS_TERRAIN_INTERNAL,
         declared_crs: str | None = None,
         linear_light: bool = False,
@@ -361,6 +372,7 @@ class RgbSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
     ) -> None:
         super().__init__(
             source_id=source_id,
+            source_name=source_name,
             internal_crs=internal_crs,
             transform_service=transform_service,
         )
@@ -376,11 +388,7 @@ class RgbSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
             raise FileNotFoundError("No GDAL-compatible RGB surface raster found")
         self._initialize_datasets()
         def is_rgb(dataset: _GeoRasterDataset) -> bool:
-            names = set(dataset.colorinterp)
-            return {"red", "green", "blue"}.issubset(names) or dataset.count in {
-                3,
-                4,
-            }
+            return dataset.count in {3, 4}
 
         valid_datasets = [dataset for dataset in self._datasets if is_rgb(dataset)]
         invalid = [dataset for dataset in self._datasets if not is_rgb(dataset)]
@@ -389,7 +397,7 @@ class RgbSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
         self._datasets = valid_datasets
         if not self._datasets:
             raise ValueError(
-                "La cobertura RGB ha de tenir tres canals RGB vàlids "
+                "L'ortofoto ha de tenir tres canals RGB vàlids "
                 "(o RGB amb alfa); no s'accepten rasters d'una banda."
             )
         print(
@@ -539,6 +547,7 @@ class CategoricalSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
         paths: str | os.PathLike | Sequence[str],
         *,
         source_id: str = "",
+        source_name: str = "",
         class_colors: Mapping[int, Sequence[int]] | None = None,
         legend_id: str | None = None,
         band: int = 1,
@@ -549,6 +558,7 @@ class CategoricalSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
     ) -> None:
         super().__init__(
             source_id=source_id,
+            source_name=source_name,
             internal_crs=internal_crs,
             transform_service=transform_service,
         )
@@ -571,7 +581,13 @@ class CategoricalSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
             _path_fingerprint(
                 self.paths,
                 namespace=self.surface_kind,
-                configuration=(self.declared_crs, self.band, self.legend_id),
+                configuration=(
+                    self.declared_crs,
+                    self.band,
+                    self.legend_id,
+                    self.source_id,
+                    self.source_name,
+                ),
             ).encode("ascii")
         )
         digest.update(f"land-cover-palette-v{LAND_COVER_PALETTE_VERSION}".encode("ascii"))
@@ -753,6 +769,205 @@ class CategoricalSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
         return RgbaSampleBatch(rgba, valid)
 
 
+class RgbCategoricalSurfaceProvider(CategoricalSurfaceProvider):
+    """Decode a lossless RGB palette raster into semantic class identifiers."""
+
+    surface_kind = "surface-categorical-rgb"
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        mapping: dict[tuple[int, int, int, int], int] = {}
+        if self.legend_id in {
+            "s2glc",
+            "s2glc-2017",
+            "s2glc_europe_2017",
+        }:
+            for class_id, style in S2GLC_LEGEND.items():
+                mapping[tuple(int(value) for value in style.base_color)] = int(
+                    class_id
+                )
+        for class_id, raw_color in self.class_colors.items():
+            color = tuple(int(value) for value in raw_color)
+            if len(color) == 3:
+                color += (255,)
+            if len(color) >= 4:
+                mapping[color[:4]] = int(class_id)
+        self._rgba_to_class = mapping
+        packed = sorted(
+            (
+                ((r << 24) | (g << 16) | (b << 8) | a, class_id)
+                for (r, g, b, a), class_id in mapping.items()
+            ),
+            key=lambda item: item[0],
+        )
+        self._packed_colors = np.asarray(
+            [item[0] for item in packed], dtype=np.uint32
+        )
+        self._packed_classes = np.asarray(
+            [item[1] for item in packed], dtype=np.int64
+        )
+
+    def initialize(self) -> bool:
+        if not self.paths:
+            raise FileNotFoundError(
+                "No GDAL-compatible RGB categorical raster found"
+            )
+        if not self._rgba_to_class:
+            raise ValueError(
+                "La cobertura RGB categòrica necessita una llegenda coneguda "
+                "o una paleta explícita."
+            )
+        self._initialize_datasets()
+        valid_datasets = [
+            dataset for dataset in self._datasets if dataset.count in {3, 4}
+        ]
+        invalid = [
+            dataset for dataset in self._datasets if dataset.count not in {3, 4}
+        ]
+        for dataset in invalid:
+            dataset.close()
+        self._datasets = valid_datasets
+        if not self._datasets:
+            raise ValueError(
+                "La cobertura RGB categòrica ha de tenir tres canals RGB "
+                "(o RGB amb alfa)."
+            )
+        return True
+
+    @staticmethod
+    def _decode_rgba(
+        rgba: np.ndarray,
+        packed_colors: np.ndarray,
+        packed_classes: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        values = np.asarray(rgba, dtype=np.uint8)
+        packed = (
+            values[0].astype(np.uint32) << np.uint32(24)
+            | values[1].astype(np.uint32) << np.uint32(16)
+            | values[2].astype(np.uint32) << np.uint32(8)
+            | values[3].astype(np.uint32)
+        )
+        positions = np.searchsorted(packed_colors, packed)
+        inside = positions < packed_colors.size
+        matched = np.zeros(packed.shape, dtype=bool)
+        if np.any(inside):
+            matched[inside] = (
+                packed_colors[positions[inside]] == packed[inside]
+            )
+        classes = np.full(packed.shape, -1, dtype=np.int64)
+        if np.any(matched):
+            classes[matched] = packed_classes[positions[matched]]
+        return classes, matched & (values[3] > 0)
+
+    def sample_classes(
+        self,
+        x: Any,
+        y: Any,
+        *,
+        input_crs: str | None = None,
+        lod_factors: Any = None,
+        progress_callback=None,
+        abort_check=None,
+    ) -> CategoricalSampleBatch:
+        x_arr, y_arr = np.broadcast_arrays(
+            np.asarray(x, dtype=np.float64),
+            np.asarray(y, dtype=np.float64),
+        )
+        shape = x_arr.shape
+        flat_x = x_arr.ravel()
+        flat_y = y_arr.ravel()
+        lod_arr = (
+            np.broadcast_to(
+                np.asarray(lod_factors, dtype=np.int16), shape
+            ).ravel()
+            if lod_factors is not None
+            else None
+        )
+        crs = normalize_crs(input_crs or self.internal_crs)
+        classes = np.full(flat_x.size, -1, dtype=np.int64)
+        valid = np.zeros(flat_x.size, dtype=bool)
+        provenance = np.full(flat_x.size, -1, dtype=np.int16)
+        finite = np.isfinite(flat_x) & np.isfinite(flat_y)
+        dataset_count = max(1, len(self._datasets))
+        for dataset_index, dataset in enumerate(self._datasets):
+            if callable(abort_check) and abort_check():
+                from TerraLab.terrain.providers import RasterSamplingCancelled
+
+                raise RasterSamplingCancelled(
+                    "RGB categorical sampling cancelled"
+                )
+            query_indices = np.flatnonzero(finite & ~valid)
+            if query_indices.size == 0:
+                break
+            native_x, native_y, covered = self._native_query(
+                dataset, flat_x, flat_y, query_indices, crs
+            )
+            if not np.any(covered):
+                continue
+            covered_indices = query_indices[covered]
+            rgb_bands, alpha_band = RgbSurfaceProvider._band_layout(dataset)
+            bands = tuple(
+                dict.fromkeys(
+                    (*rgb_bands, *((alpha_band,) if alpha_band else ()))
+                )
+            )
+            if lod_arr is not None and PERFORMANCE_FLAGS.surface_lod_cache:
+                values, sampled_valid = dataset.sample_native_lod(
+                    native_x[covered],
+                    native_y[covered],
+                    lod_arr[covered_indices],
+                    bands=bands,
+                    tile_store=self.tile_store,
+                    progress_callback=progress_callback,
+                    abort_check=abort_check,
+                )
+            else:
+                values, sampled_valid = dataset.sample_native(
+                    native_x[covered],
+                    native_y[covered],
+                    bands=bands,
+                    interpolation="nearest",
+                    progress_callback=progress_callback,
+                    abort_check=abort_check,
+                )
+            rows = {band: index for index, band in enumerate(bands)}
+            rgba = np.full((4, covered_indices.size), 255, dtype=np.uint8)
+            for channel, band in enumerate(rgb_bands):
+                rgba[channel] = _normalize_channel(
+                    values[rows[band]],
+                    dataset.dtypes[band - 1],
+                    scale=dataset.scales[band - 1],
+                    offset=dataset.offsets[band - 1],
+                )
+            if alpha_band is not None:
+                rgba[3] = _normalize_channel(
+                    values[rows[alpha_band]],
+                    dataset.dtypes[alpha_band - 1],
+                    scale=dataset.scales[alpha_band - 1],
+                    offset=dataset.offsets[alpha_band - 1],
+                    alpha=True,
+                )
+            decoded, decoded_valid = self._decode_rgba(
+                rgba, self._packed_colors, self._packed_classes
+            )
+            decoded_valid &= sampled_valid
+            if np.any(decoded_valid):
+                chosen = covered_indices[decoded_valid]
+                classes[chosen] = decoded[decoded_valid]
+                valid[chosen] = True
+                provenance[chosen] = int(dataset_index)
+            if callable(progress_callback):
+                progress_callback(
+                    (dataset_index + 1.0) / dataset_count,
+                    "sampling-rgb-categories",
+                )
+        return CategoricalSampleBatch(
+            classes.reshape(shape),
+            valid.reshape(shape),
+            provenance.reshape(shape),
+        )
+
+
 class LightPollutionProvider(_GdalProviderMixin, SurfaceProvider):
     """Typed continuous radiance provider, independent from terrain surface."""
 
@@ -763,6 +978,7 @@ class LightPollutionProvider(_GdalProviderMixin, SurfaceProvider):
         paths: str | os.PathLike | Sequence[str],
         *,
         source_id: str = "",
+        source_name: str = "",
         band: int = 1,
         internal_crs: str = CRS_TERRAIN_INTERNAL,
         declared_crs: str | None = None,
@@ -770,6 +986,7 @@ class LightPollutionProvider(_GdalProviderMixin, SurfaceProvider):
     ) -> None:
         super().__init__(
             source_id=source_id,
+            source_name=source_name,
             internal_crs=internal_crs,
             transform_service=transform_service,
         )
@@ -858,6 +1075,8 @@ class SurfaceSamplingRequest:
     generation: int = 0
     stage: str = "complete"
     fov_margin_deg: float = 10.0
+    surface_mode: str | None = None
+    # Deprecated compatibility input.
     surface_layer_type: str | None = None
 
     def __post_init__(self) -> None:
@@ -868,8 +1087,11 @@ class SurfaceSamplingRequest:
         object.__setattr__(self, "view_azimuth_deg", float(self.view_azimuth_deg) % 360.0)
         object.__setattr__(self, "view_fov_deg", min(360.0, max(0.0, float(self.view_fov_deg))))
         object.__setattr__(self, "fov_margin_deg", max(0.0, float(self.fov_margin_deg)))
-        normalized_type = str(self.surface_layer_type or "").strip() or None
-        object.__setattr__(self, "surface_layer_type", normalized_type)
+        normalized_mode = str(
+            self.surface_mode or self.surface_layer_type or ""
+        ).strip() or None
+        object.__setattr__(self, "surface_mode", normalized_mode)
+        object.__setattr__(self, "surface_layer_type", normalized_mode)
         if self.visible_radius_m is not None:
             radius = float(self.visible_radius_m)
             object.__setattr__(
@@ -894,6 +1116,8 @@ class SurfaceSampleCache:
     key: SurfaceCacheKey
     source_ids: tuple[str, ...]
     geometry_crs: str
+    source_names: tuple[str, ...] = ()
+    source_legend_ids: tuple[str, ...] = ()
     # Exact surface sample below the observer.  It closes the sub-metre hole
     # at the centre of the polar mesh without stretching the first radial ring
     # (and all of its angular land-cover cells) to the screen bottom.
@@ -939,6 +1163,7 @@ class SurfaceSampleCache:
     visual_loaded: np.ndarray | None = None
     visual_visible: np.ndarray | None = None
     visual_rgba: np.ndarray | None = None
+    visual_source_indices: np.ndarray | None = None
     visual_class_ids: np.ndarray | None = None
     visual_categorical: np.ndarray | None = None
 
@@ -998,6 +1223,7 @@ class SurfaceSampleCache:
             ("visual_loaded", bool),
             ("visual_visible", bool),
             ("visual_rgba", np.uint8),
+            ("visual_source_indices", np.int16),
             ("visual_class_ids", np.int64),
             ("visual_categorical", bool),
         ):
@@ -1040,6 +1266,7 @@ _SURFACE_ARRAY_FIELDS = (
     "visual_loaded",
     "visual_visible",
     "visual_rgba",
+    "visual_source_indices",
     "visual_class_ids",
     "visual_categorical",
 )
@@ -1057,12 +1284,14 @@ def _surface_cache_payload(
     cache: SurfaceSampleCache,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     metadata = {
-        "schema": 2,
+        "schema": 3,
         "digest": cache.cache_id,
         "geometry_id": cache.key.geometry_id,
         "source_fingerprints": list(cache.key.source_fingerprints),
         "sampling_policy": cache.key.sampling_policy,
         "source_ids": list(cache.source_ids),
+        "source_names": list(cache.source_names),
+        "source_legend_ids": list(cache.source_legend_ids),
         "geometry_crs": cache.geometry_crs,
         "observer_valid": bool(cache.observer_valid),
         "observer_source_index": int(cache.observer_source_index),
@@ -1082,7 +1311,7 @@ def _surface_cache_payload(
 def _surface_cache_from_payload(
     metadata: Mapping[str, Any], arrays: Mapping[str, np.ndarray]
 ) -> SurfaceSampleCache:
-    if int(metadata.get("schema", 0)) != 2:
+    if int(metadata.get("schema", 0)) != 3:
         raise ValueError("Unsupported surface cache schema")
     key = SurfaceCacheKey(
         geometry_id=str(metadata["geometry_id"]),
@@ -1095,6 +1324,12 @@ def _surface_cache_from_payload(
     return SurfaceSampleCache(
         key=key,
         source_ids=tuple(str(value) for value in metadata.get("source_ids", ())),
+        source_names=tuple(
+            str(value) for value in metadata.get("source_names", ())
+        ),
+        source_legend_ids=tuple(
+            str(value) for value in metadata.get("source_legend_ids", ())
+        ),
         geometry_crs=str(metadata["geometry_crs"]),
         observer_valid=bool(metadata.get("observer_valid", False)),
         observer_source_index=int(metadata.get("observer_source_index", -1)),
@@ -1384,6 +1619,20 @@ class SurfaceSamplingService:
     def source_ids(self) -> tuple[str, ...]:
         return tuple(provider.source_id or provider.fingerprint for provider in self.providers)
 
+    @property
+    def source_names(self) -> tuple[str, ...]:
+        return tuple(
+            provider.source_name or provider.source_id or provider.fingerprint
+            for provider in self.providers
+        )
+
+    @property
+    def source_legend_ids(self) -> tuple[str, ...]:
+        return tuple(
+            str(getattr(provider, "legend_id", "") or "").strip().lower()
+            for provider in self.providers
+        )
+
     def close(self) -> None:
         with self._cache_lock:
             self._cache.clear()
@@ -1486,9 +1735,9 @@ class SurfaceSamplingService:
         class_ids = np.full(x_arr.shape, -1, dtype=np.int64)
         categorical = np.zeros(x_arr.shape, dtype=bool)
 
-        # LayerSelectionService already orders automatic chains as RGB then
-        # categorical. Preserve the supplied order here so an explicit manual
-        # categorical selection remains the effective source it claims to be.
+        # LayerSelectionService orders automatic chains as categorical then
+        # RGB. Preserve its order so a manual RGB choice remains first while
+        # other categorical sources can still fill nodata.
         ordered = list(self.providers)
         provider_to_index = {id(provider): index for index, provider in enumerate(self.providers)}
         provider_count = max(1, len(ordered))
@@ -1642,7 +1891,7 @@ class SurfaceSamplingService:
         policy = (
             f"surface-v{SURFACE_CACHE_POLICY_VERSION}:profile={self.max_profile_samples}:"
             f"relief={self.max_relief_samples}:rgb-nearest:categorical-nearest-lod:"
-            f"mode={request.surface_layer_type or 'automatic'}:"
+            f"mode={request.surface_mode or 'automatic'}:"
             f"stage={request.stage}:radius={visible_radius}:"
             f"azimuth={policy_azimuth:.6f}:fov={policy_fov:.6f}:"
             f"margin={policy_margin:.6f}"
@@ -1947,7 +2196,7 @@ class SurfaceSamplingService:
         visual_distances = visual_azimuths = None
         visual_altitudes = visual_elevations = None
         visual_valid = visual_visible = None
-        visual_rgba = visual_classes = visual_categorical = None
+        visual_rgba = visual_sources = visual_classes = visual_categorical = None
         if isinstance(mesh, Mapping):
             mesh_azimuths = np.asarray(mesh.get("azimuths", ()), dtype=np.float64)
             mesh_distances = np.asarray(mesh.get("distances", ()), dtype=np.float64)
@@ -2046,6 +2295,9 @@ class SurfaceSamplingService:
                     visual_rgba = np.where(
                         visual_valid[..., None], visual_samples.rgba, 0
                     ).astype(np.uint8)
+                    visual_sources = np.where(
+                        visual_valid, visual_samples.source_indices, -1
+                    ).astype(np.int16)
                     visual_classes = np.where(
                         visual_valid,
                         visual_samples.class_ids
@@ -2064,6 +2316,8 @@ class SurfaceSamplingService:
         result = SurfaceSampleCache(
             key=key,
             source_ids=self.source_ids,
+            source_names=self.source_names,
+            source_legend_ids=self.source_legend_ids,
             geometry_crs=geometry_crs,
             observer_rgba=observer_rgba,
             observer_valid=observer_valid,
@@ -2098,6 +2352,7 @@ class SurfaceSamplingService:
             visual_valid=visual_valid,
             visual_visible=visual_visible,
             visual_rgba=visual_rgba,
+            visual_source_indices=visual_sources,
             visual_class_ids=visual_classes,
             visual_categorical=visual_categorical,
         )
@@ -2164,8 +2419,15 @@ def _layer_kind(source: Any) -> str:
     if not raw and hasattr(raw, "name"):
         raw = raw.name
     normalized = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
-    if "rgb" in normalized or "ortho" in normalized or "true_color" in normalized or "truecolour" in normalized:
-        return "rgb"
+    if normalized in {"land_cover_rgb", "rgb_land_cover"}:
+        return "land_cover_rgb"
+    if (
+        "ortho" in normalized
+        or "true_color" in normalized
+        or "truecolour" in normalized
+        or normalized in {"rgb", "orthophoto_rgb"}
+    ):
+        return "orthophoto"
     if "categor" in normalized or normalized in {"land_cover", "landcover"}:
         return "categorical"
     if "light" in normalized or "pollution" in normalized or "dvnl" in normalized:
@@ -2242,6 +2504,15 @@ def create_surface_providers(
             kind = _layer_kind(source)
             common = {
                 "source_id": _source_identifier(source),
+                "source_name": str(
+                    _source_value(
+                        source,
+                        "display_name",
+                        "name",
+                        default=_source_identifier(source),
+                    )
+                    or _source_identifier(source)
+                ),
                 "internal_crs": internal_crs,
                 "declared_crs": _source_declared_crs(source),
                 "transform_service": service,
@@ -2253,11 +2524,18 @@ def create_surface_providers(
                     legend_id=_legend_for_source(source),
                     **common,
                 )
+            elif kind == "land_cover_rgb":
+                provider = RgbCategoricalSurfaceProvider(
+                    paths,
+                    class_colors=_palette_for_source(
+                        source, category_palettes
+                    ),
+                    legend_id=_legend_for_source(source),
+                    **common,
+                )
             elif kind == "light_pollution":
                 provider = LightPollutionProvider(paths, **common)
             else:
-                # Multi-band surface datasets default to RGB.  A one-band
-                # land-cover dataset should use the categorical type.
                 provider = RgbSurfaceProvider(
                     paths,
                     linear_light=_rgb_linear_light_for_source(source),
@@ -2287,6 +2565,7 @@ __all__ = [
     "SurfaceProvider",
     "RgbSurfaceProvider",
     "CategoricalSurfaceProvider",
+    "RgbCategoricalSurfaceProvider",
     "LightPollutionProvider",
     "SurfaceCacheKey",
     "SurfaceSampleCache",

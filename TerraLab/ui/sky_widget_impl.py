@@ -5,6 +5,7 @@ import sys
 import time
 import random
 import json
+import html
 import unicodedata
 from pathlib import Path
 from typing import Optional
@@ -29,6 +30,7 @@ _TIMEZONE_FINDER = TimezoneFinder() if TimezoneFinder is not None else None
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QSlider, QLineEdit, QPushButton, QFrame,
                              QSizePolicy, QCheckBox, QGridLayout, QDialog, QCalendarWidget, QApplication, QGroupBox, QMenu, QMessageBox, QInputDialog, QShortcut)
+from PyQt5.QtWidgets import QToolTip
 from PyQt5.QtCore import Qt, QTimer, QPointF, QRectF, pyqtSignal, pyqtSlot, QObject, QThread, QLineF, QUrl, QEvent, QMetaObject
 from PyQt5.QtGui import QPainter, QColor, QPen, QRadialGradient, QBrush, QPainterPath, QLinearGradient, QPixmap, QFont, QTransform, QImage, QPolygonF, QDesktopServices
 from TerraLab.common.custom_widget_base import CustomWidgetBase
@@ -51,7 +53,12 @@ from TerraLab.light_pollution.modes import (
 )
 from TerraLab.data.assets_manager import AssetManager
 from TerraLab.data.layer_manager import LayerId, LayerManager, LayerState
-from TerraLab.terrain.data_sources import LayerRole, LayerSelectionService, LayerType
+from TerraLab.terrain.data_sources import (
+    LayerRole,
+    LayerSelectionService,
+    LayerType,
+    SurfaceMode,
+)
 from TerraLab.ui.data_layers_dialog import DataLayerChanges, DataLayersDialog
 from TerraLab.ui.canvas_input_handler import CanvasInputHandler
 from TerraLab.ui.canvas_selection import CanvasSelection
@@ -468,6 +475,55 @@ class AstroCanvas(QWidget):
                 self.finish_inline_constellation_rename(apply=True)
                 return True
         return super().eventFilter(obj, event)
+    def event(self, event):
+        if event.type() == QEvent.ToolTip:
+            parent = getattr(self, "parent_widget", None)
+            manager = getattr(parent, "layer_manager", None)
+            registry = getattr(manager, "data_sources", None)
+            surface_enabled = self._parent_checkbox_checked(
+                "chk_surface_layer", True
+            )
+            categorical_mode = bool(
+                registry is not None
+                and registry.surface_mode is SurfaceMode.LAND_COVER
+            )
+            interactive = bool(
+                getattr(self, "dragging", False)
+                or self.scope_mode_enabled()
+                or self.measurement_tool_active()
+                or self.drawing_mode_enabled()
+                or getattr(
+                    getattr(self, "scope_controller", None),
+                    "dragging",
+                    False,
+                )
+                or getattr(parent, "_dragging_time", False)
+            )
+            info = None
+            if surface_enabled and categorical_mode and not interactive:
+                lookup = getattr(
+                    getattr(self, "horizon_overlay", None),
+                    "category_at_screen",
+                    None,
+                )
+                if callable(lookup):
+                    info = lookup(event.pos().x(), event.pos().y())
+            if info is not None:
+                name = html.escape(str(info.name))
+                description = html.escape(str(info.description))
+                product = html.escape(str(info.product))
+                QToolTip.showText(
+                    event.globalPos(),
+                    f"<b>{name}</b><br>{description}<br>"
+                    f"Classe {int(info.class_id)} · {product}",
+                    self,
+                )
+                event.accept()
+                return True
+            QToolTip.hideText()
+            event.ignore()
+            return True
+        return super().event(event)
     def clear_measurements(self) -> None:
         self.measurement_controller.clear()
         self._refresh_overlay_cursor()
@@ -2106,17 +2162,29 @@ class AstronomicalWidget(CustomWidgetBase):
         except ValueError:
             return None
         if normalized in {
+            LayerId.EARTH_ORTHOPHOTO,
             LayerId.EARTH_SURFACE_CATEGORICAL,
             LayerId.EARTH_SURFACE_RGB,
         }:
             surface_layers = (
+                LayerId.EARTH_ORTHOPHOTO,
                 LayerId.EARTH_SURFACE_CATEGORICAL,
                 LayerId.EARTH_SURFACE_RGB,
             )
-            if any(
-                manager.status(candidate).state is LayerState.READY
-                for candidate in surface_layers
-            ):
+            ready = False
+            for candidate in surface_layers:
+                try:
+                    ready = (
+                        manager.status(candidate).state
+                        is LayerState.READY
+                    )
+                except (KeyError, ValueError):
+                    # Compatibility with integrations exposing the two
+                    # pre-v3 surface rows only.
+                    continue
+                if ready:
+                    break
+            if ready:
                 return None
             return normalized
         return (
@@ -3596,20 +3664,23 @@ class AstronomicalWidget(CustomWidgetBase):
     def _usable_surface_mode_sources(self):
         """Return installed, enabled surface sources grouped by render mode."""
         grouped = {
-            LayerType.SURFACE_RGB: [],
-            LayerType.SURFACE_CATEGORICAL: [],
+            SurfaceMode.ORTHOPHOTO: [],
+            SurfaceMode.LAND_COVER: [],
         }
         manager = getattr(self, "layer_manager", None)
         registry = getattr(manager, "data_sources", None)
         if registry is None:
             return grouped
         for source in registry.list_sources():
-            if (
-                source.layer_type in grouped
-                and bool(source.enabled)
-                and bool(source.available)
-            ):
-                grouped[source.layer_type].append(source)
+            if not (bool(source.enabled) and bool(source.available)):
+                continue
+            if source.layer_type is LayerType.ORTHOPHOTO_RGB:
+                grouped[SurfaceMode.ORTHOPHOTO].append(source)
+            elif source.layer_type in {
+                LayerType.LAND_COVER_CATEGORICAL,
+                LayerType.LAND_COVER_RGB,
+            }:
+                grouped[SurfaceMode.LAND_COVER].append(source)
         for sources in grouped.values():
             sources.sort(
                 key=lambda source: (
@@ -3619,73 +3690,149 @@ class AstronomicalWidget(CustomWidgetBase):
                 )
             )
         return grouped
+    def _surface_sources_covering_observer(self, sources):
+        latitude = float(getattr(self, "latitude", 0.0))
+        longitude = float(getattr(self, "longitude", 0.0))
+        applicable = []
+        for source in sources:
+            covers = getattr(source, "covers", None)
+            try:
+                covered = (
+                    bool(covers(latitude, longitude))
+                    if callable(covers)
+                    else True
+                )
+            except (TypeError, ValueError):
+                covered = False
+            if covered:
+                applicable.append(source)
+        return applicable
+    def _surface_coverage_message(self, mode, sources):
+        latitude = float(getattr(self, "latitude", 0.0))
+        longitude = float(getattr(self, "longitude", 0.0))
+        mode_label = (
+            "d'ortofoto"
+            if mode is SurfaceMode.ORTHOPHOTO
+            else "de cobertura del sòl"
+        )
+        extents = [
+            tuple(source.coverage)
+            for source in sources
+            if getattr(source, "coverage", None)
+            and len(source.coverage) == 4
+        ]
+        message = (
+            f"Cap font {mode_label} cobreix la ubicació actual "
+            f"({latitude:.5f}, {longitude:.5f})."
+        )
+        if extents:
+            west = min(float(extent[0]) for extent in extents)
+            south = min(float(extent[1]) for extent in extents)
+            east = max(float(extent[2]) for extent in extents)
+            north = max(float(extent[3]) for extent in extents)
+            message += (
+                "\n\nLa font instal·lada cobreix aproximadament "
+                f"{south:.5f}–{north:.5f} N i "
+                f"{west:.5f}–{east:.5f} E."
+            )
+        message += (
+            "\n\nMou la ubicació dins d'aquesta extensió o enllaça una "
+            "ortofoto que cobreixi l'observador."
+            if mode is SurfaceMode.ORTHOPHOTO
+            else "\n\nEnllaça una font que cobreixi l'observador."
+        )
+        return message
     def _sync_surface_mode_control(self):
-        """Show and align the RGB/categorical switch when both can be used."""
+        """Show and align the orthophoto/land-cover switch."""
         selector = getattr(self, "surface_mode_selector", None)
         switch = getattr(self, "slider_surface_mode", None)
         if selector is None or switch is None:
             return
         grouped = self._usable_surface_mode_sources()
-        rgb_sources = grouped[LayerType.SURFACE_RGB]
-        categorical_sources = grouped[LayerType.SURFACE_CATEGORICAL]
-        both_available = bool(rgb_sources and categorical_sources)
+        orthophoto_sources = grouped[SurfaceMode.ORTHOPHOTO]
+        land_cover_sources = grouped[SurfaceMode.LAND_COVER]
+        both_available = bool(orthophoto_sources and land_cover_sources)
         selector.setVisible(both_available)
         if not both_available:
             return
 
         manager = getattr(self, "layer_manager", None)
         registry = getattr(manager, "data_sources", None)
-        selected = registry.get_selection(LayerRole.SURFACE)
-        active = registry.get(selected.source_id) if selected.source_id else None
-        usable_ids = {
-            source.id
-            for sources in grouped.values()
-            for source in sources
-        }
-        if active is None or active.id not in usable_ids:
-            active = LayerSelectionService(registry).select_surface(
-                float(getattr(self, "latitude", 0.0)),
-                float(getattr(self, "longitude", 0.0)),
-            ).effective
-        categorical = bool(
-            active is not None
-            and active.layer_type is LayerType.SURFACE_CATEGORICAL
+        categorical = registry.surface_mode is SurfaceMode.LAND_COVER
+        active_mode = (
+            SurfaceMode.LAND_COVER
+            if categorical
+            else SurfaceMode.ORTHOPHOTO
+        )
+        active_sources = grouped[active_mode]
+        locally_available = bool(
+            self._surface_sources_covering_observer(active_sources)
         )
         switch.blockSignals(True)
         switch.setValue(1 if categorical else 0)
         switch.blockSignals(False)
-        active_label = "categòric" if categorical else "RGB"
-        switch.setToolTip(
-            "Mode de tipus de sòl actiu: "
-            f"{active_label}. Mou l'interruptor per canviar de font."
-        )
+        active_label = "categòric" if categorical else "ortofoto"
+        if locally_available:
+            tooltip = (
+                "Mode de superfície actiu: "
+                f"{active_label}. Mou l'interruptor per canviar de representació."
+            )
+        else:
+            tooltip = self._surface_coverage_message(
+                active_mode, active_sources
+            )
+        switch.setToolTip(tooltip)
+        ortho_label = getattr(self, "lbl_surface_mode_rgb", None)
+        if ortho_label is not None:
+            ortho_local = bool(
+                self._surface_sources_covering_observer(
+                    grouped[SurfaceMode.ORTHOPHOTO]
+                )
+            )
+            ortho_label.setText(
+                "Ortofoto" if ortho_local else "Ortofoto (fora d'àrea)"
+            )
+            ortho_label.setToolTip(
+                ""
+                if ortho_local
+                else self._surface_coverage_message(
+                    SurfaceMode.ORTHOPHOTO,
+                    grouped[SurfaceMode.ORTHOPHOTO],
+                )
+            )
+            ortho_label.setStyleSheet(
+                "font-size: 9px;"
+                + ("" if ortho_local else " color: #9b2f2f;")
+            )
     def on_surface_mode_changed(self, value):
-        """Persist and apply the land-cover product chosen by the switch."""
+        """Persist and apply the semantic surface mode chosen by the switch."""
         grouped = self._usable_surface_mode_sources()
         if not all(grouped.values()):
             self._sync_surface_mode_control()
             return
-        target_type = (
-            LayerType.SURFACE_CATEGORICAL
+        target_mode = (
+            SurfaceMode.LAND_COVER
             if int(value)
-            else LayerType.SURFACE_RGB
+            else SurfaceMode.ORTHOPHOTO
         )
-        target_sources = grouped[target_type]
         manager = getattr(self, "layer_manager", None)
         registry = getattr(manager, "data_sources", None)
-        selected = registry.get_selection(LayerRole.SURFACE)
-        selected_source = registry.get(selected.source_id) if selected.source_id else None
-        target = (
-            selected_source
-            if selected_source in target_sources
-            else target_sources[0]
-        )
-        target_layer = (
-            LayerId.EARTH_SURFACE_CATEGORICAL
-            if target_type is LayerType.SURFACE_CATEGORICAL
-            else LayerId.EARTH_SURFACE_RGB
-        )
-        manager.set_source(target_layer, target.id)
+        target_sources = grouped[target_mode]
+        if not self._surface_sources_covering_observer(target_sources):
+            self._sync_surface_mode_control()
+            QMessageBox.information(
+                self,
+                (
+                    "Ortofoto fora de cobertura"
+                    if target_mode is SurfaceMode.ORTHOPHOTO
+                    else "Cobertura fora de l'àrea"
+                ),
+                self._surface_coverage_message(
+                    target_mode, target_sources
+                ),
+            )
+            return
+        registry.set_surface_mode(target_mode)
         self._effective_data_sources_payload = None
         self._sync_surface_mode_control()
 
@@ -3696,7 +3843,7 @@ class AstronomicalWidget(CustomWidgetBase):
             view_context = getattr(self, "_surface_refresh_view_kwargs", None)
             refresh(
                 profile=getattr(self, "_full_horizon_profile", None),
-                surface_layer_type=target_type.value,
+                surface_mode=target_mode.value,
                 atomic_surface_swap=True,
                 **(view_context() if callable(view_context) else {}),
             )
@@ -3730,10 +3877,11 @@ class AstronomicalWidget(CustomWidgetBase):
         )
         result = dialog.exec_()
         dialog.post_close_changes.connect(self._apply_data_layer_changes)
-        if result == QDialog.Accepted:
-            self._apply_data_layer_changes(dialog.changes)
-            self._sync_layer_visibility_controls()
-            self._sync_runtime_asset_config()
+        # Layer-library actions are persisted immediately, so closing the
+        # window through its title bar must refresh runtime state as well.
+        self._apply_data_layer_changes(dialog.changes)
+        self._sync_layer_visibility_controls()
+        self._sync_runtime_asset_config()
         return result
     def _sync_layer_visibility_controls(self):
         manager = getattr(self, "layer_manager", None)

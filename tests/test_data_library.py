@@ -111,3 +111,15 @@ def test_versioned_migration_keeps_external_assets_linked(tmp_path, monkeypatch)
     assert Path(new.asset_state("milkyway_texture")["path"]) == external
     assert managed.exists()
 
+
+def test_asset_manifest_entry_can_be_removed_atomically(tmp_path):
+    library = DataLibrary(tmp_path / "library")
+    library.initialize()
+    library.update_asset("planck_dust", ready=True, path="dust.npz")
+    library.update_asset("ngc_catalog", ready=True, path="ngc.csv")
+
+    previous = library.remove_asset("planck_dust")
+
+    assert previous["ready"] is True
+    assert library.asset_state("planck_dust") == {}
+    assert library.asset_state("ngc_catalog")["path"] == "ngc.csv"

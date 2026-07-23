@@ -964,7 +964,7 @@ def build_deferred_controls_ui(widget):
     self.chk_enable_village.toggled.connect(self.canvas.update)
     self.chk_enable_village.toggled.connect(self.on_topography_toggled)
     v_earth.addWidget(self.chk_enable_village)
-    self.chk_surface_layer = QCheckBox("Tipus de sòl")
+    self.chk_surface_layer = QCheckBox("Superfície")
     self.chk_surface_layer.setChecked(
         self._load_visibility_state("superficie", True)
     )
@@ -978,7 +978,7 @@ def build_deferred_controls_ui(widget):
     h_surface_mode = QHBoxLayout(self.surface_mode_selector)
     h_surface_mode.setContentsMargins(0, 0, 0, 0)
     h_surface_mode.setSpacing(4)
-    self.lbl_surface_mode_rgb = QLabel("RGB")
+    self.lbl_surface_mode_rgb = QLabel("Ortofoto")
     self.lbl_surface_mode_rgb.setStyleSheet("font-size: 9px;")
     h_surface_mode.addWidget(self.lbl_surface_mode_rgb)
     self.slider_surface_mode = QSlider(Qt.Horizontal)
@@ -989,10 +989,10 @@ def build_deferred_controls_ui(widget):
     self.slider_surface_mode.setFixedSize(38, 18)
     self.slider_surface_mode.setFocusPolicy(Qt.StrongFocus)
     self.slider_surface_mode.setAccessibleName(
-        "Mode de tipus de sòl: RGB o categòric"
+        "Mode de superfície: ortofoto o categòric"
     )
     self.slider_surface_mode.setAccessibleDescription(
-        "Posició esquerra: RGB. Posició dreta: categòric."
+        "Posició esquerra: ortofoto. Posició dreta: cobertura categòrica."
     )
     self.slider_surface_mode.setStyleSheet(
         "QSlider::groove:horizontal {"

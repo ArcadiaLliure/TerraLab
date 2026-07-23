@@ -291,6 +291,20 @@ class DataLibrary:
             self.save_manifest(manifest)
         return state
 
+    def remove_asset(self, asset_id: str) -> dict[str, Any]:
+        """Remove one asset entry from the library manifest atomically."""
+
+        normalized_id = str(asset_id or "").strip()
+        if not normalized_id:
+            raise ValueError("An asset id cannot be empty")
+        with _JSON_LOCK:
+            manifest = self.load_manifest()
+            assets = dict(manifest.get("assets", {}) or {})
+            previous = assets.pop(normalized_id, {})
+            manifest["assets"] = assets
+            self.save_manifest(manifest)
+        return dict(previous) if isinstance(previous, Mapping) else {}
+
     def legacy_managed_size(self, source_root: Path | None = None) -> int:
         source = Path(source_root or application_state_root())
         total = 0

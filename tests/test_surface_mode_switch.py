@@ -2,9 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from TerraLab.data.layer_manager import LayerId
-from TerraLab.terrain.data_sources import LayerType
-from TerraLab.ui.sky_widget_impl import AstronomicalWidget
+from PyQt5.QtCore import QEvent, QPoint
+
+from TerraLab.terrain.land_cover.legends.category_info import (
+    LandCoverCategoryInfo,
+)
+from TerraLab.terrain.data_sources import LayerType, SurfaceMode
+from TerraLab.ui.sky_widget_impl import AstroCanvas, AstronomicalWidget
 
 
 class _Selector:
@@ -34,6 +38,7 @@ class _Registry:
     def __init__(self, sources, selected_id=None):
         self.sources = list(sources)
         self.selected_id = selected_id
+        self.surface_mode = SurfaceMode.LAND_COVER
 
     def list_sources(self):
         return list(self.sources)
@@ -43,6 +48,9 @@ class _Registry:
 
     def get(self, source_id):
         return next((source for source in self.sources if source.id == source_id), None)
+
+    def set_surface_mode(self, mode):
+        self.surface_mode = SurfaceMode(mode)
 
 
 class _Manager:
@@ -57,19 +65,38 @@ class _Manager:
 
 class _SurfaceControlHarness:
     _usable_surface_mode_sources = AstronomicalWidget._usable_surface_mode_sources
+    _surface_sources_covering_observer = (
+        AstronomicalWidget._surface_sources_covering_observer
+    )
+    _surface_coverage_message = AstronomicalWidget._surface_coverage_message
     _sync_surface_mode_control = AstronomicalWidget._sync_surface_mode_control
     on_surface_mode_changed = AstronomicalWidget.on_surface_mode_changed
 
 
-def _source(source_id, layer_type, *, enabled=True, priority=0):
-    return SimpleNamespace(
+def _source(
+    source_id,
+    layer_type,
+    *,
+    enabled=True,
+    priority=0,
+    coverage=None,
+):
+    source = SimpleNamespace(
         id=source_id,
         layer_type=layer_type,
         enabled=enabled,
         available=True,
         priority=priority,
         resolution_m=10.0,
+        coverage=coverage,
     )
+    if coverage is not None:
+        west, south, east, north = coverage
+        source.covers = lambda latitude, longitude: (
+            south <= latitude <= north
+            and west <= longitude <= east
+        )
+    return source
 
 
 def _harness(sources, selected_id=None):
@@ -94,7 +121,7 @@ def test_surface_mode_switch_is_hidden_until_both_modes_are_usable():
 def test_surface_mode_switch_reflects_the_selected_categorical_source():
     widget = _harness(
         [
-            _source("rgb", LayerType.SURFACE_RGB),
+            _source("ortho", LayerType.ORTHOPHOTO_RGB),
             _source("categorical", LayerType.SURFACE_CATEGORICAL),
         ],
         "categorical",
@@ -110,7 +137,7 @@ def test_surface_mode_switch_reflects_the_selected_categorical_source():
 def test_surface_mode_switch_selects_source_and_refreshes_visible_surface():
     widget = _harness(
         [
-            _source("rgb", LayerType.SURFACE_RGB),
+            _source("ortho", LayerType.ORTHOPHOTO_RGB),
             _source("categorical-low", LayerType.SURFACE_CATEGORICAL, priority=1),
             _source("categorical-high", LayerType.SURFACE_CATEGORICAL, priority=5),
         ],
@@ -127,19 +154,152 @@ def test_surface_mode_switch_selects_source_and_refreshes_visible_surface():
     )
     widget._surface_refresh_view_kwargs = lambda: {"view_fov_deg": 75.0}
     widget.canvas = SimpleNamespace(update=lambda: updates.append(True))
+    widget.layer_manager.data_sources.surface_mode = SurfaceMode.ORTHOPHOTO
 
     widget.on_surface_mode_changed(1)
 
-    assert widget.layer_manager.calls == [
-        (LayerId.EARTH_SURFACE_CATEGORICAL, "categorical-high")
-    ]
+    assert widget.layer_manager.calls == []
+    assert (
+        widget.layer_manager.data_sources.surface_mode
+        is SurfaceMode.LAND_COVER
+    )
     assert widget._effective_data_sources_payload is None
     assert refreshes == [
         {
             "profile": profile,
-            "surface_layer_type": LayerType.SURFACE_CATEGORICAL.value,
+            "surface_mode": SurfaceMode.LAND_COVER.value,
             "atomic_surface_swap": True,
             "view_fov_deg": 75.0,
         }
     ]
     assert updates == [True]
+
+
+def test_out_of_coverage_orthophoto_is_rejected_with_explanation(monkeypatch):
+    widget = _harness(
+        [
+            _source(
+                "ortho",
+                LayerType.ORTHOPHOTO_RGB,
+                coverage=(0.97737, 42.57041, 1.03486, 42.59400),
+            ),
+            _source("categorical", LayerType.SURFACE_CATEGORICAL),
+        ],
+        "categorical",
+    )
+    messages = []
+    monkeypatch.setattr(
+        "TerraLab.ui.sky_widget_impl.QMessageBox.information",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+    widget.latitude = 41.21535
+    widget.longitude = 0.80970
+
+    widget.on_surface_mode_changed(0)
+
+    assert (
+        widget.layer_manager.data_sources.surface_mode
+        is SurfaceMode.LAND_COVER
+    )
+    assert widget.slider_surface_mode.value == 1
+    assert messages
+    assert messages[0][0] == "Ortofoto fora de cobertura"
+    assert "41.21535, 0.80970" in messages[0][1]
+    assert "42.57041–42.59400 N" in messages[0][1]
+
+
+class _TooltipEvent:
+    def __init__(self):
+        self.accepted = False
+        self.ignored = False
+
+    def type(self):
+        return QEvent.ToolTip
+
+    def pos(self):
+        return QPoint(4, 5)
+
+    def globalPos(self):
+        return QPoint(40, 50)
+
+    def accept(self):
+        self.accepted = True
+
+    def ignore(self):
+        self.ignored = True
+
+
+def _tooltip_canvas(*, mode, dragging, lookup):
+    registry = SimpleNamespace(surface_mode=mode)
+    parent = SimpleNamespace(
+        layer_manager=SimpleNamespace(data_sources=registry),
+        _dragging_time=False,
+    )
+    return SimpleNamespace(
+        parent_widget=parent,
+        dragging=dragging,
+        horizon_overlay=SimpleNamespace(category_at_screen=lookup),
+        _parent_checkbox_checked=lambda *_args: True,
+        scope_mode_enabled=lambda: False,
+        measurement_tool_active=lambda: False,
+        drawing_mode_enabled=lambda: False,
+        scope_controller=SimpleNamespace(dragging=False),
+    )
+
+
+def test_standard_tooltip_event_shows_cached_categorical_description(
+    monkeypatch,
+):
+    shown = []
+    monkeypatch.setattr(
+        "TerraLab.ui.sky_widget_impl.QToolTip",
+        SimpleNamespace(
+            showText=lambda *args: shown.append(args),
+            hideText=lambda: None,
+        ),
+    )
+    info = LandCoverCategoryInfo(
+        82,
+        "Coberta d'arbres",
+        "Descripció breu.",
+        "S2GLC Europe 2017",
+    )
+    canvas = _tooltip_canvas(
+        mode=SurfaceMode.LAND_COVER,
+        dragging=False,
+        lookup=lambda *_args: info,
+    )
+    event = _TooltipEvent()
+
+    assert AstroCanvas.event(canvas, event) is True
+    assert event.accepted is True
+    assert "Classe 82 · S2GLC Europe 2017" in shown[0][1]
+
+
+def test_tooltip_is_suppressed_while_dragging_or_in_orthophoto(
+    monkeypatch,
+):
+    lookups = []
+    hidden = []
+    monkeypatch.setattr(
+        "TerraLab.ui.sky_widget_impl.QToolTip",
+        SimpleNamespace(
+            showText=lambda *_args: None,
+            hideText=lambda: hidden.append(True),
+        ),
+    )
+    for mode, dragging in (
+        (SurfaceMode.LAND_COVER, True),
+        (SurfaceMode.ORTHOPHOTO, False),
+    ):
+        canvas = _tooltip_canvas(
+            mode=mode,
+            dragging=dragging,
+            lookup=lambda *_args: lookups.append(True),
+        )
+        event = _TooltipEvent()
+        AstroCanvas.event(canvas, event)
+        assert event.ignored is True
+
+    assert lookups == []
+    assert len(hidden) == 2

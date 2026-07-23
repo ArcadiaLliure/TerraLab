@@ -483,6 +483,7 @@ def test_rgb_nodata_falls_back_to_categorical_material(tmp_path):
             layer_type=LayerType.SURFACE_RGB,
             path=str(rgba_path),
             format="geotiff",
+            metadata={"legend_id": "s2glc_europe_2017"},
         ),
         DataSource(
             id="cover",

@@ -345,8 +345,11 @@ def test_rgb_and_categorical_are_alternative_persisted_active_products(
     worker.layer_selection = LayerSelectionService(registry)
 
     automatic, automatic_sources = worker._surface_selection(41.0, 2.0)
-    assert automatic.effective.id == rgb.id
-    assert [source.id for source in automatic_sources] == [rgb.id]
+    assert automatic.effective.id == categorical.id
+    assert [source.id for source in automatic_sources] == [
+        categorical.id,
+        rgb.id,
+    ]
 
     registry.set_selection("surface", categorical.id)
     reloaded = DataSourceRegistry(tmp_path / "sources.json", legacy_reader={})
@@ -354,7 +357,10 @@ def test_rgb_and_categorical_are_alternative_persisted_active_products(
     worker.layer_selection = LayerSelectionService(reloaded)
     manual, manual_sources = worker._surface_selection(41.0, 2.0)
     assert manual.effective.id == categorical.id
-    assert [source.id for source in manual_sources] == [categorical.id]
+    assert [source.id for source in manual_sources] == [
+        categorical.id,
+        rgb.id,
+    ]
     worker.shutdown()
 
 

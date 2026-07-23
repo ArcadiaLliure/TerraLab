@@ -303,8 +303,9 @@ class _DurableChangeEvent(QObject):
 
 _TYPE_LABELS = {
     LayerType.ELEVATION: "Elevació",
-    LayerType.SURFACE_RGB: "Cobertura del sòl — RGB",
-    LayerType.SURFACE_CATEGORICAL: "Cobertura del sòl — categòrica",
+    LayerType.ORTHOPHOTO_RGB: "Ortofoto — RGB/RGBA",
+    LayerType.LAND_COVER_CATEGORICAL: "Cobertura del sòl — raster categòric",
+    LayerType.LAND_COVER_RGB: "Cobertura del sòl — raster RGB",
     LayerType.LIGHT_POLLUTION: "Contaminació lumínica",
 }
 
@@ -359,7 +360,11 @@ def _changes_for_layer(layer_type: LayerType | str) -> DataLayerChanges:
     return DataLayerChanges(
         elevation=kind is LayerType.ELEVATION,
         surface=kind
-        in {LayerType.SURFACE_RGB, LayerType.SURFACE_CATEGORICAL},
+        in {
+            LayerType.ORTHOPHOTO_RGB,
+            LayerType.LAND_COVER_RGB,
+            LayerType.LAND_COVER_CATEGORICAL,
+        },
         light_pollution=kind is LayerType.LIGHT_POLLUTION,
     )
 
@@ -407,6 +412,9 @@ class DataLayersDialog(QDialog):
             self.layer_manager, self.tabs
         )
         self.layer_configurator.setObjectName("layerConfiguratorPage")
+        self.layer_configurator.layerChanged.connect(
+            self._layer_library_changed
+        )
         self.tabs.addTab(self.layer_configurator, "Biblioteca de capes")
         advanced = QWidget()
         advanced.setObjectName("advancedLayersPage")
@@ -448,6 +456,16 @@ class DataLayersDialog(QDialog):
         self._dialog_closed = True
         super().done(result)
 
+    def _layer_library_changed(self, layer_id: str, change: str) -> None:
+        """Keep advanced geospatial controls in sync with library actions."""
+
+        if str(layer_id).startswith("earth.") and change in {
+            "source",
+            "selection",
+            "removal",
+        }:
+            self._refresh()
+
     def _build_active_group(self) -> QGroupBox:
         group = QGroupBox(
             getTraduction("DataLayers.Active", "Capes actives")
@@ -466,17 +484,35 @@ class DataLayersDialog(QDialog):
         self.lbl_effective_elevation.setWordWrap(True)
         form.addRow("Elevació efectiva:", self.lbl_effective_elevation)
 
-        self.combo_surface = QComboBox()
-        self.combo_surface.currentIndexChanged.connect(
+        self.combo_orthophoto = QComboBox()
+        self.combo_orthophoto.currentIndexChanged.connect(
             lambda _index: self._selection_changed(
-                "surface", self.combo_surface
+                "orthophoto", self.combo_orthophoto
             )
         )
-        form.addRow("Superfície:", self.combo_surface)
-        self.lbl_effective_surface = QLabel("")
-        self.lbl_effective_surface.setObjectName("effectiveSource")
-        self.lbl_effective_surface.setWordWrap(True)
-        form.addRow("Superfície efectiva:", self.lbl_effective_surface)
+        form.addRow("Ortofoto:", self.combo_orthophoto)
+        self.lbl_effective_orthophoto = QLabel("")
+        self.lbl_effective_orthophoto.setObjectName("effectiveSource")
+        self.lbl_effective_orthophoto.setWordWrap(True)
+        form.addRow("Ortofoto efectiva:", self.lbl_effective_orthophoto)
+
+        self.combo_land_cover = QComboBox()
+        self.combo_land_cover.currentIndexChanged.connect(
+            lambda _index: self._selection_changed(
+                "land_cover", self.combo_land_cover
+            )
+        )
+        form.addRow("Cobertura del sòl:", self.combo_land_cover)
+        self.lbl_effective_land_cover = QLabel("")
+        self.lbl_effective_land_cover.setObjectName("effectiveSource")
+        self.lbl_effective_land_cover.setWordWrap(True)
+        form.addRow(
+            "Cobertura efectiva:", self.lbl_effective_land_cover
+        )
+        # Compatibility aliases for integrations using the former single
+        # surface selector.
+        self.combo_surface = self.combo_land_cover
+        self.lbl_effective_surface = self.lbl_effective_land_cover
 
         self.combo_light = QComboBox()
         self.combo_light.currentIndexChanged.connect(
@@ -557,7 +593,12 @@ class DataLayersDialog(QDialog):
             sorted(_source_signature(source) for source in self.registry.list_sources())
         )
         selections = []
-        for role in ("elevation", "surface", "light_pollution"):
+        for role in (
+            "elevation",
+            "orthophoto",
+            "land_cover",
+            "light_pollution",
+        ):
             selection = self.registry.get_selection(role)
             selections.append(
                 (
@@ -629,17 +670,28 @@ class DataLayersDialog(QDialog):
         self._updating = True
         sources = list(self.registry.list_sources())
         elevation = [s for s in sources if s.layer_type == LayerType.ELEVATION]
-        surface = [
+        orthophoto = [
+            s for s in sources if s.layer_type is LayerType.ORTHOPHOTO_RGB
+        ]
+        land_cover = [
             s
             for s in sources
             if s.layer_type
-            in {LayerType.SURFACE_RGB, LayerType.SURFACE_CATEGORICAL}
+            in {
+                LayerType.LAND_COVER_RGB,
+                LayerType.LAND_COVER_CATEGORICAL,
+            }
         ]
         light = [
             s for s in sources if s.layer_type == LayerType.LIGHT_POLLUTION
         ]
         self._fill_selection_combo(self.combo_elevation, "elevation", elevation)
-        self._fill_selection_combo(self.combo_surface, "surface", surface)
+        self._fill_selection_combo(
+            self.combo_orthophoto, "orthophoto", orthophoto
+        )
+        self._fill_selection_combo(
+            self.combo_land_cover, "land_cover", land_cover
+        )
         self._fill_selection_combo(
             self.combo_light, "light_pollution", light
         )
@@ -696,7 +748,10 @@ class DataLayersDialog(QDialog):
         elevation_result = self.selection.select_elevation(
             self.latitude, self.longitude
         )
-        surface_result = self.selection.select_surface(
+        orthophoto_result = self.selection.select_orthophoto(
+            self.latitude, self.longitude
+        )
+        land_cover_result = self.selection.select_land_cover(
             self.latitude, self.longitude
         )
         light_result = self.selection.select_light_pollution(
@@ -705,8 +760,11 @@ class DataLayersDialog(QDialog):
         self.lbl_effective_elevation.setText(
             self._result_text(elevation_result, "Horitzó pla")
         )
-        self.lbl_effective_surface.setText(
-            self._result_text(surface_result, "Paleta sintètica")
+        self.lbl_effective_orthophoto.setText(
+            self._result_text(orthophoto_result, "Sense ortofoto")
+        )
+        self.lbl_effective_land_cover.setText(
+            self._result_text(land_cover_result, "Paleta sintètica")
         )
         self.lbl_effective_light.setText(
             self._result_text(light_result, "Sense raster (fallback)")
@@ -763,8 +821,9 @@ class DataLayersDialog(QDialog):
             return
         filters = {
             LayerType.ELEVATION: "Raster d'elevació (*.tif *.tiff *.asc *.txt *.npy)",
-            LayerType.SURFACE_RGB: "Raster RGB/RGBA (*.tif *.tiff *.vrt *.img *.jp2 *.png *.jpg *.jpeg *.webp)",
-            LayerType.SURFACE_CATEGORICAL: "Raster categòric (*.tif *.tiff *.vrt *.img *.jp2)",
+            LayerType.ORTHOPHOTO_RGB: "Ortofoto RGB/RGBA (*.tif *.tiff *.vrt *.img *.jp2 *.png *.jpg *.jpeg *.webp)",
+            LayerType.LAND_COVER_RGB: "Raster de cobertura RGB (*.tif *.tiff *.vrt *.img *.jp2 *.png)",
+            LayerType.LAND_COVER_CATEGORICAL: "Raster categòric (*.tif *.tiff *.vrt *.img *.jp2)",
             LayerType.LIGHT_POLLUTION: "Raster de contaminació lumínica (*.tif *.tiff *.vrt *.img)",
         }
         path, _ = QFileDialog.getOpenFileName(
@@ -791,15 +850,27 @@ class DataLayersDialog(QDialog):
         if not ok:
             return
         try:
+            metadata = {
+                "inspection_status": SourceHealthStatus.PENDING.value,
+                "enable_after_inspection": True,
+            }
+            if layer_type is LayerType.LAND_COVER_RGB:
+                # Choosing this explicit type declares that the image uses the
+                # known S2GLC palette. Other RGB images belong to Ortofoto;
+                # programmatic/external catalogues may instead provide their
+                # own ``class_colors`` legend.
+                metadata.update(
+                    {
+                        "legend_id": "s2glc_europe_2017",
+                        "encoding": "rgb_palette",
+                    }
+                )
             source = self.registry.register_path(
                 path,
                 layer_type,
                 display_name=str(name or default_name),
                 enabled=False,
-                metadata={
-                    "inspection_status": SourceHealthStatus.PENDING.value,
-                    "enable_after_inspection": True,
-                },
+                metadata=metadata,
             )
         except Exception as exc:
             QMessageBox.critical(self, "No s'ha pogut afegir", str(exc))
@@ -935,8 +1006,9 @@ class DataLayersDialog(QDialog):
             != selection_after.get("elevation")
         )
         surface_types = {
-            LayerType.SURFACE_RGB.value,
-            LayerType.SURFACE_CATEGORICAL.value,
+            LayerType.ORTHOPHOTO_RGB.value,
+            LayerType.LAND_COVER_RGB.value,
+            LayerType.LAND_COVER_CATEGORICAL.value,
         }
         surface_before = tuple(
             row for row in before_sources if row[1] in surface_types
@@ -954,8 +1026,10 @@ class DataLayersDialog(QDialog):
             elevation=elevation_changed,
             surface=(
                 surface_before != surface_after
-                or selection_before.get("surface")
-                != selection_after.get("surface")
+                or selection_before.get("orthophoto")
+                != selection_after.get("orthophoto")
+                or selection_before.get("land_cover")
+                != selection_after.get("land_cover")
             ),
             light_pollution=light_changed,
             representation=before_mode != after_mode,

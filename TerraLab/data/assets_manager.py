@@ -68,6 +68,40 @@ class AssetSpec:
     license_note: str = ""
 
 
+@dataclass(frozen=True)
+class AssetRemovalPreview:
+    """Files and catalogue links affected by removing one layer asset."""
+
+    asset_id: str
+    managed_paths: tuple[str, ...] = ()
+    external_paths: tuple[str, ...] = ()
+    retained_paths: tuple[str, ...] = ()
+    source_ids: tuple[str, ...] = ()
+    total_bytes: int = 0
+    manifest_registered: bool = False
+
+    @property
+    def has_data(self) -> bool:
+        return bool(
+            self.managed_paths
+            or self.external_paths
+            or self.source_ids
+            or self.manifest_registered
+        )
+
+
+@dataclass(frozen=True)
+class AssetRemovalReport:
+    """Result of deleting managed data and unlinking external sources."""
+
+    asset_id: str
+    deleted_paths: tuple[str, ...] = ()
+    detached_paths: tuple[str, ...] = ()
+    retained_paths: tuple[str, ...] = ()
+    removed_source_ids: tuple[str, ...] = ()
+    released_bytes: int = 0
+
+
 S2GLC_PRODUCT = "S2GLC Land Cover Map of Europe 2017"
 S2GLC_PROVIDER = (
     "CBK PAN, Space Research Centre of the Polish Academy of Sciences"
@@ -162,6 +196,16 @@ class AssetManager:
                 credits="VIIRS/DMSP composite via Harvard Dataverse DOI:10.7910/DVN/15IKI5.",
                 allow_multiple=False,
                 auto_download_url="https://dataverse.harvard.edu/api/datasets/:persistentId/?persistentId=doi:10.7910/DVN/15IKI5",
+            ),
+            "orthophoto": AssetSpec(
+                asset_id="orthophoto",
+                title="Ortofoto",
+                source_url="",
+                accepted_formats="GeoTIFF o raster RGB/RGBA georeferenciat",
+                credits="Font aportada per l'usuari.",
+                allow_multiple=True,
+                auto_download_url=None,
+                semantic_type=LayerType.ORTHOPHOTO_RGB.value,
             ),
             "surface_rgb": AssetSpec(
                 asset_id="surface_rgb",
@@ -323,6 +367,7 @@ class AssetManager:
             "solar_system_ephemeris",
             "climate_metno",
             "elevation_dem",
+            "orthophoto",
             "surface_categorical",
             "surface_rgb",
             "light_pollution",
@@ -332,6 +377,7 @@ class AssetManager:
     def _asset_layer_type(asset_id: str) -> LayerType | None:
         return {
             "elevation_dem": LayerType.ELEVATION,
+            "orthophoto": LayerType.ORTHOPHOTO_RGB,
             "surface_rgb": LayerType.SURFACE_RGB,
             "surface_categorical": LayerType.SURFACE_CATEGORICAL,
             "light_pollution": LayerType.LIGHT_POLLUTION,
@@ -516,6 +562,311 @@ class AssetManager:
                 "path": str(p or ""),
             }
         return {"ready": False, "reason": "unknown_asset", "path": ""}
+
+    def _asset_data_root(self, asset_id: str) -> Path | None:
+        layout_key = {
+            "gaia_catalog": "data_gaia",
+            "ngc_catalog": "data_ngc",
+            "milkyway_texture": "data_milkyway",
+            "planck_dust": "data_planck",
+            "solar_system_ephemeris": "data_ephemeris",
+            "climate_metno": "cache_weather",
+            "elevation_dem": "data_elevation",
+            "orthophoto": "data_surface",
+            "surface_rgb": "data_surface",
+            "surface_categorical": "data_surface",
+            "light_pollution": "data_light_pollution",
+        }.get(str(asset_id))
+        raw = self.layout.get(layout_key) if layout_key else None
+        return Path(raw).resolve(strict=False) if raw is not None else None
+
+    @staticmethod
+    def _path_key(path: Path) -> str:
+        return os.path.normcase(os.path.normpath(str(path.resolve(strict=False))))
+
+    @staticmethod
+    def _path_has_content(path: Path) -> bool:
+        try:
+            if path.is_symlink() or path.is_file():
+                return True
+            return path.is_dir() and next(path.iterdir(), None) is not None
+        except OSError:
+            return False
+
+    @staticmethod
+    def _path_size(path: Path) -> int:
+        try:
+            if path.is_symlink() or path.is_file():
+                return int(path.stat().st_size)
+        except OSError:
+            return 0
+        total = 0
+        try:
+            for folder, _directories, files in os.walk(path, followlinks=False):
+                for name in files:
+                    try:
+                        total += int(
+                            (Path(folder) / name).stat(follow_symlinks=False).st_size
+                        )
+                    except OSError:
+                        continue
+        except OSError:
+            return total
+        return total
+
+    @staticmethod
+    def _paths_overlap(first: Path, second: Path) -> bool:
+        try:
+            a = first.resolve(strict=False)
+            b = second.resolve(strict=False)
+            return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+        except OSError:
+            return False
+
+    def _geospatial_sources_for_asset(self, asset_id: str):
+        layer_type = self._asset_layer_type(asset_id)
+        if layer_type is None:
+            return []
+        return [
+            source
+            for source in self.data_sources.list_sources(layer_type)
+            if not bool(source.metadata.get("bundled", False))
+            and str(source.provenance or "").strip().lower() != "bundled"
+        ]
+
+    def _managed_source_target(
+        self,
+        asset_id: str,
+        source,
+        *,
+        remaining_sources,
+    ) -> Path | None:
+        managed = bool(source.metadata.get("managed", False)) or (
+            str(source.provenance or "").strip().lower() == "managed"
+        )
+        if not managed:
+            return None
+        candidate = Path(source.path).resolve(strict=False)
+        if not self.library.contains(candidate):
+            return None
+        data_root = self._asset_data_root(asset_id)
+        if data_root is None:
+            return None
+        try:
+            candidate.relative_to(data_root)
+        except ValueError:
+            return candidate if candidate.is_file() else None
+        if candidate == data_root:
+            return None
+
+        target = candidate
+        if (
+            candidate.is_file()
+            and candidate.parent != data_root
+            and candidate.parent.parent == data_root
+        ):
+            # Managed single-file rasters are stored with sidecars in their
+            # own dataset directory.
+            target = candidate.parent
+        if any(
+            self._paths_overlap(target, Path(other.path))
+            for other in remaining_sources
+        ):
+            return None
+        return target
+
+    @staticmethod
+    def _deduplicate_parent_paths(paths: Iterable[Path]) -> tuple[Path, ...]:
+        unique: dict[str, Path] = {}
+        for path in paths:
+            resolved = path.resolve(strict=False)
+            unique.setdefault(AssetManager._path_key(resolved), resolved)
+        ordered = sorted(unique.values(), key=lambda item: (len(item.parts), str(item)))
+        selected: list[Path] = []
+        for candidate in ordered:
+            if any(
+                candidate == parent or candidate.is_relative_to(parent)
+                for parent in selected
+            ):
+                continue
+            selected.append(candidate)
+        return tuple(selected)
+
+    def removal_preview(
+        self,
+        asset_id: str,
+        *,
+        include_size: bool = False,
+    ) -> AssetRemovalPreview:
+        """Describe removable library data without mutating disk or catalogues."""
+
+        normalized_id = str(asset_id or "").strip()
+        self.get_spec(normalized_id)
+        state = self.library.asset_state(normalized_id)
+        sources = self._geospatial_sources_for_asset(normalized_id)
+        source_ids = tuple(sorted(str(source.id) for source in sources))
+        source_id_set = set(source_ids)
+        remaining_sources = (
+            [
+                source
+                for source in self.data_sources.list_sources()
+                if str(source.id) not in source_id_set
+            ]
+            if sources
+            else []
+        )
+
+        managed_paths: list[Path] = []
+        external_paths: list[Path] = []
+        retained_paths: list[Path] = []
+        for source in sources:
+            target = self._managed_source_target(
+                normalized_id,
+                source,
+                remaining_sources=remaining_sources,
+            )
+            managed = bool(source.metadata.get("managed", False)) or (
+                str(source.provenance or "").strip().lower() == "managed"
+            )
+            if target is not None:
+                if self._path_has_content(target):
+                    managed_paths.append(target)
+            elif managed and self.library.contains(source.path):
+                retained_paths.append(Path(source.path).resolve(strict=False))
+            else:
+                external_paths.append(Path(source.path).resolve(strict=False))
+
+        data_root = self._asset_data_root(normalized_id)
+        fixed_root_assets = {
+            "gaia_catalog",
+            "ngc_catalog",
+            "milkyway_texture",
+            "planck_dust",
+            "solar_system_ephemeris",
+            "climate_metno",
+        }
+        if (
+            normalized_id in fixed_root_assets
+            and data_root is not None
+            and self._path_has_content(data_root)
+        ):
+            managed_paths.append(data_root)
+
+        for field in ("path", "source_path"):
+            raw = str(state.get(field, "") or "").strip()
+            if not raw:
+                continue
+            candidate = Path(raw).expanduser().resolve(strict=False)
+            if any(self._paths_overlap(candidate, item) for item in managed_paths):
+                continue
+            # ``source_path`` records provenance and always remains
+            # user-owned, even when the imported derivative is managed.
+            is_managed = (
+                field == "path"
+                and bool(state.get("managed", False))
+                and self.library.contains(candidate)
+            )
+            if is_managed and candidate.is_file():
+                managed_paths.append(candidate)
+            else:
+                external_paths.append(candidate)
+
+        download_target = self._download_target(normalized_id)
+        if download_target is not None:
+            partial_path, partial_metadata = self.downloader.paths_for(download_target)
+            for candidate in (download_target, partial_path, partial_metadata):
+                resolved = candidate.resolve(strict=False)
+                if self.library.contains(resolved) and self._path_has_content(resolved):
+                    managed_paths.append(resolved)
+
+        managed = self._deduplicate_parent_paths(managed_paths)
+        external = self._deduplicate_parent_paths(external_paths)
+        retained = self._deduplicate_parent_paths(retained_paths)
+        total_bytes = (
+            sum(self._path_size(path) for path in managed) if include_size else 0
+        )
+        return AssetRemovalPreview(
+            asset_id=normalized_id,
+            managed_paths=tuple(str(path) for path in managed),
+            external_paths=tuple(str(path) for path in external),
+            retained_paths=tuple(str(path) for path in retained),
+            source_ids=source_ids,
+            total_bytes=int(total_bytes),
+            manifest_registered=bool(state),
+        )
+
+    @staticmethod
+    def _remove_path(path: Path, *, keep_directory: bool = False) -> None:
+        def remove_readonly(function, raw_path, _error_info):
+            os.chmod(raw_path, 0o700)
+            function(raw_path)
+
+        if keep_directory and path.is_dir() and not path.is_symlink():
+            for child in tuple(path.iterdir()):
+                AssetManager._remove_path(child)
+            return
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path, onerror=remove_readonly)
+            return
+        try:
+            path.unlink(missing_ok=True)
+        except PermissionError:
+            os.chmod(path, 0o600)
+            path.unlink(missing_ok=True)
+
+    def remove_asset_data(self, asset_id: str) -> AssetRemovalReport:
+        """Delete TerraLab-owned data and unlink user-owned sources."""
+
+        preview = self.removal_preview(asset_id, include_size=True)
+        data_root = self._asset_data_root(preview.asset_id)
+        fixed_root_assets = {
+            "gaia_catalog",
+            "ngc_catalog",
+            "milkyway_texture",
+            "planck_dust",
+            "solar_system_ephemeris",
+            "climate_metno",
+        }
+        deleted: list[str] = []
+        for raw in preview.managed_paths:
+            path = Path(raw).resolve(strict=False)
+            if not self.library.contains(path) or path == self.library.root:
+                raise ValueError(f"Refusing to remove unsafe library path: {path}")
+            keep_directory = (
+                preview.asset_id in fixed_root_assets
+                and data_root is not None
+                and path == data_root
+            )
+            self._remove_path(path, keep_directory=keep_directory)
+            deleted.append(str(path))
+
+        removed_source_ids: list[str] = []
+        for source_id in preview.source_ids:
+            if self.data_sources.remove(source_id) is not None:
+                removed_source_ids.append(source_id)
+
+        self.library.remove_asset(preview.asset_id)
+        now_utc = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        set_config_value(f"assets.{preview.asset_id}.ready", False)
+        set_config_value(f"assets.{preview.asset_id}.updated_utc", now_utc)
+        path_preferences = {
+            "gaia_catalog": "gaia_catalog_path",
+            "ngc_catalog": "ngc_catalog_path",
+            "milkyway_texture": "milkyway_overlay_texture_path",
+            "planck_dust": "dust_map_path",
+        }
+        preference = path_preferences.get(preview.asset_id)
+        if preference:
+            set_config_value(preference, "")
+
+        return AssetRemovalReport(
+            asset_id=preview.asset_id,
+            deleted_paths=tuple(deleted),
+            detached_paths=preview.external_paths,
+            retained_paths=preview.retained_paths,
+            removed_source_ids=tuple(removed_source_ids),
+            released_bytes=preview.total_bytes,
+        )
 
     def resolve_ephemeris_path(self) -> Path | None:
         configured = self.library.asset_state("solar_system_ephemeris")
@@ -865,7 +1216,8 @@ class AssetManager:
                 }
             )
         if asset_id == "surface_rgb":
-            metadata["rgb_interpolation"] = "linear_light"
+            metadata["legend_id"] = "s2glc_europe_2017"
+            metadata["encoding"] = "rgb_palette"
         if asset_id == "surface_categorical":
             metadata["legend_id"] = "s2glc_europe_2017"
         return metadata
@@ -1383,6 +1735,7 @@ class AssetManager:
         if layer_type is not None:
             parent_key = {
                 LayerType.ELEVATION: "data_elevation",
+                LayerType.ORTHOPHOTO_RGB: "data_surface",
                 LayerType.SURFACE_RGB: "data_surface",
                 LayerType.SURFACE_CATEGORICAL: "data_surface",
                 LayerType.LIGHT_POLLUTION: "data_light_pollution",
@@ -1393,7 +1746,12 @@ class AssetManager:
                 / "earth"
                 / (
                     "surface"
-                    if layer_type in {LayerType.SURFACE_RGB, LayerType.SURFACE_CATEGORICAL}
+                    if layer_type
+                    in {
+                        LayerType.ORTHOPHOTO_RGB,
+                        LayerType.SURFACE_RGB,
+                        LayerType.SURFACE_CATEGORICAL,
+                    }
                     else layer_type.value.replace("_", "-")
                 )
             )

@@ -113,25 +113,18 @@ class HorizonWorker(QObject):
         lat: float,
         lon: float,
         *,
+        surface_mode: str | None = None,
         surface_layer_type: str | None = None,
     ):
         selection = self.layer_selection.select_surface(
             lat,
             lon,
-            layer_type=surface_layer_type,
+            mode=surface_mode or surface_layer_type,
         )
         visible = bool(get_config_value("ui.visibility.earth.surface", True))
         if not visible or selection.effective is None:
             return selection, []
-        # RGB and categorical datasets are alternative active products.  Keep
-        # fallbacks within the selected semantic type so installing both never
-        # composes them implicitly.
-        active_type = selection.effective.layer_type
-        return selection, [
-            source
-            for source in selection.chain
-            if source.layer_type is active_type
-        ]
+        return selection, list(selection.chain)
 
     @staticmethod
     def _effective_surface_source_id(cache):
@@ -191,8 +184,8 @@ class HorizonWorker(QObject):
         selection, sources = self._surface_selection(
             float(getattr(profile, "observer_lat", 0.0)),
             float(getattr(profile, "observer_lon", 0.0)),
-            surface_layer_type=(
-                getattr(surface_request, "surface_layer_type", None)
+            surface_mode=(
+                getattr(surface_request, "surface_mode", None)
                 if surface_request is not None
                 else None
             ),
@@ -202,6 +195,22 @@ class HorizonWorker(QObject):
                 str(getattr(source, "id", "")),
                 str(getattr(source, "path", "")),
                 str(getattr(source, "fingerprint", "")),
+                str(getattr(getattr(source, "layer_type", ""), "value", "")),
+                str(getattr(source, "display_name", "")),
+                json.dumps(
+                    {
+                        key: (getattr(source, "metadata", {}) or {}).get(key)
+                        for key in (
+                            "legend_id",
+                            "legend",
+                            "class_colors",
+                            "palette",
+                            "encoding",
+                        )
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
             )
             for source in sources
         )
@@ -295,7 +304,7 @@ class HorizonWorker(QObject):
         visible_radius_m = None
         view_azimuth_deg = 0.0
         view_fov_deg = 360.0
-        surface_layer_type = None
+        surface_mode = None
         atomic_surface_swap = False
         if isinstance(profile, dict) and "profile" in profile:
             target = profile.get("profile")
@@ -303,8 +312,14 @@ class HorizonWorker(QObject):
             visible_radius_m = profile.get("visible_radius_m")
             view_azimuth_deg = float(profile.get("view_azimuth_deg", 0.0) or 0.0)
             view_fov_deg = float(profile.get("view_fov_deg", 360.0) or 360.0)
-            surface_layer_type = (
-                str(profile.get("surface_layer_type", "") or "").strip()
+            surface_mode = (
+                str(
+                    profile.get(
+                        "surface_mode",
+                        profile.get("surface_layer_type", ""),
+                    )
+                    or ""
+                ).strip()
                 or None
             )
             atomic_surface_swap = bool(
@@ -360,7 +375,7 @@ class HorizonWorker(QObject):
                         view_fov_deg=view_fov_deg,
                         generation=generation,
                         stage=stage,
-                        surface_layer_type=surface_layer_type,
+                        surface_mode=surface_mode,
                     )
                 return prepare_method(stage_profile, **prepare_kwargs)
 

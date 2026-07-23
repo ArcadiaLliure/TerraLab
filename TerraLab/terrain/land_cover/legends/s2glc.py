@@ -40,10 +40,14 @@ class LandCoverStyle:
     texture_id: str | None = None
     object_generator_id: str | None = None
     transition_priority: int = 0
+    descriptions: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "code", int(self.code))
         object.__setattr__(self, "labels", MappingProxyType(dict(self.labels)))
+        object.__setattr__(
+            self, "descriptions", MappingProxyType(dict(self.descriptions))
+        )
         object.__setattr__(
             self,
             "procedural_parameters",
@@ -70,6 +74,11 @@ def _style(
         key=key,
         label_key=f"LandCover.S2GLC.{key}",
         labels={"en": en, "ca": ca, "es": es},
+        descriptions={
+            "en": f"Land-cover category corresponding to “{en}”.",
+            "ca": f"Categoria de cobertura del sòl corresponent a «{ca}».",
+            "es": f"Categoría de cobertura del suelo correspondiente a «{es}».",
+        },
         semantic_group=group,
         base_color=rgb + (alpha,),
         procedural_style="coordinate_luminance" if variation > 0.0 else None,

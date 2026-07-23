@@ -29,6 +29,7 @@ class _StableStringEnum(str, Enum):
 
 class LayerId(_StableStringEnum):
     EARTH_TERRAIN = "earth.terrain"
+    EARTH_ORTHOPHOTO = "earth.orthophoto"
     EARTH_SURFACE_CATEGORICAL = "earth.surface.categorical"
     EARTH_SURFACE_RGB = "earth.surface.rgb"
     # Compatibility name used by older integrations; the semantic product is
@@ -176,6 +177,16 @@ _DESCRIPTORS = (
         True,
     ),
     LayerDescriptor(
+        LayerId.EARTH_ORTHOPHOTO,
+        LayerGroup.EARTH,
+        "Ortofoto",
+        "orthophoto",
+        "Raster RGB/RGBA georeferenciat aportat per l'usuari.",
+        "Paleta sintètica",
+        True,
+        False,
+    ),
+    LayerDescriptor(
         LayerId.EARTH_SURFACE_CATEGORICAL,
         LayerGroup.EARTH,
         "Cobertura del sòl — categòrica",
@@ -216,6 +227,7 @@ _LEGACY_VISIBILITY_KEYS = {
     LayerId.SKY_SOLAR_SYSTEM: "sistema_solar",
     LayerId.SKY_WEATHER: "clima",
     LayerId.EARTH_TERRAIN: "topografia",
+    LayerId.EARTH_ORTHOPHOTO: "superficie",
     LayerId.EARTH_SURFACE_CATEGORICAL: "superficie",
     LayerId.EARTH_SURFACE_RGB: "superficie",
     LayerId.EARTH_LIGHT_POLLUTION: "contaminacio_luminica",
@@ -224,8 +236,9 @@ _LEGACY_VISIBILITY_KEYS = {
 
 _GEO_ROLE = {
     LayerId.EARTH_TERRAIN: LayerRole.ELEVATION,
-    LayerId.EARTH_SURFACE_CATEGORICAL: LayerRole.SURFACE,
-    LayerId.EARTH_SURFACE_RGB: LayerRole.SURFACE,
+    LayerId.EARTH_ORTHOPHOTO: LayerRole.ORTHOPHOTO,
+    LayerId.EARTH_SURFACE_CATEGORICAL: LayerRole.LAND_COVER,
+    LayerId.EARTH_SURFACE_RGB: LayerRole.LAND_COVER,
     LayerId.EARTH_LIGHT_POLLUTION: LayerRole.LIGHT_POLLUTION,
 }
 
@@ -259,6 +272,7 @@ class LayerManager:
                     )
                     if descriptor.id
                     in {
+                        LayerId.EARTH_ORTHOPHOTO,
                         LayerId.EARTH_SURFACE_CATEGORICAL,
                         LayerId.EARTH_SURFACE_RGB,
                     }
@@ -267,6 +281,7 @@ class LayerManager:
             )
             set_config_value(f"ui.visibility.{descriptor.id.value}", value)
             if descriptor.id in {
+                LayerId.EARTH_ORTHOPHOTO,
                 LayerId.EARTH_SURFACE_CATEGORICAL,
                 LayerId.EARTH_SURFACE_RGB,
             }:
@@ -287,6 +302,7 @@ class LayerManager:
     def is_visible(self, layer_id: LayerId | str) -> bool:
         descriptor = self.descriptor(layer_id)
         if descriptor.id in {
+            LayerId.EARTH_ORTHOPHOTO,
             LayerId.EARTH_SURFACE_CATEGORICAL,
             LayerId.EARTH_SURFACE_RGB,
         }:
@@ -308,6 +324,7 @@ class LayerManager:
         checked = bool(visible)
         set_config_value(f"ui.visibility.{descriptor.id.value}", checked)
         if descriptor.id in {
+            LayerId.EARTH_ORTHOPHOTO,
             LayerId.EARTH_SURFACE_CATEGORICAL,
             LayerId.EARTH_SURFACE_RGB,
         }:
@@ -360,7 +377,9 @@ class LayerManager:
     def _geospatial_status(self, descriptor: LayerDescriptor) -> LayerStatus:
         role = _GEO_ROLE[descriptor.id]
         layer_types: Iterable[LayerType]
-        if descriptor.id is LayerId.EARTH_SURFACE_CATEGORICAL:
+        if descriptor.id is LayerId.EARTH_ORTHOPHOTO:
+            layer_types = (LayerType.ORTHOPHOTO_RGB,)
+        elif descriptor.id is LayerId.EARTH_SURFACE_CATEGORICAL:
             layer_types = (LayerType.LAND_COVER_CATEGORICAL,)
         elif descriptor.id is LayerId.EARTH_SURFACE_RGB:
             layer_types = (LayerType.LAND_COVER_RGB,)
@@ -402,7 +421,7 @@ class LayerManager:
             effective = next(
                 (source for source in usable if source.id == selected.source_id), None
             )
-        if role is LayerRole.SURFACE and selected.mode is SelectionMode.AUTOMATIC:
+        if role is LayerRole.LAND_COVER and selected.mode is SelectionMode.AUTOMATIC:
             all_surface = [
                 source
                 for kind in (
@@ -415,7 +434,7 @@ class LayerManager:
             all_surface.sort(
                 key=lambda source: (
                     0
-                    if source.layer_type is LayerType.LAND_COVER_RGB
+                    if source.layer_type is LayerType.LAND_COVER_CATEGORICAL
                     else 1,
                     -source.priority,
                     source.resolution_m or float("inf"),
@@ -430,7 +449,7 @@ class LayerManager:
             effective is None
             and usable
             and not (
-                role is LayerRole.SURFACE
+                role is LayerRole.LAND_COVER
                 and (
                     selected.mode is SelectionMode.AUTOMATIC
                     or (
@@ -454,6 +473,7 @@ class LayerManager:
             state = LayerState.INVALID
             message = f"Cap font vàlida; fallback: {descriptor.fallback}."
         elif descriptor.id in {
+            LayerId.EARTH_ORTHOPHOTO,
             LayerId.EARTH_SURFACE_CATEGORICAL,
             LayerId.EARTH_SURFACE_RGB,
         }:
@@ -613,4 +633,24 @@ class LayerManager:
             paths,
             options=dict(options),
         )
+
+    def removal_preview(
+        self,
+        layer_id: LayerId | str,
+        *,
+        include_size: bool = False,
+    ):
+        """Return the managed files and external links removable for a layer."""
+
+        descriptor = self.descriptor(layer_id)
+        return self.assets.removal_preview(
+            descriptor.asset_id,
+            include_size=include_size,
+        )
+
+    def remove_data(self, layer_id: LayerId | str):
+        """Remove a layer's library data while preserving bundled resources."""
+
+        descriptor = self.descriptor(layer_id)
+        return self.assets.remove_asset_data(descriptor.asset_id)
 

@@ -44,6 +44,10 @@ from TerraLab.terrain.render_pipeline import (
     compose_vertex_rgba,
     light_direction_enu,
 )
+from TerraLab.terrain.land_cover.legends.category_info import (
+    LandCoverCategoryInfo,
+    category_info,
+)
 from TerraLab.terrain.representation import (
     TerrainGeometrySource,
     TerrainRepresentationMode,
@@ -1227,6 +1231,7 @@ class HorizonOverlay(QObject):
         self._terrain_polygon_cache_geometry = None
         self._profile_polygon_cache_view_key = None
         self._profile_polygon_cache = {}
+        self._profile_category_hit_cache = {}
         self._profile_image_cache_key = None
         self._profile_image_cache = None
         self._terrain_surface_image_cache_key = None
@@ -1340,6 +1345,7 @@ class HorizonOverlay(QObject):
         self._terrain_polygon_cache_geometry = None
         self._profile_polygon_cache_view_key = None
         self._profile_polygon_cache.clear()
+        self._profile_category_hit_cache.clear()
         self._profile_image_cache_key = None
         self._profile_image_cache = None
         self._terrain_surface_image_cache_key = None
@@ -1399,6 +1405,7 @@ class HorizonOverlay(QObject):
         self._terrain_polygon_cache_geometry = None
         self._profile_polygon_cache_view_key = None
         self._profile_polygon_cache.clear()
+        self._profile_category_hit_cache.clear()
         self._profile_image_cache_key = None
         self._profile_image_cache = None
         self._terrain_surface_image_cache_key = None
@@ -1412,6 +1419,382 @@ class HorizonOverlay(QObject):
         if self.allow_procedural_fallback:
             self._build_procedural_fallback()
         self.request_update.emit()
+
+    @staticmethod
+    def _category_metadata(
+        cache, class_id: int, source_index: int
+    ) -> LandCoverCategoryInfo | None:
+        if class_id < 0 or source_index < 0:
+            return None
+        source_ids = tuple(
+            _sample_cache_value(cache, "source_ids", ()) or ()
+        )
+        source_names = tuple(
+            _sample_cache_value(cache, "source_names", ()) or ()
+        )
+        legend_ids = tuple(
+            _sample_cache_value(cache, "source_legend_ids", ()) or ()
+        )
+        if source_index >= len(source_ids):
+            return None
+        source_name = (
+            source_names[source_index]
+            if source_index < len(source_names)
+            else source_ids[source_index]
+        )
+        legend_id = (
+            legend_ids[source_index]
+            if source_index < len(legend_ids)
+            else ""
+        )
+        return category_info(
+            legend_id,
+            int(class_id),
+            source_name=str(source_name or source_ids[source_index]),
+            locale="ca",
+        )
+
+    @staticmethod
+    def _category_grid_value(
+        cache,
+        prefix: str,
+        row: int,
+        column: int,
+    ) -> tuple[int, int] | None:
+        classes = _sample_cache_value(cache, f"{prefix}_class_ids")
+        categorical = _sample_cache_value(
+            cache, f"{prefix}_categorical"
+        )
+        sources = _sample_cache_value(
+            cache, f"{prefix}_source_indices"
+        )
+        if classes is None or categorical is None or sources is None:
+            return None
+        class_grid = np.asarray(classes)
+        categorical_grid = np.asarray(categorical, dtype=bool)
+        source_grid = np.asarray(sources)
+        if (
+            class_grid.ndim != 2
+            or categorical_grid.shape != class_grid.shape
+            or source_grid.shape != class_grid.shape
+        ):
+            return None
+        row = int(row)
+        column = int(column) % max(1, int(class_grid.shape[1]))
+        if not (0 <= row < class_grid.shape[0]):
+            return None
+        if not bool(categorical_grid[row, column]):
+            return None
+        class_id = int(class_grid[row, column])
+        source_index = int(source_grid[row, column])
+        if class_id < 0 or source_index < 0:
+            return None
+        return class_id, source_index
+
+    def _relief_category_value(
+        self,
+        cache,
+        row: int,
+        column: int,
+        mesh_shape: tuple[int, int],
+    ) -> tuple[int, int] | None:
+        visual_classes = _sample_cache_value(
+            cache, "visual_class_ids"
+        )
+        visual_categorical = _sample_cache_value(
+            cache, "visual_categorical"
+        )
+        visual_sources = _sample_cache_value(
+            cache, "visual_source_indices"
+        )
+        if (
+            visual_classes is not None
+            and visual_categorical is not None
+            and visual_sources is not None
+            and np.shape(visual_classes) == tuple(mesh_shape)
+            and np.shape(visual_categorical) == tuple(mesh_shape)
+            and np.shape(visual_sources) == tuple(mesh_shape)
+        ):
+            return self._category_grid_value(
+                cache, "visual", row, column
+            )
+
+        classes = _sample_cache_value(cache, "relief_class_ids")
+        categorical = _sample_cache_value(
+            cache, "relief_categorical"
+        )
+        sources = _sample_cache_value(
+            cache, "relief_source_indices"
+        )
+        if classes is None or categorical is None or sources is None:
+            return None
+        classes = np.asarray(classes)
+        categorical = np.asarray(categorical, dtype=bool)
+        sources = np.asarray(sources)
+        if (
+            classes.ndim != 2
+            or categorical.shape != classes.shape
+            or sources.shape != classes.shape
+            or not classes.size
+        ):
+            return None
+        sampled_rows = np.asarray(
+            _sample_cache_value(
+                cache,
+                "relief_distance_indices",
+                np.arange(classes.shape[0]),
+            ),
+            dtype=np.int32,
+        )
+        sampled_columns = np.asarray(
+            _sample_cache_value(
+                cache,
+                "relief_azimuth_indices",
+                np.arange(classes.shape[1]),
+            ),
+            dtype=np.int32,
+        ) % max(1, int(mesh_shape[1]))
+        nearest_row = int(np.argmin(np.abs(sampled_rows - int(row))))
+        circular = np.abs(
+            sampled_columns - (int(column) % max(1, int(mesh_shape[1])))
+        )
+        circular = np.minimum(
+            circular, max(1, int(mesh_shape[1])) - circular
+        )
+        nearest_column = int(np.argmin(circular))
+        if not bool(categorical[nearest_row, nearest_column]):
+            return None
+        class_id = int(classes[nearest_row, nearest_column])
+        source_index = int(sources[nearest_row, nearest_column])
+        return (
+            (class_id, source_index)
+            if class_id >= 0 and source_index >= 0
+            else None
+        )
+
+    def _profile_category_value(
+        self, cache, band_id: str, azimuth_deg: float
+    ) -> tuple[int, int] | None:
+        classes = _sample_cache_value(cache, "profile_class_ids")
+        categorical = _sample_cache_value(
+            cache, "profile_categorical"
+        )
+        sources = _sample_cache_value(
+            cache, "profile_source_indices"
+        )
+        if classes is None or categorical is None or sources is None:
+            return None
+        classes = np.asarray(classes)
+        categorical = np.asarray(categorical, dtype=bool)
+        sources = np.asarray(sources)
+        if (
+            classes.ndim != 2
+            or categorical.shape != classes.shape
+            or sources.shape != classes.shape
+            or not classes.size
+        ):
+            return None
+        profile = getattr(self, "profile", None)
+        bands = tuple(getattr(profile, "bands", ()) or ())
+        target_band = next(
+            (
+                index
+                for index, band in enumerate(bands)
+                if str(band.get("id", "")) == str(band_id)
+            ),
+            0,
+        )
+        sampled_bands = np.asarray(
+            _sample_cache_value(
+                cache,
+                "profile_band_indices",
+                np.arange(classes.shape[0]),
+            ),
+            dtype=np.int32,
+        )
+        matches = np.flatnonzero(sampled_bands == int(target_band))
+        if not matches.size:
+            return None
+        sampled_row = int(matches[0])
+        profile_azimuths = np.asarray(
+            getattr(profile, "azimuths", ()), dtype=np.float64
+        )
+        sampled_indices = np.asarray(
+            _sample_cache_value(
+                cache,
+                "profile_azimuth_indices",
+                np.arange(classes.shape[1]),
+            ),
+            dtype=np.int32,
+        )
+        if (
+            profile_azimuths.size == 0
+            or sampled_indices.size != classes.shape[1]
+            or np.any(sampled_indices < 0)
+            or np.any(sampled_indices >= profile_azimuths.size)
+        ):
+            return None
+        sampled_azimuths = profile_azimuths[sampled_indices]
+        circular = np.abs(
+            (
+                (
+                    sampled_azimuths
+                    - (float(azimuth_deg) % 360.0)
+                    + 180.0
+                )
+                % 360.0
+            )
+            - 180.0
+        )
+        column = int(np.argmin(circular))
+        if not bool(categorical[sampled_row, column]):
+            return None
+        class_id = int(classes[sampled_row, column])
+        source_index = int(sources[sampled_row, column])
+        return (
+            (class_id, source_index)
+            if class_id >= 0 and source_index >= 0
+            else None
+        )
+
+    def _profile_category_at_screen(
+        self, cache, point_x: float, point_y: float
+    ) -> LandCoverCategoryInfo | None:
+        point = QPointF(float(point_x), float(point_y))
+        # Profile bands are painted far-to-near. Reverse that order to resolve
+        # the uppermost visible polygon at the cursor.
+        for band_pts, _night, _day in reversed(self._layers):
+            entries = self._profile_category_hit_cache.get(
+                ("band", id(band_pts)), ()
+            )
+            for polygon, screen_x, azimuths in reversed(entries):
+                if not polygon.containsPoint(point, Qt.OddEvenFill):
+                    continue
+                nearest = int(
+                    np.argmin(
+                        np.abs(
+                            np.asarray(screen_x, dtype=np.float64)
+                            - float(point_x)
+                        )
+                    )
+                )
+                value = self._profile_category_value(
+                    cache,
+                    str(getattr(band_pts, "band_id", "")),
+                    float(np.asarray(azimuths)[nearest]),
+                )
+                if value is not None:
+                    return self._category_metadata(
+                        cache, value[0], value[1]
+                    )
+                return None
+        return None
+
+    def category_at_screen(
+        self, x: float, y: float
+    ) -> LandCoverCategoryInfo | None:
+        """Return the already-sampled visible category below a screen point.
+
+        This method is deliberately cache-only: it cannot open a GeoTIFF,
+        enqueue a worker request or interpolate semantic class identifiers.
+        """
+
+        cache = getattr(
+            getattr(self, "profile", None), "surface_samples", None
+        )
+        if cache is None:
+            return None
+        geometry = self._terrain_surface_image_geometry
+        if geometry is None:
+            return self._profile_category_at_screen(
+                cache, float(x), float(y)
+            )
+        asset = self._terrain_render_asset
+        if asset is None:
+            return None
+        point_x = float(x)
+        point_y = float(y)
+
+        if isinstance(geometry, _TerrainTriangleGeometry):
+            if (
+                self._terrain_raster_cache is None
+                or not isinstance(self._terrain_raster_cache_key, tuple)
+                or len(self._terrain_raster_cache_key) < 4
+                or self._terrain_raster_cache_key[0] != id(geometry)
+            ):
+                return None
+            render_width = int(self._terrain_raster_cache_key[1])
+            render_height = int(self._terrain_raster_cache_key[2])
+            triangle_id, bary_u, bary_v = self._terrain_raster_cache
+            image = self._terrain_surface_image_cache
+            display_width = int(image.width()) if image is not None else render_width
+            display_height = int(image.height()) if image is not None else render_height
+            px = int(math.floor(point_x * render_width / max(1, display_width)))
+            py = int(math.floor(point_y * render_height / max(1, display_height)))
+            if not (0 <= px < render_width and 0 <= py < render_height):
+                return None
+            triangle = int(triangle_id[py, px])
+            if triangle < 0:
+                return None
+            weights = np.asarray(
+                [
+                    float(bary_u[py, px]),
+                    float(bary_v[py, px]),
+                    1.0
+                    - float(bary_u[py, px])
+                    - float(bary_v[py, px]),
+                ],
+                dtype=np.float64,
+            )
+            mesh_shape = tuple(
+                np.asarray(asset.elevations).shape
+            )
+            # At a class boundary, use the categorical vertex with the
+            # greatest barycentric contribution. Class codes are never mixed.
+            for vertex in np.argsort(-weights):
+                row = int(geometry.vertex_rows[triangle, vertex])
+                column = int(
+                    geometry.vertex_columns[triangle, vertex]
+                )
+                if int(geometry.vertex_domain[triangle, vertex]) == 1:
+                    value = self._category_grid_value(
+                        cache, "near_patch", row, column
+                    )
+                else:
+                    value = self._relief_category_value(
+                        cache, row, column, mesh_shape
+                    )
+                if value is not None:
+                    return self._category_metadata(
+                        cache, value[0], value[1]
+                    )
+            return None
+
+        if isinstance(geometry, _TerrainSurfaceGeometry):
+            point = QPointF(point_x, point_y)
+            mesh_shape = tuple(
+                np.asarray(asset.elevations).shape
+            )
+            # Polygons are painted in order; the last containing polygon is
+            # the visible upper contribution at this pixel.
+            for span, polygon in reversed(
+                self._terrain_polygons_for_geometry(geometry)
+            ):
+                if not polygon.containsPoint(point, Qt.OddEvenFill):
+                    continue
+                nearest = int(
+                    np.argmin(np.abs(np.asarray(span.x) - point_x))
+                )
+                column = int(span.column_indices[nearest])
+                value = self._relief_category_value(
+                    cache, int(span.row_index), column, mesh_shape
+                )
+                if value is not None:
+                    return self._category_metadata(
+                        cache, value[0], value[1]
+                    )
+                return None
+        return None
 
     @staticmethod
     def _profile_point_budget(width: int, interaction_active: bool) -> int:
@@ -1454,6 +1837,7 @@ class HorizonOverlay(QObject):
         if view_key != self._profile_polygon_cache_view_key:
             self._profile_polygon_cache_view_key = view_key
             self._profile_polygon_cache.clear()
+            self._profile_category_hit_cache.clear()
 
     def _draw_cached_profile_polygons(self, painter, cache_key, color) -> bool:
         if self._profile_polygon_cache_view_key is None:
@@ -1485,6 +1869,44 @@ class HorizonOverlay(QObject):
         if self._profile_polygon_cache_view_key is not None:
             self._profile_polygon_cache[cache_key] = result
         return result
+
+    def _cache_profile_category_polygons(
+        self,
+        cache_key,
+        list_sx,
+        list_sy,
+        list_azimuths,
+        bottom_y,
+    ) -> None:
+        entries = []
+        for sx_arr, sy_arr, azimuth_arr in zip(
+            list_sx, list_sy, list_azimuths
+        ):
+            sx_arr = np.asarray(sx_arr)
+            sy_arr = np.asarray(sy_arr)
+            azimuth_arr = np.asarray(azimuth_arr)
+            valid = (
+                np.isfinite(sx_arr)
+                & np.isfinite(sy_arr)
+                & np.isfinite(azimuth_arr)
+            )
+            if np.count_nonzero(valid) < 2:
+                continue
+            f_sx = np.asarray(sx_arr[valid], dtype=np.float32)
+            f_sy = np.asarray(sy_arr[valid], dtype=np.float32)
+            f_azimuths = np.asarray(
+                azimuth_arr[valid], dtype=np.float32
+            )
+            points = [
+                QPointF(float(x), float(y))
+                for x, y in zip(f_sx, f_sy)
+            ]
+            points.append(QPointF(float(f_sx[-1]), float(bottom_y)))
+            points.append(QPointF(float(f_sx[0]), float(bottom_y)))
+            entries.append(
+                (QPolygonF(points), f_sx, f_azimuths)
+            )
+        self._profile_category_hit_cache[cache_key] = tuple(entries)
 
     def draw(
         self,
@@ -1634,6 +2056,7 @@ class HorizonOverlay(QObject):
         if use_3d_relief:
             self._profile_polygon_cache_view_key = None
             self._profile_polygon_cache.clear()
+            self._profile_category_hit_cache.clear()
             while pending_domes:
                 d_info = pending_domes.pop(0)
                 draw_domes_callback(painter, d_info["idx"], d_info["dist"])
@@ -4185,6 +4608,13 @@ class HorizonOverlay(QObject):
             elif cacheable_fill and self._profile_polygon_cache_view_key is not None:
                 painter.setBrush(QBrush(color))
                 painter.setPen(Qt.NoPen)
+                self._cache_profile_category_polygons(
+                    polygon_cache_key,
+                    all_sx,
+                    all_sy,
+                    all_az,
+                    h * 2,
+                )
                 for polygon in self._cache_profile_polygons(
                     polygon_cache_key, all_sx, all_sy, h * 2
                 ):

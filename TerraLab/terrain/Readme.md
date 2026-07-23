@@ -62,13 +62,18 @@ las fuentes externas sin copiarlas y guarda:
   cobertura WGS84;
 - prioridad, habilitación, salud, procedencia, atribución y nota de licencia;
 - huella de la fuente y metadatos técnicos de cada ráster;
-- selección automática o manual de DEM, cobertura y contaminación lumínica;
+- selección automática o manual de DEM, ortofoto, cobertura y contaminación
+  lumínica;
+- modo de superficie `orthophoto` o `land_cover`, con preferencias de fuente
+  independientes;
 - modo de representación `profile` o `relief`.
 
-Las entradas antiguas `surface_rgb` y `surface_categorical` se leen y se vuelven
-a guardar como `land_cover_rgb` y `land_cover_categorical`. La antigua capa
-visible «Tipus de sòl» migra al control compartido de cobertura. Una ruta local
-existente no se borra ni se mueve durante la migración.
+El catálogo v3 distingue `orthophoto_rgb`, `land_cover_rgb` y
+`land_cover_categorical`. La migración reconoce S2GLC RGB como cobertura,
+rasters antiguos de una banda como cobertura categórica y RGB/RGBA externos
+sin leyenda como ortofoto. La antigua capa visible «Tipus de sòl» migra a
+«Superfície». Una ruta local existente no se borra ni se mueve durante la
+migración.
 
 ## 3. Configurar un DEM
 
@@ -246,7 +251,8 @@ contorno usa cobertura subpíxel o supersampling configurable.
 
 ## 8. S2GLC Europe 2017
 
-El gestor expone dos productos independientes:
+El gestor agrupa la superficie y expone dos codificaciones de la misma
+cobertura semántica:
 
 | Capa | Tipo interno | Descarga aproximada | Fuente |
 | --- | --- | ---: | --- |
@@ -257,17 +263,20 @@ Ambos son mosaicos GeoTIFF europeos de resolución nominal 10 m. La resolución
 que queda en el catálogo es, no obstante, la detectada en el archivo instalado:
 un GeoTIFF local alternativo puede tener otra resolución.
 
-La categórica es la opción recomendada para materiales y objetos procedurales.
-La RGB da una representación visual inmediata. Se pueden instalar ambas, pero
-solo una cobertura está activa; la selección manual/automática se guarda en el
-catálogo entre reinicios. No se componen silenciosamente.
+La categórica es la opción recomendada: ocupa aproximadamente la mitad y
+requiere menos E/S, memoria y CPU. La RGB se decodifica con la paleta S2GLC
+para producir los mismos códigos de clase. Se pueden instalar ambas; la
+selección manual/automática se guarda en el catálogo y la otra codificación
+puede cubrir zonas nodata. La preferencia no cambia el modo
+`orthophoto`/`land_cover` del interruptor principal.
 
 ### Validación
 
 No se confía en el nombre:
 
-- RGB exige tres bandas interpretables inequívocamente como R/G/B, con alfa
-  opcional;
+- una ortofoto exige tres bandas interpretables inequívocamente como R/G/B,
+  con alfa opcional;
+- una cobertura RGB exige además una paleta conocida o una leyenda explícita;
 - categórica exige exactamente una banda de `dtype` entero;
 - se capturan dimensiones, CRS, afín, bounds, resolución X/Y, nodata, escalas,
   offsets, interpretación de color, tabla de color, etiquetas, bloques y

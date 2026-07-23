@@ -8,6 +8,7 @@ from PyQt5.QtCore import QEvent, QEasingCurve, QPropertyAnimation, QTimer, QUrl,
 from PyQt5.QtGui import QColor, QDesktopServices
 from PyQt5.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFileDialog,
     QFrame,
@@ -33,6 +34,11 @@ from TerraLab.ui.data_library_dialog import (
     library_free_space,
 )
 from TerraLab.data.resumable_download import human_bytes
+from TerraLab.terrain.data_sources import (
+    LayerRole,
+    LayerType,
+    SelectionMode,
+)
 
 
 _STATE_ICON = {
@@ -111,6 +117,13 @@ class _LayerRow(QFrame):
         actions.addStretch(1)
         self.source_button = QPushButton("Font oficial")
         self.source_button.clicked.connect(self._open_official_source)
+        self.source_button.setVisible(
+            bool(
+                self.manager.assets.get_spec(
+                    self.descriptor.asset_id
+                ).source_url
+            )
+        )
         actions.addWidget(self.source_button)
         self.link_file_button = QPushButton("Enllaçar fitxer…")
         self.link_file_button.clicked.connect(self._link_file)
@@ -122,6 +135,7 @@ class _LayerRow(QFrame):
             layer_id
             in {
                 LayerId.EARTH_TERRAIN,
+                LayerId.EARTH_ORTHOPHOTO,
                 LayerId.EARTH_SURFACE_CATEGORICAL,
                 LayerId.EARTH_SURFACE_RGB,
             }
@@ -130,6 +144,10 @@ class _LayerRow(QFrame):
         self.prepare_button = QPushButton("Preparar / copiar…")
         self.prepare_button.clicked.connect(self._open_asset_wizard)
         actions.addWidget(self.prepare_button)
+        self.remove_button = QPushButton("Eliminar de la biblioteca…")
+        self.remove_button.setObjectName("removeLayerDataButton")
+        self.remove_button.clicked.connect(self._remove_data)
+        actions.addWidget(self.remove_button)
         self.activate_button = QPushButton("Fer activa")
         self.activate_button.clicked.connect(self._activate_surface)
         self.activate_button.setVisible(
@@ -255,6 +273,18 @@ class _LayerRow(QFrame):
             active = bool(status.effective_source)
             self.activate_button.setText("Activa" if active else "Fer activa")
             self.activate_button.setEnabled(bool(source_ids) and not active)
+        try:
+            removal = self.manager.removal_preview(self.layer_id)
+            self.remove_button.setEnabled(removal.has_data)
+            self.remove_button.setToolTip(
+                "Esborra les dades copiades per TerraLab i desvincula "
+                "les fonts externes sense esborrar-les."
+                if removal.has_data
+                else "Aquesta capa no té dades eliminables a la biblioteca."
+            )
+        except Exception as exc:
+            self.remove_button.setEnabled(False)
+            self.remove_button.setToolTip(str(exc))
 
     def _visibility_changed(self, checked: bool) -> None:
         self.manager.set_visible(self.layer_id, checked)
@@ -312,6 +342,79 @@ class _LayerRow(QFrame):
         if result == QDialog.Accepted:
             self.changed.emit(self.layer_id.value, "source")
 
+    def _remove_data(self) -> None:
+        try:
+            preview = self.manager.removal_preview(
+                self.layer_id,
+                include_size=True,
+            )
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "No s'han pogut revisar les dades",
+                str(exc),
+            )
+            return
+        if not preview.has_data:
+            self.refresh()
+            return
+
+        details = []
+        if preview.managed_paths:
+            details.append(
+                f"• S'esborraran {len(preview.managed_paths)} ubicacions "
+                f"gestionades ({human_bytes(preview.total_bytes)})."
+            )
+        if preview.external_paths:
+            details.append(
+                f"• Es desvincularan {len(preview.external_paths)} fonts externes; "
+                "els seus fitxers no s'esborraran."
+            )
+        if preview.source_ids:
+            details.append(
+                f"• Es retiraran {len(preview.source_ids)} fonts del catàleg."
+            )
+        if preview.retained_paths:
+            details.append(
+                "• Les dades compartides amb altres capes es conservaran."
+            )
+        if preview.manifest_registered and not details:
+            details.append(
+                "• S'eliminarà la configuració d'aquesta capa de la biblioteca."
+            )
+        answer = QMessageBox.question(
+            self,
+            "Eliminar dades de la capa",
+            f"Vols eliminar de la biblioteca les dades de "
+            f"«{self.descriptor.title}»?\n\n"
+            + "\n".join(details)
+            + "\n\nAquesta acció no es pot desfer.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        try:
+            report = self.manager.remove_data(self.layer_id)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "No s'han pogut eliminar les dades",
+                str(exc),
+            )
+            self.refresh()
+            return
+        self.refresh()
+        self.changed.emit(self.layer_id.value, "removal")
+        QMessageBox.information(
+            self,
+            "Dades eliminades",
+            (
+                f"S'han alliberat {human_bytes(report.released_bytes)}. "
+                "Les fonts externes, si n'hi havia, s'han conservat."
+            ),
+        )
+
     def _activate_surface(self) -> None:
         status = self.manager.status(self.layer_id)
         ready = [resource for resource in status.resources if resource.ready]
@@ -320,6 +423,163 @@ class _LayerRow(QFrame):
         self.manager.set_source(self.layer_id, ready[0].id)
         self.refresh()
         self.changed.emit(self.layer_id.value, "selection")
+
+
+class _SurfaceGroupRow(QFrame):
+    """One surface section with independent orthophoto and land-cover sources."""
+
+    changed = pyqtSignal(str, str)
+
+    def __init__(self, manager: LayerManager, parent=None) -> None:
+        super().__init__(parent)
+        self.manager = manager
+        self.setObjectName("assetRow")
+        root = QVBoxLayout(self)
+        root.setContentsMargins(10, 9, 10, 9)
+        root.setSpacing(7)
+
+        heading = QHBoxLayout()
+        self.visible = QCheckBox("Superfície")
+        font = self.visible.font()
+        font.setBold(True)
+        self.visible.setFont(font)
+        self.visible.toggled.connect(self._visibility_changed)
+        heading.addWidget(self.visible)
+        heading.addStretch(1)
+        root.addLayout(heading)
+
+        explanation = QLabel(
+            "Tria l’ortofoto o la cobertura categòrica amb l’interruptor "
+            "principal. Les fonts preferides es conserven per separat."
+        )
+        explanation.setWordWrap(True)
+        explanation.setObjectName("subtitleLabel")
+        root.addWidget(explanation)
+
+        selector_row = QHBoxLayout()
+        selector_row.addWidget(QLabel("Font de cobertura:"))
+        self.land_cover_source = QComboBox()
+        self.land_cover_source.setMinimumWidth(280)
+        self.land_cover_source.currentIndexChanged.connect(
+            self._land_cover_selection_changed
+        )
+        selector_row.addWidget(self.land_cover_source, 1)
+        root.addLayout(selector_row)
+
+        recommendation = QLabel(
+            "Recomanació: «Raster categòric» ocupa aproximadament la meitat "
+            "(≈8 GB davant de ≈16,2 GB) i requereix menys E/S, memòria i CPU "
+            "que «Raster RGB»."
+        )
+        recommendation.setWordWrap(True)
+        recommendation.setStyleSheet(
+            "color: #ffe680; background: #142947; border: 1px solid #3d679d; "
+            "border-radius: 5px; padding: 6px;"
+        )
+        root.addWidget(recommendation)
+
+        self.rows: dict[LayerId, _LayerRow] = {}
+        for layer_id, title in (
+            (LayerId.EARTH_ORTHOPHOTO, "Ortofoto"),
+            (
+                LayerId.EARTH_SURFACE_CATEGORICAL,
+                "Raster categòric — recomanat",
+            ),
+            (LayerId.EARTH_SURFACE_RGB, "Raster RGB"),
+        ):
+            title_label = QLabel(title)
+            title_font = title_label.font()
+            title_font.setBold(True)
+            title_label.setFont(title_font)
+            root.addWidget(title_label)
+            row = _LayerRow(manager, layer_id, self)
+            row.visible.setVisible(False)
+            row.activate_button.setVisible(False)
+            self.rows[layer_id] = row
+            root.addWidget(row)
+        self.refresh()
+
+    def _visibility_changed(self, checked: bool) -> None:
+        self.manager.set_visible(LayerId.EARTH_ORTHOPHOTO, bool(checked))
+        self.changed.emit(LayerId.EARTH_ORTHOPHOTO.value, "visibility")
+
+    def _land_cover_selection_changed(self, _index: int) -> None:
+        if bool(self.land_cover_source.property("refreshing")):
+            return
+        source_id = self.land_cover_source.currentData()
+        if source_id:
+            self.manager.data_sources.set_selection(
+                LayerRole.LAND_COVER,
+                str(source_id),
+                mode=SelectionMode.MANUAL,
+            )
+        else:
+            self.manager.data_sources.set_automatic(LayerRole.LAND_COVER)
+        # This changes only the preferred coverage source. SurfaceMode remains
+        # untouched, so an active orthophoto stays active.
+        self.changed.emit(
+            LayerId.EARTH_SURFACE_CATEGORICAL.value, "selection"
+        )
+        self.refresh()
+
+    def refresh(self) -> None:
+        self.visible.blockSignals(True)
+        self.visible.setChecked(
+            self.manager.is_visible(LayerId.EARTH_ORTHOPHOTO)
+        )
+        self.visible.blockSignals(False)
+        for row in self.rows.values():
+            row.refresh()
+
+        sources = [
+            source
+            for kind in (
+                LayerType.LAND_COVER_CATEGORICAL,
+                LayerType.LAND_COVER_RGB,
+            )
+            for source in self.manager.data_sources.list_sources(kind)
+            if source.enabled and source.available
+        ]
+        sources.sort(
+            key=lambda source: (
+                0
+                if source.layer_type
+                is LayerType.LAND_COVER_CATEGORICAL
+                else 1,
+                -int(source.priority),
+                source.resolution_m or float("inf"),
+                source.id,
+            )
+        )
+        selection = self.manager.data_sources.get_selection(
+            LayerRole.LAND_COVER
+        )
+        self.land_cover_source.setProperty("refreshing", True)
+        self.land_cover_source.blockSignals(True)
+        self.land_cover_source.clear()
+        self.land_cover_source.addItem(
+            "Automàtic — raster categòric preferent", None
+        )
+        for source in sources:
+            encoding = (
+                "raster categòric — recomanat"
+                if source.layer_type
+                is LayerType.LAND_COVER_CATEGORICAL
+                else "raster RGB"
+            )
+            self.land_cover_source.addItem(
+                f"{source.display_name} · {encoding}", source.id
+            )
+        if (
+            selection.mode is SelectionMode.MANUAL
+            and selection.source_id
+        ):
+            index = self.land_cover_source.findData(selection.source_id)
+            self.land_cover_source.setCurrentIndex(max(0, index))
+        else:
+            self.land_cover_source.setCurrentIndex(0)
+        self.land_cover_source.blockSignals(False)
+        self.land_cover_source.setProperty("refreshing", False)
 
 
 class LayerConfiguratorWidget(QWidget):
@@ -332,6 +592,7 @@ class LayerConfiguratorWidget(QWidget):
         super().__init__(parent)
         self.manager = manager
         self._rows: dict[LayerId, _LayerRow] = {}
+        self._surface_groups = []
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
@@ -368,7 +629,26 @@ class LayerConfiguratorWidget(QWidget):
             layout = QVBoxLayout(content)
             layout.setContentsMargins(4, 6, 4, 6)
             layout.setSpacing(8)
-            for descriptor in manager.list_layers(group):
+            descriptors = manager.list_layers(group)
+            surface_ids = {
+                LayerId.EARTH_ORTHOPHOTO,
+                LayerId.EARTH_SURFACE_CATEGORICAL,
+                LayerId.EARTH_SURFACE_RGB,
+            }
+            for descriptor in descriptors:
+                if descriptor.id in surface_ids:
+                    if descriptor.id is not LayerId.EARTH_ORTHOPHOTO:
+                        continue
+                    surface_group = _SurfaceGroupRow(manager, content)
+                    surface_group.changed.connect(self.layerChanged)
+                    surface_group.changed.connect(self._row_changed)
+                    self._surface_groups.append(surface_group)
+                    for surface_id, row in surface_group.rows.items():
+                        row.changed.connect(self.layerChanged)
+                        row.changed.connect(self._row_changed)
+                        self._rows[surface_id] = row
+                    layout.addWidget(surface_group)
+                    continue
                 row = _LayerRow(manager, descriptor.id, content)
                 row.changed.connect(self.layerChanged)
                 row.changed.connect(self._row_changed)
@@ -404,7 +684,7 @@ class LayerConfiguratorWidget(QWidget):
         QTimer.singleShot(0, _reveal)
 
     def _row_changed(self, _layer_id: str, change: str) -> None:
-        if change in {"visibility", "selection"}:
+        if change in {"visibility", "selection", "source", "removal"}:
             self.refresh()
 
     def refresh(self) -> None:
@@ -414,6 +694,8 @@ class LayerConfiguratorWidget(QWidget):
         )
         for row in self._rows.values():
             row.refresh()
+        for group in self._surface_groups:
+            group.refresh()
 
     def _change_library(self) -> None:
         if configure_data_library(self, changing=True) is not None:

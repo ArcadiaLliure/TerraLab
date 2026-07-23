@@ -1,10 +1,15 @@
 from types import SimpleNamespace
 
 import numpy as np
-from PyQt5.QtGui import QColor
+from PyQt5.QtCore import QPointF
+from PyQt5.QtGui import QColor, QPolygonF
 
 from TerraLab.terrain.overlay import (
     HorizonOverlay,
+    _TerrainGeometryMetrics,
+    _TerrainSurfaceGeometry,
+    _TerrainSurfaceSpan,
+    _TerrainTriangleGeometry,
     _apply_horizon_coverage,
     _geometry_horizon_y,
     _interpolate_triangle_values,
@@ -30,6 +35,159 @@ def _overlay() -> HorizonOverlay:
 
 def _rgb(color: QColor) -> tuple[int, int, int, int]:
     return color.red(), color.green(), color.blue(), color.alpha()
+
+
+def _categorical_cache(classes, *, legend="s2glc_europe_2017"):
+    class_grid = np.asarray(classes, dtype=np.int64)
+    return SimpleNamespace(
+        source_ids=("source-1",),
+        source_names=("Cobertura externa",),
+        source_legend_ids=(legend,),
+        relief_class_ids=class_grid,
+        relief_categorical=np.ones(class_grid.shape, dtype=bool),
+        relief_source_indices=np.zeros(class_grid.shape, dtype=np.int16),
+        relief_distance_indices=np.arange(
+            class_grid.shape[0], dtype=np.int32
+        ),
+        relief_azimuth_indices=np.arange(
+            class_grid.shape[1], dtype=np.int32
+        ),
+    )
+
+
+def test_relief_category_hit_uses_greatest_barycentric_vertex():
+    overlay = _overlay()
+    cache = _categorical_cache([[62, 82, 102]])
+    overlay.profile = SimpleNamespace(surface_samples=cache)
+    overlay._terrain_render_asset = SimpleNamespace(
+        elevations=np.zeros((1, 3), dtype=np.float32)
+    )
+    geometry = _TerrainTriangleGeometry(
+        xy=np.asarray([[[0, 0], [1, 0], [0, 1]]], dtype=np.float32),
+        depth=np.asarray([[1, 1, 1]], dtype=np.float32),
+        vertex_rows=np.asarray([[0, 0, 0]], dtype=np.int32),
+        vertex_columns=np.asarray([[0, 1, 2]], dtype=np.int32),
+        vertex_domain=np.asarray([[0, 0, 0]], dtype=np.uint8),
+        metrics=_TerrainGeometryMetrics(spans=1),
+    )
+    overlay._terrain_surface_image_geometry = geometry
+    overlay._terrain_raster_cache_key = (id(geometry), 1, 1, 1)
+    overlay._terrain_raster_cache = (
+        np.asarray([[0]], dtype=np.int32),
+        np.asarray([[0.20]], dtype=np.float32),
+        np.asarray([[0.70]], dtype=np.float32),
+    )
+
+    info = overlay.category_at_screen(0.0, 0.0)
+
+    assert info is not None
+    assert info.class_id == 82
+    assert info.product == "S2GLC Europe 2017"
+    assert "fulla ampla" in info.name
+
+
+def test_profile_category_hit_uses_top_visible_polygon_and_nearest_sample():
+    overlay = _overlay()
+    cache = _categorical_cache(
+        [[1, 10]], legend="clcplus_backbone_2023"
+    )
+    overlay.profile = SimpleNamespace(surface_samples=cache)
+    overlay._terrain_render_asset = SimpleNamespace(
+        elevations=np.zeros((1, 2), dtype=np.float32)
+    )
+    span = _TerrainSurfaceSpan(
+        row_index=0,
+        distance_m=100.0,
+        column_indices=np.asarray([0, 1], dtype=np.int32),
+        x=np.asarray([0.0, 10.0], dtype=np.float32),
+        bottom_x=np.asarray([0.0, 10.0], dtype=np.float32),
+        top_y=np.asarray([0.0, 0.0], dtype=np.float32),
+        bottom_y=np.asarray([10.0, 10.0], dtype=np.float32),
+        source_vertex_count=2,
+        max_error_px=0.0,
+    )
+    geometry = _TerrainSurfaceGeometry(
+        (span,), _TerrainGeometryMetrics(spans=1)
+    )
+    overlay._terrain_surface_image_geometry = geometry
+
+    info = overlay.category_at_screen(8.0, 5.0)
+
+    assert info is not None
+    assert info.class_id == 10
+    assert info.name == "Aigua"
+    assert info.product == "CLC+ Backbone"
+
+
+def test_profile_representation_uses_cached_polygon_without_raster_io():
+    overlay = _overlay()
+    cache = SimpleNamespace(
+        source_ids=("clc",),
+        source_names=("CLC+",),
+        source_legend_ids=("clcplus_backbone_2023",),
+        profile_class_ids=np.asarray([[1, 10]], dtype=np.int64),
+        profile_categorical=np.asarray([[True, True]]),
+        profile_source_indices=np.asarray([[0, 0]], dtype=np.int16),
+        profile_band_indices=np.asarray([0], dtype=np.int32),
+        profile_azimuth_indices=np.asarray([0, 1], dtype=np.int32),
+    )
+    band = SimpleNamespace(band_id="near")
+    overlay.profile = SimpleNamespace(
+        surface_samples=cache,
+        bands=({"id": "near"},),
+        azimuths=np.asarray([0.0, 90.0], dtype=np.float32),
+    )
+    overlay._layers = [(band, None, None)]
+    polygon = QPolygonF(
+        [
+            QPointF(0.0, 0.0),
+            QPointF(10.0, 0.0),
+            QPointF(10.0, 10.0),
+            QPointF(0.0, 10.0),
+        ]
+    )
+    overlay._profile_category_hit_cache[
+        ("band", id(band))
+    ] = (
+        (
+            polygon,
+            np.asarray([0.0, 10.0], dtype=np.float32),
+            np.asarray([0.0, 90.0], dtype=np.float32),
+        ),
+    )
+
+    info = overlay.category_at_screen(8.0, 5.0)
+
+    assert info is not None
+    assert info.class_id == 10
+    assert info.name == "Aigua"
+
+
+def test_category_hit_ignores_non_categorical_surface_cache():
+    overlay = _overlay()
+    cache = _categorical_cache([[82]])
+    cache.relief_categorical[:] = False
+    overlay.profile = SimpleNamespace(surface_samples=cache)
+    overlay._terrain_render_asset = SimpleNamespace(
+        elevations=np.zeros((1, 1), dtype=np.float32)
+    )
+    geometry = _TerrainTriangleGeometry(
+        xy=np.asarray([[[0, 0], [1, 0], [0, 1]]], dtype=np.float32),
+        depth=np.asarray([[1, 1, 1]], dtype=np.float32),
+        vertex_rows=np.asarray([[0, 0, 0]], dtype=np.int32),
+        vertex_columns=np.asarray([[0, 0, 0]], dtype=np.int32),
+        vertex_domain=np.asarray([[0, 0, 0]], dtype=np.uint8),
+        metrics=_TerrainGeometryMetrics(spans=1),
+    )
+    overlay._terrain_surface_image_geometry = geometry
+    overlay._terrain_raster_cache_key = (id(geometry), 1, 1, 1)
+    overlay._terrain_raster_cache = (
+        np.asarray([[0]], dtype=np.int32),
+        np.asarray([[0.4]], dtype=np.float32),
+        np.asarray([[0.3]], dtype=np.float32),
+    )
+
+    assert overlay.category_at_screen(0.0, 0.0) is None
 
 
 def test_explicit_profile_mode_ignores_an_accidental_mesh():

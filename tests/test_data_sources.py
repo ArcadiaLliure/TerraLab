@@ -10,12 +10,14 @@ from TerraLab.terrain.data_sources import (
     CATALOG_SCHEMA_VERSION,
     LAND_COVER_TYPE_MIGRATION,
     LEGACY_PATHS_MIGRATION,
+    SURFACE_MODEL_MIGRATION,
     DataSourceRegistry,
     LayerRole,
     LayerSelectionService,
     LayerType,
     SelectionMode,
     SourceHealthStatus,
+    SurfaceMode,
     TerrainRepresentationMode,
     build_source_fingerprint,
 )
@@ -33,6 +35,113 @@ def _touch(tmp_path: Path, name: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"test")
     return path
+
+
+def test_v3_migration_splits_orthophoto_and_land_cover_encodings(tmp_path):
+    s2glc = _touch(tmp_path, "legacy/s2glc-rgb.tif")
+    clcplus = _touch(tmp_path, "legacy/clcplus.tif")
+    orthophoto = _touch(tmp_path, "legacy/ortho-25cm.tif")
+    catalog = tmp_path / "catalog" / "data_sources.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "sources": [
+                    {
+                        "id": "s2glc",
+                        "display_name": "S2GLC RGB",
+                        "layer_type": "land_cover_rgb",
+                        "path": str(s2glc),
+                        "priority": 8,
+                        "enabled": True,
+                        "metadata": {
+                            "product_id": "s2glc-europe-2017-v1.2",
+                            "rasters": [{"band_count": 4}],
+                        },
+                    },
+                    {
+                        "id": "clcplus",
+                        "display_name": "CLC+",
+                        "layer_type": "land_cover_rgb",
+                        "path": str(clcplus),
+                        "priority": 7,
+                        "enabled": True,
+                        "metadata": {"rasters": [{"band_count": 1}]},
+                    },
+                    {
+                        "id": "ortho",
+                        "display_name": "Orto 25 cm",
+                        "layer_type": "land_cover_rgb",
+                        "path": str(orthophoto),
+                        "priority": 6,
+                        "enabled": True,
+                        "metadata": {"rasters": [{"band_count": 3}]},
+                    },
+                ],
+                "selections": {
+                    "surface": {
+                        "mode": "manual",
+                        "source_id": "ortho",
+                    }
+                },
+                "migrations": {
+                    LEGACY_PATHS_MIGRATION: True,
+                    LAND_COVER_TYPE_MIGRATION: True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    registry = DataSourceRegistry(catalog, legacy_reader={})
+
+    assert registry.get("s2glc").layer_type is LayerType.LAND_COVER_RGB
+    assert (
+        registry.get("s2glc").metadata["legend_id"]
+        == "s2glc_europe_2017"
+    )
+    assert (
+        registry.get("clcplus").layer_type
+        is LayerType.LAND_COVER_CATEGORICAL
+    )
+    assert (
+        registry.get("clcplus").metadata["legend_id"]
+        == "clcplus_backbone_2023"
+    )
+    assert registry.get("ortho").layer_type is LayerType.ORTHOPHOTO_RGB
+    assert registry.get("ortho").path == str(orthophoto.resolve())
+    assert registry.surface_mode is SurfaceMode.ORTHOPHOTO
+    assert (
+        registry.get_selection("orthophoto").source_id == "ortho"
+    )
+    persisted = json.loads(catalog.read_text(encoding="utf-8"))
+    assert persisted["version"] == 3
+    assert persisted["migrations"][SURFACE_MODEL_MIGRATION] is True
+
+
+def test_legacy_surface_layer_type_value_loads_as_surface_mode(tmp_path):
+    catalog = tmp_path / "catalog" / "legacy-mode.json"
+    catalog.parent.mkdir(parents=True)
+    catalog.write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "sources": [],
+                "surface_layer_type": "surface_rgb",
+                "migrations": {
+                    LEGACY_PATHS_MIGRATION: True,
+                    LAND_COVER_TYPE_MIGRATION: True,
+                    SURFACE_MODEL_MIGRATION: True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    registry = DataSourceRegistry(catalog, legacy_reader={})
+
+    assert registry.surface_mode is SurfaceMode.LAND_COVER
 
 
 def test_registry_round_trip_preserves_complete_metadata_and_preferences(
@@ -274,7 +383,7 @@ def test_elevation_selection_uses_coverage_priority_resolution_and_stable_id(
     assert manual_fallback.reason == "manual_out_of_coverage_fallback"
 
 
-def test_surface_rgb_precedes_categorical_but_manual_selection_wins(tmp_path):
+def test_surface_categorical_precedes_rgb_but_manual_selection_wins(tmp_path):
     registry = _registry(tmp_path)
     categorical = registry.register_path(
         _touch(tmp_path, "surface/clc.tif"),
@@ -295,8 +404,8 @@ def test_surface_rgb_precedes_categorical_but_manual_selection_wins(tmp_path):
     selector = LayerSelectionService(registry)
 
     automatic = selector.select_surface(41.5, 2.0)
-    assert automatic.effective == rgb
-    assert [source.id for source in automatic.chain] == ["ortho"]
+    assert automatic.effective == categorical
+    assert [source.id for source in automatic.chain] == ["clc", "ortho"]
 
     outside_rgb = selector.select_surface(50.0, 8.0)
     assert outside_rgb.effective == categorical
@@ -306,10 +415,10 @@ def test_surface_rgb_precedes_categorical_but_manual_selection_wins(tmp_path):
     assert manual.reason == "manual"
     assert manual.configured == categorical
     assert manual.effective == categorical
-    assert [source.id for source in manual.chain] == ["clc"]
+    assert [source.id for source in manual.chain] == ["clc", "ortho"]
 
 
-def test_manual_surface_fallback_never_crosses_rgb_categorical_boundary(
+def test_manual_surface_rgb_can_fall_back_to_categorical(
     tmp_path,
 ):
     registry = _registry(tmp_path)
@@ -338,16 +447,77 @@ def test_manual_surface_fallback_never_crosses_rgb_categorical_boundary(
     fallback = selector.select_surface(50.0, 8.0)
 
     assert fallback.reason == "manual_out_of_coverage_fallback"
-    assert fallback.effective == europe_rgb
-    assert [source.id for source in fallback.chain] == ["europe-rgb"]
-    assert categorical not in fallback.chain
+    assert fallback.effective == categorical
+    assert [source.id for source in fallback.chain] == [
+        "categorical",
+        "europe-rgb",
+    ]
 
     registry.update(europe_rgb.id, enabled=False)
-    no_rgb_fallback = selector.select_surface(50.0, 8.0)
+    categorical_fallback = selector.select_surface(50.0, 8.0)
 
-    assert no_rgb_fallback.reason == "manual_out_of_coverage_no_fallback"
-    assert no_rgb_fallback.effective is None
-    assert no_rgb_fallback.chain == ()
+    assert categorical_fallback.reason == "manual_out_of_coverage_fallback"
+    assert categorical_fallback.effective == categorical
+    assert categorical_fallback.chain == (categorical,)
+
+
+def test_equivalent_s2glc_encodings_remain_cross_encoding_fallbacks(
+    tmp_path,
+):
+    registry = _registry(tmp_path)
+    common = {
+        "product_id": "s2glc-europe-2017-v1.2",
+        "product_version": "1.2",
+        "managed": True,
+    }
+    rgb = registry.register_path(
+        _touch(tmp_path, "surface/s2glc-rgb.tif"),
+        LayerType.LAND_COVER_RGB,
+        source_id="s2glc-rgb",
+        metadata=common,
+    )
+    categorical = registry.register_path(
+        _touch(tmp_path, "surface/s2glc-codes.tif"),
+        LayerType.LAND_COVER_CATEGORICAL,
+        source_id="s2glc-codes",
+        metadata=common,
+    )
+    registry.set_selection(LayerRole.LAND_COVER, rgb.id)
+
+    selected = LayerSelectionService(registry).select_land_cover(
+        41.0, 2.0
+    )
+
+    assert selected.effective == rgb
+    assert selected.chain == (rgb, categorical)
+
+
+def test_land_cover_preference_does_not_change_surface_mode(tmp_path):
+    registry = _registry(tmp_path)
+    source = registry.register_path(
+        _touch(tmp_path, "surface/classes.tif"),
+        LayerType.LAND_COVER_CATEGORICAL,
+    )
+    registry.set_surface_mode(SurfaceMode.ORTHOPHOTO)
+
+    registry.set_selection(LayerRole.LAND_COVER, source.id)
+
+    assert registry.surface_mode is SurfaceMode.ORTHOPHOTO
+    assert registry.get_selection(LayerRole.LAND_COVER).source_id == source.id
+
+
+def test_land_cover_fallback_never_uses_an_orthophoto(tmp_path):
+    registry = _registry(tmp_path)
+    orthophoto = registry.register_path(
+        _touch(tmp_path, "surface/ortho.tif"),
+        LayerType.ORTHOPHOTO_RGB,
+    )
+    registry.set_surface_mode(SurfaceMode.LAND_COVER)
+
+    selection = LayerSelectionService(registry).select_surface(41.0, 2.0)
+
+    assert orthophoto not in selection.chain
+    assert selection.effective is None
 
 
 def test_disabled_missing_and_removed_sources_fall_back_without_disk_deletion(

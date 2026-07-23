@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from TerraLab.common.data_library import DataLibrary
 from TerraLab.data.assets_manager import AssetManager, AssetSpec
 from TerraLab.terrain.crs import (
     CRS_GEOGRAPHIC,
@@ -292,3 +293,138 @@ def test_invalid_typed_import_is_catalogued_disabled_and_never_marked_ready(
     assert manager.asset_status("elevation_dem")["reason"] == "invalid_source"
     assert ("assets.elevation_dem.ready", False) in writes
     assert ("assets.elevation_dem.ready", True) not in writes
+
+
+def test_remove_layer_data_deletes_managed_sources_and_preserves_external_files(
+    tmp_path,
+    monkeypatch,
+):
+    library = DataLibrary(tmp_path / "library")
+    library.initialize()
+    manager = AssetManager(library)
+    manager.data_sources = DataSourceRegistry(
+        tmp_path / "catalog" / "removal_sources.json",
+        legacy_reader={},
+    )
+    writes = []
+    monkeypatch.setattr(
+        "TerraLab.data.assets_manager.set_config_value",
+        lambda key, value: writes.append((key, value)),
+    )
+
+    managed_dir = manager.layout["data_elevation"] / "owned-dem"
+    managed_file = _write_ascii_grid(
+        managed_dir / "dem.asc",
+        x=400_000,
+        y=4_500_000,
+    )
+    external_file = _write_ascii_grid(
+        tmp_path / "external" / "dem.asc",
+        x=410_000,
+        y=4_510_000,
+    )
+    managed_source = manager.data_sources.register_path(
+        managed_dir,
+        LayerType.ELEVATION,
+        metadata={"managed": True, "asset_id": "elevation_dem"},
+        provenance="managed",
+    )
+    external_source = manager.data_sources.register_path(
+        external_file,
+        LayerType.ELEVATION,
+        metadata={"managed": False, "asset_id": "elevation_dem"},
+        provenance="external",
+    )
+    library.update_asset("elevation_dem", ready=True)
+    managed_size = managed_file.stat().st_size
+
+    preview = manager.removal_preview("elevation_dem", include_size=True)
+    report = manager.remove_asset_data("elevation_dem")
+
+    assert preview.has_data is True
+    assert preview.total_bytes == managed_size
+    assert managed_dir.exists() is False
+    assert external_file.is_file()
+    assert manager.data_sources.get(managed_source.id) is None
+    assert manager.data_sources.get(external_source.id) is None
+    assert set(report.removed_source_ids) == {
+        managed_source.id,
+        external_source.id,
+    }
+    assert str(external_file.resolve()) in report.detached_paths
+    assert library.asset_state("elevation_dem") == {}
+    assert ("assets.elevation_dem.ready", False) in writes
+
+
+def test_remove_sky_layer_clears_owned_directory_but_not_linked_source(
+    tmp_path,
+    monkeypatch,
+):
+    library = DataLibrary(tmp_path / "library")
+    library.initialize()
+    manager = AssetManager(library)
+    monkeypatch.setattr(
+        "TerraLab.data.assets_manager.set_config_value",
+        lambda *_args: None,
+    )
+    managed_root = manager.layout["data_ngc"]
+    managed_file = managed_root / "openngc_catalog.csv"
+    managed_file.write_text("Name\nM31\n", encoding="utf-8")
+    external_source = library.root / "imports" / "OpenNGC.csv"
+    external_source.parent.mkdir()
+    external_source.write_text("Name\nM42\n", encoding="utf-8")
+    library.update_asset(
+        "ngc_catalog",
+        ready=True,
+        path=str(managed_file),
+        source_path=str(external_source),
+        managed=True,
+    )
+
+    report = manager.remove_asset_data("ngc_catalog")
+
+    assert managed_root.is_dir()
+    assert list(managed_root.iterdir()) == []
+    assert external_source.read_text(encoding="utf-8") == "Name\nM42\n"
+    assert str(external_source.resolve()) in report.detached_paths
+    assert library.asset_state("ngc_catalog") == {}
+
+
+def test_remove_layer_keeps_managed_path_shared_with_another_layer(
+    tmp_path,
+    monkeypatch,
+):
+    library = DataLibrary(tmp_path / "library")
+    library.initialize()
+    manager = AssetManager(library)
+    manager.data_sources = DataSourceRegistry(
+        tmp_path / "catalog" / "shared_sources.json",
+        legacy_reader={},
+    )
+    monkeypatch.setattr(
+        "TerraLab.data.assets_manager.set_config_value",
+        lambda *_args: None,
+    )
+    shared = manager.layout["data_surface"] / "shared"
+    raster = shared / "surface.tif"
+    raster.parent.mkdir()
+    raster.write_bytes(b"surface")
+    rgb = manager.data_sources.register_path(
+        shared,
+        LayerType.SURFACE_RGB,
+        metadata={"managed": True, "asset_id": "surface_rgb"},
+        provenance="managed",
+    )
+    categorical = manager.data_sources.register_path(
+        shared,
+        LayerType.SURFACE_CATEGORICAL,
+        metadata={"managed": False, "asset_id": "surface_categorical"},
+        provenance="external",
+    )
+
+    report = manager.remove_asset_data("surface_rgb")
+
+    assert raster.read_bytes() == b"surface"
+    assert manager.data_sources.get(rgb.id) is None
+    assert manager.data_sources.get(categorical.id) is not None
+    assert str(shared.resolve()) in report.retained_paths

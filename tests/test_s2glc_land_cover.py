@@ -14,6 +14,7 @@ from TerraLab.terrain.land_cover.legends.s2glc import (
     get_s2glc_style,
     s2glc_classes_to_rgba,
 )
+from TerraLab.terrain.land_cover.legends.category_info import category_info
 from TerraLab.data.assets_manager import AssetManager
 from TerraLab.data.layer_manager import LayerGroup, LayerId, LayerManager
 from TerraLab.common.data_library import DataLibrary
@@ -22,6 +23,7 @@ from TerraLab.terrain.source_inspection import inspect_data_source
 from TerraLab.terrain.data_sources import LayerType
 from TerraLab.terrain.surface import (
     CategoricalSurfaceProvider,
+    RgbCategoricalSurfaceProvider,
     RgbSurfaceProvider,
     SurfaceSamplingService,
     raster_grids_aligned,
@@ -267,7 +269,7 @@ def test_crs_transform_nodata_bounds_and_detected_metadata(tmp_path):
     finally:
         provider.close()
 
-    inspected = inspect_data_source(path, LayerType.LAND_COVER_RGB)
+    inspected = inspect_data_source(path, LayerType.ORTHOPHOTO_RGB)
     assert inspected.crs == "EPSG:3857"
     # EPSG:3857 native pixels are 10 projection units; the catalogue stores
     # their detected ground resolution at this latitude.
@@ -309,6 +311,19 @@ def test_s2glc_registry_is_complete_deterministic_and_unknown_is_transparent():
     assert first[0].tolist() == first[1].tolist()
 
 
+def test_localized_category_descriptions_cover_builtin_and_external_legends():
+    s2glc = category_info("s2glc_europe_2017", 82)
+    clcplus = category_info("clcplus_backbone_2023", 10)
+    external = category_info("", 17, source_name="Mapa propi")
+
+    assert s2glc.name == "Coberta d'arbres de fulla ampla"
+    assert "cobertura del sòl" in s2glc.description
+    assert clcplus.name == "Aigua"
+    assert clcplus.description
+    assert external.name == "Classe 17"
+    assert external.product == "Mapa propi"
+
+
 def test_validation_rejects_grayscale_rgb_and_float_categories(tmp_path):
     grayscale = _write_raster(
         tmp_path / "not-rgb.tif",
@@ -316,7 +331,11 @@ def test_validation_rejects_grayscale_rgb_and_float_categories(tmp_path):
         pixel_size=10.0,
     )
     with pytest.raises(ValueError, match="tres canals RGB"):
-        inspect_data_source(grayscale, LayerType.LAND_COVER_RGB)
+        inspect_data_source(
+            grayscale,
+            LayerType.LAND_COVER_RGB,
+            metadata={"legend_id": "s2glc_europe_2017"},
+        )
 
     continuous = _write_raster(
         tmp_path / "not-categorical.tif",
@@ -325,6 +344,78 @@ def test_validation_rejects_grayscale_rgb_and_float_categories(tmp_path):
     )
     with pytest.raises(ValueError, match="codis enters"):
         inspect_data_source(continuous, LayerType.LAND_COVER_CATEGORICAL)
+
+
+def test_s2glc_rgb_and_single_band_decode_to_identical_classes(tmp_path):
+    codes = np.asarray(
+        [
+            [62, 82, 102, 162],
+            [82, 102, 162, 62],
+            [102, 162, 62, 82],
+            [162, 62, 82, 102],
+        ],
+        dtype=np.uint8,
+    )
+    rgba = np.asarray(
+        [[S2GLC_LEGEND[int(code)].base_color for code in row] for row in codes],
+        dtype=np.uint8,
+    )
+    rgb_path = _write_raster(
+        tmp_path / "s2glc-rgb.tif",
+        np.moveaxis(rgba[..., :3], -1, 0),
+        pixel_size=10.0,
+        left=0.0,
+        top=40.0,
+        rgb=True,
+    )
+    class_path = _write_raster(
+        tmp_path / "s2glc-classes.tif",
+        codes,
+        pixel_size=10.0,
+        left=0.0,
+        top=40.0,
+    )
+    rgb_provider = RgbCategoricalSurfaceProvider(
+        rgb_path, legend_id="s2glc_europe_2017"
+    )
+    class_provider = CategoricalSurfaceProvider(
+        class_path, legend_id="s2glc_europe_2017"
+    )
+    rgb_provider.initialize()
+    class_provider.initialize()
+    try:
+        x, y = np.meshgrid(
+            np.asarray([5.0, 15.0, 25.0, 35.0]),
+            np.asarray([35.0, 25.0, 15.0, 5.0]),
+        )
+        decoded = rgb_provider.sample_classes(x, y)
+        direct = class_provider.sample_classes(x, y)
+        np.testing.assert_array_equal(decoded.valid, direct.valid)
+        np.testing.assert_array_equal(decoded.classes, direct.classes)
+        np.testing.assert_array_equal(decoded.classes, codes)
+    finally:
+        rgb_provider.close()
+        class_provider.close()
+
+
+def test_rgb_categorical_unknown_colours_and_transparency_are_nodata():
+    palette = np.asarray([0x239800FF], dtype=np.uint32)
+    classes = np.asarray([82], dtype=np.int64)
+    rgba = np.asarray(
+        [
+            [35, 152, 0, 255],
+            [1, 2, 3, 255],
+            [35, 152, 0, 0],
+        ],
+        dtype=np.uint8,
+    ).T
+
+    decoded, valid = RgbCategoricalSurfaceProvider._decode_rgba(
+        rgba, palette, classes
+    )
+
+    assert decoded.tolist() == [82, -1, -1]
+    assert valid.tolist() == [True, False, False]
 
 
 def test_layer_catalog_exposes_both_official_s2glc_products(tmp_path):

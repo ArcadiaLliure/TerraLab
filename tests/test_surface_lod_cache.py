@@ -193,7 +193,13 @@ def test_surface_result_cache_survives_restart_and_partial_fov_is_typed(tmp_path
     cache_root = tmp_path / "surface-cache"
     profile = _surface_profile()
 
-    provider = CategoricalSurfaceProvider(path, source_id="land-cover")
+    provider = CategoricalSurfaceProvider(
+        path,
+        source_id="land-cover",
+        source_name="Mapa categòric",
+        legend_id="external-legend",
+        class_colors={10: (20, 90, 30, 255)},
+    )
     provider.initialize()
     service = SurfaceSamplingService(
         [provider], persistent_cache_dir=cache_root, persistent_cache_bytes=32 * 1024**2
@@ -210,11 +216,19 @@ def test_surface_result_cache_survives_restart_and_partial_fov_is_typed(tmp_path
         ),
     )
     assert partial.completion_state == "visible_partial"
+    assert partial.source_names == ("Mapa categòric",)
+    assert partial.source_legend_ids == ("external-legend",)
     assert partial.profile_azimuth_indices.tolist() == [1]
     assert partial.profile_loaded.all()
     service.close()
 
-    provider = CategoricalSurfaceProvider(path, source_id="land-cover")
+    provider = CategoricalSurfaceProvider(
+        path,
+        source_id="land-cover",
+        source_name="Mapa categòric",
+        legend_id="external-legend",
+        class_colors={10: (20, 90, 30, 255)},
+    )
     provider.initialize()
     restarted = SurfaceSamplingService(
         [provider], persistent_cache_dir=cache_root, persistent_cache_bytes=32 * 1024**2
@@ -232,6 +246,8 @@ def test_surface_result_cache_survives_restart_and_partial_fov_is_typed(tmp_path
     )
     try:
         assert same.cache_id == partial.cache_id
+        assert same.source_names == partial.source_names
+        assert same.source_legend_ids == partial.source_legend_ids
         assert restarted._persistent_store.stats.hits >= 1
         assert provider._datasets[0].lod_rows_read == 0
     finally:
