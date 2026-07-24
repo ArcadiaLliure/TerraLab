@@ -8,21 +8,27 @@ from TerraLab.terrain.land_cover.legends.category_info import (
     LandCoverCategoryInfo,
 )
 from TerraLab.terrain.data_sources import LayerType, SurfaceMode
+from TerraLab.ui.canvas_input_handler import CanvasInputHandler
 from TerraLab.ui.sky_widget_impl import AstroCanvas, AstronomicalWidget
 
 
 class _Selector:
     def __init__(self):
         self.visible = None
+        self.enabled = None
 
     def setVisible(self, visible):
         self.visible = bool(visible)
+
+    def setEnabled(self, enabled):
+        self.enabled = bool(enabled)
 
 
 class _Switch:
     def __init__(self):
         self.value = None
         self.tooltip = ""
+        self.enabled = None
 
     def blockSignals(self, _blocked):
         return None
@@ -32,6 +38,9 @@ class _Switch:
 
     def setToolTip(self, tooltip):
         self.tooltip = str(tooltip)
+
+    def setEnabled(self, enabled):
+        self.enabled = bool(enabled)
 
 
 class _Registry:
@@ -71,6 +80,9 @@ class _SurfaceControlHarness:
     _surface_coverage_message = AstronomicalWidget._surface_coverage_message
     _sync_surface_mode_control = AstronomicalWidget._sync_surface_mode_control
     on_surface_mode_changed = AstronomicalWidget.on_surface_mode_changed
+    on_surface_visual_style_changed = (
+        AstronomicalWidget.on_surface_visual_style_changed
+    )
 
 
 def _source(
@@ -105,6 +117,8 @@ def _harness(sources, selected_id=None):
     widget.layer_manager = _Manager(registry)
     widget.surface_mode_selector = _Selector()
     widget.slider_surface_mode = _Switch()
+    widget.surface_visual_style_selector = _Selector()
+    widget.slider_surface_visual_style = _Switch()
     widget.latitude = 41.0
     widget.longitude = 2.0
     return widget
@@ -132,6 +146,59 @@ def test_surface_mode_switch_reflects_the_selected_categorical_source():
     assert widget.surface_mode_selector.visible is True
     assert widget.slider_surface_mode.value == 1
     assert "categòric" in widget.slider_surface_mode.tooltip
+
+
+def test_visual_style_switch_is_independent_of_surface_source(monkeypatch):
+    widget = _harness(
+        [_source("ortho", LayerType.ORTHOPHOTO_RGB)],
+        "ortho",
+    )
+    widget.layer_manager.data_sources.surface_mode = SurfaceMode.ORTHOPHOTO
+    monkeypatch.setattr(
+        "TerraLab.ui.sky_widget_impl.get_config_value",
+        lambda key, default=None: (
+            "vibrant" if key == "surface_visual_style" else default
+        ),
+    )
+
+    widget._sync_surface_mode_control()
+
+    assert widget.surface_mode_selector.visible is False
+    assert widget.surface_visual_style_selector.visible is True
+    assert widget.slider_surface_visual_style.value == 1
+    assert "Vibrant" in widget.slider_surface_visual_style.tooltip
+
+
+def test_visual_style_change_reloads_only_visual_render_settings(monkeypatch):
+    widget = _harness(
+        [_source("ortho", LayerType.ORTHOPHOTO_RGB)],
+        "ortho",
+    )
+    saved = []
+    reloaded = []
+    updates = []
+    refreshes = []
+    monkeypatch.setattr(
+        "TerraLab.ui.sky_widget_impl.set_config_value",
+        lambda key, value: saved.append((key, value)),
+    )
+    widget.terrain_coordinator = SimpleNamespace(
+        request_surface_refresh=lambda **kwargs: refreshes.append(kwargs)
+    )
+    widget.canvas = SimpleNamespace(
+        horizon_overlay=SimpleNamespace(
+            reload_render_settings=lambda: reloaded.append(True)
+        ),
+        update=lambda: updates.append(True),
+    )
+
+    widget.on_surface_visual_style_changed(1)
+
+    assert ("surface_visual_style", "vibrant") in saved
+    assert ("categorical_edge_smoothing_enabled", True) in saved
+    assert reloaded == [True]
+    assert updates == [True]
+    assert refreshes == []
 
 
 def test_surface_mode_switch_selects_source_and_refreshes_visible_surface():
@@ -209,12 +276,13 @@ def test_out_of_coverage_orthophoto_is_rejected_with_explanation(monkeypatch):
 
 
 class _TooltipEvent:
-    def __init__(self):
+    def __init__(self, event_type=QEvent.ToolTip):
+        self.event_type = event_type
         self.accepted = False
         self.ignored = False
 
     def type(self):
-        return QEvent.ToolTip
+        return self.event_type
 
     def pos(self):
         return QPoint(4, 5)
@@ -274,6 +342,42 @@ def test_standard_tooltip_event_shows_cached_categorical_description(
     assert AstroCanvas.event(canvas, event) is True
     assert event.accepted is True
     assert "Classe 82 · S2GLC Europe 2017" in shown[0][1]
+
+
+def test_mouse_move_shows_categorical_tooltip_without_waiting_for_qt_delay(
+    monkeypatch,
+):
+    shown = []
+    monkeypatch.setattr(
+        "TerraLab.ui.sky_widget_impl.QToolTip",
+        SimpleNamespace(
+            showText=lambda *args: shown.append(args),
+            hideText=lambda: None,
+        ),
+    )
+    info = LandCoverCategoryInfo(
+        82,
+        "Coberta d'arbres",
+        "Descripció breu.",
+        "S2GLC Europe 2017",
+    )
+    canvas = _tooltip_canvas(
+        mode=SurfaceMode.LAND_COVER,
+        dragging=False,
+        lookup=lambda *_args: info,
+    )
+    canvas._update_surface_tooltip_for_pointer = lambda event: (
+        AstroCanvas._update_surface_tooltip_for_pointer(canvas, event)
+    )
+    canvas.drawing_mode_enabled = lambda: False
+    canvas.scope_mode_enabled = lambda: False
+    canvas.measurement_tool_active = lambda: False
+    event = _TooltipEvent(QEvent.MouseMove)
+
+    CanvasInputHandler(canvas).handle_mouse_move(event)
+
+    assert len(shown) == 1
+    assert "Coberta d&#x27;arbres" in shown[0][1]
 
 
 def test_tooltip_is_suppressed_while_dragging_or_in_orthophoto(

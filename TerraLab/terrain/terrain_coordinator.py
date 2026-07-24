@@ -106,6 +106,8 @@ class TerrainCoordinator(QObject):
         visible_radius_m: float | None = None,
         view_azimuth_deg: float = 0.0,
         view_fov_deg: float = 360.0,
+        viewport_width_px: int | None = None,
+        viewport_height_px: int | None = None,
         surface_mode: str | None = None,
         surface_layer_type: str | None = None,
         atomic_surface_swap: bool = False,
@@ -114,6 +116,8 @@ class TerrainCoordinator(QObject):
             "visible_radius_m": visible_radius_m,
             "view_azimuth_deg": float(view_azimuth_deg),
             "view_fov_deg": float(view_fov_deg),
+            "viewport_width_px": viewport_width_px,
+            "viewport_height_px": viewport_height_px,
             "surface_mode": str(
                 surface_mode or surface_layer_type or ""
             ).strip()

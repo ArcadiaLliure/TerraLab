@@ -21,6 +21,7 @@ from TerraLab.terrain.engine import HorizonBaker, HorizonProfile, generate_bands
 from TerraLab.terrain.overlay import HorizonOverlay, generate_layer_defs
 from TerraLab.terrain.providers import create_elevation_provider
 from TerraLab.terrain.render_pipeline import (
+    TerrainCelestialLightContext,
     TerrainRenderSettings,
     TerrainSamplingSettings,
 )
@@ -164,8 +165,12 @@ def _render_profile(
     overlay = HorizonOverlay(allow_procedural_fallback=False)
     overlay.render_settings = settings
     overlay.set_profile(profile, generate_layer_defs(profile.bands))
+
     def render_once(
-        view_azimuth: float = azimuth, *, interaction_active: bool = False
+        view_azimuth: float = azimuth,
+        *,
+        interaction_active: bool = False,
+        light_context: TerrainCelestialLightContext | None = None,
     ) -> tuple[QImage, float]:
         scalar_projection, vector_projection = _projection(
             width, height, view_azimuth, fov
@@ -174,6 +179,9 @@ def _render_profile(
         image.fill(QColor(151, 190, 219))
         painter = QPainter(image)
         started = time.perf_counter()
+        context = light_context or TerrainCelestialLightContext(
+            35.0, 315.0
+        )
         overlay.draw(
             painter,
             scalar_projection,
@@ -185,9 +193,8 @@ def _render_profile(
             12.0,
             projection_fn_numpy=vector_projection,
             terrain_3d_enabled=True,
-            sun_alt=35.0,
-            sun_az=315.0,
             interaction_active=interaction_active,
+            light_context=context,
         )
         elapsed = time.perf_counter() - started
         painter.end()
@@ -234,6 +241,70 @@ def _render_profile(
             azimuth + offset, interaction_active=True
         )
         interaction_trials.append(float(elapsed))
+
+    def cache_snapshot() -> dict:
+        diagnostics = overlay.terrain_cache_diagnostics()
+        return {
+            "base_material_builds": int(
+                diagnostics["base_material"]["builds"]
+            ),
+            "lighting_builds": int(diagnostics["lighting"]["builds"]),
+            "resolved_material_builds": int(
+                diagnostics["resolved_material"]["builds"]
+            ),
+            "raster_builds": int(diagnostics["raster"]["builds"]),
+        }
+
+    def cache_scenario(name, views, contexts) -> dict:
+        before = cache_snapshot()
+        trials = []
+        for view, context in zip(views, contexts):
+            _scenario_image, elapsed = render_once(
+                float(view), light_context=context
+            )
+            trials.append(float(elapsed))
+        after = cache_snapshot()
+        return {
+            "name": name,
+            "trials_s": trials,
+            "median_s": float(np.median(trials)),
+            "build_deltas": {
+                key: int(after[key] - before[key])
+                for key in before
+            },
+        }
+
+    fixed_noon = TerrainCelestialLightContext(35.0, 315.0)
+    cache_rotation = cache_scenario(
+        "continuous_rotation_fixed_time",
+        (azimuth + 2.0, azimuth + 2.25, azimuth + 2.5),
+        (fixed_noon,) * 3,
+    )
+    fixed_view = azimuth + 2.5
+    # Establish one projected/rasterized material before advancing time.
+    render_once(fixed_view, light_context=fixed_noon)
+    cache_time = cache_scenario(
+        "time_advance_fixed_camera",
+        (fixed_view,) * 3,
+        (
+            TerrainCelestialLightContext(22.0, 250.0),
+            TerrainCelestialLightContext(4.0, 270.0),
+            TerrainCelestialLightContext(
+                -24.0, 300.0, 42.0, 120.0, 0.94
+            ),
+        ),
+    )
+    cache_combined = cache_scenario(
+        "rotation_and_clock",
+        (azimuth + 3.0, azimuth + 3.25, azimuth + 3.5),
+        (
+            TerrainCelestialLightContext(28.0, 240.0),
+            TerrainCelestialLightContext(8.0, 265.0),
+            TerrainCelestialLightContext(
+                -20.0, 290.0, 35.0, 105.0, 0.72
+            ),
+        ),
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if not image.save(str(output_path)):
         raise RuntimeError(f"Could not save {output_path}")
@@ -246,6 +317,12 @@ def _render_profile(
         "cached_render_s": float(cached_s),
         "interactive_motion_render_s": float(np.median(interaction_trials)),
         "interactive_motion_render_trials_s": interaction_trials,
+        "cache_scenarios": {
+            "rotation_fixed_time": cache_rotation,
+            "time_fixed_camera": cache_time,
+            "rotation_and_clock": cache_combined,
+        },
+        "cache_diagnostics": overlay.terrain_cache_diagnostics(),
         **cold_metrics,
         **warm_metrics,
         "vertices": vertex_count,

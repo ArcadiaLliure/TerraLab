@@ -142,6 +142,12 @@ class _LayerRow(QFrame):
         )
         actions.addWidget(self.link_folder_button)
         self.prepare_button = QPushButton("Preparar / copiar…")
+        if layer_id is LayerId.EARTH_ORTHOPHOTO:
+            self.prepare_button.setText("Descàrrega automàtica…")
+            self.prepare_button.setToolTip(
+                "Selecciona una àrea d'Europa i descarrega l'ortofoto "
+                "Copernicus, o copia una font pròpia."
+            )
         self.prepare_button.clicked.connect(self._open_asset_wizard)
         actions.addWidget(self.prepare_button)
         self.remove_button = QPushButton("Eliminar de la biblioteca…")

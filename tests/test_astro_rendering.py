@@ -1110,8 +1110,8 @@ def test_terrain_light_factor_tracks_solar_azimuth_and_haze():
 
     assert east_facing > west_facing + 0.08
     assert flipped > west_facing + 0.08
-    assert below_horizon == 1.0
-    assert abs(far_shadow - 1.0) < abs(near_shadow - 1.0)
+    assert 0.0 < below_horizon < west_facing
+    assert np.isclose(far_shadow, near_shadow)
 
 
 def test_terrain_sun_visibility_casts_shadow_behind_ridge():

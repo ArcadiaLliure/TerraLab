@@ -964,7 +964,23 @@ def build_deferred_controls_ui(widget):
     self.chk_enable_village.toggled.connect(self.canvas.update)
     self.chk_enable_village.toggled.connect(self.on_topography_toggled)
     v_earth.addWidget(self.chk_enable_village)
-    self.chk_surface_layer = QCheckBox("Superfície")
+    self.surface_controls_group = QGroupBox("Superfície")
+    self.surface_controls_group.setObjectName("surfaceControlsGroup")
+    self.surface_controls_group.setStyleSheet(
+        "QGroupBox#surfaceControlsGroup {"
+        " border: 1px solid #a18d68; border-radius: 4px;"
+        " margin-top: 1.05em; background: rgba(255, 250, 237, 70);"
+        "}"
+        "QGroupBox#surfaceControlsGroup::title {"
+        " subcontrol-origin: margin; left: 8px; padding: 0 4px;"
+        " color: #493b25; font-size: 10px; font-weight: bold;"
+        "}"
+    )
+    v_surface = QVBoxLayout(self.surface_controls_group)
+    v_surface.setContentsMargins(7, 5, 7, 5)
+    v_surface.setSpacing(3)
+
+    self.chk_surface_layer = QCheckBox("Mostrar")
     self.chk_surface_layer.setChecked(
         self._load_visibility_state("superficie", True)
     )
@@ -973,6 +989,9 @@ def build_deferred_controls_ui(widget):
     h_surface.setContentsMargins(0, 0, 0, 0)
     h_surface.setSpacing(6)
     h_surface.addWidget(self.chk_surface_layer)
+    h_surface.addStretch(1)
+    v_surface.addLayout(h_surface)
+
     self.surface_mode_selector = QWidget()
     self.surface_mode_selector.setObjectName("surfaceModeSelector")
     h_surface_mode = QHBoxLayout(self.surface_mode_selector)
@@ -1009,9 +1028,69 @@ def build_deferred_controls_ui(widget):
     self.lbl_surface_mode_categorical = QLabel("Categòric")
     self.lbl_surface_mode_categorical.setStyleSheet("font-size: 9px;")
     h_surface_mode.addWidget(self.lbl_surface_mode_categorical)
-    h_surface.addWidget(self.surface_mode_selector)
-    h_surface.addStretch(1)
-    v_earth.addLayout(h_surface)
+    h_surface_mode.addStretch(1)
+    v_surface.addWidget(self.surface_mode_selector)
+
+    self.lbl_surface_visual_style = QLabel("Estil visual")
+    self.lbl_surface_visual_style.setStyleSheet(
+        "font-size: 9px; color: #5f5036;"
+    )
+    v_surface.addWidget(self.lbl_surface_visual_style)
+    self.surface_visual_style_selector = QWidget()
+    self.surface_visual_style_selector.setObjectName(
+        "surfaceVisualStyleSelector"
+    )
+    h_visual_style = QHBoxLayout(self.surface_visual_style_selector)
+    h_visual_style.setContentsMargins(0, 0, 0, 0)
+    h_visual_style.setSpacing(4)
+    self.lbl_surface_style_original = QLabel("Original")
+    self.lbl_surface_style_original.setStyleSheet("font-size: 9px;")
+    h_visual_style.addWidget(self.lbl_surface_style_original)
+    self.slider_surface_visual_style = QSlider(Qt.Horizontal)
+    self.slider_surface_visual_style.setObjectName(
+        "surfaceVisualStyleSwitch"
+    )
+    self.slider_surface_visual_style.setRange(0, 1)
+    self.slider_surface_visual_style.setSingleStep(1)
+    self.slider_surface_visual_style.setPageStep(1)
+    self.slider_surface_visual_style.setFixedSize(38, 18)
+    self.slider_surface_visual_style.setFocusPolicy(Qt.StrongFocus)
+    self.slider_surface_visual_style.setAccessibleName(
+        "Estil visual de la superfície: Original o Vibrant"
+    )
+    self.slider_surface_visual_style.setAccessibleDescription(
+        "Posició esquerra: colors originals. Posició dreta: estil Vibrant."
+    )
+    self.slider_surface_visual_style.setStyleSheet(
+        "QSlider::groove:horizontal {"
+        " height: 8px; background: #9b9384; border: 1px solid #625c52;"
+        " border-radius: 4px; }"
+        "QSlider::handle:horizontal {"
+        " width: 12px; margin: -3px 0; background: #f4efe5;"
+        " border: 1px solid #4d4942; border-radius: 6px; }"
+        "QSlider::handle:horizontal:hover { background: #ffffff; }"
+        "QSlider::handle:horizontal:focus {"
+        " border: 2px solid #2b6ca3; background: #fff8de; }"
+    )
+    current_surface_style = str(
+        get_config_value("surface_visual_style", "original") or "original"
+    ).strip().lower()
+    self.slider_surface_visual_style.setValue(
+        1 if current_surface_style == "vibrant" else 0
+    )
+    self.slider_surface_visual_style.valueChanged.connect(
+        self.on_surface_visual_style_changed
+    )
+    h_visual_style.addWidget(self.slider_surface_visual_style)
+    self.lbl_surface_style_vibrant = QLabel("Vibrant")
+    self.lbl_surface_style_vibrant.setStyleSheet(
+        "font-size: 9px; color: #76520a; font-weight: bold;"
+    )
+    h_visual_style.addWidget(self.lbl_surface_style_vibrant)
+    h_visual_style.addStretch(1)
+    v_surface.addWidget(self.surface_visual_style_selector)
+
+    v_earth.addWidget(self.surface_controls_group)
     self._sync_surface_mode_control()
     # Compatibility alias for integrations that used a surface checkbox name.
     self.chk_surface = self.chk_surface_layer

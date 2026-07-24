@@ -39,6 +39,11 @@ class StandaloneAstronomicalWidget(AstronomicalWidget):
 def main():
     enable_timestamped_print()
 
+    # Qt WebEngine must share the application's OpenGL contexts.  This
+    # attribute has to be set before constructing QApplication; setting it
+    # lazily when the Copernicus map dialog opens is already too late.
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+
     # Persist native crashes (segfault/abort) to file for post-mortem analysis.
     crash_log = os.path.join(os.getcwd(), "terralab_crash.log")
     try:

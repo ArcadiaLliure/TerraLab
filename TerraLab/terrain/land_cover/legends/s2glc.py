@@ -117,34 +117,6 @@ def get_s2glc_style(code: int) -> LandCoverStyle | None:
     return S2GLC_LEGEND.get(int(code))
 
 
-def _coordinate_variation(
-    code: int,
-    x: np.ndarray,
-    y: np.ndarray,
-    *,
-    scale_m: float,
-    seed: int,
-) -> np.ndarray:
-    """Return stable, low-frequency noise without mutable RNG state."""
-
-    scale = max(1.0, float(scale_m))
-    cell_x = np.floor(np.asarray(x, dtype=np.float64) / scale).astype(np.int64)
-    cell_y = np.floor(np.asarray(y, dtype=np.float64) / scale).astype(np.int64)
-    # Integer hashing is deterministic across processes and frames. Overflow
-    # is intentional and supplies the wraparound used by the hash.
-    with np.errstate(over="ignore"):
-        hashed = (
-            cell_x * np.int64(0x45D9F3B)
-            ^ cell_y * np.int64(0x119DE1F3)
-            ^ np.int64(int(code) * 0x27D4EB2D)
-            ^ np.int64(int(seed) * 0x165667B1)
-        )
-        hashed ^= hashed >> np.int64(16)
-        hashed *= np.int64(0x45D9F3B)
-        hashed ^= hashed >> np.int64(16)
-    return ((hashed & np.int64(0xFFFF)).astype(np.float32) / 32767.5) - 1.0
-
-
 def s2glc_classes_to_rgba(
     classes: Any,
     *,
@@ -155,26 +127,17 @@ def s2glc_classes_to_rgba(
     aspect_deg: Any | None = None,
     seed: int = 2017,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Map discrete codes to deterministic display colours.
+    """Map discrete codes to their canonical, versioned legend colours.
 
-    ``classes`` is never interpolated or modified.  Optional geographic/world
-    coordinates influence only a small luminance variation in the derived
-    visual output.  Altitude, slope and aspect are accepted now so future
-    material implementations can use them without changing provider APIs.
+    Coordinate-driven variation is deliberately disabled: lighting and fog
+    are applied after per-pixel material resolution in the renderer, so base
+    colours remain independent of camera triangulation.
     """
 
-    del altitude_m, slope, aspect_deg
+    del x, y, altitude_m, slope, aspect_deg, seed
     codes = np.asarray(classes, dtype=np.int64)
     rgba = np.zeros(codes.shape + (4,), dtype=np.uint8)
     valid = np.zeros(codes.shape, dtype=bool)
-    if x is not None and y is not None:
-        x_arr, y_arr = np.broadcast_arrays(
-            np.asarray(x, dtype=np.float64), np.asarray(y, dtype=np.float64)
-        )
-        x_arr = np.broadcast_to(x_arr, codes.shape)
-        y_arr = np.broadcast_to(y_arr, codes.shape)
-    else:
-        x_arr = y_arr = None
 
     for code in np.unique(codes):
         style = S2GLC_LEGEND.get(int(code))
@@ -183,16 +146,6 @@ def s2glc_classes_to_rgba(
         mask = codes == int(code)
         base = np.asarray(style.base_color, dtype=np.float32)
         pixels = np.broadcast_to(base, (int(np.count_nonzero(mask)), 4)).copy()
-        amplitude = float(style.procedural_parameters.get("variation", 0.0))
-        if amplitude > 0.0 and x_arr is not None and y_arr is not None:
-            noise = _coordinate_variation(
-                int(code),
-                x_arr[mask],
-                y_arr[mask],
-                scale_m=float(style.procedural_parameters.get("scale_m", 45.0)),
-                seed=seed,
-            )
-            pixels[:, :3] *= (1.0 + amplitude * noise[:, None])
         rgba[mask] = np.clip(np.rint(pixels), 0, 255).astype(np.uint8)
         valid[mask] = int(style.base_color[3]) > 0
     return rgba, valid

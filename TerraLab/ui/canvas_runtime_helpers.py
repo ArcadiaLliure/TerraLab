@@ -2,20 +2,103 @@
 
 from __future__ import annotations
 
+import math
+
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
     is_automatic_mode,
     normalize_light_pollution_mode,
     resolve_bortle_class,
 )
+from TerraLab.terrain.render_pipeline import TerrainCelestialLightContext
+
+
+# Performance/debug switch.  ``False`` keeps the configured 3-D terrain and
+# its surface material visible while the camera or simulated time is moving.
+# Set it to ``True`` to restore the legacy bounded 2-D profile fallback.
+TERRAIN_SUSPEND_RELIEF_DURING_INTERACTION = False
 
 
 def _terrain_relief_enabled_for_frame(
-    configured_enabled: bool, camera_interaction_active: bool
+    configured_enabled: bool,
+    camera_interaction_active: bool,
+    *,
+    suspend_during_interaction: bool | None = None,
 ) -> bool:
     """Return the transient relief state without changing user preferences."""
 
-    return bool(configured_enabled and not camera_interaction_active)
+    suspend = (
+        TERRAIN_SUSPEND_RELIEF_DURING_INTERACTION
+        if suspend_during_interaction is None
+        else bool(suspend_during_interaction)
+    )
+    return bool(
+        configured_enabled
+        and not (camera_interaction_active and suspend)
+    )
+
+
+def _terrain_celestial_light_context(
+    sun_alt: float,
+    sun_az: float,
+    ephemeris_data,
+    eclipse_factor: float,
+) -> TerrainCelestialLightContext:
+    """Build terrain astronomy independently from celestial-layer visibility."""
+
+    try:
+        resolved_sun_alt = float(sun_alt)
+        resolved_sun_az = float(sun_az)
+    except (TypeError, ValueError):
+        resolved_sun_alt = math.nan
+        resolved_sun_az = math.nan
+    moon_alt = None
+    moon_az = None
+    moon_illumination = 0.0
+    data = ephemeris_data if isinstance(ephemeris_data, dict) else {}
+    sun = data.get("sun")
+    if isinstance(sun, dict):
+        try:
+            candidate_alt = float(sun.get("alt"))
+            candidate_az = float(sun.get("az"))
+            if math.isfinite(candidate_alt) and math.isfinite(candidate_az):
+                resolved_sun_alt = candidate_alt
+                resolved_sun_az = candidate_az
+        except (TypeError, ValueError):
+            pass
+    moon = data.get("moon")
+    if isinstance(moon, dict):
+        try:
+            candidate_alt = float(moon.get("alt"))
+            candidate_az = float(moon.get("az"))
+            if math.isfinite(candidate_alt) and math.isfinite(candidate_az):
+                moon_alt = candidate_alt
+                moon_az = candidate_az
+        except (TypeError, ValueError):
+            moon_alt = None
+            moon_az = None
+        try:
+            illumination = moon.get("illumination")
+            if illumination is None:
+                separation = float(moon.get("sep_real"))
+                illumination = (
+                    1.0 - math.cos(math.radians(separation))
+                ) / 2.0
+            moon_illumination = float(illumination)
+        except (TypeError, ValueError):
+            moon_illumination = 0.0
+    try:
+        resolved_eclipse_factor = float(eclipse_factor)
+    except (TypeError, ValueError):
+        resolved_eclipse_factor = 1.0
+    return TerrainCelestialLightContext(
+        sun_altitude_deg=resolved_sun_alt,
+        sun_azimuth_deg=resolved_sun_az,
+        moon_altitude_deg=moon_alt,
+        moon_azimuth_deg=moon_az,
+        moon_illumination=moon_illumination,
+        eclipse_factor=resolved_eclipse_factor,
+    )
 
 
 def canvas_update_skyfield_cache(canvas, ut_hour, day_of_year):
@@ -458,9 +541,9 @@ def canvas_paintEvent(canvas, event):
                 self.parent_widget._on_canvas_first_useful_paint()
         if scene_stage_rank <= 0:
             return
-        # Interaction mode: favor smoothness while camera or simulated time moves.
-        # Both temporarily replace relief with the bounded 2-D profile; moving
-        # only the scope reticle does not alter terrain detail.
+        # Interaction mode still enables cheaper screen-space effects. Whether
+        # it also replaces relief with the bounded 2-D profile is controlled by
+        # TERRAIN_SUSPEND_RELIEF_DURING_INTERACTION above.
         view_interaction_active = bool(
             self._camera_interaction_active(
                 include_time_drag=True,
@@ -705,6 +788,17 @@ def canvas_paintEvent(canvas, event):
         if show_horizon:
             force_flat = not use_detailed_topo
             dome_callback = None
+            ephemeris_data = (
+                self._sf_cache.get("data")
+                if isinstance(getattr(self, "_sf_cache", None), dict)
+                else None
+            )
+            terrain_light_context = _terrain_celestial_light_context(
+                eff_sun_alt,
+                eff_sun_az,
+                ephemeris_data,
+                eclipse_dimming,
+            )
             light_pollution_mode = normalize_light_pollution_mode(
                 getattr(
                     self.parent_widget,
@@ -738,6 +832,7 @@ def canvas_paintEvent(canvas, event):
                 draw_domes_callback=dome_callback,
                 sun_alt=eff_sun_alt,
                 sun_az=eff_sun_az,
+                light_context=terrain_light_context,
                 terrain_3d_enabled=_terrain_relief_enabled_for_frame(
                     terrain_3d_enabled,
                     view_interaction_active,

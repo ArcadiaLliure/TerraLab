@@ -475,54 +475,70 @@ class AstroCanvas(QWidget):
                 self.finish_inline_constellation_rename(apply=True)
                 return True
         return super().eventFilter(obj, event)
+
+    def _surface_category_at_pointer(self, position):
+        """Return cached land-cover metadata when passive hover is allowed."""
+
+        parent = getattr(self, "parent_widget", None)
+        manager = getattr(parent, "layer_manager", None)
+        registry = getattr(manager, "data_sources", None)
+        surface_enabled = self._parent_checkbox_checked(
+            "chk_surface_layer", True
+        )
+        categorical_mode = bool(
+            registry is not None
+            and registry.surface_mode is SurfaceMode.LAND_COVER
+        )
+        interactive = bool(
+            getattr(self, "dragging", False)
+            or self.scope_mode_enabled()
+            or self.measurement_tool_active()
+            or self.drawing_mode_enabled()
+            or getattr(
+                getattr(self, "scope_controller", None),
+                "dragging",
+                False,
+            )
+            or getattr(parent, "_dragging_time", False)
+        )
+        if not surface_enabled or not categorical_mode or interactive:
+            return None
+        lookup = getattr(
+            getattr(self, "horizon_overlay", None),
+            "category_at_screen",
+            None,
+        )
+        if not callable(lookup):
+            return None
+        return lookup(position.x(), position.y())
+
+    def _update_surface_tooltip_for_pointer(self, event) -> bool:
+        """Update the land-cover tooltip directly from a pointer event."""
+
+        info = AstroCanvas._surface_category_at_pointer(self, event.pos())
+        if info is None:
+            QToolTip.hideText()
+            return False
+        name = html.escape(str(info.name))
+        description = html.escape(str(info.description))
+        product = html.escape(str(info.product))
+        QToolTip.showText(
+            event.globalPos(),
+            f"<b>{name}</b><br>{description}<br>"
+            f"Classe {int(info.class_id)} · {product}",
+            self,
+        )
+        return True
+
     def event(self, event):
         if event.type() == QEvent.ToolTip:
-            parent = getattr(self, "parent_widget", None)
-            manager = getattr(parent, "layer_manager", None)
-            registry = getattr(manager, "data_sources", None)
-            surface_enabled = self._parent_checkbox_checked(
-                "chk_surface_layer", True
-            )
-            categorical_mode = bool(
-                registry is not None
-                and registry.surface_mode is SurfaceMode.LAND_COVER
-            )
-            interactive = bool(
-                getattr(self, "dragging", False)
-                or self.scope_mode_enabled()
-                or self.measurement_tool_active()
-                or self.drawing_mode_enabled()
-                or getattr(
-                    getattr(self, "scope_controller", None),
-                    "dragging",
-                    False,
-                )
-                or getattr(parent, "_dragging_time", False)
-            )
-            info = None
-            if surface_enabled and categorical_mode and not interactive:
-                lookup = getattr(
-                    getattr(self, "horizon_overlay", None),
-                    "category_at_screen",
-                    None,
-                )
-                if callable(lookup):
-                    info = lookup(event.pos().x(), event.pos().y())
-            if info is not None:
-                name = html.escape(str(info.name))
-                description = html.escape(str(info.description))
-                product = html.escape(str(info.product))
-                QToolTip.showText(
-                    event.globalPos(),
-                    f"<b>{name}</b><br>{description}<br>"
-                    f"Classe {int(info.class_id)} · {product}",
-                    self,
-                )
+            if AstroCanvas._update_surface_tooltip_for_pointer(self, event):
                 event.accept()
                 return True
-            QToolTip.hideText()
             event.ignore()
             return True
+        if event.type() == QEvent.Leave:
+            QToolTip.hideText()
         return super().event(event)
     def clear_measurements(self) -> None:
         self.measurement_controller.clear()
@@ -3643,6 +3659,12 @@ class AstronomicalWidget(CustomWidgetBase):
             "view_azimuth_deg": float(getattr(canvas, "azimuth_offset", 180.0)) % 360.0,
             "view_fov_deg": 100.0
             / max(0.001, float(getattr(canvas, "zoom_level", 1.0))),
+            "viewport_width_px": (
+                int(canvas.width()) if canvas is not None else None
+            ),
+            "viewport_height_px": (
+                int(canvas.height()) if canvas is not None else None
+            ),
         }
 
     def on_surface_layer_toggled(self, checked):
@@ -3660,6 +3682,9 @@ class AstronomicalWidget(CustomWidgetBase):
             cancel = getattr(coordinator, "cancel_surface_refresh", None)
             if callable(cancel):
                 cancel()
+        sync = getattr(self, "_sync_surface_mode_control", None)
+        if callable(sync):
+            sync()
         self.canvas.update()
     def _usable_surface_mode_sources(self):
         """Return installed, enabled surface sources grouped by render mode."""
@@ -3743,17 +3768,68 @@ class AstronomicalWidget(CustomWidgetBase):
         )
         return message
     def _sync_surface_mode_control(self):
-        """Show and align the orthophoto/land-cover switch."""
+        """Align the independent source and visual-style surface switches."""
         selector = getattr(self, "surface_mode_selector", None)
         switch = getattr(self, "slider_surface_mode", None)
-        if selector is None or switch is None:
-            return
+        style_selector = getattr(
+            self, "surface_visual_style_selector", None
+        )
+        style_switch = getattr(
+            self, "slider_surface_visual_style", None
+        )
         grouped = self._usable_surface_mode_sources()
         orthophoto_sources = grouped[SurfaceMode.ORTHOPHOTO]
         land_cover_sources = grouped[SurfaceMode.LAND_COVER]
         both_available = bool(orthophoto_sources and land_cover_sources)
-        selector.setVisible(both_available)
-        if not both_available:
+        any_available = bool(orthophoto_sources or land_cover_sources)
+        checkbox = getattr(self, "chk_surface_layer", None)
+        surface_enabled = (
+            bool(checkbox.isChecked())
+            if checkbox is not None
+            and callable(getattr(checkbox, "isChecked", None))
+            else True
+        )
+
+        if selector is not None:
+            selector.setVisible(both_available)
+            enable = getattr(selector, "setEnabled", None)
+            if callable(enable):
+                enable(surface_enabled and both_available)
+        source_label = getattr(self, "lbl_surface_source", None)
+        if source_label is not None:
+            source_label.setVisible(both_available)
+
+        if style_selector is not None:
+            style_selector.setVisible(True)
+            enable = getattr(style_selector, "setEnabled", None)
+            if callable(enable):
+                enable(surface_enabled and any_available)
+        style_label = getattr(self, "lbl_surface_visual_style", None)
+        if style_label is not None:
+            style_label.setEnabled(surface_enabled and any_available)
+        if style_switch is not None:
+            configured_style = str(
+                get_config_value("surface_visual_style", "original")
+                or "original"
+            ).strip().lower()
+            style_switch.blockSignals(True)
+            style_switch.setValue(
+                1 if configured_style == "vibrant" else 0
+            )
+            style_switch.blockSignals(False)
+            style_switch.setToolTip(
+                (
+                    "Estil Vibrant actiu: paleta o grading cromàtic, "
+                    "contorns suaus, bruma i bloom moderat."
+                )
+                if configured_style == "vibrant"
+                else (
+                    "Estil Original actiu: conserva fidelment els colors "
+                    "i les regions de la font."
+                )
+            )
+
+        if not both_available or selector is None or switch is None:
             return
 
         manager = getattr(self, "layer_manager", None)
@@ -3804,6 +3880,37 @@ class AstronomicalWidget(CustomWidgetBase):
                 "font-size: 9px;"
                 + ("" if ortho_local else " color: #9b2f2f;")
             )
+    def on_surface_visual_style_changed(self, value):
+        """Apply Original or Vibrant without rebuilding source samples."""
+
+        vibrant = bool(int(value))
+        style = "vibrant" if vibrant else "original"
+        set_config_value("surface_visual_style", style)
+        # Keep the former key synchronized for external configurations while
+        # the renderer treats the visual style as the authoritative switch.
+        set_config_value("categorical_edge_smoothing_enabled", vibrant)
+
+        switch = getattr(self, "slider_surface_visual_style", None)
+        if switch is not None:
+            switch.setToolTip(
+                (
+                    "Estil Vibrant actiu: paleta o grading cromàtic, "
+                    "contorns suaus, bruma i bloom moderat."
+                )
+                if vibrant
+                else (
+                    "Estil Original actiu: conserva fidelment els colors "
+                    "i les regions de la font."
+                )
+            )
+
+        canvas = getattr(self, "canvas", None)
+        overlay = getattr(canvas, "horizon_overlay", None)
+        reload_settings = getattr(overlay, "reload_render_settings", None)
+        if callable(reload_settings):
+            reload_settings()
+        if canvas is not None:
+            canvas.update()
     def on_surface_mode_changed(self, value):
         """Persist and apply the semantic surface mode chosen by the switch."""
         grouped = self._usable_surface_mode_sources()

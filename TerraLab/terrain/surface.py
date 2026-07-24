@@ -64,8 +64,13 @@ SURFACE_GDAL_SUFFIXES = {
     ".jpeg",
     ".webp",
 }
-SURFACE_CACHE_POLICY_VERSION = 3
-LAND_COVER_PALETTE_VERSION = 2
+SURFACE_CACHE_POLICY_VERSION = 4
+LAND_COVER_PALETTE_VERSION = 3
+SAMPLE_ORIGIN_UNKNOWN = np.uint8(0)
+SAMPLE_ORIGIN_EXACT = np.uint8(1)
+SAMPLE_ORIGIN_MODAL = np.uint8(2)
+SAMPLE_ORIGIN_SOURCE_FALLBACK = np.uint8(3)
+SAMPLE_ORIGIN_TERRAIN_FALLBACK = np.uint8(4)
 
 
 # CLC+ Backbone raster classes use a stable 1..11 legend.  Keeping that
@@ -135,6 +140,10 @@ class RgbaSampleBatch:
     source_indices: np.ndarray | None = None
     class_ids: np.ndarray | None = None
     categorical: np.ndarray | None = None
+    raster_rows: np.ndarray | None = None
+    raster_columns: np.ndarray | None = None
+    lod_factors: np.ndarray | None = None
+    sample_origins: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         rgba = np.asarray(self.rgba, dtype=np.uint8)
@@ -158,6 +167,19 @@ class RgbaSampleBatch:
             if categorical.shape != valid.shape:
                 raise ValueError("Categorical mask must match the validity mask")
             object.__setattr__(self, "categorical", categorical)
+        for name, dtype in (
+            ("raster_rows", np.int64),
+            ("raster_columns", np.int64),
+            ("lod_factors", np.int16),
+            ("sample_origins", np.uint8),
+        ):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            array = np.asarray(value, dtype=dtype)
+            if array.shape != valid.shape:
+                raise ValueError(f"{name} must match the validity mask")
+            object.__setattr__(self, name, array)
 
 
 @dataclass(frozen=True)
@@ -165,6 +187,10 @@ class CategoricalSampleBatch:
     classes: np.ndarray
     valid: np.ndarray
     source_indices: np.ndarray | None = None
+    raster_rows: np.ndarray | None = None
+    raster_columns: np.ndarray | None = None
+    lod_factors: np.ndarray | None = None
+    sample_origins: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         classes = np.asarray(self.classes, dtype=np.int64)
@@ -178,6 +204,19 @@ class CategoricalSampleBatch:
             if source_indices.shape != valid.shape:
                 raise ValueError("Source indices must match the validity mask")
             object.__setattr__(self, "source_indices", source_indices)
+        for name, dtype in (
+            ("raster_rows", np.int64),
+            ("raster_columns", np.int64),
+            ("lod_factors", np.int16),
+            ("sample_origins", np.uint8),
+        ):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            array = np.asarray(value, dtype=dtype)
+            if array.shape != valid.shape:
+                raise ValueError(f"{name} must match the validity mask")
+            object.__setattr__(self, name, array)
 
 
 class SurfaceProvider(abc.ABC):
@@ -265,6 +304,32 @@ def _normalize_channel(
     if alpha:
         values = np.where(np.isfinite(values), values, 0.0)
     return np.clip(np.rint(values), 0.0, 255.0).astype(np.uint8)
+
+
+def _native_sample_indices(
+    dataset: _GeoRasterDataset, native_x: Any, native_y: Any
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return nearest native pixel indices for transformed sample points."""
+
+    x = np.asarray(native_x, dtype=np.float64)
+    y = np.asarray(native_y, dtype=np.float64)
+    inverse = dataset.inverse_transform
+    columns = np.floor(
+        inverse.a * x + inverse.b * y + inverse.c
+    ).astype(np.int64)
+    rows = np.floor(
+        inverse.d * x + inverse.e * y + inverse.f
+    ).astype(np.int64)
+    return rows, columns
+
+
+def _normalized_lod_factors(values: Any) -> np.ndarray:
+    requested = np.asarray(values, dtype=np.int16)
+    levels = np.asarray((1, 2, 4, 8, 16, 32, 64, 128), dtype=np.int16)
+    positions = (
+        np.searchsorted(levels, np.maximum(1, requested), side="right") - 1
+    )
+    return levels[np.clip(positions, 0, len(levels) - 1)]
 
 
 class _GdalProviderMixin:
@@ -537,6 +602,23 @@ class RgbSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
         )
 
 
+def _isolated_lod_classes(legend_id: str) -> tuple[int, ...]:
+    """Return semantic classes that must survive categorical LOD reduction."""
+
+    legend = str(legend_id or "").strip().lower().replace("-", "_")
+    if legend in {"s2glc", "s2glc_2017", "s2glc_europe_2017"}:
+        # Buildings win if one coarse cell also happens to touch shoreline.
+        return (62, 162)
+    if legend in {
+        "clcplus",
+        "clcplus_backbone",
+        "clcplus_backbone_2023",
+        "clc_plus_backbone",
+    }:
+        return (1, 10, 253)
+    return ()
+
+
 class CategoricalSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
     """Land-cover provider; classes are sampled exclusively with nearest neighbour."""
 
@@ -661,6 +743,10 @@ class CategoricalSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
         classes = np.zeros(flat_x.size, dtype=np.int64)
         valid = np.zeros(flat_x.size, dtype=bool)
         provenance = np.full(flat_x.size, -1, dtype=np.int16)
+        raster_rows = np.full(flat_x.size, -1, dtype=np.int64)
+        raster_columns = np.full(flat_x.size, -1, dtype=np.int64)
+        sampled_lod = np.ones(flat_x.size, dtype=np.int16)
+        sample_origins = np.zeros(flat_x.size, dtype=np.uint8)
         finite = np.isfinite(flat_x) & np.isfinite(flat_y)
 
         dataset_count = max(1, len(self._datasets))
@@ -695,6 +781,11 @@ class CategoricalSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
                     lod_arr[covered_indices],
                     bands=(self.band,),
                     tile_store=self.tile_store,
+                    reducer_identity=(
+                        "categorical-lod-feature-priority-v3:"
+                        f"legend={self.legend_id or 'external'}"
+                    ),
+                    priority_classes=_isolated_lod_classes(self.legend_id),
                     progress_callback=sampling_progress,
                     abort_check=abort_check,
                 )
@@ -709,9 +800,33 @@ class CategoricalSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
                 )
             if np.any(sampled_valid):
                 chosen = covered_indices[sampled_valid]
-                classes[chosen] = np.rint(values[0, sampled_valid]).astype(np.int64)
+                classes[chosen] = np.asarray(
+                    values[0, sampled_valid], dtype=np.int64
+                )
                 valid[chosen] = True
                 provenance[chosen] = int(min(dataset_index, np.iinfo(np.int16).max))
+                selected_rows, selected_columns = _native_sample_indices(
+                    dataset,
+                    native_x[covered][sampled_valid],
+                    native_y[covered][sampled_valid],
+                )
+                raster_rows[chosen] = selected_rows
+                raster_columns[chosen] = selected_columns
+                selected_lod = (
+                    _normalized_lod_factors(lod_arr[chosen])
+                    if lod_arr is not None
+                    else np.ones(chosen.shape, dtype=np.int16)
+                )
+                sampled_lod[chosen] = selected_lod
+                sample_origins[chosen] = np.where(
+                    dataset_index > 0,
+                    SAMPLE_ORIGIN_SOURCE_FALLBACK,
+                    np.where(
+                        selected_lod > 1,
+                        SAMPLE_ORIGIN_MODAL,
+                        SAMPLE_ORIGIN_EXACT,
+                    ),
+                )
             if callable(progress_callback):
                 progress_callback(
                     (dataset_index + 1.0) / dataset_count,
@@ -737,8 +852,6 @@ class CategoricalSurfaceProvider(_GdalProviderMixin, SurfaceProvider):
         if self.legend_id in {"s2glc", "s2glc-2017", "s2glc_europe_2017"}:
             rgba, valid = s2glc_classes_to_rgba(
                 class_array,
-                x=x,
-                y=y,
                 altitude_m=altitude_m,
                 slope=slope,
                 aspect_deg=aspect_deg,
@@ -887,6 +1000,10 @@ class RgbCategoricalSurfaceProvider(CategoricalSurfaceProvider):
         classes = np.full(flat_x.size, -1, dtype=np.int64)
         valid = np.zeros(flat_x.size, dtype=bool)
         provenance = np.full(flat_x.size, -1, dtype=np.int16)
+        raster_rows = np.full(flat_x.size, -1, dtype=np.int64)
+        raster_columns = np.full(flat_x.size, -1, dtype=np.int64)
+        sampled_lod = np.ones(flat_x.size, dtype=np.int16)
+        sample_origins = np.zeros(flat_x.size, dtype=np.uint8)
         finite = np.isfinite(flat_x) & np.isfinite(flat_y)
         dataset_count = max(1, len(self._datasets))
         for dataset_index, dataset in enumerate(self._datasets):
@@ -912,15 +1029,54 @@ class RgbCategoricalSurfaceProvider(CategoricalSurfaceProvider):
                 )
             )
             if lod_arr is not None and PERFORMANCE_FLAGS.surface_lod_cache:
+                rows = {band: index for index, band in enumerate(bands)}
+
+                def decode_window(
+                    raw_values: np.ndarray,
+                    _bands: tuple[int, ...],
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    window_shape = raw_values.shape[1:]
+                    rgba_window = np.full(
+                        (4,) + window_shape, 255, dtype=np.uint8
+                    )
+                    for channel, band in enumerate(rgb_bands):
+                        rgba_window[channel] = _normalize_channel(
+                            raw_values[rows[band]],
+                            dataset.dtypes[band - 1],
+                            scale=dataset.scales[band - 1],
+                            offset=dataset.offsets[band - 1],
+                        )
+                    if alpha_band is not None:
+                        rgba_window[3] = _normalize_channel(
+                            raw_values[rows[alpha_band]],
+                            dataset.dtypes[alpha_band - 1],
+                            scale=dataset.scales[alpha_band - 1],
+                            offset=dataset.offsets[alpha_band - 1],
+                            alpha=True,
+                        )
+                    return self._decode_rgba(
+                        rgba_window,
+                        self._packed_colors,
+                        self._packed_classes,
+                    )
+
                 values, sampled_valid = dataset.sample_native_lod(
                     native_x[covered],
                     native_y[covered],
                     lod_arr[covered_indices],
                     bands=bands,
                     tile_store=self.tile_store,
+                    categorical_decoder=decode_window,
+                    reducer_identity=(
+                        "categorical-lod-feature-priority-v3:"
+                        f"palette={self.fingerprint}"
+                    ),
+                    priority_classes=_isolated_lod_classes(self.legend_id),
                     progress_callback=progress_callback,
                     abort_check=abort_check,
                 )
+                decoded = np.asarray(values[0], dtype=np.int64)
+                decoded_valid = sampled_valid
             else:
                 values, sampled_valid = dataset.sample_native(
                     native_x[covered],
@@ -930,32 +1086,56 @@ class RgbCategoricalSurfaceProvider(CategoricalSurfaceProvider):
                     progress_callback=progress_callback,
                     abort_check=abort_check,
                 )
-            rows = {band: index for index, band in enumerate(bands)}
-            rgba = np.full((4, covered_indices.size), 255, dtype=np.uint8)
-            for channel, band in enumerate(rgb_bands):
-                rgba[channel] = _normalize_channel(
-                    values[rows[band]],
-                    dataset.dtypes[band - 1],
-                    scale=dataset.scales[band - 1],
-                    offset=dataset.offsets[band - 1],
+                rows = {band: index for index, band in enumerate(bands)}
+                rgba = np.full(
+                    (4, covered_indices.size), 255, dtype=np.uint8
                 )
-            if alpha_band is not None:
-                rgba[3] = _normalize_channel(
-                    values[rows[alpha_band]],
-                    dataset.dtypes[alpha_band - 1],
-                    scale=dataset.scales[alpha_band - 1],
-                    offset=dataset.offsets[alpha_band - 1],
-                    alpha=True,
+                for channel, band in enumerate(rgb_bands):
+                    rgba[channel] = _normalize_channel(
+                        values[rows[band]],
+                        dataset.dtypes[band - 1],
+                        scale=dataset.scales[band - 1],
+                        offset=dataset.offsets[band - 1],
+                    )
+                if alpha_band is not None:
+                    rgba[3] = _normalize_channel(
+                        values[rows[alpha_band]],
+                        dataset.dtypes[alpha_band - 1],
+                        scale=dataset.scales[alpha_band - 1],
+                        offset=dataset.offsets[alpha_band - 1],
+                        alpha=True,
+                    )
+                decoded, decoded_valid = self._decode_rgba(
+                    rgba, self._packed_colors, self._packed_classes
                 )
-            decoded, decoded_valid = self._decode_rgba(
-                rgba, self._packed_colors, self._packed_classes
-            )
-            decoded_valid &= sampled_valid
+                decoded_valid &= sampled_valid
             if np.any(decoded_valid):
                 chosen = covered_indices[decoded_valid]
                 classes[chosen] = decoded[decoded_valid]
                 valid[chosen] = True
                 provenance[chosen] = int(dataset_index)
+                selected_rows, selected_columns = _native_sample_indices(
+                    dataset,
+                    native_x[covered][decoded_valid],
+                    native_y[covered][decoded_valid],
+                )
+                raster_rows[chosen] = selected_rows
+                raster_columns[chosen] = selected_columns
+                selected_lod = (
+                    _normalized_lod_factors(lod_arr[chosen])
+                    if lod_arr is not None
+                    else np.ones(chosen.shape, dtype=np.int16)
+                )
+                sampled_lod[chosen] = selected_lod
+                sample_origins[chosen] = np.where(
+                    dataset_index > 0,
+                    SAMPLE_ORIGIN_SOURCE_FALLBACK,
+                    np.where(
+                        selected_lod > 1,
+                        SAMPLE_ORIGIN_MODAL,
+                        SAMPLE_ORIGIN_EXACT,
+                    ),
+                )
             if callable(progress_callback):
                 progress_callback(
                     (dataset_index + 1.0) / dataset_count,
@@ -965,6 +1145,10 @@ class RgbCategoricalSurfaceProvider(CategoricalSurfaceProvider):
             classes.reshape(shape),
             valid.reshape(shape),
             provenance.reshape(shape),
+            raster_rows.reshape(shape),
+            raster_columns.reshape(shape),
+            sampled_lod.reshape(shape),
+            sample_origins.reshape(shape),
         )
 
 
@@ -1076,6 +1260,8 @@ class SurfaceSamplingRequest:
     stage: str = "complete"
     fov_margin_deg: float = 10.0
     surface_mode: str | None = None
+    viewport_width_px: int | None = None
+    viewport_height_px: int | None = None
     # Deprecated compatibility input.
     surface_layer_type: str | None = None
 
@@ -1092,6 +1278,12 @@ class SurfaceSamplingRequest:
         ).strip() or None
         object.__setattr__(self, "surface_mode", normalized_mode)
         object.__setattr__(self, "surface_layer_type", normalized_mode)
+        for name in ("viewport_width_px", "viewport_height_px"):
+            raw_value = getattr(self, name)
+            if raw_value is None:
+                continue
+            value = int(raw_value)
+            object.__setattr__(self, name, value if value > 0 else None)
         if self.visible_radius_m is not None:
             radius = float(self.visible_radius_m)
             object.__setattr__(
@@ -1126,6 +1318,10 @@ class SurfaceSampleCache:
     observer_source_index: int = -1
     observer_class_id: int = -1
     observer_categorical: bool = False
+    observer_raster_row: int = -1
+    observer_raster_column: int = -1
+    observer_lod_factor: int = 1
+    observer_sample_origin: int = int(SAMPLE_ORIGIN_UNKNOWN)
     observer_loaded: bool = True
     completion_state: str = "complete"
     # Surface values for the Cartesian near-field DEM patch. They keep their
@@ -1136,12 +1332,20 @@ class SurfaceSampleCache:
     near_patch_source_indices: np.ndarray | None = None
     near_patch_class_ids: np.ndarray | None = None
     near_patch_categorical: np.ndarray | None = None
+    near_patch_raster_rows: np.ndarray | None = None
+    near_patch_raster_columns: np.ndarray | None = None
+    near_patch_lod_factors: np.ndarray | None = None
+    near_patch_sample_origins: np.ndarray | None = None
     profile_rgba: np.ndarray | None = None
     profile_valid: np.ndarray | None = None
     profile_loaded: np.ndarray | None = None
     profile_source_indices: np.ndarray | None = None
     profile_class_ids: np.ndarray | None = None
     profile_categorical: np.ndarray | None = None
+    profile_raster_rows: np.ndarray | None = None
+    profile_raster_columns: np.ndarray | None = None
+    profile_lod_factors: np.ndarray | None = None
+    profile_sample_origins: np.ndarray | None = None
     profile_band_indices: np.ndarray | None = None
     profile_azimuth_indices: np.ndarray | None = None
     relief_rgba: np.ndarray | None = None
@@ -1150,6 +1354,10 @@ class SurfaceSampleCache:
     relief_source_indices: np.ndarray | None = None
     relief_class_ids: np.ndarray | None = None
     relief_categorical: np.ndarray | None = None
+    relief_raster_rows: np.ndarray | None = None
+    relief_raster_columns: np.ndarray | None = None
+    relief_lod_factors: np.ndarray | None = None
+    relief_sample_origins: np.ndarray | None = None
     relief_distance_indices: np.ndarray | None = None
     relief_azimuth_indices: np.ndarray | None = None
     # A visual grid may subdivide DEM cells to preserve land-cover detail. Its
@@ -1166,6 +1374,10 @@ class SurfaceSampleCache:
     visual_source_indices: np.ndarray | None = None
     visual_class_ids: np.ndarray | None = None
     visual_categorical: np.ndarray | None = None
+    visual_raster_rows: np.ndarray | None = None
+    visual_raster_columns: np.ndarray | None = None
+    visual_lod_factors: np.ndarray | None = None
+    visual_sample_origins: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "geometry_crs", normalize_crs(self.geometry_crs))
@@ -1191,6 +1403,42 @@ class SurfaceSampleCache:
             object.__setattr__(
                 self, "visual_loaded", np.ones(np.asarray(self.visual_valid).shape, dtype=bool)
             )
+        for prefix in ("near_patch", "profile", "relief", "visual"):
+            rgba = getattr(self, f"{prefix}_rgba")
+            valid = getattr(self, f"{prefix}_valid")
+            loaded = getattr(self, f"{prefix}_loaded")
+            sources = getattr(self, f"{prefix}_source_indices")
+            classes = getattr(self, f"{prefix}_class_ids")
+            categorical = getattr(self, f"{prefix}_categorical")
+            values = (rgba, valid, loaded, sources, classes, categorical)
+            if all(value is None for value in values):
+                continue
+            if valid is None:
+                raise ValueError(f"{prefix} material samples require a validity mask")
+            shape = np.shape(valid)
+            if rgba is not None and np.shape(rgba) != shape + (4,):
+                raise ValueError(f"{prefix} RGBA geometry is not aligned")
+            for name, value in (
+                ("loaded", loaded),
+                ("source indices", sources),
+                ("class ids", classes),
+                ("categorical mask", categorical),
+            ):
+                if value is not None and np.shape(value) != shape:
+                    raise ValueError(
+                        f"{prefix} {name} geometry is not aligned with RGBA"
+                    )
+            for suffix in (
+                "raster_rows",
+                "raster_columns",
+                "lod_factors",
+                "sample_origins",
+            ):
+                value = getattr(self, f"{prefix}_{suffix}")
+                if value is not None and np.shape(value) != shape:
+                    raise ValueError(
+                        f"{prefix} {suffix} geometry is not aligned with RGBA"
+                    )
         for name, dtype in (
             ("observer_rgba", np.uint8),
             ("near_patch_rgba", np.uint8),
@@ -1199,12 +1447,20 @@ class SurfaceSampleCache:
             ("near_patch_source_indices", np.int16),
             ("near_patch_class_ids", np.int64),
             ("near_patch_categorical", bool),
+            ("near_patch_raster_rows", np.int64),
+            ("near_patch_raster_columns", np.int64),
+            ("near_patch_lod_factors", np.int16),
+            ("near_patch_sample_origins", np.uint8),
             ("profile_rgba", np.uint8),
             ("profile_valid", bool),
             ("profile_loaded", bool),
             ("profile_source_indices", np.int16),
             ("profile_class_ids", np.int64),
             ("profile_categorical", bool),
+            ("profile_raster_rows", np.int64),
+            ("profile_raster_columns", np.int64),
+            ("profile_lod_factors", np.int16),
+            ("profile_sample_origins", np.uint8),
             ("profile_band_indices", np.int32),
             ("profile_azimuth_indices", np.int32),
             ("relief_rgba", np.uint8),
@@ -1213,6 +1469,10 @@ class SurfaceSampleCache:
             ("relief_source_indices", np.int16),
             ("relief_class_ids", np.int64),
             ("relief_categorical", bool),
+            ("relief_raster_rows", np.int64),
+            ("relief_raster_columns", np.int64),
+            ("relief_lod_factors", np.int16),
+            ("relief_sample_origins", np.uint8),
             ("relief_distance_indices", np.int32),
             ("relief_azimuth_indices", np.int32),
             ("visual_distances", np.float32),
@@ -1226,6 +1486,10 @@ class SurfaceSampleCache:
             ("visual_source_indices", np.int16),
             ("visual_class_ids", np.int64),
             ("visual_categorical", bool),
+            ("visual_raster_rows", np.int64),
+            ("visual_raster_columns", np.int64),
+            ("visual_lod_factors", np.int16),
+            ("visual_sample_origins", np.uint8),
         ):
             object.__setattr__(self, name, _readonly_array(getattr(self, name), dtype))
 
@@ -1242,12 +1506,20 @@ _SURFACE_ARRAY_FIELDS = (
     "near_patch_source_indices",
     "near_patch_class_ids",
     "near_patch_categorical",
+    "near_patch_raster_rows",
+    "near_patch_raster_columns",
+    "near_patch_lod_factors",
+    "near_patch_sample_origins",
     "profile_rgba",
     "profile_valid",
     "profile_loaded",
     "profile_source_indices",
     "profile_class_ids",
     "profile_categorical",
+    "profile_raster_rows",
+    "profile_raster_columns",
+    "profile_lod_factors",
+    "profile_sample_origins",
     "profile_band_indices",
     "profile_azimuth_indices",
     "relief_rgba",
@@ -1256,6 +1528,10 @@ _SURFACE_ARRAY_FIELDS = (
     "relief_source_indices",
     "relief_class_ids",
     "relief_categorical",
+    "relief_raster_rows",
+    "relief_raster_columns",
+    "relief_lod_factors",
+    "relief_sample_origins",
     "relief_distance_indices",
     "relief_azimuth_indices",
     "visual_distances",
@@ -1269,6 +1545,10 @@ _SURFACE_ARRAY_FIELDS = (
     "visual_source_indices",
     "visual_class_ids",
     "visual_categorical",
+    "visual_raster_rows",
+    "visual_raster_columns",
+    "visual_lod_factors",
+    "visual_sample_origins",
 )
 
 
@@ -1284,7 +1564,7 @@ def _surface_cache_payload(
     cache: SurfaceSampleCache,
 ) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
     metadata = {
-        "schema": 3,
+        "schema": 4,
         "digest": cache.cache_id,
         "geometry_id": cache.key.geometry_id,
         "source_fingerprints": list(cache.key.source_fingerprints),
@@ -1297,6 +1577,10 @@ def _surface_cache_payload(
         "observer_source_index": int(cache.observer_source_index),
         "observer_class_id": int(cache.observer_class_id),
         "observer_categorical": bool(cache.observer_categorical),
+        "observer_raster_row": int(cache.observer_raster_row),
+        "observer_raster_column": int(cache.observer_raster_column),
+        "observer_lod_factor": int(cache.observer_lod_factor),
+        "observer_sample_origin": int(cache.observer_sample_origin),
         "observer_loaded": bool(cache.observer_loaded),
         "completion_state": cache.completion_state,
     }
@@ -1311,7 +1595,7 @@ def _surface_cache_payload(
 def _surface_cache_from_payload(
     metadata: Mapping[str, Any], arrays: Mapping[str, np.ndarray]
 ) -> SurfaceSampleCache:
-    if int(metadata.get("schema", 0)) != 3:
+    if int(metadata.get("schema", 0)) != 4:
         raise ValueError("Unsupported surface cache schema")
     key = SurfaceCacheKey(
         geometry_id=str(metadata["geometry_id"]),
@@ -1335,6 +1619,12 @@ def _surface_cache_from_payload(
         observer_source_index=int(metadata.get("observer_source_index", -1)),
         observer_class_id=int(metadata.get("observer_class_id", -1)),
         observer_categorical=bool(metadata.get("observer_categorical", False)),
+        observer_raster_row=int(metadata.get("observer_raster_row", -1)),
+        observer_raster_column=int(metadata.get("observer_raster_column", -1)),
+        observer_lod_factor=int(metadata.get("observer_lod_factor", 1)),
+        observer_sample_origin=int(
+            metadata.get("observer_sample_origin", SAMPLE_ORIGIN_UNKNOWN)
+        ),
         observer_loaded=bool(metadata.get("observer_loaded", True)),
         completion_state=str(metadata.get("completion_state", "complete")),
         **kwargs,
@@ -1351,7 +1641,7 @@ def _hash_array(digest, value: Any) -> None:
 def geometry_fingerprint(profile: Any, *, geometry_crs: str) -> str:
     explicit = getattr(profile, "geometry_id", None)
     digest = hashlib.blake2b(digest_size=20)
-    digest.update(b"terrain-geometry-v3")
+    digest.update(b"terrain-geometry-v4-categorical-materials")
     if explicit:
         digest.update(str(explicit).encode("utf-8", errors="replace"))
     digest.update(normalize_crs(geometry_crs).encode("ascii"))
@@ -1467,6 +1757,10 @@ def _lod_factors_for_polar_grid(
     distances: Any,
     azimuths: Any,
     resolution_m: float | None,
+    *,
+    viewport_width_px: int | None = None,
+    view_fov_deg: float | None = None,
+    categorical: bool = False,
 ) -> np.ndarray:
     """Choose the coarsest power-of-two level no larger than half a cell."""
 
@@ -1502,7 +1796,29 @@ def _lod_factors_for_polar_grid(
     maximum = np.where(np.isfinite(maximum), maximum, 128.0)
     levels = np.asarray((1, 2, 4, 8, 16, 32, 64, 128), dtype=np.int16)
     positions = np.searchsorted(levels, np.maximum(1.0, maximum), side="right") - 1
-    return levels[np.clip(positions, 0, len(levels) - 1)]
+    result = levels[np.clip(positions, 0, len(levels) - 1)]
+    if categorical and viewport_width_px and view_fov_deg:
+        fov_radians = math.radians(
+            min(360.0, max(1e-3, float(view_fov_deg)))
+        )
+        pixels_per_radian = float(viewport_width_px) / fov_radians
+        projected_native = (
+            resolution
+            / np.maximum(np.abs(distance_grid), resolution)
+            * pixels_per_radian
+        )
+        maximum_factor = np.maximum(
+            1.0, np.floor(2.0 / np.maximum(projected_native, 1e-12))
+        )
+        cap_positions = (
+            np.searchsorted(levels, maximum_factor, side="right") - 1
+        )
+        screen_cap = levels[
+            np.clip(cap_positions, 0, len(levels) - 1)
+        ]
+        result = np.minimum(result, screen_cap)
+        result = np.where(projected_native >= 0.5, 1, result)
+    return np.asarray(result, dtype=np.int16)
 
 
 def _subdivided_axis(values: np.ndarray, factor: int, *, circular: bool = False) -> np.ndarray:
@@ -1658,6 +1974,7 @@ class SurfaceSamplingService:
         self,
         distances: np.ndarray,
         azimuths: np.ndarray,
+        request: SurfaceSamplingRequest | None = None,
     ) -> tuple[int, int]:
         resolution = self._nominal_surface_resolution()
         if resolution is None or len(distances) < 2 or len(azimuths) < 2:
@@ -1677,6 +1994,51 @@ class SurfaceSamplingService:
         )
         radial_factor = min(4, max(1, int(math.ceil(radial_spacing / resolution))))
         angular_factor = min(4, max(1, int(math.ceil(angular_spacing / resolution))))
+        categorical = any(
+            isinstance(provider, CategoricalSurfaceProvider)
+            for provider in self.providers
+        )
+        if (
+            categorical
+            and request is not None
+            and request.viewport_width_px
+            and request.view_fov_deg > 0.0
+        ):
+            pixels_per_radian = float(request.viewport_width_px) / math.radians(
+                max(1e-3, request.view_fov_deg)
+            )
+            midpoints = np.maximum(
+                resolution,
+                (
+                    np.asarray(distances[:-1], dtype=np.float64)
+                    + np.asarray(distances[1:], dtype=np.float64)
+                )
+                * 0.5,
+            )
+            radial_edges_px = (
+                np.diff(np.asarray(distances, dtype=np.float64))
+                / midpoints
+                * pixels_per_radian
+            )
+            radial_factor = max(
+                radial_factor,
+                int(
+                    math.ceil(
+                        float(np.max(radial_edges_px, initial=0.0)) / 8.0
+                    )
+                ),
+            )
+            angular_step_rad = (
+                math.radians(float(np.median(azimuth_steps)))
+                if azimuth_steps.size
+                else 0.0
+            )
+            angular_factor = max(
+                angular_factor,
+                int(math.ceil(angular_step_rad * pixels_per_radian / 8.0)),
+            )
+            radial_factor = min(32, radial_factor)
+            angular_factor = min(32, angular_factor)
         while (
             ((len(distances) - 1) * radial_factor + 1)
             * (len(azimuths) * angular_factor)
@@ -1688,6 +2050,83 @@ class SurfaceSamplingService:
             elif radial_factor > 1:
                 radial_factor -= 1
         return radial_factor, angular_factor
+
+    def _adaptive_visual_axes(
+        self,
+        distances: np.ndarray,
+        azimuths: np.ndarray,
+        request: SurfaceSamplingRequest,
+    ) -> tuple[np.ndarray, np.ndarray, bool]:
+        """Build a budgeted screen-space grid for categorical materials."""
+
+        radial_factor, angular_factor = self._visual_subdivision(
+            distances, azimuths, request
+        )
+        categorical = any(
+            isinstance(provider, CategoricalSurfaceProvider)
+            for provider in self.providers
+        )
+        if (
+            not categorical
+            or not request.viewport_width_px
+            or request.view_fov_deg <= 0.0
+        ):
+            return (
+                _subdivided_axis(distances, radial_factor),
+                _subdivided_axis(azimuths, angular_factor, circular=True),
+                False,
+            )
+
+        resolution = float(self._nominal_surface_resolution() or 1.0)
+        pixels_per_radian = float(request.viewport_width_px) / math.radians(
+            max(1e-3, request.view_fov_deg)
+        )
+        distances64 = np.asarray(distances, dtype=np.float64)
+        midpoints = np.maximum(
+            resolution, (distances64[:-1] + distances64[1:]) * 0.5
+        )
+        projected = (
+            np.diff(distances64) / midpoints * pixels_per_radian
+        )
+        desired = np.clip(np.ceil(projected / 8.0), 1, 32).astype(np.int32)
+        angular_count = max(1, len(azimuths) * angular_factor)
+        maximum_radial_points = max(
+            2, self.max_relief_samples // angular_count
+        )
+        permitted_intervals = max(
+            len(desired), maximum_radial_points - 1
+        )
+        factors = np.ones(len(desired), dtype=np.int32)
+        extra = max(0, permitted_intervals - len(desired))
+        # Allocate scarce subdivisions to the edges with the greatest current
+        # screen-space excess.  Dividing by distance gives near-field ties a
+        # stable priority without increasing the global vertex count.
+        while extra > 0 and np.any(factors < desired):
+            score = np.where(
+                factors < desired,
+                projected / factors / np.maximum(midpoints, resolution),
+                -np.inf,
+            )
+            chosen = int(np.argmax(score))
+            factors[chosen] += 1
+            extra -= 1
+        budget_limited = bool(np.any(factors < desired))
+        radial_parts = [
+            np.linspace(
+                distances64[index],
+                distances64[index + 1],
+                int(factors[index]),
+                endpoint=False,
+            )
+            for index in range(len(factors))
+        ]
+        radial_axis = np.concatenate(
+            (*radial_parts, distances64[-1:])
+        ).astype(np.float32)
+        angular_axis = _subdivided_axis(
+            azimuths, angular_factor, circular=True
+        )
+        return radial_axis, angular_axis, budget_limited
 
     def sample_rgba_points(
         self,
@@ -1734,6 +2173,10 @@ class SurfaceSamplingService:
         provenance = np.full(x_arr.shape, -1, dtype=np.int16)
         class_ids = np.full(x_arr.shape, -1, dtype=np.int64)
         categorical = np.zeros(x_arr.shape, dtype=bool)
+        raster_rows = np.full(x_arr.shape, -1, dtype=np.int64)
+        raster_columns = np.full(x_arr.shape, -1, dtype=np.int64)
+        sampled_lod = np.ones(x_arr.shape, dtype=np.int16)
+        sample_origins = np.zeros(x_arr.shape, dtype=np.uint8)
 
         # LayerSelectionService orders automatic chains as categorical then
         # RGB. Preserve its order so a manual RGB choice remains first while
@@ -1789,6 +2232,24 @@ class SurfaceSamplingService:
             rgba[take] = candidate_rgba[take]
             valid[take] = True
             provenance[take] = int(provider_to_index[id(provider)])
+            provider_rows = getattr(batch if isinstance(provider, RgbSurfaceProvider) else classes, "raster_rows", None)
+            provider_columns = getattr(batch if isinstance(provider, RgbSurfaceProvider) else classes, "raster_columns", None)
+            provider_lod = getattr(batch if isinstance(provider, RgbSurfaceProvider) else classes, "lod_factors", None)
+            provider_origins = getattr(batch if isinstance(provider, RgbSurfaceProvider) else classes, "sample_origins", None)
+            if provider_rows is not None:
+                raster_rows[take] = np.asarray(provider_rows)[take]
+            if provider_columns is not None:
+                raster_columns[take] = np.asarray(provider_columns)[take]
+            if provider_lod is not None:
+                sampled_lod[take] = np.asarray(provider_lod)[take]
+            elif lod_arr is not None:
+                sampled_lod[take] = _normalized_lod_factors(lod_arr)[take]
+            if provider_position > 0:
+                sample_origins[take] = SAMPLE_ORIGIN_SOURCE_FALLBACK
+            elif provider_origins is not None:
+                sample_origins[take] = np.asarray(provider_origins)[take]
+            else:
+                sample_origins[take] = SAMPLE_ORIGIN_EXACT
             if isinstance(provider, CategoricalSurfaceProvider):
                 class_ids[take] = classes.classes[take]
                 categorical[take] = True
@@ -1802,8 +2263,22 @@ class SurfaceSamplingService:
                 provenance[dedupe_inverse].reshape(requested_shape),
                 class_ids[dedupe_inverse].reshape(requested_shape),
                 categorical[dedupe_inverse].reshape(requested_shape),
+                raster_rows[dedupe_inverse].reshape(requested_shape),
+                raster_columns[dedupe_inverse].reshape(requested_shape),
+                sampled_lod[dedupe_inverse].reshape(requested_shape),
+                sample_origins[dedupe_inverse].reshape(requested_shape),
             )
-        return RgbaSampleBatch(rgba, valid, provenance, class_ids, categorical)
+        return RgbaSampleBatch(
+            rgba,
+            valid,
+            provenance,
+            class_ids,
+            categorical,
+            raster_rows,
+            raster_columns,
+            sampled_lod,
+            sample_origins,
+        )
 
     def _observer_xy(self, profile: Any, geometry_crs: str) -> tuple[float, float]:
         observer_x = getattr(profile, "observer_x", None)
@@ -1840,11 +2315,18 @@ class SurfaceSamplingService:
             if isinstance(provider, CategoricalSurfaceProvider)
             for dataset in provider._datasets
         ]
+        categorical_lod = any(
+            isinstance(provider, CategoricalSurfaceProvider)
+            for provider in self.providers
+        )
         metric_baseline = {
             id(dataset): (
                 int(dataset.bytes_read),
                 int(dataset.lod_rows_read),
                 int(dataset.lod_intervals_read),
+                int(dataset.lod_windows_read),
+                int(dataset.lod_pixels_decoded),
+                int(dataset.lod_modal_cells),
                 int(dataset.lod_requested),
                 int(dataset.lod_unique),
                 int(dataset.lod_cache_hits),
@@ -1895,6 +2377,7 @@ class SurfaceSamplingService:
             f"stage={request.stage}:radius={visible_radius}:"
             f"azimuth={policy_azimuth:.6f}:fov={policy_fov:.6f}:"
             f"margin={policy_margin:.6f}"
+            f":viewport={request.viewport_width_px}x{request.viewport_height_px}"
         )
         key = SurfaceCacheKey(
             geometry_id=str(geometry_key),
@@ -1976,11 +2459,35 @@ class SurfaceSamplingService:
             and observer_samples.categorical is not None
             and np.asarray(observer_samples.categorical).item()
         )
+        observer_raster_row = (
+            int(np.asarray(observer_samples.raster_rows).item())
+            if observer_valid and observer_samples.raster_rows is not None
+            else -1
+        )
+        observer_raster_column = (
+            int(np.asarray(observer_samples.raster_columns).item())
+            if observer_valid and observer_samples.raster_columns is not None
+            else -1
+        )
+        observer_lod_factor = (
+            int(np.asarray(observer_samples.lod_factors).item())
+            if observer_samples.lod_factors is not None
+            else 1
+        )
+        observer_sample_origin = (
+            int(np.asarray(observer_samples.sample_origins).item())
+            if observer_samples.sample_origins is not None
+            else int(SAMPLE_ORIGIN_UNKNOWN)
+        )
         near_patch_rgba = None
         near_patch_valid = None
         near_patch_sources = None
         near_patch_classes = None
         near_patch_categorical = None
+        near_patch_raster_rows = None
+        near_patch_raster_columns = None
+        near_patch_lod_factors = None
+        near_patch_sample_origins = None
         mesh = getattr(profile, "terrain_mesh", None)
         if isinstance(mesh, Mapping):
             patch_eastings = np.asarray(
@@ -2030,6 +2537,20 @@ class SurfaceSamplingService:
                     if patch_samples.categorical is not None
                     else False
                 )
+                near_patch_raster_rows = np.where(
+                    near_patch_valid, patch_samples.raster_rows, -1
+                ).astype(np.int64)
+                near_patch_raster_columns = np.where(
+                    near_patch_valid, patch_samples.raster_columns, -1
+                ).astype(np.int64)
+                near_patch_lod_factors = np.asarray(
+                    patch_samples.lod_factors, dtype=np.int16
+                )
+                near_patch_sample_origins = np.where(
+                    near_patch_valid,
+                    patch_samples.sample_origins,
+                    SAMPLE_ORIGIN_UNKNOWN,
+                ).astype(np.uint8)
         azimuths = np.asarray(getattr(profile, "azimuths", ()), dtype=np.float64)
         bands = list(getattr(profile, "bands", ()) or ())
 
@@ -2049,6 +2570,10 @@ class SurfaceSamplingService:
         profile_sources = np.full(profile_valid.shape, -1, dtype=np.int16)
         profile_classes = np.full(profile_valid.shape, -1, dtype=np.int64)
         profile_categorical = np.zeros(profile_valid.shape, dtype=bool)
+        profile_raster_rows = np.full(profile_valid.shape, -1, dtype=np.int64)
+        profile_raster_columns = np.full(profile_valid.shape, -1, dtype=np.int64)
+        profile_lod_factors = np.ones(profile_valid.shape, dtype=np.int16)
+        profile_sample_origins = np.zeros(profile_valid.shape, dtype=np.uint8)
         if band_indices.size and profile_azimuth_indices.size:
             sampled_bands = [bands[index] for index in band_indices]
             sampled_azimuths = azimuths[profile_azimuth_indices]
@@ -2097,7 +2622,12 @@ class SurfaceSamplingService:
                 y,
                 input_crs=geometry_crs,
                 lod_factors=_lod_factors_for_polar_grid(
-                    distances, sampled_azimuths, self._nominal_surface_resolution()
+                    distances,
+                    sampled_azimuths,
+                    self._nominal_surface_resolution(),
+                    viewport_width_px=request.viewport_width_px,
+                    view_fov_deg=request.view_fov_deg,
+                    categorical=categorical_lod,
                 ),
                 progress_callback=lambda fraction, phase: report(
                     10.0 + 20.0 * float(fraction), f"profile:{phase}"
@@ -2115,6 +2645,20 @@ class SurfaceSamplingService:
                 ).astype(np.int64)
             if samples.categorical is not None:
                 profile_categorical = profile_valid & samples.categorical
+            profile_raster_rows = np.where(
+                profile_valid, samples.raster_rows, -1
+            ).astype(np.int64)
+            profile_raster_columns = np.where(
+                profile_valid, samples.raster_columns, -1
+            ).astype(np.int64)
+            profile_lod_factors = np.asarray(
+                samples.lod_factors, dtype=np.int16
+            )
+            profile_sample_origins = np.where(
+                profile_valid,
+                samples.sample_origins,
+                SAMPLE_ORIGIN_UNKNOWN,
+            ).astype(np.uint8)
 
         report(32.0, "profile-ready")
         check_cancelled()
@@ -2124,6 +2668,10 @@ class SurfaceSamplingService:
         relief_sources = None
         relief_classes = None
         relief_categorical = None
+        relief_raster_rows = None
+        relief_raster_columns = None
+        relief_lod_factors = None
+        relief_sample_origins = None
         relief_distance_indices = None
         relief_azimuth_indices = None
         if isinstance(mesh, Mapping):
@@ -2161,6 +2709,9 @@ class SurfaceSamplingService:
                         selected_distances,
                         selected_azimuths,
                         self._nominal_surface_resolution(),
+                        viewport_width_px=request.viewport_width_px,
+                        view_fov_deg=request.view_fov_deg,
+                        categorical=categorical_lod,
                     ),
                     progress_callback=lambda fraction, phase: report(
                         34.0 + 28.0 * float(fraction), f"relief:{phase}"
@@ -2189,6 +2740,20 @@ class SurfaceSamplingService:
                     if samples.categorical is not None
                     else False
                 )
+                relief_raster_rows = np.where(
+                    relief_valid, samples.raster_rows, -1
+                ).astype(np.int64)
+                relief_raster_columns = np.where(
+                    relief_valid, samples.raster_columns, -1
+                ).astype(np.int64)
+                relief_lod_factors = np.asarray(
+                    samples.lod_factors, dtype=np.int16
+                )
+                relief_sample_origins = np.where(
+                    relief_valid,
+                    samples.sample_origins,
+                    SAMPLE_ORIGIN_UNKNOWN,
+                ).astype(np.uint8)
 
         report(64.0, "relief-ready")
         check_cancelled()
@@ -2197,6 +2762,8 @@ class SurfaceSamplingService:
         visual_altitudes = visual_elevations = None
         visual_valid = visual_visible = None
         visual_rgba = visual_sources = visual_classes = visual_categorical = None
+        visual_raster_rows = visual_raster_columns = None
+        visual_lod_factors = visual_sample_origins = None
         if isinstance(mesh, Mapping):
             mesh_azimuths = np.asarray(mesh.get("azimuths", ()), dtype=np.float64)
             mesh_distances = np.asarray(mesh.get("distances", ()), dtype=np.float64)
@@ -2212,17 +2779,30 @@ class SurfaceSamplingService:
                 and mesh_elevations.shape == mesh_shape
                 and mesh_valid.shape == mesh_shape
             ):
-                radial_factor, angular_factor = self._visual_subdivision(
-                    mesh_distances, mesh_azimuths
+                (
+                    candidate_visual_distances,
+                    candidate_visual_azimuths,
+                    visual_budget_limited,
+                ) = self._adaptive_visual_axes(
+                    mesh_distances, mesh_azimuths, request
                 )
-                if radial_factor > 1 or angular_factor > 1:
+                if (
+                    len(candidate_visual_distances) > len(mesh_distances)
+                    or len(candidate_visual_azimuths) > len(mesh_azimuths)
+                ):
                     report(68.0, "subdividing-visual-grid")
-                    visual_distances = _subdivided_axis(
-                        mesh_distances, radial_factor
-                    )
-                    visual_azimuths = _subdivided_axis(
-                        mesh_azimuths, angular_factor, circular=True
-                    )
+                    visual_distances = candidate_visual_distances
+                    visual_azimuths = candidate_visual_azimuths
+                    if visual_budget_limited and self.performance_logging:
+                        append_perf_event(
+                            "surface.visual_budget",
+                            target_edge_px=8.0,
+                            requested_samples=int(
+                                len(candidate_visual_distances)
+                                * len(candidate_visual_azimuths)
+                            ),
+                            max_relief_samples=int(self.max_relief_samples),
+                        )
                     if visible_radius is not None:
                         visual_distances = visual_distances[
                             visual_distances <= float(visible_radius)
@@ -2284,6 +2864,9 @@ class SurfaceSamplingService:
                             visual_distances,
                             visual_azimuths,
                             self._nominal_surface_resolution(),
+                            viewport_width_px=request.viewport_width_px,
+                            view_fov_deg=request.view_fov_deg,
+                            categorical=categorical_lod,
                         ),
                         progress_callback=lambda fraction, phase: report(
                             74.0 + 23.0 * float(fraction),
@@ -2310,6 +2893,20 @@ class SurfaceSamplingService:
                         if visual_samples.categorical is not None
                         else False
                     )
+                    visual_raster_rows = np.where(
+                        visual_valid, visual_samples.raster_rows, -1
+                    ).astype(np.int64)
+                    visual_raster_columns = np.where(
+                        visual_valid, visual_samples.raster_columns, -1
+                    ).astype(np.int64)
+                    visual_lod_factors = np.asarray(
+                        visual_samples.lod_factors, dtype=np.int16
+                    )
+                    visual_sample_origins = np.where(
+                        visual_valid,
+                        visual_samples.sample_origins,
+                        SAMPLE_ORIGIN_UNKNOWN,
+                    ).astype(np.uint8)
 
         report(98.0, "registering-cache")
         check_cancelled()
@@ -2324,6 +2921,10 @@ class SurfaceSamplingService:
             observer_source_index=observer_source_index,
             observer_class_id=observer_class_id,
             observer_categorical=observer_categorical,
+            observer_raster_row=observer_raster_row,
+            observer_raster_column=observer_raster_column,
+            observer_lod_factor=observer_lod_factor,
+            observer_sample_origin=observer_sample_origin,
             observer_loaded=True,
             completion_state=request.stage,
             near_patch_rgba=near_patch_rgba,
@@ -2331,11 +2932,19 @@ class SurfaceSamplingService:
             near_patch_source_indices=near_patch_sources,
             near_patch_class_ids=near_patch_classes,
             near_patch_categorical=near_patch_categorical,
+            near_patch_raster_rows=near_patch_raster_rows,
+            near_patch_raster_columns=near_patch_raster_columns,
+            near_patch_lod_factors=near_patch_lod_factors,
+            near_patch_sample_origins=near_patch_sample_origins,
             profile_rgba=profile_rgba,
             profile_valid=profile_valid,
             profile_source_indices=profile_sources,
             profile_class_ids=profile_classes,
             profile_categorical=profile_categorical,
+            profile_raster_rows=profile_raster_rows,
+            profile_raster_columns=profile_raster_columns,
+            profile_lod_factors=profile_lod_factors,
+            profile_sample_origins=profile_sample_origins,
             profile_band_indices=band_indices,
             profile_azimuth_indices=profile_azimuth_indices,
             relief_rgba=relief_rgba,
@@ -2343,6 +2952,10 @@ class SurfaceSamplingService:
             relief_source_indices=relief_sources,
             relief_class_ids=relief_classes,
             relief_categorical=relief_categorical,
+            relief_raster_rows=relief_raster_rows,
+            relief_raster_columns=relief_raster_columns,
+            relief_lod_factors=relief_lod_factors,
+            relief_sample_origins=relief_sample_origins,
             relief_distance_indices=relief_distance_indices,
             relief_azimuth_indices=relief_azimuth_indices,
             visual_distances=visual_distances,
@@ -2355,6 +2968,10 @@ class SurfaceSamplingService:
             visual_source_indices=visual_sources,
             visual_class_ids=visual_classes,
             visual_categorical=visual_categorical,
+            visual_raster_rows=visual_raster_rows,
+            visual_raster_columns=visual_raster_columns,
+            visual_lod_factors=visual_lod_factors,
+            visual_sample_origins=visual_sample_origins,
         )
         result_size = _surface_cache_size(result)
         with self._cache_lock:
@@ -2377,6 +2994,9 @@ class SurfaceSamplingService:
                     int(dataset.bytes_read),
                     int(dataset.lod_rows_read),
                     int(dataset.lod_intervals_read),
+                    int(dataset.lod_windows_read),
+                    int(dataset.lod_pixels_decoded),
+                    int(dataset.lod_modal_cells),
                     int(dataset.lod_requested),
                     int(dataset.lod_unique),
                     int(dataset.lod_cache_hits),
@@ -2393,9 +3013,12 @@ class SurfaceSamplingService:
                 raster_bytes=sum(value[0] for value in deltas),
                 lod_rows=sum(value[1] for value in deltas),
                 lod_intervals=sum(value[2] for value in deltas),
-                lod_requested=sum(value[3] for value in deltas),
-                lod_unique=sum(value[4] for value in deltas),
-                lod_cache_hits=sum(value[5] for value in deltas),
+                lod_windows=sum(value[3] for value in deltas),
+                lod_pixels_decoded=sum(value[4] for value in deltas),
+                lod_modal_cells=sum(value[5] for value in deltas),
+                lod_requested=sum(value[6] for value in deltas),
+                lod_unique=sum(value[7] for value in deltas),
+                lod_cache_hits=sum(value[8] for value in deltas),
                 result_cache=self._persistent_store.metrics() if self._persistent_store else None,
                 rss_bytes=int(rss_end),
                 peak_rss_bytes=int(peak_end),

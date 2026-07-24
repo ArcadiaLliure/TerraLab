@@ -26,6 +26,12 @@ from PyQt5.QtGui import (
     QPen,
     QPolygonF,
 )
+from scipy.ndimage import (
+    convolve,
+    distance_transform_edt,
+    gaussian_filter,
+    label as connected_components,
+)
 
 try:
     from numba import njit
@@ -40,13 +46,25 @@ from TerraLab.common.performance import (
 from TerraLab.common.perf_events import append_perf_event
 from TerraLab.config import ConfigManager
 from TerraLab.terrain.render_pipeline import (
+    SurfaceVisualStyle,
+    TerrainCelestialLightContext,
+    TerrainCelestialLightFactors,
+    apply_vibrant_color_grade,
     atmospheric_fog_factor,
     compose_vertex_rgba,
     light_direction_enu,
+    normalize_surface_visual_style,
+    terrain_celestial_light_factors,
+    vibrant_depth_haze_factor,
 )
 from TerraLab.terrain.land_cover.legends.category_info import (
     LandCoverCategoryInfo,
     category_info,
+)
+from TerraLab.terrain.land_cover.visual_styles import (
+    VIBRANT_PALETTE_VERSION,
+    preserve_small_region,
+    vibrant_land_cover_rgba,
 )
 from TerraLab.terrain.representation import (
     TerrainGeometrySource,
@@ -236,6 +254,159 @@ class _TerrainTriangleGeometry:
             object.__setattr__(self, name, value)
 
 
+@dataclass(frozen=True)
+class TerrainMaterialSamples:
+    """Discrete material identity kept alongside its display-ready base colour."""
+
+    base_rgba: np.ndarray
+    valid: np.ndarray
+    class_ids: np.ndarray
+    categorical: np.ndarray
+    source_indices: np.ndarray
+
+    def __post_init__(self) -> None:
+        valid = np.asarray(self.valid, dtype=bool)
+        base_rgba = np.asarray(self.base_rgba, dtype=np.uint8)
+        class_ids = np.asarray(self.class_ids, dtype=np.int64)
+        categorical = np.asarray(self.categorical, dtype=bool)
+        source_indices = np.asarray(self.source_indices, dtype=np.int16)
+        if base_rgba.shape != valid.shape + (4,):
+            raise ValueError("Material RGBA must match material geometry")
+        for value in (class_ids, categorical, source_indices):
+            if value.shape != valid.shape:
+                raise ValueError("Material identity arrays must match RGBA geometry")
+        for name, value in (
+            ("base_rgba", base_rgba),
+            ("valid", valid),
+            ("class_ids", class_ids),
+            ("categorical", categorical),
+            ("source_indices", source_indices),
+        ):
+            object.__setattr__(self, name, value)
+
+
+@dataclass(frozen=True)
+class TerrainLightingGrid:
+    """Brightness and source-specific exposure over aligned terrain vertices."""
+
+    intensity: np.ndarray
+    solar_exposure: np.ndarray
+    lunar_exposure: np.ndarray
+    factors: TerrainCelestialLightFactors
+
+
+@dataclass(frozen=True)
+class TerrainBaseMaterialCache:
+    """Camera- and time-independent colours aligned with terrain geometry."""
+
+    key: tuple
+    polar: TerrainMaterialSamples
+    near_patch: TerrainMaterialSamples
+    polar_protected: np.ndarray
+    near_patch_protected: np.ndarray
+    owned_bytes: int = -1
+
+    def __post_init__(self) -> None:
+        for name in ("polar_protected", "near_patch_protected"):
+            value = np.asarray(getattr(self, name), dtype=bool)
+            value.setflags(write=False)
+            object.__setattr__(self, name, value)
+
+    @property
+    def resident_bytes(self) -> int:
+        if self.owned_bytes >= 0:
+            return int(self.owned_bytes)
+        return (
+            _material_samples_size(self.polar)
+            + _material_samples_size(self.near_patch)
+            + int(self.polar_protected.nbytes)
+            + int(self.near_patch_protected.nbytes)
+        )
+
+
+@dataclass(frozen=True)
+class TerrainResolvedMaterialCache:
+    """Screen material lookup reusable while the projected raster is stable."""
+
+    key: tuple
+    materials: TerrainMaterialSamples
+    triangle_materials: TerrainMaterialSamples
+    triangle_surface_xy: np.ndarray
+    protected: np.ndarray
+
+    @property
+    def resident_bytes(self) -> int:
+        return (
+            _material_samples_size(self.materials)
+            + _material_samples_size(self.triangle_materials)
+            + int(np.asarray(self.triangle_surface_xy).nbytes)
+            + int(np.asarray(self.protected).nbytes)
+        )
+
+
+def _material_samples_size(materials: TerrainMaterialSamples) -> int:
+    """Return owned NumPy storage used by one material grid."""
+
+    return sum(
+        int(np.asarray(value).nbytes)
+        for value in (
+            materials.base_rgba,
+            materials.valid,
+            materials.class_ids,
+            materials.categorical,
+            materials.source_indices,
+        )
+    )
+
+
+def _freeze_material_samples(
+    materials: TerrainMaterialSamples,
+) -> TerrainMaterialSamples:
+    """Mark one derived material grid immutable without duplicating it."""
+
+    for value in (
+        materials.base_rgba,
+        materials.valid,
+        materials.class_ids,
+        materials.categorical,
+        materials.source_indices,
+    ):
+        np.asarray(value).setflags(write=False)
+    return materials
+
+
+def _owned_material_samples_size(
+    material_grids: tuple[TerrainMaterialSamples, ...],
+    shared_arrays,
+) -> int:
+    """Count only arrays owned by derived cache entries."""
+
+    shared = tuple(
+        np.asarray(value)
+        for value in shared_arrays
+        if value is not None
+    )
+    seen = set()
+    total = 0
+    for materials in material_grids:
+        for value in (
+            materials.base_rgba,
+            materials.valid,
+            materials.class_ids,
+            materials.categorical,
+            materials.source_indices,
+        ):
+            array = np.asarray(value)
+            identity = id(array)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            if any(np.shares_memory(array, source) for source in shared):
+                continue
+            total += int(array.nbytes)
+    return total
+
+
 def _rasterize_triangles_impl(xy, depth_values, width, height, supersample):
     """Reference z-buffer rasterizer using deterministic pixel-centre coverage."""
 
@@ -364,7 +535,7 @@ def _rasterize_terrain_triangles(xy, depth, width, height, supersample=2):
     )
 
 
-def _interpolate_triangle_values(
+def _interpolate_triangle_continuous_values(
     triangle_id,
     bary_u,
     bary_v,
@@ -372,7 +543,7 @@ def _interpolate_triangle_values(
     *,
     flat: bool = False,
 ):
-    """Interpolate arbitrary per-vertex channels on a rasterized triangle map."""
+    """Interpolate continuous per-vertex channels on a triangle map."""
 
     ids_grid = np.asarray(triangle_id, dtype=np.int32)
     values = np.asarray(triangle_values, dtype=np.float64)
@@ -396,6 +567,676 @@ def _interpolate_triangle_values(
         + w[:, None] * selected[:, 2]
     )
     return result, covered
+
+
+def _interpolate_triangle_values(
+    triangle_id,
+    bary_u,
+    bary_v,
+    triangle_values,
+    *,
+    flat: bool = False,
+):
+    """Compatibility alias; categorical materials must use their resolver."""
+
+    return _interpolate_triangle_continuous_values(
+        triangle_id,
+        bary_u,
+        bary_v,
+        triangle_values,
+        flat=flat,
+    )
+
+
+def _resolve_triangle_material(
+    triangle_id,
+    bary_u,
+    bary_v,
+    triangle_materials: TerrainMaterialSamples,
+    *,
+    flat_continuous: bool = False,
+) -> TerrainMaterialSamples:
+    """Resolve one material per covered pixel without semantic interpolation.
+
+    Equal categorical identities ``(source_index, class_id)`` are constant.
+    Three continuous samples from one source retain smooth RGBA interpolation.
+    Every mixed/source-boundary case uses the greatest barycentric weight;
+    ``argmax`` gives vertex order as the deterministic tie-break.
+    """
+
+    ids_grid = np.asarray(triangle_id, dtype=np.int32)
+    covered = ids_grid >= 0
+    result_rgba = np.zeros(ids_grid.shape + (4,), dtype=np.uint8)
+    result_valid = np.zeros(ids_grid.shape, dtype=bool)
+    result_classes = np.full(ids_grid.shape, -1, dtype=np.int64)
+    result_categorical = np.zeros(ids_grid.shape, dtype=bool)
+    result_sources = np.full(ids_grid.shape, -1, dtype=np.int16)
+    if not np.any(covered):
+        return TerrainMaterialSamples(
+            result_rgba,
+            result_valid,
+            result_classes,
+            result_categorical,
+            result_sources,
+        )
+
+    triangle_rgba = np.asarray(triangle_materials.base_rgba, dtype=np.uint8)
+    triangle_valid = np.asarray(triangle_materials.valid, dtype=bool)
+    triangle_classes = np.asarray(triangle_materials.class_ids, dtype=np.int64)
+    triangle_categorical = np.asarray(
+        triangle_materials.categorical, dtype=bool
+    )
+    triangle_sources = np.asarray(
+        triangle_materials.source_indices, dtype=np.int16
+    )
+    triangle_all_valid = np.all(triangle_valid, axis=1)
+    triangle_all_categorical = np.all(triangle_categorical, axis=1)
+    triangle_all_continuous = np.all(~triangle_categorical, axis=1)
+    triangle_same_source = np.all(
+        triangle_sources == triangle_sources[:, :1], axis=1
+    )
+    triangle_same_class = np.all(
+        triangle_classes == triangle_classes[:, :1], axis=1
+    )
+    triangle_constant_category = (
+        triangle_all_valid
+        & triangle_all_categorical
+        & triangle_same_source
+        & triangle_same_class
+    )
+    triangle_smooth_continuous = (
+        triangle_all_valid & triangle_all_continuous & triangle_same_source
+    )
+
+    ids = ids_grid[covered]
+    u = np.asarray(bary_u, dtype=np.float32)[covered]
+    v = np.asarray(bary_v, dtype=np.float32)[covered]
+    weights = np.column_stack((u, v, 1.0 - u - v))
+    dominant = np.argmax(weights, axis=1)
+    constant_category = triangle_constant_category[ids]
+    smooth_continuous = triangle_smooth_continuous[ids]
+
+    resolved = triangle_rgba[ids, dominant].copy()
+    if np.any(constant_category):
+        resolved[constant_category] = triangle_rgba[
+            ids[constant_category], 0
+        ]
+    if np.any(smooth_continuous):
+        selected_rgba = triangle_rgba[
+            ids[smooth_continuous]
+        ].astype(np.float32)
+        if flat_continuous:
+            continuous_rgba = np.mean(selected_rgba, axis=1)
+        else:
+            selected_weights = weights[smooth_continuous]
+            continuous_rgba = np.sum(
+                selected_rgba * selected_weights[..., None], axis=1
+            )
+        resolved[smooth_continuous] = np.clip(
+            np.rint(continuous_rgba), 0, 255
+        ).astype(np.uint8)
+
+    selected_valid = triangle_valid[ids, dominant]
+    selected_classes = triangle_classes[ids, dominant]
+    selected_categorical = triangle_categorical[ids, dominant]
+    selected_sources = triangle_sources[ids, dominant]
+    selected_valid[constant_category | smooth_continuous] = True
+    selected_classes[constant_category] = triangle_classes[
+        ids[constant_category], 0
+    ]
+    selected_categorical[constant_category] = True
+    uniform_pixels = constant_category | smooth_continuous
+    selected_sources[uniform_pixels] = triangle_sources[
+        ids[uniform_pixels], 0
+    ]
+    selected_classes[smooth_continuous] = -1
+    selected_categorical[smooth_continuous] = False
+
+    result_rgba[covered] = resolved
+    result_valid[covered] = selected_valid
+    result_classes[covered] = np.where(
+        selected_categorical, selected_classes, -1
+    )
+    result_categorical[covered] = selected_categorical
+    result_sources[covered] = selected_sources
+    return TerrainMaterialSamples(
+        result_rgba,
+        result_valid,
+        result_classes,
+        result_categorical,
+        result_sources,
+    )
+
+
+def _nearest_axis_indices(axis, values) -> np.ndarray:
+    """Return stable nearest-neighbour indices on a one-dimensional axis."""
+
+    coordinates = np.asarray(axis, dtype=np.float64).reshape(-1)
+    requested = np.asarray(values, dtype=np.float64)
+    if coordinates.size == 0:
+        return np.full(requested.shape, -1, dtype=np.int32)
+    order = np.argsort(coordinates, kind="stable")
+    sorted_coordinates = coordinates[order]
+    if sorted_coordinates.size > 1:
+        steps = np.diff(sorted_coordinates)
+        step = float(steps[0])
+        if step > 0.0 and np.allclose(steps, step, rtol=1e-6, atol=1e-9):
+            relative = (requested - sorted_coordinates[0]) / step
+            rounded = np.floor(
+                np.nextafter(relative + 0.5, -np.inf)
+            ).astype(np.int64)
+            return order[
+                np.clip(rounded, 0, sorted_coordinates.size - 1)
+            ].astype(np.int32, copy=False)
+    insertion = np.searchsorted(sorted_coordinates, requested, side="left")
+    left = np.clip(insertion - 1, 0, sorted_coordinates.size - 1)
+    right = np.clip(insertion, 0, sorted_coordinates.size - 1)
+    choose_right = (
+        np.abs(sorted_coordinates[right] - requested)
+        < np.abs(requested - sorted_coordinates[left])
+    )
+    selected = np.where(choose_right, right, left)
+    return order[selected].astype(np.int32, copy=False)
+
+
+def _nearest_circular_axis_indices(axis_degrees, values_degrees) -> np.ndarray:
+    """Return stable nearest-neighbour indices on a circular degree axis."""
+
+    coordinates = np.mod(
+        np.asarray(axis_degrees, dtype=np.float64).reshape(-1), 360.0
+    )
+    requested = np.mod(np.asarray(values_degrees, dtype=np.float64), 360.0)
+    if coordinates.size == 0:
+        return np.full(requested.shape, -1, dtype=np.int32)
+    order = np.argsort(coordinates, kind="stable")
+    sorted_coordinates = coordinates[order]
+    if sorted_coordinates.size > 1:
+        wrapped = np.r_[
+            np.diff(sorted_coordinates),
+            sorted_coordinates[0] + 360.0 - sorted_coordinates[-1],
+        ]
+        step = float(wrapped[0])
+        if step > 0.0 and np.allclose(
+            wrapped, step, rtol=1e-6, atol=1e-9
+        ):
+            relative = (
+                (requested - sorted_coordinates[0]) % 360.0
+            ) / step
+            rounded = np.floor(
+                np.nextafter(relative + 0.5, -np.inf)
+            ).astype(np.int64)
+            return order[rounded % sorted_coordinates.size].astype(
+                np.int32, copy=False
+            )
+    insertion = np.searchsorted(sorted_coordinates, requested, side="left")
+    left = (insertion - 1) % sorted_coordinates.size
+    right = insertion % sorted_coordinates.size
+    left_distance = np.abs(
+        (requested - sorted_coordinates[left] + 180.0) % 360.0 - 180.0
+    )
+    right_distance = np.abs(
+        (requested - sorted_coordinates[right] + 180.0) % 360.0 - 180.0
+    )
+    selected = np.where(right_distance < left_distance, right, left)
+    return order[selected].astype(np.int32, copy=False)
+
+
+def _resolve_surface_material_impl(
+    triangle_id,
+    bary_u,
+    bary_v,
+    triangle_rgba,
+    triangle_valid,
+    triangle_classes,
+    triangle_categorical,
+    triangle_sources,
+    triangle_constant_category,
+    triangle_surface_xy,
+    triangle_vertex_domain,
+    polar_rgba,
+    polar_valid,
+    polar_classes,
+    polar_categorical,
+    polar_sources,
+    polar_distances,
+    polar_azimuths,
+    patch_rgba,
+    patch_valid,
+    patch_classes,
+    patch_categorical,
+    patch_sources,
+    patch_eastings,
+    patch_northings,
+):
+    """Compiled categorical material lookup for the interactive hot path."""
+
+    height, width = triangle_id.shape
+    result_rgba = np.zeros((height, width, 4), dtype=np.uint8)
+    result_valid = np.zeros((height, width), dtype=np.bool_)
+    result_classes = np.full((height, width), -1, dtype=np.int64)
+    result_categorical = np.zeros((height, width), dtype=np.bool_)
+    result_sources = np.full((height, width), -1, dtype=np.int16)
+    degrees_per_radian = 180.0 / math.pi
+    for row in range(height):
+        for column in range(width):
+            triangle = int(triangle_id[row, column])
+            if triangle < 0:
+                continue
+            if triangle_constant_category[triangle]:
+                result_rgba[row, column] = triangle_rgba[triangle, 0]
+                result_valid[row, column] = True
+                result_classes[row, column] = triangle_classes[triangle, 0]
+                result_categorical[row, column] = True
+                result_sources[row, column] = triangle_sources[triangle, 0]
+                continue
+            u = float(bary_u[row, column])
+            v = float(bary_v[row, column])
+            w = 1.0 - u - v
+            domain = int(triangle_vertex_domain[triangle, 0])
+            uniform_domain = (
+                int(triangle_vertex_domain[triangle, 1]) == domain
+                and int(triangle_vertex_domain[triangle, 2]) == domain
+            )
+            east = (
+                u * triangle_surface_xy[triangle, 0, 0]
+                + v * triangle_surface_xy[triangle, 1, 0]
+                + w * triangle_surface_xy[triangle, 2, 0]
+            )
+            north = (
+                u * triangle_surface_xy[triangle, 0, 1]
+                + v * triangle_surface_xy[triangle, 1, 1]
+                + w * triangle_surface_xy[triangle, 2, 1]
+            )
+            material_row = -1
+            material_column = -1
+            if uniform_domain and domain == 0 and polar_distances.size:
+                distance = math.sqrt(east * east + north * north)
+                right = int(np.searchsorted(polar_distances, distance))
+                left = max(0, min(polar_distances.size - 1, right - 1))
+                right = max(0, min(polar_distances.size - 1, right))
+                material_row = (
+                    right
+                    if abs(float(polar_distances[right]) - distance)
+                    < abs(distance - float(polar_distances[left]))
+                    else left
+                )
+                azimuth = (
+                    math.atan2(east, north) * degrees_per_radian
+                ) % 360.0
+                right = int(np.searchsorted(polar_azimuths, azimuth))
+                left = (right - 1) % polar_azimuths.size
+                right = right % polar_azimuths.size
+                left_distance = abs(
+                    (
+                        azimuth
+                        - float(polar_azimuths[left])
+                        + 180.0
+                    )
+                    % 360.0
+                    - 180.0
+                )
+                right_distance = abs(
+                    (
+                        azimuth
+                        - float(polar_azimuths[right])
+                        + 180.0
+                    )
+                    % 360.0
+                    - 180.0
+                )
+                material_column = (
+                    right if right_distance < left_distance else left
+                )
+                if polar_valid[material_row, material_column]:
+                    result_rgba[row, column] = polar_rgba[
+                        material_row, material_column
+                    ]
+                    result_valid[row, column] = True
+                    categorical = polar_categorical[
+                        material_row, material_column
+                    ]
+                    result_categorical[row, column] = categorical
+                    if categorical:
+                        result_classes[row, column] = polar_classes[
+                            material_row, material_column
+                        ]
+                    result_sources[row, column] = polar_sources[
+                        material_row, material_column
+                    ]
+                    continue
+            elif (
+                uniform_domain
+                and domain == 1
+                and patch_eastings.size
+                and patch_northings.size
+            ):
+                right = int(np.searchsorted(patch_eastings, east))
+                left = max(0, min(patch_eastings.size - 1, right - 1))
+                right = max(0, min(patch_eastings.size - 1, right))
+                material_column = (
+                    right
+                    if abs(float(patch_eastings[right]) - east)
+                    < abs(east - float(patch_eastings[left]))
+                    else left
+                )
+                right = int(np.searchsorted(patch_northings, north))
+                left = max(0, min(patch_northings.size - 1, right - 1))
+                right = max(0, min(patch_northings.size - 1, right))
+                material_row = (
+                    right
+                    if abs(float(patch_northings[right]) - north)
+                    < abs(north - float(patch_northings[left]))
+                    else left
+                )
+                if patch_valid[material_row, material_column]:
+                    result_rgba[row, column] = patch_rgba[
+                        material_row, material_column
+                    ]
+                    result_valid[row, column] = True
+                    categorical = patch_categorical[
+                        material_row, material_column
+                    ]
+                    result_categorical[row, column] = categorical
+                    if categorical:
+                        result_classes[row, column] = patch_classes[
+                            material_row, material_column
+                        ]
+                    result_sources[row, column] = patch_sources[
+                        material_row, material_column
+                    ]
+                    continue
+
+            dominant = 0
+            if v > u and v >= w:
+                dominant = 1
+            elif w > u and w > v:
+                dominant = 2
+            if triangle_valid[triangle, dominant]:
+                result_rgba[row, column] = triangle_rgba[
+                    triangle, dominant
+                ]
+                result_valid[row, column] = True
+                categorical = triangle_categorical[triangle, dominant]
+                result_categorical[row, column] = categorical
+                if categorical:
+                    result_classes[row, column] = triangle_classes[
+                        triangle, dominant
+                    ]
+                result_sources[row, column] = triangle_sources[
+                    triangle, dominant
+                ]
+    return (
+        result_rgba,
+        result_valid,
+        result_classes,
+        result_categorical,
+        result_sources,
+    )
+
+
+_resolve_surface_material_fast = (
+    njit(cache=True, nogil=True)(_resolve_surface_material_impl)
+    if njit is not None
+    else None
+)
+
+
+def _resolve_surface_material(
+    triangle_id,
+    bary_u,
+    bary_v,
+    triangle_materials: TerrainMaterialSamples,
+    triangle_surface_xy,
+    triangle_vertex_domain,
+    polar_materials: TerrainMaterialSamples,
+    polar_distances,
+    polar_azimuths,
+    patch_materials: TerrainMaterialSamples,
+    patch_eastings,
+    patch_northings,
+    *,
+    flat_continuous: bool = False,
+) -> TerrainMaterialSamples:
+    """Resolve semantic material in terrain space rather than screen space.
+
+    Continuous RGB samples from one source retain barycentric interpolation.
+    Every categorical, mixed, or cross-source pixel first interpolates its ENU
+    ground coordinate and then performs a nearest lookup in the already
+    prepared material grid.  No source raster is accessed during painting.
+    """
+
+    ids_grid = np.asarray(triangle_id, dtype=np.int32)
+    covered = ids_grid >= 0
+    if not np.any(covered):
+        shape = ids_grid.shape
+        return TerrainMaterialSamples(
+            np.zeros(shape + (4,), dtype=np.uint8),
+            np.zeros(shape, dtype=bool),
+            np.full(shape, -1, dtype=np.int64),
+            np.zeros(shape, dtype=bool),
+            np.full(shape, -1, dtype=np.int16),
+        )
+
+    triangle_valid = np.asarray(triangle_materials.valid, dtype=bool)
+    triangle_categorical = np.asarray(
+        triangle_materials.categorical, dtype=bool
+    )
+    triangle_sources = np.asarray(
+        triangle_materials.source_indices, dtype=np.int16
+    )
+    smooth_continuous = (
+        np.all(triangle_valid, axis=1)
+        & np.all(~triangle_categorical, axis=1)
+        & np.all(triangle_sources == triangle_sources[:, :1], axis=1)
+    )
+    constant_category = (
+        np.all(triangle_valid, axis=1)
+        & np.all(triangle_categorical, axis=1)
+        & np.all(triangle_sources == triangle_sources[:, :1], axis=1)
+        & np.all(
+            np.asarray(triangle_materials.class_ids, dtype=np.int64)
+            == np.asarray(triangle_materials.class_ids, dtype=np.int64)[:, :1],
+            axis=1,
+        )
+    )
+    ids = ids_grid[covered]
+    requires_surface_lookup = ~(
+        smooth_continuous[ids] | constant_category[ids]
+    )
+    if not np.any(requires_surface_lookup):
+        return _resolve_triangle_material(
+            triangle_id,
+            bary_u,
+            bary_v,
+            triangle_materials,
+            flat_continuous=flat_continuous,
+        )
+    has_smooth_pixels = bool(np.any(smooth_continuous[ids]))
+    has_direct_pixels = bool(np.any(~requires_surface_lookup))
+    polar_distances_array = np.asarray(polar_distances, dtype=np.float64)
+    polar_azimuths_array = np.mod(
+        np.asarray(polar_azimuths, dtype=np.float64), 360.0
+    )
+    patch_eastings_array = np.asarray(patch_eastings, dtype=np.float64)
+    patch_northings_array = np.asarray(patch_northings, dtype=np.float64)
+    fast_axes = (
+        np.all(np.diff(polar_distances_array) >= 0.0)
+        and np.all(np.diff(polar_azimuths_array) >= 0.0)
+        and np.all(np.diff(patch_eastings_array) >= 0.0)
+        and np.all(np.diff(patch_northings_array) >= 0.0)
+    )
+    if (
+        _resolve_surface_material_fast is not None
+        and not has_smooth_pixels
+        and fast_axes
+    ):
+        return TerrainMaterialSamples(
+            *_resolve_surface_material_fast(
+                ids_grid,
+                np.asarray(bary_u, dtype=np.float32),
+                np.asarray(bary_v, dtype=np.float32),
+                np.asarray(triangle_materials.base_rgba, dtype=np.uint8),
+                triangle_valid,
+                np.asarray(triangle_materials.class_ids, dtype=np.int64),
+                triangle_categorical,
+                triangle_sources,
+                constant_category,
+                np.asarray(triangle_surface_xy, dtype=np.float64),
+                np.asarray(triangle_vertex_domain, dtype=np.uint8),
+                np.asarray(polar_materials.base_rgba, dtype=np.uint8),
+                np.asarray(polar_materials.valid, dtype=bool),
+                np.asarray(polar_materials.class_ids, dtype=np.int64),
+                np.asarray(polar_materials.categorical, dtype=bool),
+                np.asarray(polar_materials.source_indices, dtype=np.int16),
+                polar_distances_array,
+                polar_azimuths_array,
+                np.asarray(patch_materials.base_rgba, dtype=np.uint8),
+                np.asarray(patch_materials.valid, dtype=bool),
+                np.asarray(patch_materials.class_ids, dtype=np.int64),
+                np.asarray(patch_materials.categorical, dtype=bool),
+                np.asarray(patch_materials.source_indices, dtype=np.int16),
+                patch_eastings_array,
+                patch_northings_array,
+            )
+        )
+    resolved = (
+        _resolve_triangle_material(
+            triangle_id,
+            bary_u,
+            bary_v,
+            triangle_materials,
+            flat_continuous=flat_continuous,
+        )
+        if has_direct_pixels
+        else None
+    )
+
+    covered_rows, covered_columns = np.nonzero(covered)
+    target_rows = covered_rows[requires_surface_lookup]
+    target_columns = covered_columns[requires_surface_lookup]
+    target_ids = ids[requires_surface_lookup]
+    u = np.asarray(bary_u, dtype=np.float64)[target_rows, target_columns]
+    v = np.asarray(bary_v, dtype=np.float64)[target_rows, target_columns]
+    w = 1.0 - u - v
+    surface_vertices = np.asarray(
+        triangle_surface_xy, dtype=np.float64
+    )[target_ids]
+    surface_xy = (
+        u[:, None] * surface_vertices[:, 0]
+        + v[:, None] * surface_vertices[:, 1]
+        + w[:, None] * surface_vertices[:, 2]
+    )
+
+    domains = np.asarray(triangle_vertex_domain, dtype=np.uint8)[target_ids]
+    uniform_domain = np.all(domains == domains[:, :1], axis=1)
+    selected_domain = domains[:, 0]
+    selected_rgba = np.zeros((len(target_ids), 4), dtype=np.uint8)
+    selected_valid = np.zeros(len(target_ids), dtype=bool)
+    selected_classes = np.full(len(target_ids), -1, dtype=np.int64)
+    selected_categorical = np.zeros(len(target_ids), dtype=bool)
+    selected_sources = np.full(len(target_ids), -1, dtype=np.int16)
+
+    polar = uniform_domain & (selected_domain == 0)
+    if np.any(polar):
+        east = surface_xy[polar, 0]
+        north = surface_xy[polar, 1]
+        distance_indices = _nearest_axis_indices(
+            polar_distances, np.hypot(east, north)
+        )
+        azimuth_indices = _nearest_circular_axis_indices(
+            polar_azimuths, np.degrees(np.arctan2(east, north))
+        )
+        selected_rgba[polar] = polar_materials.base_rgba[
+            distance_indices, azimuth_indices
+        ]
+        selected_valid[polar] = polar_materials.valid[
+            distance_indices, azimuth_indices
+        ]
+        selected_classes[polar] = polar_materials.class_ids[
+            distance_indices, azimuth_indices
+        ]
+        selected_categorical[polar] = polar_materials.categorical[
+            distance_indices, azimuth_indices
+        ]
+        selected_sources[polar] = polar_materials.source_indices[
+            distance_indices, azimuth_indices
+        ]
+
+    patch = uniform_domain & (selected_domain == 1)
+    if np.any(patch):
+        easting_indices = _nearest_axis_indices(
+            patch_eastings, surface_xy[patch, 0]
+        )
+        northing_indices = _nearest_axis_indices(
+            patch_northings, surface_xy[patch, 1]
+        )
+        selected_rgba[patch] = patch_materials.base_rgba[
+            northing_indices, easting_indices
+        ]
+        selected_valid[patch] = patch_materials.valid[
+            northing_indices, easting_indices
+        ]
+        selected_classes[patch] = patch_materials.class_ids[
+            northing_indices, easting_indices
+        ]
+        selected_categorical[patch] = patch_materials.categorical[
+            northing_indices, easting_indices
+        ]
+        selected_sources[patch] = patch_materials.source_indices[
+            northing_indices, easting_indices
+        ]
+
+    replace = uniform_domain & selected_valid
+    if not np.any(replace):
+        return (
+            resolved
+            if resolved is not None
+            else _resolve_triangle_material(
+                triangle_id,
+                bary_u,
+                bary_v,
+                triangle_materials,
+                flat_continuous=flat_continuous,
+            )
+        )
+    replace_rows = target_rows[replace]
+    replace_columns = target_columns[replace]
+    if resolved is None and np.all(replace):
+        result_rgba = np.zeros(ids_grid.shape + (4,), dtype=np.uint8)
+        result_valid = np.zeros(ids_grid.shape, dtype=bool)
+        result_classes = np.full(ids_grid.shape, -1, dtype=np.int64)
+        result_categorical = np.zeros(ids_grid.shape, dtype=bool)
+        result_sources = np.full(ids_grid.shape, -1, dtype=np.int16)
+    else:
+        if resolved is None:
+            resolved = _resolve_triangle_material(
+                triangle_id,
+                bary_u,
+                bary_v,
+                triangle_materials,
+                flat_continuous=flat_continuous,
+            )
+        result_rgba = resolved.base_rgba.copy()
+        result_valid = resolved.valid.copy()
+        result_classes = resolved.class_ids.copy()
+        result_categorical = resolved.categorical.copy()
+        result_sources = resolved.source_indices.copy()
+    result_rgba[replace_rows, replace_columns] = selected_rgba[replace]
+    result_valid[replace_rows, replace_columns] = True
+    result_categorical[replace_rows, replace_columns] = (
+        selected_categorical[replace]
+    )
+    result_classes[replace_rows, replace_columns] = np.where(
+        selected_categorical[replace], selected_classes[replace], -1
+    )
+    result_sources[replace_rows, replace_columns] = selected_sources[replace]
+    return TerrainMaterialSamples(
+        result_rgba,
+        result_valid,
+        result_classes,
+        result_categorical,
+        result_sources,
+    )
 
 
 def _triangle_vertical_minimum_y(vertices, sample_x: float) -> float:
@@ -544,6 +1385,332 @@ def _apply_horizon_coverage(
             np.rint(float(base_rgba[3]) * coverage), 0.0, 255.0
         ).astype(np.uint8)
     return result
+
+
+def _soften_categorical_edges(
+    rgba,
+    materials: TerrainMaterialSamples,
+    covered,
+    *,
+    strength: float = 0.82,
+    protected=None,
+) -> np.ndarray:
+    """Blend only the one-pixel contour between different land-cover classes.
+
+    Material identity remains untouched for hit-testing and tooltips.  The
+    display image gets a small Gaussian-like transition that rounds raster
+    corners and tones down narrow projected streaks without softening the
+    terrain, orthophotos, or the sky-facing silhouette.
+    """
+
+    image = np.asarray(rgba, dtype=np.uint8)
+    category = (
+        np.asarray(covered, dtype=bool)
+        & np.asarray(materials.valid, dtype=bool)
+        & np.asarray(materials.categorical, dtype=bool)
+    )
+    protected_mask = (
+        np.zeros(category.shape, dtype=bool)
+        if protected is None
+        else np.asarray(protected, dtype=bool)
+    )
+    if protected_mask.shape != category.shape:
+        raise ValueError("Protected edge mask must match material geometry")
+    amount = max(0.0, min(1.0, float(strength)))
+    if (
+        image.ndim != 3
+        or image.shape[2] != 4
+        or image.shape[:2] != category.shape
+        or amount <= 0.0
+        or np.count_nonzero(category) < 2
+    ):
+        return image.copy()
+
+    classes = np.asarray(materials.class_ids, dtype=np.int64)
+    sources = np.asarray(materials.source_indices, dtype=np.int16)
+    boundary = np.zeros(category.shape, dtype=bool)
+
+    for dy, dx in (
+        (-1, -1),
+        (-1, 0),
+        (-1, 1),
+        (0, -1),
+        (0, 1),
+        (1, -1),
+        (1, 0),
+        (1, 1),
+    ):
+        neighbour_category = np.roll(category, (dy, dx), axis=(0, 1))
+        if dy < 0:
+            neighbour_category[dy:, :] = False
+        elif dy > 0:
+            neighbour_category[:dy, :] = False
+        if dx < 0:
+            neighbour_category[:, dx:] = False
+        elif dx > 0:
+            neighbour_category[:, :dx] = False
+
+        overlap = category & neighbour_category
+        if not np.any(overlap):
+            continue
+        neighbour_classes = np.roll(classes, (dy, dx), axis=(0, 1))
+        neighbour_sources = np.roll(sources, (dy, dx), axis=(0, 1))
+        boundary |= overlap & (
+            (classes != neighbour_classes) | (sources != neighbour_sources)
+        )
+
+    if not np.any(boundary):
+        return image.copy()
+    boundary &= ~protected_mask
+    if not np.any(boundary):
+        return image.copy()
+    boundary_rows, boundary_columns = np.nonzero(boundary)
+    row_slice = slice(
+        max(0, int(boundary_rows.min()) - 1),
+        min(image.shape[0], int(boundary_rows.max()) + 2),
+    )
+    column_slice = slice(
+        max(0, int(boundary_columns.min()) - 1),
+        min(image.shape[1], int(boundary_columns.max()) + 2),
+    )
+    category_region = category[row_slice, column_slice]
+    boundary_region = boundary[row_slice, column_slice]
+    rgb = image[row_slice, column_slice, :3].astype(np.float32)
+    kernel = np.asarray(
+        ((1.0, 2.0, 1.0), (2.0, 4.0, 2.0), (1.0, 2.0, 1.0)),
+        dtype=np.float32,
+    )
+    accumulated = convolve(
+        rgb * category_region[..., None],
+        kernel[..., None],
+        mode="constant",
+        cval=0.0,
+    )
+    weights = convolve(
+        category_region.astype(np.float32),
+        kernel,
+        mode="constant",
+        cval=0.0,
+    )
+    blurred = np.divide(
+        accumulated,
+        np.maximum(weights[..., None], 1.0),
+        out=rgb.copy(),
+        where=weights[..., None] > 0.0,
+    )
+    result = image.copy()
+    local_delta = np.max(np.abs(rgb - blurred), axis=-1) / 255.0
+    contrast_weight = np.clip(
+        (local_delta - 0.06) / 0.28, 0.0, 1.0
+    )
+    contrast_weight = contrast_weight * contrast_weight * (
+        3.0 - 2.0 * contrast_weight
+    )
+    adaptive_amount = amount * (0.52 + 0.48 * contrast_weight)
+    result_rgb = (
+        rgb[boundary_region]
+        * (1.0 - adaptive_amount[boundary_region, None])
+        + blurred[boundary_region]
+        * adaptive_amount[boundary_region, None]
+    )
+    result_region = result[row_slice, column_slice, :3]
+    result_region[boundary_region] = np.clip(
+        np.rint(result_rgb), 0.0, 255.0
+    ).astype(np.uint8)
+    return result
+
+
+def _regularize_categorical_regions(
+    materials: TerrainMaterialSamples,
+    covered,
+    *,
+    radius_px: float = 8.0,
+    protected=None,
+) -> TerrainMaterialSamples:
+    """Round categorical regions and absorb narrow screen-space protrusions.
+
+    A Gaussian support field is built for each visible ``(source, class)``
+    identity.  Selecting the strongest local field reconstructs the discrete
+    regions with rounded corners while preserving broad areas and exact class
+    identities.  Continuous imagery and pixels outside terrain coverage are
+    never modified.
+    """
+
+    valid = np.asarray(materials.valid, dtype=bool)
+    categorical = np.asarray(materials.categorical, dtype=bool)
+    category = np.asarray(covered, dtype=bool) & valid & categorical
+    protected_mask = (
+        np.zeros(category.shape, dtype=bool)
+        if protected is None
+        else np.asarray(protected, dtype=bool)
+    )
+    if protected_mask.shape != category.shape:
+        raise ValueError("Protected category mask must match material geometry")
+    protected_mask &= category
+    radius = max(0.0, float(radius_px))
+    if radius < 0.5 or np.count_nonzero(category) < 2:
+        return materials
+
+    classes = np.asarray(materials.class_ids, dtype=np.int64)
+    sources = np.asarray(materials.source_indices, dtype=np.int16)
+    category_sources = sources[category]
+    category_classes = classes[category]
+    identity_codes = (
+        (category_sources.astype(np.int64) + 32_768) << 32
+    ) | (category_classes & np.int64(0xFFFFFFFF))
+    unique_codes, first_identity_indices = np.unique(
+        identity_codes, return_index=True
+    )
+    identity_sources = category_sources[first_identity_indices]
+    identity_classes = category_classes[first_identity_indices]
+    if len(identity_sources) < 2:
+        return materials
+
+    category_rows, category_columns = np.nonzero(category)
+    padding = max(1, int(math.ceil(radius * 2.5)))
+    row_slice = slice(
+        max(0, int(category_rows.min()) - padding),
+        min(category.shape[0], int(category_rows.max()) + padding + 1),
+    )
+    column_slice = slice(
+        max(0, int(category_columns.min()) - padding),
+        min(category.shape[1], int(category_columns.max()) + padding + 1),
+    )
+    region_category = category[row_slice, column_slice]
+    region_classes = classes[row_slice, column_slice]
+    region_sources = sources[row_slice, column_slice]
+    region_protected = protected_mask[row_slice, column_slice]
+    region_rgba = np.asarray(
+        materials.base_rgba[row_slice, column_slice], dtype=np.uint8
+    )
+
+    best_score = np.full(region_category.shape, -1.0, dtype=np.float32)
+    second_score = np.full(region_category.shape, -1.0, dtype=np.float32)
+    selected_identity = np.full(
+        region_category.shape, -1, dtype=np.int16
+    )
+    second_identity = np.full(
+        region_category.shape, -1, dtype=np.int16
+    )
+    identity_rgba = np.empty(
+        (len(identity_sources), 4), dtype=np.uint8
+    )
+    for identity_index, (source_index, class_id) in enumerate(
+        zip(identity_sources, identity_classes)
+    ):
+        identity_mask = (
+            region_category
+            & (region_sources == source_index)
+            & (region_classes == class_id)
+        )
+        first = np.flatnonzero(identity_mask)
+        if first.size == 0:
+            continue
+        identity_rgba[identity_index] = region_rgba.reshape(-1, 4)[
+            int(first[0])
+        ]
+        score = gaussian_filter(
+            identity_mask.astype(np.float32),
+            sigma=radius,
+            mode="constant",
+            cval=0.0,
+            truncate=2.5,
+        )
+        stronger = score > best_score
+        second_score[stronger] = best_score[stronger]
+        second_identity[stronger] = selected_identity[stronger]
+        best_score[stronger] = score[stronger]
+        selected_identity[stronger] = int(identity_index)
+        runner_up = (~stronger) & (score > second_score)
+        second_score[runner_up] = score[runner_up]
+        second_identity[runner_up] = int(identity_index)
+
+    # Restore the exact source identity on protected pixels before component
+    # cleanup.  Thus narrow buildings, waterways, snow and wetlands survive
+    # even when their surrounding regions are rounded.
+    region_codes = (
+        (region_sources.astype(np.int64) + 32_768) << 32
+    ) | (region_classes & np.int64(0xFFFFFFFF))
+    original_identity = np.searchsorted(unique_codes, region_codes)
+    protected_in_range = (
+        region_protected
+        & (original_identity >= 0)
+        & (original_identity < len(unique_codes))
+    )
+    protected_matches = np.zeros(region_category.shape, dtype=bool)
+    protected_matches[protected_in_range] = (
+        unique_codes[original_identity[protected_in_range]]
+        == region_codes[protected_in_range]
+    )
+    selected_identity[protected_matches] = original_identity[
+        protected_matches
+    ].astype(np.int16)
+
+    protected_identities = np.zeros(len(identity_sources), dtype=bool)
+    if np.any(protected_matches):
+        protected_identities[
+            np.unique(selected_identity[protected_matches])
+        ] = True
+
+    minimum_region_area = max(
+        4, int(round(math.pi * radius * radius * 0.5))
+    )
+    connectivity = np.ones((3, 3), dtype=np.uint8)
+    for identity_index in range(len(identity_sources)):
+        if protected_identities[identity_index]:
+            continue
+        component_map, component_count = connected_components(
+            region_category & (selected_identity == identity_index),
+            structure=connectivity,
+        )
+        if component_count == 0:
+            continue
+        component_sizes = np.bincount(component_map.reshape(-1))
+        small_component = component_sizes < minimum_region_area
+        small_component[0] = False
+        replace = (
+            small_component[component_map]
+            & (second_identity >= 0)
+            & ~region_protected
+        )
+        selected_identity[replace] = second_identity[replace]
+
+    selected = selected_identity >= 0
+    selected_sources = np.full(region_category.shape, -1, dtype=np.int16)
+    selected_classes = np.full(region_category.shape, -1, dtype=np.int64)
+    selected_sources[selected] = identity_sources[
+        selected_identity[selected]
+    ]
+    selected_classes[selected] = identity_classes[
+        selected_identity[selected]
+    ]
+    changed = (
+        region_category
+        & selected
+        & (
+            (region_sources != selected_sources)
+            | (region_classes != selected_classes)
+        )
+    )
+    if not np.any(changed):
+        return materials
+
+    result_rgba = np.asarray(materials.base_rgba, dtype=np.uint8).copy()
+    result_classes = classes.copy()
+    result_sources = sources.copy()
+    rgba_region = result_rgba[row_slice, column_slice]
+    class_region = result_classes[row_slice, column_slice]
+    source_region = result_sources[row_slice, column_slice]
+    rgba_region[changed] = identity_rgba[selected_identity[changed]]
+    class_region[changed] = selected_classes[changed]
+    source_region[changed] = selected_sources[changed]
+    return TerrainMaterialSamples(
+        result_rgba,
+        valid.copy(),
+        result_classes,
+        categorical.copy(),
+        result_sources,
+    )
 
 
 def _local_extrema_mask(values: np.ndarray) -> np.ndarray:
@@ -1032,6 +2199,834 @@ def _sample_cache_value(cache, name: str, default=None):
     return cache.get(name, default) if isinstance(cache, dict) else getattr(cache, name, default)
 
 
+def _vibrant_categorical_palette(
+    materials: TerrainMaterialSamples, cache
+) -> TerrainMaterialSamples:
+    """Replace known official category colours with the Vibrant palette."""
+
+    legends = tuple(
+        _sample_cache_value(cache, "source_legend_ids", ()) or ()
+    )
+    categorical = (
+        np.asarray(materials.valid, dtype=bool)
+        & np.asarray(materials.categorical, dtype=bool)
+    )
+    if not legends or not np.any(categorical):
+        return materials
+
+    result_rgba = np.asarray(materials.base_rgba, dtype=np.uint8).copy()
+    classes = np.asarray(materials.class_ids, dtype=np.int64)
+    sources = np.asarray(materials.source_indices, dtype=np.int16)
+    changed = False
+    for source_index in np.unique(sources[categorical]):
+        index = int(source_index)
+        if not (0 <= index < len(legends)):
+            continue
+        source_mask = categorical & (sources == index)
+        for class_id in np.unique(classes[source_mask]):
+            color = vibrant_land_cover_rgba(
+                str(legends[index] or ""), int(class_id)
+            )
+            if color is None:
+                continue
+            result_rgba[
+                source_mask & (classes == int(class_id))
+            ] = np.asarray(color, dtype=np.uint8)
+            changed = True
+    if not changed:
+        return materials
+    return TerrainMaterialSamples(
+        result_rgba,
+        np.asarray(materials.valid, dtype=bool).copy(),
+        classes.copy(),
+        np.asarray(materials.categorical, dtype=bool).copy(),
+        sources.copy(),
+    )
+
+
+def _protected_categorical_regions(
+    materials: TerrainMaterialSamples, cache
+) -> np.ndarray:
+    """Return original pixels whose semantic identity must stay intact."""
+
+    legends = tuple(
+        _sample_cache_value(cache, "source_legend_ids", ()) or ()
+    )
+    protected = np.zeros(np.asarray(materials.valid).shape, dtype=bool)
+    categorical = (
+        np.asarray(materials.valid, dtype=bool)
+        & np.asarray(materials.categorical, dtype=bool)
+    )
+    if not legends or not np.any(categorical):
+        return protected
+    classes = np.asarray(materials.class_ids, dtype=np.int64)
+    sources = np.asarray(materials.source_indices, dtype=np.int16)
+    for source_index in np.unique(sources[categorical]):
+        index = int(source_index)
+        if not (0 <= index < len(legends)):
+            continue
+        source_mask = categorical & (sources == index)
+        for class_id in np.unique(classes[source_mask]):
+            if preserve_small_region(
+                str(legends[index] or ""), int(class_id)
+            ):
+                protected |= source_mask & (classes == int(class_id))
+    return protected
+
+
+def _apply_categorical_territorial_variation(
+    rgba,
+    materials: TerrainMaterialSamples,
+    world_x,
+    world_y,
+    valid_mask,
+    *,
+    strength: float = 1.0,
+    luminance_variation: float = 0.045,
+    hue_variation: float = 0.018,
+    midscale_variation: float = 0.0,
+    microscale_variation: float = 0.0,
+    altitude_influence: float = 0.0,
+    slope_influence: float = 0.0,
+    snow_rock_blend: float = 0.0,
+    water_shore_variation: float = 0.0,
+    light_intensity=None,
+    solar_exposure=None,
+    elevation_m=None,
+    normal_x=None,
+    normal_y=None,
+    normal_z=None,
+    source_legend_ids=(),
+    render_scale: float = 1.0,
+    include_solar_response: bool = True,
+) -> np.ndarray:
+    """Build stable multiscale materials from class identity and DEM geometry."""
+
+    image = np.asarray(rgba, dtype=np.uint8)
+    valid = np.asarray(valid_mask, dtype=bool)
+    categorical = (
+        valid
+        & np.asarray(materials.valid, dtype=bool)
+        & np.asarray(materials.categorical, dtype=bool)
+    )
+    amount = max(0.0, min(1.0, float(strength)))
+    luminance_amount = max(0.0, min(0.12, float(luminance_variation)))
+    hue_amount = max(0.0, min(0.08, float(hue_variation)))
+    midscale_amount = max(0.0, min(0.08, float(midscale_variation)))
+    microscale_amount = max(0.0, min(0.03, float(microscale_variation)))
+    altitude_amount = max(0.0, min(0.2, float(altitude_influence)))
+    slope_amount = max(0.0, min(0.2, float(slope_influence)))
+    snow_amount = max(0.0, min(0.75, float(snow_rock_blend)))
+    water_amount = max(0.0, min(0.3, float(water_shore_variation)))
+    if (
+        image.shape[:2] != categorical.shape
+        or image.shape[-1:] != (4,)
+        or amount <= 0.0
+        or not np.any(categorical)
+    ):
+        return image.copy()
+
+    east = np.broadcast_to(
+        np.asarray(world_x, dtype=np.float64), categorical.shape
+    )
+    north = np.broadcast_to(
+        np.asarray(world_y, dtype=np.float64), categorical.shape
+    )
+    phase = (
+        np.asarray(materials.class_ids, dtype=np.float64) % 37.0
+    ) * 0.31
+    territorial = (
+        0.5
+        + 0.25 * np.sin((east + north * 0.37) / 3_800.0 + phase)
+        + 0.25 * np.cos((north - east * 0.21) / 9_100.0 - phase * 0.6)
+    )
+    territorial = np.clip(territorial, 0.0, 1.0)
+    luminance_wave = territorial * 2.0 - 1.0
+    chromatic_wave = (
+        0.58
+        * np.sin((east * 0.42 - north) / 6_700.0 - phase * 0.7)
+        + 0.42
+        * np.cos((east + north * 0.63) / 12_400.0 + phase * 0.4)
+    )
+    chromatic_wave = np.clip(chromatic_wave, -1.0, 1.0)
+    if midscale_amount > 0.0:
+        medium_wave = (
+            0.55
+            * np.sin((east * 0.76 + north * 0.31) / 620.0 + phase * 1.7)
+            + 0.45
+            * np.cos((north - east * 0.44) / 1_350.0 - phase * 1.1)
+        )
+        medium_wave = np.clip(medium_wave, -1.0, 1.0)
+    else:
+        medium_wave = np.zeros(categorical.shape, dtype=np.float32)
+    if microscale_amount > 0.0:
+        micro_wave = (
+            0.57
+            * np.sin((east - north * 0.58) / 145.0 + phase * 2.3)
+            + 0.43
+            * np.cos((north + east * 0.35) / 280.0 - phase * 1.9)
+        )
+        micro_wave = np.clip(micro_wave, -1.0, 1.0)
+    else:
+        micro_wave = np.zeros(categorical.shape, dtype=np.float32)
+    material_wave = (
+        luminance_amount * luminance_wave
+        + midscale_amount * medium_wave
+        + microscale_amount * micro_wave
+    )
+    factor = 1.0 + amount * material_wave
+
+    result = image.copy()
+    rgb = np.asarray(image[..., :3], dtype=np.float32) / 255.0
+    varied = rgb * factor[..., None]
+    channel_max = np.max(rgb, axis=-1)
+    channel_min = np.min(rgb, axis=-1)
+    saturation = np.divide(
+        channel_max - channel_min,
+        np.maximum(channel_max, 1e-6),
+        out=np.zeros(categorical.shape, dtype=np.float32),
+        where=channel_max > 1e-6,
+    )
+    dominant = np.argmax(rgb, axis=-1)
+    green = (dominant == 1) & (saturation > 0.16)
+    blue = (dominant == 2) & (saturation > 0.16)
+    warm = (
+        (dominant == 0)
+        & (rgb[..., 1] > rgb[..., 2] * 1.06)
+        & (saturation > 0.14)
+    )
+    hue_shift = amount * hue_amount * chromatic_wave
+    # Green territories drift between fresh/cool and dry/warm; water varies
+    # between deeper blue and atmospheric blue-green; earth gains a restrained
+    # ochre/sienna oscillation.
+    varied[..., 0] += hue_shift * 0.52 * green
+    varied[..., 1] += hue_shift * 0.06 * green
+    varied[..., 2] -= hue_shift * 0.28 * green
+    varied[..., 0] -= hue_shift * 0.22 * blue
+    varied[..., 1] += hue_shift * 0.30 * blue
+    varied[..., 2] += hue_shift * 0.20 * blue
+    varied[..., 0] += hue_shift * 0.30 * warm
+    varied[..., 1] += hue_shift * 0.16 * warm
+    varied[..., 2] -= hue_shift * 0.24 * warm
+
+    if include_solar_response and solar_exposure is not None:
+        exposure = np.clip(
+            np.broadcast_to(
+                np.asarray(solar_exposure, dtype=np.float32),
+                categorical.shape,
+            ),
+            0.0,
+            1.0,
+        ) * amount
+    elif include_solar_response and light_intensity is not None:
+        light = np.broadcast_to(
+            np.asarray(light_intensity, dtype=np.float32),
+            categorical.shape,
+        )
+        exposure = np.clip((light - 1.02) / 0.27, 0.0, 1.0) * amount
+        luminance = np.sum(
+            varied
+            * np.asarray((0.2126, 0.7152, 0.0722), dtype=np.float32),
+            axis=-1,
+        )
+        varied = luminance[..., None] + (
+            varied - luminance[..., None]
+        ) * (1.0 - 0.025 * exposure[..., None])
+        varied *= 1.0 + 0.008 * exposure[..., None]
+    else:
+        exposure = np.zeros(categorical.shape, dtype=np.float32)
+
+    physical_detail = (
+        midscale_amount
+        + microscale_amount
+        + altitude_amount
+        + slope_amount
+        + snow_amount
+        + water_amount
+    )
+    if physical_detail <= 0.0:
+        result_rgb = result[..., :3]
+        result_rgb[categorical] = np.clip(
+            np.rint(varied[categorical] * 255.0),
+            0.0,
+            255.0,
+        ).astype(np.uint8)
+        return result
+
+    classes = np.asarray(materials.class_ids, dtype=np.int64)
+    sources = np.asarray(materials.source_indices, dtype=np.int16)
+    legends = tuple(source_legend_ids or ())
+    if legends:
+        s2glc = np.zeros(categorical.shape, dtype=bool)
+        for source_index, legend_id in enumerate(legends):
+            normalized = (
+                str(legend_id or "").strip().lower().replace("-", "_")
+            )
+            if normalized in {
+                "s2glc",
+                "s2glc_2017",
+                "s2glc_europe_2017",
+            }:
+                s2glc |= categorical & (sources == source_index)
+    else:
+        s2glc = categorical.copy()
+
+    def _geometry_channel(value, default):
+        if value is None:
+            return np.full(categorical.shape, default, dtype=np.float32)
+        return np.broadcast_to(
+            np.asarray(value, dtype=np.float32), categorical.shape
+        )
+
+    elevation = _geometry_channel(elevation_m, 0.0)
+    nx = _geometry_channel(normal_x, 0.0)
+    ny = _geometry_channel(normal_y, 0.0)
+    nz = np.clip(_geometry_channel(normal_z, 1.0), -1.0, 1.0)
+    horizontal_normal = np.hypot(nx, ny)
+    normal_length = np.maximum(
+        np.sqrt(horizontal_normal * horizontal_normal + nz * nz), 1e-5
+    )
+    steepness = np.clip(horizontal_normal / normal_length, 0.0, 1.0)
+    northness = np.divide(
+        ny,
+        np.maximum(horizontal_normal, 1e-5),
+        out=np.zeros(categorical.shape, dtype=np.float32),
+        where=horizontal_normal > 1e-5,
+    )
+    altitude = np.full(categorical.shape, 0.5, dtype=np.float32)
+    elevation_valid = categorical & np.isfinite(elevation)
+    if np.count_nonzero(elevation_valid) >= 2:
+        low, high = np.nanpercentile(
+            elevation[elevation_valid], (10.0, 90.0)
+        )
+        if float(high) > float(low) + 1e-3:
+            altitude = np.clip(
+                (elevation - float(low)) / float(high - low), 0.0, 1.0
+            ).astype(np.float32)
+
+    forest = s2glc & np.isin(classes, (82, 83))
+    conifers = s2glc & (classes == 83)
+    herbaceous = s2glc & (classes == 102)
+    rock = s2glc & (classes == 121)
+    snow = s2glc & (classes == 123)
+    water = s2glc & (classes == 162)
+
+    # Forest canopies gain broad density changes, cool shaded north faces and
+    # subtle sunlit clearings without introducing pixel-scale grain.
+    forest_density = (
+        midscale_amount * medium_wave
+        + microscale_amount * micro_wave
+    ) * amount
+    forest_cold = (
+        np.clip(northness, 0.0, 1.0) * steepness * slope_amount * amount
+    )
+    varied *= 1.0 + (forest_density * forest)[..., None]
+    varied[..., 0] -= 0.16 * forest_cold * forest
+    varied[..., 1] -= 0.06 * forest_cold * forest
+    varied[..., 2] += 0.10 * forest_cold * forest
+    if include_solar_response:
+        varied *= 1.0 - (
+            0.8
+            * (midscale_amount + microscale_amount)
+            * conifers
+            * (0.45 + 0.55 * (1.0 - exposure))
+        )[..., None]
+
+    # Grass alternates between fresh, sheltered greens and dry sun-facing
+    # yellow-greens, using DEM orientation rather than arbitrary patches.
+    if include_solar_response:
+        grass_dry = (
+            exposure * (0.45 + 0.55 * steepness) * slope_amount * amount
+        )
+        grass_fresh = (
+            np.clip(northness, 0.0, 1.0)
+            * (1.0 - exposure)
+            * slope_amount
+            * amount
+        )
+        varied[..., 0] += 0.28 * grass_dry * herbaceous
+        varied[..., 1] += 0.08 * grass_dry * herbaceous
+        varied[..., 2] -= 0.18 * grass_dry * herbaceous
+        varied[..., 0] -= 0.10 * grass_fresh * herbaceous
+        varied[..., 1] += 0.20 * grass_fresh * herbaceous
+        varied[..., 2] += 0.06 * grass_fresh * herbaceous
+
+    # Exposed high rock becomes lighter and slightly less chromatic while
+    # retaining warm mineral variation in shade.
+    mineral_exposure = (
+        0.55 * altitude + 0.45 * steepness
+    ) * altitude_amount * amount
+    varied *= 1.0 + (0.65 * mineral_exposure * rock)[..., None]
+    mineral_luminance = np.sum(
+        varied
+        * np.asarray((0.2126, 0.7152, 0.0722), dtype=np.float32),
+        axis=-1,
+    )
+    rock_desaturation = (0.45 * mineral_exposure * rock)[..., None]
+    varied = (
+        varied * (1.0 - rock_desaturation)
+        + mineral_luminance[..., None] * rock_desaturation
+    )
+
+    # Steep, low or strongly insolated snow reveals mineral substrate.  The
+    # narrow support transition dirties its visual edge without changing the
+    # categorical snow identity used by LOD and hit-testing.
+    if snow_amount > 0.0 and np.any(snow):
+        snow_support = gaussian_filter(
+            snow.astype(np.float32),
+            sigma=max(0.6, 1.15 * float(render_scale)),
+            mode="nearest",
+        )
+        snow_edge = snow * np.clip(1.0 - snow_support, 0.0, 1.0)
+        steep_snow = np.clip((steepness - 0.42) / 0.48, 0.0, 1.0)
+        snow_melt = (
+            0.46 * steep_snow
+            + 0.24 * (1.0 - altitude)
+            + (
+                0.18 * exposure
+                if include_solar_response
+                else 0.0
+            )
+            + 0.12 * snow_edge
+        )
+        snow_mix = np.clip(
+            snow_amount * amount * snow_melt * snow, 0.0, 0.72
+        )[..., None]
+        mineral = np.asarray((0.78, 0.745, 0.63), dtype=np.float32)
+        varied = varied * (1.0 - snow_mix) + mineral * snow_mix
+        cold_snow = (
+            snow
+            * np.clip(northness, 0.0, 1.0)
+            * steepness
+            * 0.018
+            * amount
+        )
+        varied[..., 0] -= cold_snow
+        varied[..., 2] += cold_snow
+
+    # Water receives a shallow bright shoreline, a darker visual centre and
+    # a small solar/sky response.  Category geometry remains unchanged.
+    if water_amount > 0.0 and np.any(water):
+        water_depth = distance_transform_edt(water)
+        shoreline = np.exp(
+            -np.maximum(water_depth - 1.0, 0.0)
+            / max(1.0, 3.5 * float(render_scale))
+        ).astype(np.float32)
+        centre = np.clip(1.0 - shoreline, 0.0, 1.0)
+        varied *= 1.0 - (
+            water * centre * water_amount * 0.72
+        )[..., None]
+        sky_water = np.asarray((0.48, 0.72, 0.88), dtype=np.float32)
+        shore_mix = (
+            water * shoreline * water_amount * 0.62
+        )[..., None]
+        varied = varied * (1.0 - shore_mix) + sky_water * shore_mix
+        if include_solar_response:
+            varied += (
+                water * exposure * water_amount * 0.16
+            )[..., None]
+
+    result_rgb = result[..., :3]
+    result_rgb[categorical] = np.clip(
+        np.rint(varied[categorical] * 255.0),
+        0.0,
+        255.0,
+    ).astype(np.uint8)
+    return result
+
+
+def _apply_categorical_solar_response(
+    rgba,
+    materials: TerrainMaterialSamples,
+    solar_exposure,
+    valid_mask,
+    *,
+    strength: float,
+    midscale_variation: float,
+    microscale_variation: float,
+    slope_influence: float,
+    snow_rock_blend: float,
+    water_shore_variation: float,
+    normal_x=None,
+    normal_y=None,
+    normal_z=None,
+    source_legend_ids=(),
+) -> np.ndarray:
+    """Apply only time-dependent material responses to cached base colours."""
+
+    image = np.asarray(rgba, dtype=np.uint8)
+    valid = np.asarray(valid_mask, dtype=bool)
+    categorical = (
+        valid
+        & np.asarray(materials.valid, dtype=bool)
+        & np.asarray(materials.categorical, dtype=bool)
+    )
+    if (
+        image.shape[:2] != categorical.shape
+        or image.shape[-1:] != (4,)
+        or not np.any(categorical)
+    ):
+        return image.copy()
+
+    amount = max(0.0, min(1.0, float(strength)))
+    midscale_amount = max(
+        0.0, min(0.08, float(midscale_variation))
+    )
+    microscale_amount = max(
+        0.0, min(0.03, float(microscale_variation))
+    )
+    slope_amount = max(0.0, min(0.2, float(slope_influence)))
+    snow_amount = max(0.0, min(0.75, float(snow_rock_blend)))
+    water_amount = max(
+        0.0, min(0.3, float(water_shore_variation))
+    )
+    exposure = np.clip(
+        np.broadcast_to(
+            np.asarray(solar_exposure, dtype=np.float32),
+            categorical.shape,
+        ),
+        0.0,
+        1.0,
+    ) * amount
+
+    classes = np.asarray(materials.class_ids, dtype=np.int64)
+    sources = np.asarray(materials.source_indices, dtype=np.int16)
+    legends = tuple(source_legend_ids or ())
+    if legends:
+        s2glc = np.zeros(categorical.shape, dtype=bool)
+        for source_index, legend_id in enumerate(legends):
+            normalized = (
+                str(legend_id or "").strip().lower().replace("-", "_")
+            )
+            if normalized in {
+                "s2glc",
+                "s2glc_2017",
+                "s2glc_europe_2017",
+            }:
+                s2glc |= categorical & (sources == source_index)
+    else:
+        s2glc = categorical.copy()
+
+    def _normal_channel(value, default):
+        if value is None:
+            return np.full(categorical.shape, default, dtype=np.float32)
+        return np.broadcast_to(
+            np.asarray(value, dtype=np.float32), categorical.shape
+        )
+
+    nx = _normal_channel(normal_x, 0.0)
+    ny = _normal_channel(normal_y, 0.0)
+    nz = np.clip(_normal_channel(normal_z, 1.0), -1.0, 1.0)
+    horizontal = np.hypot(nx, ny)
+    normal_length = np.maximum(
+        np.sqrt(horizontal * horizontal + nz * nz), 1e-5
+    )
+    steepness = np.clip(horizontal / normal_length, 0.0, 1.0)
+    northness = np.divide(
+        ny,
+        np.maximum(horizontal, 1e-5),
+        out=np.zeros(categorical.shape, dtype=np.float32),
+        where=horizontal > 1e-5,
+    )
+
+    conifers = s2glc & (classes == 83)
+    herbaceous = s2glc & (classes == 102)
+    snow = s2glc & (classes == 123)
+    water = s2glc & (classes == 162)
+    result = image.copy()
+    varied = np.asarray(image[..., :3], dtype=np.float32) / 255.0
+
+    canopy_response = (
+        0.8
+        * (midscale_amount + microscale_amount)
+        * conifers
+        * (0.45 + 0.55 * (1.0 - exposure))
+    )
+    varied *= 1.0 - canopy_response[..., None]
+
+    grass_dry = (
+        exposure * (0.45 + 0.55 * steepness) * slope_amount * amount
+    )
+    grass_fresh = (
+        np.clip(northness, 0.0, 1.0)
+        * (1.0 - exposure)
+        * slope_amount
+        * amount
+    )
+    varied[..., 0] += 0.28 * grass_dry * herbaceous
+    varied[..., 1] += 0.08 * grass_dry * herbaceous
+    varied[..., 2] -= 0.18 * grass_dry * herbaceous
+    varied[..., 0] -= 0.10 * grass_fresh * herbaceous
+    varied[..., 1] += 0.20 * grass_fresh * herbaceous
+    varied[..., 2] += 0.06 * grass_fresh * herbaceous
+
+    if snow_amount > 0.0 and np.any(snow):
+        solar_snow_mix = np.clip(
+            snow_amount * amount * 0.18 * exposure * snow,
+            0.0,
+            0.24,
+        )[..., None]
+        mineral = np.asarray((0.78, 0.745, 0.63), dtype=np.float32)
+        varied = (
+            varied * (1.0 - solar_snow_mix)
+            + mineral * solar_snow_mix
+        )
+    if water_amount > 0.0 and np.any(water):
+        varied += (
+            water * exposure * water_amount * 0.16
+        )[..., None]
+
+    result_rgb = result[..., :3]
+    result_rgb[categorical] = np.clip(
+        np.rint(varied[categorical] * 255.0),
+        0.0,
+        255.0,
+    ).astype(np.uint8)
+    return result
+
+
+def _vibrant_relief_occlusion(
+    elevation_m,
+    normal_z,
+    valid_mask,
+    *,
+    radius_px: float = 5.0,
+    relief_scale_m: float = 42.0,
+) -> np.ndarray:
+    """Approximate broad DEM occlusion in valleys and terrain folds."""
+
+    valid = np.asarray(valid_mask, dtype=bool)
+    elevation = np.broadcast_to(
+        np.asarray(elevation_m, dtype=np.float32), valid.shape
+    )
+    nz = np.clip(
+        np.broadcast_to(np.asarray(normal_z, dtype=np.float32), valid.shape),
+        0.0,
+        1.0,
+    )
+    radius = max(0.0, float(radius_px))
+    if radius < 0.5 or not np.any(valid):
+        return np.zeros(valid.shape, dtype=np.float32)
+
+    weights = gaussian_filter(
+        valid.astype(np.float32),
+        sigma=radius,
+        mode="constant",
+        cval=0.0,
+        truncate=2.5,
+    )
+    local_mean = gaussian_filter(
+        np.where(valid, elevation, 0.0),
+        sigma=radius,
+        mode="constant",
+        cval=0.0,
+        truncate=2.5,
+    )
+    local_mean = np.divide(
+        local_mean,
+        np.maximum(weights, 1e-4),
+        out=elevation.copy(),
+        where=weights > 1e-4,
+    )
+    depression = np.maximum(local_mean - elevation, 0.0)
+    relief_scale = max(1.0, float(relief_scale_m))
+    occlusion = np.clip(depression / relief_scale, 0.0, 1.0)
+    occlusion = occlusion * occlusion * (3.0 - 2.0 * occlusion)
+    fold_weight = 0.42 + 0.58 * np.sqrt(np.clip(1.0 - nz, 0.0, 1.0))
+    return np.where(valid, occlusion * fold_weight, 0.0).astype(np.float32)
+
+
+def _apply_vibrant_ambient_occlusion(
+    rgba,
+    occlusion,
+    valid_mask,
+    *,
+    strength: float = 0.12,
+) -> np.ndarray:
+    """Apply subtle colour-preserving occlusion to Vibrant terrain only."""
+
+    image = np.asarray(rgba, dtype=np.uint8)
+    valid = np.asarray(valid_mask, dtype=bool)
+    ao = np.clip(
+        np.broadcast_to(np.asarray(occlusion, dtype=np.float32), valid.shape),
+        0.0,
+        1.0,
+    )
+    amount = max(0.0, min(0.4, float(strength)))
+    if (
+        image.shape[:2] != valid.shape
+        or image.shape[-1:] != (4,)
+        or amount <= 0.0
+        or not np.any(valid & (ao > 0.0))
+    ):
+        return image.copy()
+
+    result = image.copy()
+    rgb = np.asarray(image[..., :3], dtype=np.float32) / 255.0
+    shaded = rgb * (1.0 - amount * ao[..., None])
+    result[..., :3][valid] = np.clip(
+        np.rint(shaded[valid] * 255.0), 0.0, 255.0
+    ).astype(np.uint8)
+    return result
+
+
+def _vibrant_valley_haze(
+    occlusion,
+    distance_m,
+    valid_mask,
+    *,
+    maximum_distance_m: float,
+    strength: float = 0.10,
+) -> np.ndarray:
+    """Return a restrained second atmospheric layer for distant hollows."""
+
+    valid = np.asarray(valid_mask, dtype=bool)
+    ao = np.clip(
+        np.broadcast_to(np.asarray(occlusion, dtype=np.float32), valid.shape),
+        0.0,
+        1.0,
+    )
+    distance = np.maximum(
+        np.broadcast_to(
+            np.asarray(distance_m, dtype=np.float32), valid.shape
+        ),
+        0.0,
+    )
+    depth = np.sqrt(
+        np.clip(distance / max(1.0, float(maximum_distance_m)), 0.0, 1.0)
+    )
+    amount = max(0.0, min(0.4, float(strength)))
+    return np.where(
+        valid,
+        np.clip(ao * (0.25 + 0.75 * depth) * amount, 0.0, 1.0),
+        0.0,
+    ).astype(np.float32)
+
+
+def _apply_vibrant_bloom(
+    rgba,
+    valid_mask,
+    settings,
+    *,
+    render_scale: float = 1.0,
+    light_intensity=None,
+    distance_m=None,
+    maximum_distance_m: float | None = None,
+    daylight_factor: float = 1.0,
+    moonlight_factor: float = 0.0,
+) -> np.ndarray:
+    """Add a selective, low-opacity additive glow to surface highlights."""
+
+    image = np.asarray(rgba, dtype=np.uint8)
+    valid = np.asarray(valid_mask, dtype=bool)
+    if image.shape[:2] != valid.shape or image.shape[-1:] != (4,):
+        raise ValueError("Vibrant bloom mask must match the RGBA image")
+    strength = (
+        float(settings.vibrant_bloom_strength)
+        * float(settings.vibrant_intensity)
+        * (
+            max(0.0, min(1.0, float(daylight_factor)))
+            + float(settings.vibrant_moon_bloom_scale)
+            * max(0.0, min(1.0, float(moonlight_factor)))
+        )
+    )
+    radius = float(settings.vibrant_bloom_radius_px) * max(
+        0.1, float(render_scale)
+    )
+    if strength <= 0.0 or radius < 0.25 or not np.any(valid):
+        return image.copy()
+
+    rgb = np.asarray(image[..., :3], dtype=np.float32) / 255.0
+    luminance = np.sum(
+        rgb
+        * np.asarray((0.2126, 0.7152, 0.0722), dtype=np.float32),
+        axis=-1,
+    )
+    base_threshold = max(
+        0.0, min(0.999, float(settings.vibrant_bloom_threshold))
+    )
+    sunlight = np.zeros(valid.shape, dtype=np.float32)
+    if light_intensity is not None:
+        light = np.broadcast_to(
+            np.asarray(light_intensity, dtype=np.float32), valid.shape
+        )
+        sunlight = np.clip((light - 0.98) / 0.33, 0.0, 1.0)
+    distance_haze = np.zeros(valid.shape, dtype=np.float32)
+    if distance_m is not None:
+        distance_haze = np.broadcast_to(
+            vibrant_depth_haze_factor(
+                distance_m,
+                settings,
+                maximum_distance_m=maximum_distance_m,
+            ),
+            valid.shape,
+        ).astype(np.float32)
+    threshold = np.clip(
+        base_threshold - 0.022 * sunlight - 0.012 * distance_haze,
+        0.0,
+        0.999,
+    )
+    bright = np.clip(
+        (luminance - threshold) / np.maximum(1e-6, 1.0 - threshold),
+        0.0,
+        1.0,
+    )
+    bright = bright * bright * (3.0 - 2.0 * bright)
+    if light_intensity is not None:
+        bright *= 0.78 + 0.22 * sunlight
+    bright *= valid
+    if not np.any(bright > 0.0):
+        return image.copy()
+
+    glow_source = rgb * bright[..., None]
+    blurred = gaussian_filter(
+        glow_source,
+        sigma=(radius, radius, 0.0),
+        mode="constant",
+        cval=0.0,
+        truncate=2.5,
+    )
+    support = gaussian_filter(
+        valid.astype(np.float32),
+        sigma=radius,
+        mode="constant",
+        cval=0.0,
+        truncate=2.5,
+    )
+    blurred = np.divide(
+        blurred,
+        np.maximum(support[..., None], 1e-4),
+        out=np.zeros_like(blurred),
+        where=support[..., None] > 1e-4,
+    )
+    result = image.copy()
+    result_rgb = result[..., :3]
+    glow = np.clip(blurred * strength, 0.0, 1.0)
+    composed = rgb + glow
+    result_rgb[valid] = np.clip(
+        np.rint(composed[valid] * 255.0),
+        0.0,
+        255.0,
+    ).astype(np.uint8)
+    return result
+
+
+def _surface_cache_has_categorical_material(cache) -> bool:
+    """Return whether a prepared surface cache contains categorical material."""
+
+    for prefix in ("visual", "relief", "near_patch"):
+        categorical = _sample_cache_value(cache, f"{prefix}_categorical")
+        valid = _sample_cache_value(cache, f"{prefix}_valid")
+        if categorical is None:
+            continue
+        categorical = np.asarray(categorical, dtype=bool)
+        if valid is not None and np.shape(valid) == categorical.shape:
+            categorical = categorical & np.asarray(valid, dtype=bool)
+        if np.any(categorical):
+            return True
+    return False
+
+
 def _solar_shading_strength(sun_alt: float) -> float:
     alt = float(sun_alt if sun_alt is not None else -90.0)
     twilight_side_light = 0.34 * _smoothstep(-12.0, 0.0, alt)
@@ -1061,14 +3056,6 @@ def _shade_color(color: QColor, factor: float, sky_color: QColor | None = None) 
 
     target = sky_color if sky_color is not None else QColor(255, 255, 255)
     return _lerp_color(color, target, min(0.32, (factor - 1.0) * 1.35))
-
-
-def _calc_t_night(ut_hour: float) -> float:
-    """Compute a [0..1] night factor from UTC hour (0=midnight, 12=noon)."""
-    val = math.cos((ut_hour / 24.0) * 2 * math.pi)
-    t = (val + 1.0) / 2.0
-    t = t * t * (3.0 - 2.0 * t)  # smoothstep
-    return max(0.0, min(1.0, t))
 
 
 def _parse_band_max_from_id(band_id: str) -> float:
@@ -1224,6 +3211,21 @@ class HorizonOverlay(QObject):
         self._last_terrain_raster_s = 0.0
         self._last_horizon_antialias_s = 0.0
         self._last_terrain_total_s = 0.0
+        self._last_material_resolution_s = 0.0
+        self._last_base_material_cache_hit = False
+        self._last_lighting_cache_hit = False
+        self._last_resolved_material_cache_hit = False
+        self._last_raster_cache_hit = False
+        self._last_frame_cache_hit = False
+        self._terrain_base_material_builds = 0
+        self._terrain_lighting_builds = 0
+        self._terrain_resolved_material_builds = 0
+        self._terrain_raster_builds = 0
+        self._terrain_frame_cache_hits = 0
+        self._terrain_frame_cache_misses = 0
+        self._terrain_material_image = None
+        self._terrain_surface_diagnostics = {}
+        self._terrain_resolved_materials = None
         self._terrain_geometry_cache_key = None
         self._terrain_geometry_cache = None
         self._terrain_polygon_cache_key = None
@@ -1237,6 +3239,9 @@ class HorizonOverlay(QObject):
         self._terrain_surface_image_cache_key = None
         self._terrain_surface_image_cache = None
         self._terrain_surface_image_geometry = None
+        self._terrain_material_image = None
+        self._terrain_surface_diagnostics = {}
+        self._terrain_resolved_materials = None
         self._terrain_surface_image_drawn = 0
         self._terrain_raster_cache_key = None
         self._terrain_raster_cache = None
@@ -1248,8 +3253,11 @@ class HorizonOverlay(QObject):
         self._terrain_shade_cache = ByteLRU(
             max(16 * 1024**2, DEFAULT_PERFORMANCE_BUDGET.transient_bytes // 4)
         )
-        self._terrain_color_cache = ByteLRU(
-            max(16 * 1024**2, DEFAULT_PERFORMANCE_BUDGET.transient_bytes // 4)
+        self._terrain_base_material_cache = ByteLRU(
+            max(16 * 1024**2, DEFAULT_PERFORMANCE_BUDGET.transient_bytes // 6)
+        )
+        self._terrain_resolved_material_cache = ByteLRU(
+            max(32 * 1024**2, DEFAULT_PERFORMANCE_BUDGET.transient_bytes // 4)
         )
         self.render_settings = ConfigManager().get_terrain_render_settings()
 
@@ -1301,26 +3309,63 @@ class HorizonOverlay(QObject):
     # ── public API ──
 
     def set_terrain_surface_opaque(self, enabled: bool) -> None:
-        self.terrain_surface_opaque = bool(enabled)
+        enabled = bool(enabled)
+        if enabled == self.terrain_surface_opaque:
+            return
+        self.terrain_surface_opaque = enabled
         self._terrain_surface_image_cache_key = None
         self._terrain_surface_image_cache = None
         self._terrain_surface_image_geometry = None
-        self._terrain_raster_cache_key = None
-        self._terrain_raster_cache = None
         self.request_update.emit()
 
     def reload_render_settings(self) -> None:
         """Reload terrain-only settings and invalidate colour-derived caches."""
 
+        previous_static_key = self._static_material_settings_key()
+        previous_lighting_key = self._terrain_lighting_settings_key()
+        previous_resolved_key = (
+            normalize_surface_visual_style(
+                self.render_settings.surface_visual_style
+            ),
+            str(self.render_settings.terrain_shading_mode),
+            round(
+                float(
+                    self.render_settings
+                    .categorical_region_smoothing_radius_px
+                ),
+                6,
+            ),
+        )
         self.render_settings = ConfigManager().get_terrain_render_settings()
+        next_static_key = self._static_material_settings_key()
+        next_lighting_key = self._terrain_lighting_settings_key()
+        next_resolved_key = (
+            normalize_surface_visual_style(
+                self.render_settings.surface_visual_style
+            ),
+            str(self.render_settings.terrain_shading_mode),
+            round(
+                float(
+                    self.render_settings
+                    .categorical_region_smoothing_radius_px
+                ),
+                6,
+            ),
+        )
         self._terrain_shadow_cache_key = None
         self._terrain_shadow_cache = None
+        self._profile_image_cache_key = None
+        self._profile_image_cache = None
         self._terrain_surface_image_cache_key = None
         self._terrain_surface_image_cache = None
-        self._terrain_raster_cache_key = None
-        self._terrain_raster_cache = None
-        self._terrain_shade_cache.clear()
-        self._terrain_color_cache.clear()
+        self._terrain_surface_image_geometry = None
+        if previous_lighting_key != next_lighting_key:
+            self._terrain_shade_cache.clear()
+        if previous_static_key != next_static_key:
+            self._terrain_base_material_cache.clear()
+            self._terrain_resolved_material_cache.clear()
+        elif previous_resolved_key != next_resolved_key:
+            self._terrain_resolved_material_cache.clear()
         self.request_update.emit()
 
     def set_profile(self, profile, layer_defs=None):
@@ -1359,7 +3404,8 @@ class HorizonOverlay(QObject):
             else None
         )
         self._terrain_shade_cache.clear()
-        self._terrain_color_cache.clear()
+        self._terrain_base_material_cache.clear()
+        self._terrain_resolved_material_cache.clear()
 
         effective_defs = layer_defs if layer_defs is not None else LAYER_DEFS
 
@@ -1413,7 +3459,8 @@ class HorizonOverlay(QObject):
         self._terrain_surface_image_geometry = None
         self._terrain_render_asset = None
         self._terrain_shade_cache.clear()
-        self._terrain_color_cache.clear()
+        self._terrain_base_material_cache.clear()
+        self._terrain_resolved_material_cache.clear()
         self._layers.clear()
         self._loaded = False
         if self.allow_procedural_fallback:
@@ -1716,6 +3763,52 @@ class HorizonOverlay(QObject):
         point_y = float(y)
 
         if isinstance(geometry, _TerrainTriangleGeometry):
+            display_materials = self._terrain_resolved_materials
+            display_image = self._terrain_surface_image_cache
+            if display_materials is not None and display_image is not None:
+                material_height, material_width = (
+                    display_materials.valid.shape
+                )
+                material_x = int(
+                    math.floor(
+                        point_x
+                        * material_width
+                        / max(1, int(display_image.width()))
+                    )
+                )
+                material_y = int(
+                    math.floor(
+                        point_y
+                        * material_height
+                        / max(1, int(display_image.height()))
+                    )
+                )
+                if (
+                    0 <= material_x < material_width
+                    and 0 <= material_y < material_height
+                    and bool(
+                        display_materials.valid[material_y, material_x]
+                    )
+                    and bool(
+                        display_materials.categorical[
+                            material_y, material_x
+                        ]
+                    )
+                ):
+                    class_id = int(
+                        display_materials.class_ids[
+                            material_y, material_x
+                        ]
+                    )
+                    source_index = int(
+                        display_materials.source_indices[
+                            material_y, material_x
+                        ]
+                    )
+                    if class_id >= 0 and source_index >= 0:
+                        return self._category_metadata(
+                            cache, class_id, source_index
+                        )
             if (
                 self._terrain_raster_cache is None
                 or not isinstance(self._terrain_raster_cache_key, tuple)
@@ -1795,6 +3888,205 @@ class HorizonOverlay(QObject):
                     )
                 return None
         return None
+
+    def terrain_surface_diagnostics(self) -> dict:
+        """Return cache-only diagnostics from the most recently painted frame."""
+
+        return dict(self._terrain_surface_diagnostics)
+
+    def terrain_cache_diagnostics(self) -> dict:
+        """Return hit, build, timing and resident-memory terrain metrics."""
+
+        def _cache_metrics(cache, builds: int, last_hit: bool) -> dict:
+            return {
+                "hits": int(cache.hits),
+                "misses": int(cache.misses),
+                "evictions": int(cache.evictions),
+                "builds": int(builds),
+                "resident_bytes": int(cache.resident_bytes),
+                "budget_bytes": int(cache.max_bytes),
+                "last_hit": bool(last_hit),
+            }
+
+        return {
+            "base_material": {
+                **_cache_metrics(
+                    self._terrain_base_material_cache,
+                    self._terrain_base_material_builds,
+                    self._last_base_material_cache_hit,
+                ),
+                "last_time_s": float(self._last_terrain_color_s),
+            },
+            "lighting": _cache_metrics(
+                self._terrain_shade_cache,
+                self._terrain_lighting_builds,
+                self._last_lighting_cache_hit,
+            ),
+            "resolved_material": {
+                **_cache_metrics(
+                    self._terrain_resolved_material_cache,
+                    self._terrain_resolved_material_builds,
+                    self._last_resolved_material_cache_hit,
+                ),
+                "last_time_s": float(self._last_material_resolution_s),
+            },
+            "raster": {
+                "builds": int(self._terrain_raster_builds),
+                "last_hit": bool(self._last_raster_cache_hit),
+                "last_time_s": float(self._last_terrain_raster_s),
+            },
+            "frame": {
+                "hits": int(self._terrain_frame_cache_hits),
+                "misses": int(self._terrain_frame_cache_misses),
+                "last_hit": bool(self._last_frame_cache_hit),
+            },
+        }
+
+    def terrain_surface_diagnostic_at_screen(
+        self, x: float, y: float
+    ) -> dict | None:
+        """Inspect the resolved pixel material without touching raster sources."""
+
+        materials = self._terrain_resolved_materials
+        image = self._terrain_surface_image_cache
+        if materials is None or image is None:
+            return None
+        height, width = materials.valid.shape
+        px = int(math.floor(float(x) * width / max(1, int(image.width()))))
+        py = int(math.floor(float(y) * height / max(1, int(image.height()))))
+        if not (0 <= px < width and 0 <= py < height):
+            return None
+        if not bool(materials.valid[py, px]):
+            return None
+        source_index = int(materials.source_indices[py, px])
+        class_id = int(materials.class_ids[py, px])
+        categorical = bool(materials.categorical[py, px])
+        cache = getattr(
+            getattr(self, "profile", None), "surface_samples", None
+        )
+        legends = tuple(
+            _sample_cache_value(cache, "source_legend_ids", ()) or ()
+        )
+        info = (
+            self._category_metadata(cache, class_id, source_index)
+            if categorical
+            else None
+        )
+        raster_row = raster_column = None
+        lod_factor = None
+        sample_origin = None
+        geometry = self._terrain_surface_image_geometry
+        raster_cache = self._terrain_raster_cache
+        if (
+            isinstance(geometry, _TerrainTriangleGeometry)
+            and raster_cache is not None
+        ):
+            triangle_id, bary_u, bary_v = raster_cache
+            triangle = int(triangle_id[py, px])
+            if triangle >= 0:
+                weights = np.asarray(
+                    (
+                        bary_u[py, px],
+                        bary_v[py, px],
+                        1.0 - bary_u[py, px] - bary_v[py, px],
+                    )
+                )
+                vertex = int(np.argmax(weights))
+                row = int(geometry.vertex_rows[triangle, vertex])
+                column = int(geometry.vertex_columns[triangle, vertex])
+                domain = int(geometry.vertex_domain[triangle, vertex])
+                prefix = "near_patch" if domain == 1 else "visual"
+                asset = self._terrain_render_asset
+                shape = (
+                    np.shape(asset.near_patch_elevations)
+                    if domain == 1 and asset is not None
+                    else np.shape(asset.elevations)
+                    if asset is not None
+                    else ()
+                )
+                diagnostic = _sample_cache_value(
+                    cache, f"{prefix}_lod_factors"
+                )
+                if (
+                    domain == 0
+                    and (
+                        diagnostic is None
+                        or np.shape(diagnostic) != tuple(shape)
+                    )
+                ):
+                    prefix = "relief"
+                    sampled_rows = np.asarray(
+                        _sample_cache_value(
+                            cache,
+                            "relief_distance_indices",
+                            (),
+                        ),
+                        dtype=np.int32,
+                    )
+                    sampled_columns = np.asarray(
+                        _sample_cache_value(
+                            cache,
+                            "relief_azimuth_indices",
+                            (),
+                        ),
+                        dtype=np.int32,
+                    )
+                    if sampled_rows.size and sampled_columns.size:
+                        row = int(np.argmin(np.abs(sampled_rows - row)))
+                        circular = np.abs(
+                            sampled_columns
+                            - (column % max(1, int(shape[1])))
+                        )
+                        circular = np.minimum(
+                            circular,
+                            max(1, int(shape[1])) - circular,
+                        )
+                        column = int(np.argmin(circular))
+                values = {}
+                for name in (
+                    "raster_rows",
+                    "raster_columns",
+                    "lod_factors",
+                    "sample_origins",
+                ):
+                    grid = _sample_cache_value(cache, f"{prefix}_{name}")
+                    if grid is not None and np.ndim(grid) == 2:
+                        grid_array = np.asarray(grid)
+                        if (
+                            0 <= row < grid_array.shape[0]
+                            and 0 <= column < grid_array.shape[1]
+                        ):
+                            values[name] = int(grid_array[row, column])
+                raster_row = values.get("raster_rows")
+                raster_column = values.get("raster_columns")
+                lod_factor = values.get("lod_factors")
+                sample_origin = values.get("sample_origins")
+        origin_names = {
+            1: "exact",
+            2: "modal",
+            3: "source_fallback",
+            4: "terrain_fallback",
+        }
+        return {
+            "class_id": class_id if categorical else None,
+            "category_name": getattr(info, "name", None),
+            "source_index": source_index,
+            "legend_id": (
+                legends[source_index]
+                if 0 <= source_index < len(legends)
+                else ""
+            ),
+            "material_type": "categorical" if categorical else "continuous",
+            "lod_factor": lod_factor,
+            "raster_row": raster_row,
+            "raster_column": raster_column,
+            "sample_origin": origin_names.get(
+                sample_origin,
+                "source_fallback"
+                if source_index >= 0
+                else "terrain_fallback",
+            ),
+        }
 
     @staticmethod
     def _profile_point_budget(width: int, interaction_active: bool) -> int:
@@ -1927,6 +4219,7 @@ class HorizonOverlay(QObject):
         sky_color_fn=None,
         interaction_active: bool = False,
         terrain_3d_enabled: bool | None = None,
+        light_context: TerrainCelestialLightContext | None = None,
     ):
         """
         Main entry: draw all terrain layers.
@@ -1940,13 +4233,44 @@ class HorizonOverlay(QObject):
         if terrain_3d_enabled is None:
             terrain_3d_enabled = bool(terrain_shading_enabled)
 
-        t_night = _calc_t_night(ut_hour)
+        light_context = self._resolve_light_context(
+            light_context,
+            sun_alt=sun_alt,
+            sun_az=sun_az,
+        )
+        sun_alt = light_context.sun_altitude_deg
+        sun_az = light_context.sun_azimuth_deg
+        light_factors = terrain_celestial_light_factors(
+            light_context, self.render_settings
+        )
+        t_night = light_factors.night
 
         bottom_y = height * 2.0
 
         # Flat Line Mode
         if draw_flat_line:
-            color = _lerp_color(GROUND_DAY, GROUND_NIGHT, t_night)
+            flat_light = self._terrain_light_components(
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                light_context=light_context,
+            )
+            color = self._compose_profile_light_color(
+                GROUND_DAY,
+                float(flat_light.intensity),
+                0.0,
+                self._reference_sky_color(
+                    sky_color_fn,
+                    sun_alt,
+                    sun_az,
+                    current_azimuth,
+                    t_night,
+                ),
+                flat_light.factors,
+                solar_exposure=float(flat_light.solar_exposure),
+                lunar_exposure=float(flat_light.lunar_exposure),
+            )
             painter.setPen(QPen(color, 2))
             painter.setBrush(QBrush(color))
 
@@ -2076,6 +4400,31 @@ class HorizonOverlay(QObject):
                     self._profile_polygon_cache_view_key,
                     round(float(t_night) * 256.0) / 256.0,
                     int(sky_ref.rgba()),
+                    round(float(light_context.sun_altitude_deg) * 4.0) / 4.0,
+                    round(float(light_context.sun_azimuth_deg) * 4.0) / 4.0,
+                    (
+                        None
+                        if light_context.moon_altitude_deg is None
+                        else round(
+                            float(light_context.moon_altitude_deg) * 4.0
+                        )
+                        / 4.0
+                    ),
+                    (
+                        None
+                        if light_context.moon_azimuth_deg is None
+                        else round(
+                            float(light_context.moon_azimuth_deg) * 4.0
+                        )
+                        / 4.0
+                    ),
+                    round(
+                        float(light_context.moon_illumination) * 256.0
+                    )
+                    / 256.0,
+                    round(float(light_context.eclipse_factor) * 256.0)
+                    / 256.0,
+                    repr(self.render_settings),
                 )
                 if (
                     profile_image_key == self._profile_image_cache_key
@@ -2096,7 +4445,7 @@ class HorizonOverlay(QObject):
             # Bands are already ordered far-to-near. In silhouette mode the
             # layer-count control remains authoritative even if a mesh exists.
             terrain_layers = self._profile_layers_for_frame(interaction_active)
-            for band_pts, night_c, day_c in terrain_layers:
+            for band_pts, _night_c, day_c in terrain_layers:
                 # First: Draw any domes that are behind or within this band (further than band_min)
                 while (
                     pending_domes and pending_domes[0]["dist"] >= band_pts.band_min
@@ -2104,10 +4453,7 @@ class HorizonOverlay(QObject):
                     d_info = pending_domes.pop(0)
                     draw_domes_callback(painter, d_info["idx"], d_info["dist"])
 
-                base_color = _lerp_color(day_c, night_c, t_night)
-                color = self._apply_atmospheric_perspective(
-                    base_color, sky_ref, band_pts, t_night
-                )
+                color = QColor(day_c)
                 self._draw_band_linear(
                     profile_target_painter,
                     band_pts,
@@ -2120,8 +4466,12 @@ class HorizonOverlay(QObject):
                     az_min,
                     az_max,
                     projection_fn_numpy,
-                    terrain_shading_enabled=False,
+                    sun_alt=sun_alt,
+                    sun_az=sun_az,
+                    terrain_shading_enabled=True,
+                    sky_color=sky_ref,
                     interaction_active=interaction_active,
+                    light_context=light_context,
                 )
 
         # ── Farciment del terra amb gradient de perspectiva ───────────────────────
@@ -2137,7 +4487,22 @@ class HorizonOverlay(QObject):
             and not has_terrain_mesh
             and not profile_is_partial
         ):
-            ground_c = _lerp_color(GROUND_DAY, GROUND_NIGHT, t_night)
+            ground_light = self._terrain_light_components(
+                0.0,
+                0.0,
+                1.0,
+                0.0,
+                light_context=light_context,
+            )
+            ground_c = self._compose_profile_light_color(
+                GROUND_DAY,
+                float(ground_light.intensity),
+                0.0,
+                sky_ref,
+                ground_light.factors,
+                solar_exposure=float(ground_light.solar_exposure),
+                lunar_exposure=float(ground_light.lunar_exposure),
+            )
             nearest = self._layers[-1]
             self._draw_ground_linear(
                 profile_target_painter,
@@ -2172,8 +4537,14 @@ class HorizonOverlay(QObject):
                 and type(self)._draw_terrain_surface_2d
                 is HorizonOverlay._draw_terrain_surface_2d
             )
+            categorical_surface = _surface_cache_has_categorical_material(
+                getattr(self.profile, "surface_samples", None)
+            )
             if (
-                self.render_settings.terrain_shading_mode == "interpolated"
+                (
+                    self.render_settings.terrain_shading_mode == "interpolated"
+                    or categorical_surface
+                )
                 and supports_interpolated
             ):
                 rendered = self._draw_terrain_interpolated(
@@ -2187,8 +4558,11 @@ class HorizonOverlay(QObject):
                     az_max,
                     t_night,
                     sky_ref,
+                    sun_alt=sun_alt,
+                    sun_az=sun_az,
                     projection_fn_numpy=projection_fn_numpy,
                     interaction_active=interaction_active,
+                    light_context=light_context,
                 )
             if not rendered:
                 self._draw_terrain_surface_2d(
@@ -2208,6 +4582,7 @@ class HorizonOverlay(QObject):
                     True,
                     projection_fn_numpy=projection_fn_numpy,
                     interaction_active=interaction_active,
+                    light_context=light_context,
                 )
         elif terrain_3d_enabled and has_terrain_mesh and not self._layers:
             self._draw_terrain_mesh(
@@ -2226,6 +4601,7 @@ class HorizonOverlay(QObject):
                 sun_az,
                 terrain_shading_enabled,
                 projection_fn_numpy=projection_fn_numpy,
+                light_context=light_context,
             )
 
     # ── private rendering ──
@@ -2289,26 +4665,111 @@ class HorizonOverlay(QObject):
         )
 
     def _terrain_shade_values(
-        self, az_arr, h_arr, sun_alt, sun_az, band_pts
+        self,
+        az_arr,
+        h_arr,
+        sun_alt,
+        sun_az,
+        band_pts,
+        light_context: TerrainCelestialLightContext | None = None,
     ) -> np.ndarray:
+        return self._terrain_profile_light_grid(
+            az_arr,
+            h_arr,
+            sun_alt,
+            sun_az,
+            band_pts,
+            light_context=light_context,
+        ).intensity
+
+    def _terrain_profile_light_grid(
+        self,
+        az_arr,
+        h_arr,
+        sun_alt,
+        sun_az,
+        band_pts,
+        *,
+        light_context: TerrainCelestialLightContext | None = None,
+    ) -> TerrainLightingGrid:
+        """Approximate visible profile normals and apply the shared sky light."""
+
         del h_arr
-        if sun_alt is None or sun_az is None:
-            return np.ones_like(az_arr, dtype=np.float32)
+        context = self._resolve_light_context(
+            light_context, sun_alt=sun_alt, sun_az=sun_az
+        )
+        azimuth = np.deg2rad(np.asarray(az_arr, dtype=np.float32))
+        # A silhouette has no complete DEM normal.  Its visible flank faces the
+        # observer, with a broad upward component that avoids wall-like bands.
+        horizontal = 0.66
+        normal_x = -np.sin(azimuth) * horizontal
+        normal_y = -np.cos(azimuth) * horizontal
+        normal_z = np.full(np.shape(normal_x), 0.75, dtype=np.float32)
+        distance = float(getattr(band_pts, "band_max", 0.0) or 0.0)
+        return self._terrain_light_components(
+            normal_x,
+            normal_y,
+            normal_z,
+            distance,
+            self._sun_vector_enu(
+                context.sun_altitude_deg, context.sun_azimuth_deg
+            ),
+            context.sun_altitude_deg,
+            terrain_shading_enabled=True,
+            light_context=context,
+        )
 
-        strength = _solar_shading_strength(float(sun_alt))
-        if strength <= 0.001 or len(az_arr) < 2:
-            return np.ones_like(az_arr, dtype=np.float32)
+    def _compose_profile_light_color(
+        self,
+        base_color: QColor,
+        intensity: float,
+        distance_m: float,
+        sky_color: QColor,
+        factors: TerrainCelestialLightFactors,
+        *,
+        solar_exposure: float = 0.0,
+        lunar_exposure: float = 0.0,
+    ) -> QColor:
+        """Run fallback/profile colours through the same surface pipeline."""
 
-        band_max_m = float(getattr(band_pts, "band_max", 0.0) or 0.0)
-        distance_contrast = 1.0 - 0.78 * _distance_haze_factor(band_max_m)
-        strength *= max(0.18, distance_contrast)
-
-        az = np.asarray(az_arr, dtype=np.float32)
-        delta = np.deg2rad(((float(sun_az) - az + 180.0) % 360.0) - 180.0)
-        broad_facing = np.cos(delta)
-
-        shade = 1.0 + strength * 0.10 * broad_facing
-        return np.clip(shade, 0.91, 1.08).astype(np.float32)
+        base = np.asarray(base_color.getRgb(), dtype=np.uint8)
+        vibrant = (
+            normalize_surface_visual_style(
+                self.render_settings.surface_visual_style
+            )
+            == SurfaceVisualStyle.VIBRANT.value
+        )
+        composed = compose_vertex_rgba(
+            base,
+            float(intensity),
+            float(distance_m),
+            self.render_settings,
+            maximum_distance_m=self._maximum_terrain_distance_m(),
+            horizon_rgb=(
+                sky_color.red(),
+                sky_color.green(),
+                sky_color.blue(),
+            ),
+            atmosphere_strength=0.0 if vibrant else 1.0,
+        )
+        if vibrant:
+            composed = apply_vibrant_color_grade(
+                composed,
+                float(intensity),
+                float(distance_m),
+                self.render_settings,
+                maximum_distance_m=self._maximum_terrain_distance_m(),
+                daylight_factor=factors.solar_ambient,
+                moonlight_factor=factors.lunar_strength,
+                solar_exposure=float(solar_exposure),
+                lunar_exposure=float(lunar_exposure),
+                atmosphere_rgb=(
+                    sky_color.red(),
+                    sky_color.green(),
+                    sky_color.blue(),
+                ),
+            )
+        return _qcolor_from_rgba(composed)
 
     def _sun_vector_enu(self, sun_alt, sun_az):
         if sun_alt is None or sun_az is None:
@@ -2325,21 +4786,169 @@ class HorizonOverlay(QObject):
             dtype=np.float32,
         )
 
-    def _configured_light(self) -> tuple[float, float, np.ndarray | None]:
+    def _resolve_light_context(
+        self,
+        light_context: TerrainCelestialLightContext | None = None,
+        *,
+        sun_alt: float | None = None,
+        sun_az: float | None = None,
+    ) -> TerrainCelestialLightContext:
+        """Resolve shared astronomy, retaining the fixed light as a fallback."""
+
+        if isinstance(light_context, TerrainCelestialLightContext):
+            try:
+                valid_context_sun = bool(
+                    np.isfinite(float(light_context.sun_altitude_deg))
+                    and np.isfinite(float(light_context.sun_azimuth_deg))
+                )
+            except (TypeError, ValueError):
+                valid_context_sun = False
+            if valid_context_sun:
+                return light_context.validated()
         settings = self.render_settings
-        if not settings.terrain_lighting_enabled:
-            return (
-                settings.terrain_light_elevation_deg,
-                settings.terrain_light_azimuth_deg,
-                None,
+        try:
+            valid_legacy_sun = bool(
+                sun_alt is not None
+                and sun_az is not None
+                and np.isfinite(float(sun_alt))
+                and np.isfinite(float(sun_az))
             )
-        return (
+        except (TypeError, ValueError):
+            valid_legacy_sun = False
+        if valid_legacy_sun:
+            return TerrainCelestialLightContext(
+                float(sun_alt), float(sun_az)
+            ).validated()
+        return TerrainCelestialLightContext(
             settings.terrain_light_elevation_deg,
             settings.terrain_light_azimuth_deg,
-            light_direction_enu(
-                settings.terrain_light_azimuth_deg,
-                settings.terrain_light_elevation_deg,
+        ).validated()
+
+    def _configured_light(
+        self,
+        sun_alt: float | None = None,
+        sun_az: float | None = None,
+        light_context: TerrainCelestialLightContext | None = None,
+    ) -> tuple[float, float, np.ndarray | None]:
+        """Compatibility view of the real astronomical sun in every style."""
+
+        context = self._resolve_light_context(
+            light_context, sun_alt=sun_alt, sun_az=sun_az
+        )
+        vector = (
+            self._sun_vector_enu(
+                context.sun_altitude_deg, context.sun_azimuth_deg
+            )
+            if self.render_settings.terrain_lighting_enabled
+            else None
+        )
+        return (
+            context.sun_altitude_deg,
+            context.sun_azimuth_deg,
+            vector,
+        )
+
+    def _terrain_light_bounds(
+        self,
+        factors: TerrainCelestialLightFactors | None = None,
+    ) -> tuple[float, float]:
+        settings = self.render_settings
+        if (
+            normalize_surface_visual_style(settings.surface_visual_style)
+            == SurfaceVisualStyle.VIBRANT.value
+        ):
+            day_minimum = settings.vibrant_sun_min_brightness
+            day_maximum = settings.vibrant_sun_max_brightness
+        else:
+            day_minimum = settings.terrain_min_brightness
+            day_maximum = settings.terrain_max_brightness
+        if factors is None:
+            return day_minimum, day_maximum
+        night_minimum = (
+            float(settings.terrain_night_ambient_strength)
+            + float(settings.terrain_moon_ambient_strength)
+            * factors.lunar_strength
+        )
+        night_maximum = (
+            night_minimum
+            + float(settings.terrain_moon_diffuse_strength)
+            * factors.lunar_strength
+        )
+        minimum = night_minimum + (
+            day_minimum - night_minimum
+        ) * factors.solar_ambient
+        maximum = night_maximum + (
+            day_maximum - night_maximum
+        ) * factors.solar_ambient
+        return max(0.0, minimum), max(minimum, maximum)
+
+    def _terrain_lighting_settings_key(self) -> tuple:
+        """Describe Lambert/celestial settings without material or camera state."""
+
+        settings = self.render_settings
+        return (
+            "terrain-lighting-settings-v1",
+            bool(settings.terrain_lighting_enabled),
+            normalize_surface_visual_style(settings.surface_visual_style),
+            round(float(settings.terrain_ambient_strength), 6),
+            round(float(settings.terrain_diffuse_strength), 6),
+            round(float(settings.terrain_min_brightness), 6),
+            round(float(settings.terrain_max_brightness), 6),
+            round(
+                float(settings.terrain_twilight_dark_altitude_deg), 6
             ),
+            round(float(settings.terrain_sun_full_altitude_deg), 6),
+            round(float(settings.terrain_night_ambient_strength), 6),
+            round(
+                float(settings.terrain_moon_horizon_fade_start_deg), 6
+            ),
+            round(
+                float(settings.terrain_moon_horizon_fade_end_deg), 6
+            ),
+            round(float(settings.terrain_moon_ambient_strength), 6),
+            round(float(settings.terrain_moon_diffuse_strength), 6),
+            round(float(settings.terrain_moon_phase_exponent), 6),
+            round(float(settings.vibrant_sun_ambient_strength), 6),
+            round(float(settings.vibrant_sun_diffuse_boost), 6),
+            round(float(settings.vibrant_sunlight_exponent), 6),
+            round(float(settings.vibrant_sun_min_brightness), 6),
+            round(float(settings.vibrant_sun_max_brightness), 6),
+        )
+
+    def _terrain_lighting_key(
+        self,
+        asset,
+        light_context: TerrainCelestialLightContext,
+        *,
+        lighting_enabled: bool,
+    ) -> tuple:
+        """Key lighting by geometry and quantized celestial state, never camera."""
+
+        return (
+            "terrain-lighting-v1",
+            int(asset.mesh_id),
+            bool(lighting_enabled),
+            round(float(light_context.sun_altitude_deg) * 4.0) / 4.0,
+            round(float(light_context.sun_azimuth_deg) * 4.0) / 4.0,
+            (
+                None
+                if light_context.moon_altitude_deg is None
+                else round(
+                    float(light_context.moon_altitude_deg) * 4.0
+                )
+                / 4.0
+            ),
+            (
+                None
+                if light_context.moon_azimuth_deg is None
+                else round(
+                    float(light_context.moon_azimuth_deg) * 4.0
+                )
+                / 4.0
+            ),
+            round(float(light_context.moon_illumination) * 256.0) / 256.0,
+            round(float(light_context.eclipse_factor) * 256.0) / 256.0,
+            self._terrain_lighting_settings_key(),
         )
 
     def _maximum_terrain_distance_m(self) -> float | None:
@@ -2712,6 +5321,152 @@ class HorizonOverlay(QObject):
         self._terrain_shadow_cache = result
         return result
 
+    def _terrain_light_components(
+        self,
+        normal_x,
+        normal_y,
+        normal_z,
+        distance_m,
+        sun_vec=None,
+        sun_alt=None,
+        terrain_shading_enabled=True,
+        sun_visibility=None,
+        light_context: TerrainCelestialLightContext | None = None,
+    ) -> TerrainLightingGrid:
+        nx, ny, nz = np.broadcast_arrays(
+            np.asarray(normal_x, dtype=np.float32),
+            np.asarray(normal_y, dtype=np.float32),
+            np.asarray(normal_z, dtype=np.float32),
+        )
+        settings = self.render_settings
+        if light_context is None:
+            derived_azimuth = None
+            if sun_vec is not None:
+                candidate = np.asarray(sun_vec, dtype=np.float32)
+                if candidate.shape == (3,) and np.all(np.isfinite(candidate)):
+                    derived_azimuth = math.degrees(
+                        math.atan2(float(candidate[0]), float(candidate[1]))
+                    ) % 360.0
+            light_context = self._resolve_light_context(
+                None,
+                sun_alt=sun_alt,
+                sun_az=derived_azimuth,
+            )
+        else:
+            light_context = light_context.validated()
+        factors = terrain_celestial_light_factors(light_context, settings)
+        zeros = np.zeros(nx.shape, dtype=np.float32)
+        if not terrain_shading_enabled or not settings.terrain_lighting_enabled:
+            return TerrainLightingGrid(
+                np.ones(nx.shape, dtype=np.float32),
+                zeros,
+                zeros,
+                factors,
+            )
+
+        norm = np.sqrt(nx * nx + ny * ny + nz * nz)
+        safe = np.isfinite(norm) & (norm > 1e-6)
+        nx = np.where(safe, nx / np.where(safe, norm, 1.0), 0.0)
+        ny = np.where(safe, ny / np.where(safe, norm, 1.0), 0.0)
+        nz = np.where(safe, nz / np.where(safe, norm, 1.0), 1.0)
+
+        if sun_vec is None or not np.all(np.isfinite(sun_vec)):
+            sun_vec = self._sun_vector_enu(
+                light_context.sun_altitude_deg,
+                light_context.sun_azimuth_deg,
+            )
+        sun_vec = np.asarray(sun_vec, dtype=np.float32)
+        solar_lambert = np.clip(
+            nx * sun_vec[0] + ny * sun_vec[1] + nz * sun_vec[2],
+            0.0,
+            1.0,
+        )
+        if sun_visibility is not None:
+            direct_visibility = np.broadcast_to(
+                np.asarray(sun_visibility, dtype=np.float32), nx.shape
+            )
+            solar_lambert *= np.clip(direct_visibility, 0.0, 1.0)
+        vibrant = (
+            normalize_surface_visual_style(settings.surface_visual_style)
+            == SurfaceVisualStyle.VIBRANT.value
+        )
+        if vibrant:
+            solar_lambert = np.power(
+                solar_lambert,
+                float(settings.vibrant_sunlight_exponent),
+            )
+            day_ambient = float(
+                settings.vibrant_sun_ambient_strength
+            )
+            day_diffuse = (
+                float(settings.terrain_diffuse_strength)
+                * float(settings.vibrant_sun_diffuse_boost)
+            )
+        else:
+            day_ambient = float(settings.terrain_ambient_strength)
+            day_diffuse = float(settings.terrain_diffuse_strength)
+
+        lunar_lambert = zeros
+        if (
+            factors.lunar_strength > 0.0
+            and light_context.moon_altitude_deg is not None
+            and light_context.moon_azimuth_deg is not None
+        ):
+            moon_vec = self._sun_vector_enu(
+                light_context.moon_altitude_deg,
+                light_context.moon_azimuth_deg,
+            )
+            lunar_lambert = np.clip(
+                nx * moon_vec[0] + ny * moon_vec[1] + nz * moon_vec[2],
+                0.0,
+                1.0,
+            )
+
+        # Distance only removes directional contrast.  Pulling total brightness
+        # towards 1.0 here would incorrectly turn night terrain back on.
+        haze = _distance_haze_factors(distance_m)
+        directional_contrast = np.maximum(0.18, 1.0 - 0.78 * haze)
+        solar_exposure = (
+            solar_lambert
+            * float(factors.solar_direct)
+            * directional_contrast
+        )
+        lunar_exposure = (
+            lunar_lambert
+            * float(factors.lunar_strength)
+            * directional_contrast
+        )
+        ambient = (
+            float(settings.terrain_night_ambient_strength)
+            + (
+                day_ambient
+                - float(settings.terrain_night_ambient_strength)
+            )
+            * float(factors.solar_ambient)
+            + float(settings.terrain_moon_ambient_strength)
+            * float(factors.lunar_strength)
+        )
+        intensity = (
+            ambient
+            + day_diffuse * solar_exposure
+            + float(settings.terrain_moon_diffuse_strength)
+            * lunar_exposure
+        )
+        minimum_brightness, maximum_brightness = self._terrain_light_bounds(
+            factors
+        )
+        intensity = np.clip(
+            intensity,
+            minimum_brightness,
+            maximum_brightness,
+        ).astype(np.float32)
+        return TerrainLightingGrid(
+            intensity,
+            np.asarray(solar_exposure, dtype=np.float32),
+            np.asarray(lunar_exposure, dtype=np.float32),
+            factors,
+        )
+
     def _terrain_light_factor(
         self,
         normal_x,
@@ -2722,55 +5477,21 @@ class HorizonOverlay(QObject):
         sun_alt,
         terrain_shading_enabled=True,
         sun_visibility=None,
+        light_context: TerrainCelestialLightContext | None = None,
     ):
-        nx, ny, nz = np.broadcast_arrays(
-            np.asarray(normal_x, dtype=np.float32),
-            np.asarray(normal_y, dtype=np.float32),
-            np.asarray(normal_z, dtype=np.float32),
-        )
-        settings = self.render_settings
-        if (
-            not terrain_shading_enabled
-            or not settings.terrain_lighting_enabled
-            or sun_vec is None
-            or sun_alt is None
-            or float(sun_alt) <= 0.0
-            or not np.all(np.isfinite(sun_vec))
-        ):
-            return np.ones(nx.shape, dtype=np.float32)
+        """Compatibility brightness view over the celestial light components."""
 
-        norm = np.sqrt(nx * nx + ny * ny + nz * nz)
-        safe = np.isfinite(norm) & (norm > 1e-6)
-        nx = np.where(safe, nx / np.where(safe, norm, 1.0), 0.0)
-        ny = np.where(safe, ny / np.where(safe, norm, 1.0), 0.0)
-        nz = np.where(safe, nz / np.where(safe, norm, 1.0), 1.0)
-
-        sun_vec = np.asarray(sun_vec, dtype=np.float32)
-        lambert = np.clip(
-            nx * sun_vec[0] + ny * sun_vec[1] + nz * sun_vec[2],
-            0.0,
-            1.0,
-        )
-        if sun_visibility is not None:
-            direct_visibility = np.broadcast_to(
-                np.asarray(sun_visibility, dtype=np.float32), nx.shape
-            )
-            lambert *= np.clip(direct_visibility, 0.0, 1.0)
-        factor = (
-            float(settings.terrain_ambient_strength)
-            + float(settings.terrain_diffuse_strength) * lambert
-        )
-        # Distant terrain loses directional-light contrast before its colour is
-        # mixed with the atmosphere.  This also keeps the legacy vertex/gradient
-        # route visually consistent with the interpolated composition stage.
-        haze = _distance_haze_factors(distance_m)
-        contrast = np.maximum(0.18, 1.0 - 0.78 * haze)
-        factor = 1.0 + (factor - 1.0) * contrast
-        return np.clip(
-            factor,
-            settings.terrain_min_brightness,
-            settings.terrain_max_brightness,
-        ).astype(np.float32)
+        return self._terrain_light_components(
+            normal_x,
+            normal_y,
+            normal_z,
+            distance_m,
+            sun_vec,
+            sun_alt,
+            terrain_shading_enabled=terrain_shading_enabled,
+            sun_visibility=sun_visibility,
+            light_context=light_context,
+        ).intensity
 
     @staticmethod
     def _smooth_light_grid(
@@ -2867,32 +5588,83 @@ class HorizonOverlay(QObject):
             result_valid = result_valid & (np.asarray(sources)[sampled_row, nearest] >= 0)
         return result_rgba, result_valid
 
-    def _relief_surface_samples(self, row_indices, column_indices, mesh_shape):
+    def _relief_surface_materials(
+        self, row_indices, column_indices, mesh_shape
+    ) -> TerrainMaterialSamples:
         cache = getattr(getattr(self, "profile", None), "surface_samples", None)
         visual_rgba = _sample_cache_value(cache, "visual_rgba")
         visual_valid = _sample_cache_value(cache, "visual_valid")
+        visual_sources = _sample_cache_value(cache, "visual_source_indices")
+        visual_classes = _sample_cache_value(cache, "visual_class_ids")
+        visual_categorical = _sample_cache_value(cache, "visual_categorical")
         if (
             visual_rgba is not None
             and visual_valid is not None
+            and visual_sources is not None
+            and visual_classes is not None
+            and visual_categorical is not None
             and np.shape(visual_rgba) == tuple(mesh_shape) + (4,)
             and np.shape(visual_valid) == tuple(mesh_shape)
+            and np.shape(visual_sources) == tuple(mesh_shape)
+            and np.shape(visual_classes) == tuple(mesh_shape)
+            and np.shape(visual_categorical) == tuple(mesh_shape)
         ):
             rows = np.asarray(row_indices, dtype=np.int32)
             columns = np.asarray(column_indices, dtype=np.int32) % max(
                 1, int(mesh_shape[1])
             )
-            return (
+            return TerrainMaterialSamples(
                 np.asarray(visual_rgba, dtype=np.uint8)[rows, columns],
                 np.asarray(visual_valid, dtype=bool)[rows, columns],
+                np.asarray(visual_classes, dtype=np.int64)[rows, columns],
+                np.asarray(visual_categorical, dtype=bool)[rows, columns],
+                np.asarray(visual_sources, dtype=np.int16)[rows, columns],
             )
         rgba = _sample_cache_value(cache, "relief_rgba")
         valid = _sample_cache_value(cache, "relief_valid")
+        sources = _sample_cache_value(cache, "relief_source_indices")
+        classes = _sample_cache_value(cache, "relief_class_ids")
+        categorical = _sample_cache_value(cache, "relief_categorical")
         rows = np.asarray(row_indices, dtype=np.int32)
         columns = np.asarray(column_indices, dtype=np.int32) % max(1, int(mesh_shape[1]))
         if rgba is None or valid is None:
-            return np.zeros(rows.shape + (4,), dtype=np.uint8), np.zeros(rows.shape, dtype=bool)
+            return TerrainMaterialSamples(
+                np.zeros(rows.shape + (4,), dtype=np.uint8),
+                np.zeros(rows.shape, dtype=bool),
+                np.full(rows.shape, -1, dtype=np.int64),
+                np.zeros(rows.shape, dtype=bool),
+                np.full(rows.shape, -1, dtype=np.int16),
+            )
         rgba = np.asarray(rgba, dtype=np.uint8)
         valid = np.asarray(valid, dtype=bool)
+        sources = (
+            np.asarray(sources, dtype=np.int16)
+            if sources is not None
+            else np.full(valid.shape, -1, dtype=np.int16)
+        )
+        classes = (
+            np.asarray(classes, dtype=np.int64)
+            if classes is not None
+            else np.full(valid.shape, -1, dtype=np.int64)
+        )
+        categorical = (
+            np.asarray(categorical, dtype=bool)
+            if categorical is not None
+            else np.zeros(valid.shape, dtype=bool)
+        )
+        if not (
+            rgba.shape == valid.shape + (4,)
+            and sources.shape == valid.shape
+            and classes.shape == valid.shape
+            and categorical.shape == valid.shape
+        ):
+            return TerrainMaterialSamples(
+                np.zeros(rows.shape + (4,), dtype=np.uint8),
+                np.zeros(rows.shape, dtype=bool),
+                np.full(rows.shape, -1, dtype=np.int64),
+                np.zeros(rows.shape, dtype=bool),
+                np.full(rows.shape, -1, dtype=np.int16),
+            )
         loaded = _sample_cache_value(cache, "relief_loaded")
         sampled_rows = np.asarray(
             _sample_cache_value(cache, "relief_distance_indices", np.arange(rgba.shape[0])),
@@ -2916,88 +5688,514 @@ class HorizonOverlay(QObject):
             result_valid &= np.isin(rows, sampled_rows) & np.isin(
                 columns, sampled_columns
             )
-        sources = _sample_cache_value(cache, "relief_source_indices")
-        if sources is not None:
-            result_valid = result_valid & (
-                np.asarray(sources)[nearest_rows, nearest_columns] >= 0
-            )
-        return result_rgba, result_valid
+        result_sources = sources[nearest_rows, nearest_columns]
+        result_classes = classes[nearest_rows, nearest_columns]
+        result_categorical = categorical[nearest_rows, nearest_columns]
+        result_valid &= result_sources >= 0
+        return TerrainMaterialSamples(
+            result_rgba,
+            result_valid,
+            result_classes,
+            result_categorical,
+            result_sources,
+        )
 
-    def _terrain_vertex_base_rgba(self, asset, t_night):
-        """Return one stable base RGBA value for every shared mesh vertex."""
+    def _relief_surface_samples(self, row_indices, column_indices, mesh_shape):
+        """Compatibility colour view over the complete material samples."""
 
+        materials = self._relief_surface_materials(
+            row_indices, column_indices, mesh_shape
+        )
+        return materials.base_rgba, materials.valid
+
+    def _terrain_vertex_materials(self, asset, t_night) -> TerrainMaterialSamples:
+        """Return aligned material identity and base colour for every vertex."""
+
+        del t_night
         shape = asset.elevations.shape
+        cache = getattr(
+            getattr(self, "profile", None), "surface_samples", None
+        )
+        visual_rgba = _sample_cache_value(cache, "visual_rgba")
+        visual_valid = _sample_cache_value(cache, "visual_valid")
+        visual_loaded = _sample_cache_value(cache, "visual_loaded")
+        visual_sources = _sample_cache_value(
+            cache, "visual_source_indices"
+        )
+        visual_classes = _sample_cache_value(cache, "visual_class_ids")
+        visual_categorical = _sample_cache_value(
+            cache, "visual_categorical"
+        )
+        if (
+            np.shape(visual_rgba) == shape + (4,)
+            and np.shape(visual_valid) == shape
+            and np.shape(visual_sources) == shape
+            and np.shape(visual_classes) == shape
+            and np.shape(visual_categorical) == shape
+            and np.all(np.asarray(visual_valid, dtype=bool))
+            and (
+                visual_loaded is None
+                or (
+                    np.shape(visual_loaded) == shape
+                    and np.all(np.asarray(visual_loaded, dtype=bool))
+                )
+            )
+            and (
+                not self.terrain_surface_opaque
+                or np.all(
+                    np.asarray(visual_rgba, dtype=np.uint8)[..., 3] == 255
+                )
+            )
+        ):
+            return TerrainMaterialSamples(
+                np.asarray(visual_rgba, dtype=np.uint8),
+                np.asarray(visual_valid, dtype=bool),
+                np.asarray(visual_classes, dtype=np.int64),
+                np.asarray(visual_categorical, dtype=bool),
+                np.asarray(visual_sources, dtype=np.int16),
+            )
+
         maximum = max(1.0, float(asset.distances[-1]))
         fallback = np.empty(shape + (4,), dtype=np.uint8)
         for row, distance in enumerate(asset.distances):
             palette_position = _clamp01(1.0 - float(distance) / maximum)
-            night_color, day_color = _palette_color(palette_position)
-            fallback[row, :, :] = _lerp_color(
-                day_color, night_color, t_night
-            ).getRgb()
+            _night_color, day_color = _palette_color(palette_position)
+            fallback[row, :, :] = day_color.getRgb()
 
         rows, columns = np.indices(shape, dtype=np.int32)
-        sampled, sampled_valid = self._relief_surface_samples(
+        sampled = self._relief_surface_materials(
             rows, columns, shape
         )
-        result = np.where(sampled_valid[..., None], sampled, fallback).astype(
-            np.uint8
-        )
+        result = np.where(
+            sampled.valid[..., None], sampled.base_rgba, fallback
+        ).astype(np.uint8)
         if self.terrain_surface_opaque:
             result[..., 3] = 255
-        return result
+        return TerrainMaterialSamples(
+            result,
+            np.ones(shape, dtype=bool),
+            np.where(sampled.valid, sampled.class_ids, -1),
+            sampled.valid & sampled.categorical,
+            np.where(sampled.valid, sampled.source_indices, -1),
+        )
 
-    def _near_patch_vertex_base_rgba(self, asset, t_night):
-        """Return display colours for the Cartesian patch without altering classes."""
+    @staticmethod
+    def _surface_material_identity(surface_cache) -> tuple:
+        """Return a stable source identity without retaining scientific arrays."""
 
+        if surface_cache is None:
+            return ("fallback",)
+        completion_state = str(
+            _sample_cache_value(
+                surface_cache, "completion_state", "complete"
+            )
+        )
+        cache_id = _sample_cache_value(surface_cache, "cache_id")
+        if cache_id:
+            return (
+                "surface-cache",
+                str(cache_id),
+                completion_state,
+            )
+        key = _sample_cache_value(surface_cache, "key")
+        digest = getattr(key, "digest", None)
+        if digest:
+            return ("surface-key", str(digest))
+        return (
+            "runtime-surface",
+            id(surface_cache),
+            completion_state,
+        )
+
+    def _static_material_settings_key(self) -> tuple:
+        """Describe only settings that alter immutable terrain material."""
+
+        settings = self.render_settings
+        style = normalize_surface_visual_style(
+            settings.surface_visual_style
+        )
+        if style != SurfaceVisualStyle.VIBRANT.value:
+            return (
+                "base-material-settings-v1",
+                style,
+                bool(self.terrain_surface_opaque),
+            )
+        return (
+            "base-material-settings-v1",
+            style,
+            int(VIBRANT_PALETTE_VERSION),
+            round(float(settings.vibrant_intensity), 6),
+            round(
+                float(settings.vibrant_territorial_luminance_variation), 6
+            ),
+            round(float(settings.vibrant_territorial_hue_variation), 6),
+            round(float(settings.vibrant_material_midscale_variation), 6),
+            round(float(settings.vibrant_material_microscale_variation), 6),
+            round(float(settings.vibrant_material_altitude_influence), 6),
+            round(float(settings.vibrant_material_slope_influence), 6),
+            round(float(settings.vibrant_snow_rock_blend), 6),
+            round(float(settings.vibrant_water_shore_variation), 6),
+            bool(self.terrain_surface_opaque),
+        )
+
+    def _terrain_base_material_key(
+        self, asset, surface_cache
+    ) -> tuple:
+        """Key a material by source, geometry/LOD and static style only."""
+
+        return (
+            "terrain-base-material-v1",
+            self._surface_material_identity(surface_cache),
+            int(asset.mesh_id),
+            tuple(np.asarray(asset.elevations).shape),
+            tuple(np.asarray(asset.near_patch_elevations).shape),
+            tuple(
+                _sample_cache_value(surface_cache, "source_legend_ids", ())
+                or ()
+            ),
+            self._static_material_settings_key(),
+        )
+
+    def _build_terrain_base_material(
+        self, asset, surface_cache
+    ) -> TerrainBaseMaterialCache:
+        """Build the camera/time-independent material grids once."""
+
+        key = self._terrain_base_material_key(asset, surface_cache)
+        cached = (
+            self._terrain_base_material_cache.get(key)
+            if PERFORMANCE_FLAGS.relief_cached
+            else None
+        )
+        if isinstance(cached, TerrainBaseMaterialCache):
+            self._last_base_material_cache_hit = True
+            return cached
+
+        self._last_base_material_cache_hit = False
+        polar = self._terrain_vertex_materials(asset, 0.0)
+        near_patch = self._near_patch_vertex_materials(asset, 0.0)
+        vibrant = (
+            normalize_surface_visual_style(
+                self.render_settings.surface_visual_style
+            )
+            == SurfaceVisualStyle.VIBRANT.value
+        )
+        if vibrant:
+            settings = self.render_settings
+            legends = tuple(
+                _sample_cache_value(
+                    surface_cache, "source_legend_ids", ()
+                )
+                or ()
+            )
+            polar = _vibrant_categorical_palette(polar, surface_cache)
+            polar_azimuth = np.radians(
+                np.asarray(asset.azimuths, dtype=np.float64)
+            )
+            polar_distance = np.asarray(
+                asset.distances, dtype=np.float64
+            )
+            polar_east = (
+                polar_distance[:, None] * np.sin(polar_azimuth)[None, :]
+            )
+            polar_north = (
+                polar_distance[:, None] * np.cos(polar_azimuth)[None, :]
+            )
+            polar_rgba = _apply_categorical_territorial_variation(
+                polar.base_rgba,
+                polar,
+                polar_east,
+                polar_north,
+                polar.valid,
+                strength=settings.vibrant_intensity,
+                luminance_variation=(
+                    settings.vibrant_territorial_luminance_variation
+                ),
+                hue_variation=settings.vibrant_territorial_hue_variation,
+                midscale_variation=(
+                    settings.vibrant_material_midscale_variation
+                ),
+                microscale_variation=(
+                    settings.vibrant_material_microscale_variation
+                ),
+                altitude_influence=(
+                    settings.vibrant_material_altitude_influence
+                ),
+                slope_influence=settings.vibrant_material_slope_influence,
+                snow_rock_blend=settings.vibrant_snow_rock_blend,
+                water_shore_variation=(
+                    settings.vibrant_water_shore_variation
+                ),
+                elevation_m=asset.elevations,
+                normal_x=asset.normal_x,
+                normal_y=asset.normal_y,
+                normal_z=asset.normal_z,
+                source_legend_ids=legends,
+                render_scale=1.0,
+                include_solar_response=False,
+            )
+            polar = TerrainMaterialSamples(
+                polar_rgba,
+                polar.valid,
+                polar.class_ids,
+                polar.categorical,
+                polar.source_indices,
+            )
+
+            near_patch = _vibrant_categorical_palette(
+                near_patch, surface_cache
+            )
+            if np.asarray(near_patch.valid).size:
+                patch_east, patch_north = np.meshgrid(
+                    np.asarray(
+                        asset.near_patch_eastings, dtype=np.float64
+                    ),
+                    np.asarray(
+                        asset.near_patch_northings, dtype=np.float64
+                    ),
+                )
+                patch_rgba = _apply_categorical_territorial_variation(
+                    near_patch.base_rgba,
+                    near_patch,
+                    patch_east,
+                    patch_north,
+                    near_patch.valid,
+                    strength=settings.vibrant_intensity,
+                    luminance_variation=(
+                        settings.vibrant_territorial_luminance_variation
+                    ),
+                    hue_variation=(
+                        settings.vibrant_territorial_hue_variation
+                    ),
+                    midscale_variation=(
+                        settings.vibrant_material_midscale_variation
+                    ),
+                    microscale_variation=(
+                        settings.vibrant_material_microscale_variation
+                    ),
+                    altitude_influence=(
+                        settings.vibrant_material_altitude_influence
+                    ),
+                    slope_influence=(
+                        settings.vibrant_material_slope_influence
+                    ),
+                    snow_rock_blend=settings.vibrant_snow_rock_blend,
+                    water_shore_variation=(
+                        settings.vibrant_water_shore_variation
+                    ),
+                    elevation_m=asset.near_patch_elevations,
+                    normal_x=asset.near_patch_normal_x,
+                    normal_y=asset.near_patch_normal_y,
+                    normal_z=asset.near_patch_normal_z,
+                    source_legend_ids=legends,
+                    render_scale=1.0,
+                    include_solar_response=False,
+                )
+                near_patch = TerrainMaterialSamples(
+                    patch_rgba,
+                    near_patch.valid,
+                    near_patch.class_ids,
+                    near_patch.categorical,
+                    near_patch.source_indices,
+                )
+
+        shared_arrays = tuple(
+            _sample_cache_value(surface_cache, name)
+            for prefix in ("visual", "relief", "near_patch")
+            for name in (
+                f"{prefix}_rgba",
+                f"{prefix}_valid",
+                f"{prefix}_class_ids",
+                f"{prefix}_categorical",
+                f"{prefix}_source_indices",
+            )
+        )
+        owned_bytes = _owned_material_samples_size(
+            (polar, near_patch), shared_arrays
+        )
+        if vibrant:
+            polar_protected = _protected_categorical_regions(
+                polar, surface_cache
+            )
+            near_patch_protected = _protected_categorical_regions(
+                near_patch, surface_cache
+            )
+        else:
+            polar_protected = np.zeros(
+                np.asarray(polar.valid).shape, dtype=bool
+            )
+            near_patch_protected = np.zeros(
+                np.asarray(near_patch.valid).shape, dtype=bool
+            )
+        owned_bytes += int(
+            polar_protected.nbytes + near_patch_protected.nbytes
+        )
+        entry = TerrainBaseMaterialCache(
+            key,
+            _freeze_material_samples(polar),
+            _freeze_material_samples(near_patch),
+            polar_protected,
+            near_patch_protected,
+            owned_bytes,
+        )
+        self._terrain_base_material_builds += 1
+        if PERFORMANCE_FLAGS.relief_cached:
+            self._terrain_base_material_cache.put(
+                key, entry, entry.resident_bytes
+            )
+        return entry
+
+    def _terrain_vertex_base_rgba(self, asset, t_night):
+        """Compatibility view used by legacy callers."""
+
+        return self._terrain_vertex_materials(asset, t_night).base_rgba
+
+    def _near_patch_vertex_materials(
+        self, asset, t_night
+    ) -> TerrainMaterialSamples:
+        """Return aligned near-patch material samples with terrain fallback."""
+
+        del t_night
         shape = asset.near_patch_elevations.shape
-        night_color, day_color = _palette_color(1.0)
+        cache = getattr(
+            getattr(self, "profile", None), "surface_samples", None
+        )
+        sampled = _sample_cache_value(cache, "near_patch_rgba")
+        sampled_valid = _sample_cache_value(cache, "near_patch_valid")
+        sampled_loaded = _sample_cache_value(cache, "near_patch_loaded")
+        sampled_sources = _sample_cache_value(
+            cache, "near_patch_source_indices"
+        )
+        sampled_classes = _sample_cache_value(
+            cache, "near_patch_class_ids"
+        )
+        sampled_categorical = _sample_cache_value(
+            cache, "near_patch_categorical"
+        )
+        if (
+            np.shape(sampled) == shape + (4,)
+            and np.shape(sampled_valid) == shape
+            and np.shape(sampled_sources) == shape
+            and np.shape(sampled_classes) == shape
+            and np.shape(sampled_categorical) == shape
+            and np.all(np.asarray(sampled_valid, dtype=bool))
+            and (
+                sampled_loaded is None
+                or (
+                    np.shape(sampled_loaded) == shape
+                    and np.all(np.asarray(sampled_loaded, dtype=bool))
+                )
+            )
+            and (
+                not self.terrain_surface_opaque
+                or np.all(
+                    np.asarray(sampled, dtype=np.uint8)[..., 3] == 255
+                )
+            )
+        ):
+            return TerrainMaterialSamples(
+                np.asarray(sampled, dtype=np.uint8),
+                np.asarray(sampled_valid, dtype=bool),
+                np.asarray(sampled_classes, dtype=np.int64),
+                np.asarray(sampled_categorical, dtype=bool),
+                np.asarray(sampled_sources, dtype=np.int16),
+            )
+
+        _night_color, day_color = _palette_color(1.0)
         fallback_color = np.asarray(
-            _lerp_color(day_color, night_color, t_night).getRgb(),
+            day_color.getRgb(),
             dtype=np.uint8,
         )
         fallback = np.broadcast_to(fallback_color, shape + (4,)).copy()
-        cache = getattr(getattr(self, "profile", None), "surface_samples", None)
-        sampled = _sample_cache_value(cache, "near_patch_rgba")
-        sampled_valid = _sample_cache_value(cache, "near_patch_valid")
         if (
             sampled is not None
             and sampled_valid is not None
             and np.shape(sampled) == shape + (4,)
             and np.shape(sampled_valid) == shape
         ):
+            sampled_valid = np.asarray(sampled_valid, dtype=bool)
             result = np.where(
-                np.asarray(sampled_valid, dtype=bool)[..., None],
+                sampled_valid[..., None],
                 np.asarray(sampled, dtype=np.uint8),
                 fallback,
             ).astype(np.uint8)
+            source_indices = np.where(
+                sampled_valid,
+                (
+                    np.asarray(sampled_sources, dtype=np.int16)
+                    if sampled_sources is not None
+                    and np.shape(sampled_sources) == shape
+                    else -1
+                ),
+                -1,
+            )
+            class_ids = np.where(
+                sampled_valid,
+                (
+                    np.asarray(sampled_classes, dtype=np.int64)
+                    if sampled_classes is not None
+                    and np.shape(sampled_classes) == shape
+                    else -1
+                ),
+                -1,
+            )
+            categorical = sampled_valid & (
+                np.asarray(sampled_categorical, dtype=bool)
+                if sampled_categorical is not None
+                and np.shape(sampled_categorical) == shape
+                else np.zeros(shape, dtype=bool)
+            )
         else:
             result = fallback
+            source_indices = np.full(shape, -1, dtype=np.int16)
+            class_ids = np.full(shape, -1, dtype=np.int64)
+            categorical = np.zeros(shape, dtype=bool)
         if self.terrain_surface_opaque:
             result[..., 3] = 255
-        return result
+        return TerrainMaterialSamples(
+            result,
+            np.ones(shape, dtype=bool),
+            class_ids,
+            categorical,
+            source_indices,
+        )
+
+    def _near_patch_vertex_base_rgba(self, asset, t_night):
+        """Compatibility view used by legacy callers."""
+
+        return self._near_patch_vertex_materials(asset, t_night).base_rgba
 
     def _apply_terrain_light(
         self, color: QColor, light_factor: float, sky_color: QColor, t_night: float
     ) -> QColor:
-        del sky_color, t_night
+        del sky_color
         if not self.render_settings.terrain_lighting_enabled:
             return QColor(color)
         factor = max(
-            self.render_settings.terrain_min_brightness,
-            min(self.render_settings.terrain_max_brightness, float(light_factor)),
+            0.0,
+            min(
+                max(
+                    self.render_settings.terrain_max_brightness,
+                    self.render_settings.vibrant_sun_max_brightness,
+                ),
+                float(light_factor),
+            ),
         )
+        del t_night
+        rgb = np.asarray(
+            (color.red(), color.green(), color.blue()), dtype=np.float32
+        ) * factor
         return QColor(
-            max(0, min(255, round(color.red() * factor))),
-            max(0, min(255, round(color.green() * factor))),
-            max(0, min(255, round(color.blue() * factor))),
+            max(0, min(255, round(float(rgb[0])))),
+            max(0, min(255, round(float(rgb[1])))),
+            max(0, min(255, round(float(rgb[2])))),
             color.alpha(),
         )
 
     def _apply_terrain_atmosphere(
         self, color: QColor, distance_m: float, sky_color: QColor, t_night: float
     ) -> QColor:
-        del sky_color, t_night
+        del t_night
         base = np.asarray(color.getRgb(), dtype=np.uint8)
         result = compose_vertex_rgba(
             base,
@@ -3005,6 +6203,11 @@ class HorizonOverlay(QObject):
             float(distance_m),
             self.render_settings,
             maximum_distance_m=self._maximum_terrain_distance_m(),
+            horizon_rgb=(
+                sky_color.red(),
+                sky_color.green(),
+                sky_color.blue(),
+            ),
         )
         return _qcolor_from_rgba(result)
 
@@ -3015,7 +6218,62 @@ class HorizonOverlay(QObject):
         distance_m: float,
         sky_color: QColor,
         t_night: float,
+        light_context: TerrainCelestialLightContext | None = None,
     ) -> QColor:
+        if isinstance(light_context, TerrainCelestialLightContext):
+            factors = terrain_celestial_light_factors(
+                light_context, self.render_settings
+            )
+            vibrant = (
+                normalize_surface_visual_style(
+                    self.render_settings.surface_visual_style
+                )
+                == SurfaceVisualStyle.VIBRANT.value
+            )
+            day_ambient = (
+                self.render_settings.vibrant_sun_ambient_strength
+                if vibrant
+                else self.render_settings.terrain_ambient_strength
+            )
+            ambient = (
+                self.render_settings.terrain_night_ambient_strength
+                + (
+                    day_ambient
+                    - self.render_settings.terrain_night_ambient_strength
+                )
+                * factors.solar_ambient
+                + self.render_settings.terrain_moon_ambient_strength
+                * factors.lunar_strength
+            )
+            directional = max(0.0, float(light_factor) - float(ambient))
+            solar_exposure = 0.0
+            lunar_exposure = 0.0
+            if factors.solar_direct > 0.0:
+                day_diffuse = self.render_settings.terrain_diffuse_strength * (
+                    self.render_settings.vibrant_sun_diffuse_boost
+                    if vibrant
+                    else 1.0
+                )
+                solar_exposure = _clamp01(
+                    directional / max(1e-6, float(day_diffuse))
+                )
+            elif factors.lunar_strength > 0.0:
+                lunar_exposure = _clamp01(
+                    directional
+                    / max(
+                        1e-6,
+                        float(self.render_settings.terrain_moon_diffuse_strength),
+                    )
+                )
+            return self._compose_profile_light_color(
+                base_color,
+                light_factor,
+                distance_m,
+                sky_color,
+                factors,
+                solar_exposure=solar_exposure,
+                lunar_exposure=lunar_exposure,
+            )
         lit = self._apply_terrain_light(
             QColor(base_color), light_factor, sky_color, t_night
         )
@@ -3036,6 +6294,7 @@ class HorizonOverlay(QObject):
         terrain_shading_enabled=True,
         light_factor=None,
         base_color=None,
+        light_context: TerrainCelestialLightContext | None = None,
     ):
         haze = float(
             atmospheric_fog_factor(
@@ -3046,7 +6305,15 @@ class HorizonOverlay(QObject):
         )
         palette_t = _clamp01(1.0 - haze)
         night_c, day_c = _palette_color(palette_t)
-        base = QColor(base_color) if base_color is not None else _lerp_color(day_c, night_c, t_night)
+        base = (
+            QColor(base_color)
+            if base_color is not None
+            else (
+                QColor(day_c)
+                if light_context is not None
+                else _lerp_color(day_c, night_c, t_night)
+            )
+        )
 
         if light_factor is None:
             light_factor = float(
@@ -3059,12 +6326,18 @@ class HorizonOverlay(QObject):
                         sun_vec,
                         sun_alt,
                         terrain_shading_enabled=terrain_shading_enabled,
+                        light_context=light_context,
                     )
                 )
             )
 
         return self._compose_terrain_color(
-            base, light_factor, distance_m, sky_color, t_night
+            base,
+            light_factor,
+            distance_m,
+            sky_color,
+            t_night,
+            light_context=light_context,
         )
 
     def _terrain_surface_color(
@@ -3076,6 +6349,7 @@ class HorizonOverlay(QObject):
         sun_vec,
         sun_alt,
         terrain_shading_enabled,
+        light_context: TerrainCelestialLightContext | None = None,
     ):
         color = self._mesh_quad_color(
             distance_m,
@@ -3088,7 +6362,12 @@ class HorizonOverlay(QObject):
             sun_alt,
             terrain_shading_enabled=terrain_shading_enabled,
             light_factor=light_factor,
+            light_context=light_context,
         )
+        if light_context is not None:
+            if self.terrain_surface_opaque:
+                color.setAlpha(255)
+            return color
         haze = float(
             atmospheric_fog_factor(
                 distance_m,
@@ -3121,6 +6400,7 @@ class HorizonOverlay(QObject):
         sun_vec,
         sun_alt,
         terrain_shading_enabled,
+        light_context: TerrainCelestialLightContext | None = None,
     ):
         finite = np.isfinite(seg_x) & np.isfinite(segment_shade)
         if np.count_nonzero(finite) < 2:
@@ -3139,6 +6419,7 @@ class HorizonOverlay(QObject):
                     sun_vec,
                     sun_alt,
                     terrain_shading_enabled,
+                    light_context,
                 )
             )
 
@@ -3161,6 +6442,7 @@ class HorizonOverlay(QObject):
                     sun_vec,
                     sun_alt,
                     terrain_shading_enabled,
+                    light_context,
                 )
             )
 
@@ -3182,6 +6464,7 @@ class HorizonOverlay(QObject):
                 sun_vec,
                 sun_alt,
                 terrain_shading_enabled,
+                light_context,
             )
             stops.append((position, color))
         for position, color in sorted(stops, key=lambda item: item[0]):
@@ -3288,6 +6571,7 @@ class HorizonOverlay(QObject):
         terrain_shading_enabled=True,
         projection_fn_numpy=None,
         interaction_active=False,
+        light_context: TerrainCelestialLightContext | None = None,
     ):
         self._last_surface2d_quads = 0
         self._last_surface2d_vertices = 0
@@ -3318,12 +6602,15 @@ class HorizonOverlay(QObject):
         normal_y = asset.normal_y
         normal_z = asset.normal_z
 
-        if self._layers:
-            sun_alt, sun_az, sun_vec = self._configured_light()
-        else:
-            # Mesh-only synthetic/integration profiles predate the configurable
-            # terrain light and explicitly provide the astronomical direction.
-            sun_vec = self._sun_vector_enu(sun_alt, sun_az)
+        light_context = self._resolve_light_context(
+            light_context, sun_alt=sun_alt, sun_az=sun_az
+        )
+        sun_alt, sun_az, sun_vec = self._configured_light(
+            sun_alt, sun_az, light_context
+        )
+        light_factors = terrain_celestial_light_factors(
+            light_context, self.render_settings
+        )
         terrain_shading_enabled = bool(
             terrain_shading_enabled
             and self.render_settings.terrain_lighting_enabled
@@ -3333,6 +6620,18 @@ class HorizonOverlay(QObject):
             bool(terrain_shading_enabled),
             None if sun_alt is None else round(float(sun_alt) * 4.0) / 4.0,
             None if sun_az is None else round(float(sun_az) * 4.0) / 4.0,
+            (
+                None
+                if light_context.moon_altitude_deg is None
+                else round(float(light_context.moon_altitude_deg) * 4.0) / 4.0
+            ),
+            (
+                None
+                if light_context.moon_azimuth_deg is None
+                else round(float(light_context.moon_azimuth_deg) * 4.0) / 4.0
+            ),
+            round(float(light_context.moon_illumination) * 256.0) / 256.0,
+            round(float(light_context.eclipse_factor) * 256.0) / 256.0,
             repr(self.render_settings),
         )
         shade_grid = (
@@ -3361,12 +6660,16 @@ class HorizonOverlay(QObject):
                 sun_alt,
                 terrain_shading_enabled=terrain_shading_enabled,
                 sun_visibility=sun_visibility,
+                light_context=light_context,
+            )
+            minimum_light, maximum_light = self._terrain_light_bounds(
+                light_factors
             )
             shade_grid = self._smooth_light_grid(
                 shade_grid,
                 valid & visible,
-                min_value=self.render_settings.terrain_min_brightness,
-                max_value=self.render_settings.terrain_max_brightness,
+                min_value=minimum_light,
+                max_value=maximum_light,
             )
             if PERFORMANCE_FLAGS.relief_cached:
                 self._terrain_shade_cache.put(
@@ -3453,6 +6756,7 @@ class HorizonOverlay(QObject):
                 sun_vec,
                 sun_alt,
                 terrain_shading_enabled,
+                light_context=light_context,
             )
             target_painter.setBrush(brush)
             target_painter.drawPolygon(polygon)
@@ -3486,7 +6790,7 @@ class HorizonOverlay(QObject):
             projection_fn, float(cur_az) - 90.0, float(cur_az) + 90.0
         )
         cache_key = (
-            "triangles-v1",
+            "triangles-v2-categorical-grid",
             int(asset.mesh_id),
             int(width),
             int(height),
@@ -3782,8 +7086,11 @@ class HorizonOverlay(QObject):
         t_night,
         sky_color,
         *,
+        sun_alt=None,
+        sun_az=None,
         projection_fn_numpy=None,
         interaction_active=False,
+        light_context: TerrainCelestialLightContext | None = None,
     ) -> bool:
         """Render the relief with shared per-vertex colours and a z-buffer."""
 
@@ -3803,30 +7110,37 @@ class HorizonOverlay(QObject):
         if asset is None:
             return False
 
-        light_alt, light_az, light_vector = self._configured_light()
+        light_context = self._resolve_light_context(
+            light_context,
+            sun_alt=sun_alt,
+            sun_az=sun_az,
+        )
+        light_alt, light_az, light_vector = self._configured_light(
+            sun_alt, sun_az, light_context
+        )
+        light_factors = terrain_celestial_light_factors(
+            light_context, self.render_settings
+        )
         lighting_enabled = bool(
             self.render_settings.terrain_lighting_enabled
             and light_vector is not None
         )
-        shade_key = (
-            "vertex-light-v1",
-            asset.mesh_id,
-            lighting_enabled,
-            round(float(light_alt) * 4.0) / 4.0,
-            round(float(light_az) * 4.0) / 4.0,
-            repr(self.render_settings),
+        shade_key = self._terrain_lighting_key(
+            asset,
+            light_context,
+            lighting_enabled=lighting_enabled,
         )
-        shade_grid = (
+        lighting_grid = (
             self._terrain_shade_cache.get(shade_key)
             if PERFORMANCE_FLAGS.relief_cached
             else None
         )
-        if shade_grid is None:
-            # The enhanced path deliberately uses the requested local Lambert
-            # model.  The legacy ray-marched sun-visibility calculation remains
-            # available to the compatibility renderer, but is neither required
-            # for normal lighting nor affordable on every interactive update.
-            shade_grid = self._terrain_light_factor(
+        polar_lighting_hit = isinstance(
+            lighting_grid, TerrainLightingGrid
+        )
+        if not isinstance(lighting_grid, TerrainLightingGrid):
+            self._terrain_lighting_builds += 1
+            lighting_grid = self._terrain_light_components(
                 asset.normal_x,
                 asset.normal_y,
                 asset.normal_z,
@@ -3835,16 +7149,40 @@ class HorizonOverlay(QObject):
                 light_alt,
                 terrain_shading_enabled=lighting_enabled,
                 sun_visibility=None,
+                light_context=light_context,
             )
-            shade_grid = self._smooth_light_grid(
-                shade_grid,
-                asset.valid,
-                min_value=self.render_settings.terrain_min_brightness,
-                max_value=self.render_settings.terrain_max_brightness,
+            minimum_light, maximum_light = self._terrain_light_bounds(
+                lighting_grid.factors
+            )
+            lighting_grid = TerrainLightingGrid(
+                self._smooth_light_grid(
+                    lighting_grid.intensity,
+                    asset.valid,
+                    min_value=minimum_light,
+                    max_value=maximum_light,
+                ),
+                self._smooth_light_grid(
+                    lighting_grid.solar_exposure,
+                    asset.valid,
+                    min_value=0.0,
+                    max_value=1.0,
+                ),
+                self._smooth_light_grid(
+                    lighting_grid.lunar_exposure,
+                    asset.valid,
+                    min_value=0.0,
+                    max_value=1.0,
+                ),
+                lighting_grid.factors,
             )
             if PERFORMANCE_FLAGS.relief_cached:
+                light_bytes = (
+                    lighting_grid.intensity.nbytes
+                    + lighting_grid.solar_exposure.nbytes
+                    + lighting_grid.lunar_exposure.nbytes
+                )
                 self._terrain_shade_cache.put(
-                    shade_key, shade_grid, int(shade_grid.nbytes)
+                    shade_key, lighting_grid, int(light_bytes)
                 )
 
         patch_east, patch_north = np.meshgrid(
@@ -3853,15 +7191,22 @@ class HorizonOverlay(QObject):
         )
         patch_distances = np.hypot(patch_east, patch_north).astype(np.float32)
         patch_shade_key = shade_key + ("near-patch",)
-        patch_shade = (
+        patch_lighting = (
             self._terrain_shade_cache.get(patch_shade_key)
             if PERFORMANCE_FLAGS.relief_cached
             else None
         )
-        if patch_shade is None and patch_distances.size == 0:
-            patch_shade = np.empty(patch_distances.shape, dtype=np.float32)
-        elif patch_shade is None:
-            patch_shade = self._terrain_light_factor(
+        patch_lighting_hit = isinstance(
+            patch_lighting, TerrainLightingGrid
+        )
+        if not isinstance(patch_lighting, TerrainLightingGrid) and patch_distances.size == 0:
+            empty = np.empty(patch_distances.shape, dtype=np.float32)
+            patch_lighting = TerrainLightingGrid(
+                empty, empty.copy(), empty.copy(), light_factors
+            )
+            patch_lighting_hit = True
+        elif not isinstance(patch_lighting, TerrainLightingGrid):
+            patch_lighting = self._terrain_light_components(
                 asset.near_patch_normal_x,
                 asset.near_patch_normal_y,
                 asset.near_patch_normal_z,
@@ -3870,17 +7215,44 @@ class HorizonOverlay(QObject):
                 light_alt,
                 terrain_shading_enabled=lighting_enabled,
                 sun_visibility=None,
+                light_context=light_context,
             )
-            patch_shade = self._smooth_light_grid(
-                patch_shade,
-                asset.near_patch_valid,
-                min_value=self.render_settings.terrain_min_brightness,
-                max_value=self.render_settings.terrain_max_brightness,
+            minimum_light, maximum_light = self._terrain_light_bounds(
+                patch_lighting.factors
+            )
+            patch_lighting = TerrainLightingGrid(
+                self._smooth_light_grid(
+                    patch_lighting.intensity,
+                    asset.near_patch_valid,
+                    min_value=minimum_light,
+                    max_value=maximum_light,
+                ),
+                self._smooth_light_grid(
+                    patch_lighting.solar_exposure,
+                    asset.near_patch_valid,
+                    min_value=0.0,
+                    max_value=1.0,
+                ),
+                self._smooth_light_grid(
+                    patch_lighting.lunar_exposure,
+                    asset.near_patch_valid,
+                    min_value=0.0,
+                    max_value=1.0,
+                ),
+                patch_lighting.factors,
             )
             if PERFORMANCE_FLAGS.relief_cached:
-                self._terrain_shade_cache.put(
-                    patch_shade_key, patch_shade, int(patch_shade.nbytes)
+                patch_light_bytes = (
+                    patch_lighting.intensity.nbytes
+                    + patch_lighting.solar_exposure.nbytes
+                    + patch_lighting.lunar_exposure.nbytes
                 )
+                self._terrain_shade_cache.put(
+                    patch_shade_key, patch_lighting, int(patch_light_bytes)
+                )
+        self._last_lighting_cache_hit = bool(
+            polar_lighting_hit and patch_lighting_hit
+        )
 
         geometry = self._terrain_triangles_for_view(
             asset,
@@ -3895,55 +7267,44 @@ class HorizonOverlay(QObject):
         if geometry is None or geometry.xy.size == 0:
             return False
 
-        color_key = (
+        color_started = time.perf_counter()
+        base_material = self._build_terrain_base_material(
+            asset, surface_cache
+        )
+        vertex_materials = base_material.polar
+        patch_materials = base_material.near_patch
+        self._last_terrain_color_s = time.perf_counter() - color_started
+        frame_key = (
+            "terrain-frame-v1",
+            base_material.key,
             shade_key,
             round(float(t_night) * 256.0) / 256.0,
-            id(getattr(getattr(self, "profile", None), "surface_samples", None)),
-            bool(self.terrain_surface_opaque),
+            (
+                int(sky_color.rgba())
+                if isinstance(sky_color, QColor)
+                else None
+            ),
+            repr(self.render_settings),
         )
-        color_started = time.perf_counter()
-        cached_colors = (
-            self._terrain_color_cache.get(color_key)
-            if PERFORMANCE_FLAGS.relief_cached
-            else None
-        )
-        if isinstance(cached_colors, tuple) and len(cached_colors) == 2:
-            vertex_rgba, patch_vertex_rgba = cached_colors
-        else:
-            base_rgba = self._terrain_vertex_base_rgba(asset, t_night)
-            vertex_rgba = compose_vertex_rgba(
-                base_rgba,
-                shade_grid,
-                asset.distances[:, None],
-                self.render_settings,
-                maximum_distance_m=self._maximum_terrain_distance_m()
-                or float(asset.distances[-1]),
-            )
-            patch_base_rgba = self._near_patch_vertex_base_rgba(asset, t_night)
-            patch_vertex_rgba = compose_vertex_rgba(
-                patch_base_rgba,
-                patch_shade,
-                patch_distances,
-                self.render_settings,
-                maximum_distance_m=self._maximum_terrain_distance_m()
-                or float(asset.distances[-1]),
-            )
-            if PERFORMANCE_FLAGS.relief_cached:
-                self._terrain_color_cache.put(
-                    color_key,
-                    (vertex_rgba, patch_vertex_rgba),
-                    int(vertex_rgba.nbytes + patch_vertex_rgba.nbytes),
-                )
-        self._last_terrain_color_s = time.perf_counter() - color_started
         self._paint_terrain_triangles(
             painter,
+            asset,
             geometry,
-            vertex_rgba,
-            patch_vertex_rgba,
+            vertex_materials,
+            patch_materials,
+            lighting_grid.intensity,
+            patch_lighting.intensity,
             width,
             height,
-            color_key,
+            base_material.key,
+            frame_key,
             interaction_active=interaction_active,
+            vertex_solar=lighting_grid.solar_exposure,
+            patch_vertex_solar=patch_lighting.solar_exposure,
+            vertex_lunar=lighting_grid.lunar_exposure,
+            patch_vertex_lunar=patch_lighting.lunar_exposure,
+            light_factors=lighting_grid.factors,
+            sky_color=sky_color,
         )
         self._last_terrain_total_s = time.perf_counter() - frame_started
         if self.render_settings.terrain_performance_logging_enabled:
@@ -3951,6 +7312,9 @@ class HorizonOverlay(QObject):
                 "terrain.render",
                 geometry_s=round(float(geometry.metrics.elapsed_s), 6),
                 colors_s=round(float(self._last_terrain_color_s), 6),
+                material_resolution_s=round(
+                    float(self._last_material_resolution_s), 6
+                ),
                 rasterization_s=round(float(self._last_terrain_raster_s), 6),
                 horizon_antialias_s=round(
                     float(self._last_horizon_antialias_s), 6
@@ -3963,19 +7327,252 @@ class HorizonOverlay(QObject):
                 width=int(width),
                 height=int(height),
                 shading_mode=self.render_settings.terrain_shading_mode,
+                base_material_cache_hit=bool(
+                    self._last_base_material_cache_hit
+                ),
+                lighting_cache_hit=bool(
+                    self._last_lighting_cache_hit
+                ),
+                resolved_material_cache_hit=bool(
+                    self._last_resolved_material_cache_hit
+                ),
+                base_material_builds=int(
+                    self._terrain_base_material_builds
+                ),
+                lighting_builds=int(self._terrain_lighting_builds),
+                resolved_material_builds=int(
+                    self._terrain_resolved_material_builds
+                ),
+                raster_builds=int(self._terrain_raster_builds),
+                raster_cache_hit=bool(self._last_raster_cache_hit),
+                frame_cache_hit=bool(self._last_frame_cache_hit),
+                base_material_cache_bytes=int(
+                    self._terrain_base_material_cache.resident_bytes
+                ),
+                lighting_cache_bytes=int(
+                    self._terrain_shade_cache.resident_bytes
+                ),
+                resolved_material_cache_bytes=int(
+                    self._terrain_resolved_material_cache.resident_bytes
+                ),
             )
         return True
+
+    def _resolve_screen_material(
+        self,
+        asset,
+        geometry,
+        triangle_id,
+        bary_u,
+        bary_v,
+        covered,
+        vertex_materials,
+        patch_materials,
+        *,
+        raster_key: tuple,
+        material_key: tuple,
+        render_scale: float,
+    ) -> TerrainResolvedMaterialCache:
+        """Resolve projected classes/colours once for a stable camera raster."""
+
+        key = (
+            "terrain-resolved-material-v1",
+            raster_key,
+            material_key,
+            str(self.render_settings.terrain_shading_mode),
+            round(
+                float(
+                    self.render_settings
+                    .categorical_region_smoothing_radius_px
+                )
+                * float(render_scale),
+                4,
+            ),
+        )
+        cached = (
+            self._terrain_resolved_material_cache.get(key)
+            if PERFORMANCE_FLAGS.relief_cached
+            else None
+        )
+        if isinstance(cached, TerrainResolvedMaterialCache):
+            self._last_resolved_material_cache_hit = True
+            self._last_material_resolution_s = 0.0
+            return cached
+
+        self._last_resolved_material_cache_hit = False
+        material_started = time.perf_counter()
+        vertex_rows = np.asarray(geometry.vertex_rows, dtype=np.int32)
+        vertex_domain = np.asarray(geometry.vertex_domain, dtype=np.uint8)
+        vertex_columns = np.asarray(
+            geometry.vertex_columns, dtype=np.int32
+        )
+        polar_vertices = vertex_domain == 0
+        polar_rows = np.where(polar_vertices, vertex_rows, 0)
+        polar_columns = np.where(polar_vertices, vertex_columns, 0)
+        base_rgba = np.asarray(
+            vertex_materials.base_rgba[polar_rows, polar_columns],
+            dtype=np.uint8,
+        )
+        material_valid = np.asarray(
+            vertex_materials.valid[polar_rows, polar_columns], dtype=bool
+        )
+        class_ids = np.asarray(
+            vertex_materials.class_ids[polar_rows, polar_columns],
+            dtype=np.int64,
+        )
+        categorical = np.asarray(
+            vertex_materials.categorical[polar_rows, polar_columns],
+            dtype=bool,
+        )
+        source_indices = np.asarray(
+            vertex_materials.source_indices[polar_rows, polar_columns],
+            dtype=np.int16,
+        )
+        patch_vertices = vertex_domain == 1
+        if np.any(patch_vertices):
+            base_rgba = base_rgba.copy()
+            material_valid = material_valid.copy()
+            class_ids = class_ids.copy()
+            categorical = categorical.copy()
+            source_indices = source_indices.copy()
+            patch_rows = vertex_rows[patch_vertices]
+            patch_columns = vertex_columns[patch_vertices]
+            base_rgba[patch_vertices] = np.asarray(
+                patch_materials.base_rgba[patch_rows, patch_columns],
+                dtype=np.uint8,
+            )
+            material_valid[patch_vertices] = np.asarray(
+                patch_materials.valid[patch_rows, patch_columns], dtype=bool
+            )
+            class_ids[patch_vertices] = np.asarray(
+                patch_materials.class_ids[patch_rows, patch_columns],
+                dtype=np.int64,
+            )
+            categorical[patch_vertices] = np.asarray(
+                patch_materials.categorical[patch_rows, patch_columns],
+                dtype=bool,
+            )
+            source_indices[patch_vertices] = np.asarray(
+                patch_materials.source_indices[patch_rows, patch_columns],
+                dtype=np.int16,
+            )
+
+        triangle_materials = TerrainMaterialSamples(
+            base_rgba,
+            material_valid,
+            class_ids,
+            categorical,
+            source_indices,
+        )
+        triangle_surface_xy = np.zeros(
+            vertex_rows.shape + (2,), dtype=np.float64
+        )
+        polar_distance = np.asarray(
+            asset.distances[polar_rows], dtype=np.float64
+        )
+        polar_azimuth = np.radians(
+            np.asarray(
+                asset.azimuths[polar_columns], dtype=np.float64
+            )
+        )
+        triangle_surface_xy[..., 0] = (
+            polar_distance * np.sin(polar_azimuth)
+        )
+        triangle_surface_xy[..., 1] = (
+            polar_distance * np.cos(polar_azimuth)
+        )
+        if np.any(patch_vertices):
+            patch_rows = vertex_rows[patch_vertices]
+            patch_columns = vertex_columns[patch_vertices]
+            triangle_surface_xy[..., 0][patch_vertices] = np.asarray(
+                asset.near_patch_eastings[patch_columns],
+                dtype=np.float64,
+            )
+            triangle_surface_xy[..., 1][patch_vertices] = np.asarray(
+                asset.near_patch_northings[patch_rows],
+                dtype=np.float64,
+            )
+
+        resolved = _resolve_surface_material(
+            triangle_id,
+            bary_u,
+            bary_v,
+            triangle_materials,
+            triangle_surface_xy,
+            vertex_domain,
+            vertex_materials,
+            asset.distances,
+            asset.azimuths,
+            patch_materials,
+            asset.near_patch_eastings,
+            asset.near_patch_northings,
+            flat_continuous=(
+                self.render_settings.terrain_shading_mode == "flat"
+            ),
+        )
+        surface_cache = getattr(
+            getattr(self, "profile", None), "surface_samples", None
+        )
+        protected = np.zeros(np.asarray(covered).shape, dtype=bool)
+        if (
+            normalize_surface_visual_style(
+                self.render_settings.surface_visual_style
+            )
+            == SurfaceVisualStyle.VIBRANT.value
+        ):
+            protected = _protected_categorical_regions(
+                resolved, surface_cache
+            )
+            resolved = _regularize_categorical_regions(
+                resolved,
+                covered,
+                radius_px=(
+                    self.render_settings
+                    .categorical_region_smoothing_radius_px
+                    * render_scale
+                ),
+                protected=protected,
+            )
+
+        triangle_surface_xy.setflags(write=False)
+        protected.setflags(write=False)
+        entry = TerrainResolvedMaterialCache(
+            key,
+            _freeze_material_samples(resolved),
+            _freeze_material_samples(triangle_materials),
+            triangle_surface_xy,
+            protected,
+        )
+        self._terrain_resolved_material_builds += 1
+        self._last_material_resolution_s = (
+            time.perf_counter() - material_started
+        )
+        if PERFORMANCE_FLAGS.relief_cached:
+            self._terrain_resolved_material_cache.put(
+                key, entry, entry.resident_bytes
+            )
+        return entry
 
     def _paint_terrain_triangles(
         self,
         painter,
+        asset,
         geometry,
-        vertex_rgba,
-        patch_vertex_rgba,
+        vertex_materials,
+        patch_materials,
+        vertex_light,
+        patch_vertex_light,
         width,
         height,
-        color_key,
+        material_key,
+        frame_key,
         interaction_active=False,
+        vertex_solar=None,
+        patch_vertex_solar=None,
+        vertex_lunar=None,
+        patch_vertex_lunar=None,
+        light_factors: TerrainCelestialLightFactors | None = None,
+        sky_color: QColor | None = None,
     ):
         """Resolve exact screen visibility and compose the cached RGBA surface."""
 
@@ -3989,12 +7586,11 @@ class HorizonOverlay(QObject):
         render_height = max(1, int(math.ceil(float(height) * render_scale)))
         supersample = 1
         cache_key = (
-            "zbuffer-v3",
+            "terrain-frame-image-v1",
             int(width),
             int(height),
             bool(interaction_active),
-            color_key,
-            bool(self.terrain_surface_opaque),
+            frame_key,
         )
         if (
             PERFORMANCE_FLAGS.relief_cached
@@ -4002,12 +7598,16 @@ class HorizonOverlay(QObject):
             and self._terrain_surface_image_cache_key == cache_key
             and self._terrain_surface_image_cache is not None
         ):
+            self._last_frame_cache_hit = True
+            self._terrain_frame_cache_hits += 1
             painter.drawImage(0, 0, self._terrain_surface_image_cache)
             self._last_surface2d_paint_s = time.perf_counter() - paint_started
             self._last_terrain_raster_s = 0.0
             self._last_horizon_antialias_s = 0.0
             return
 
+        self._last_frame_cache_hit = False
+        self._terrain_frame_cache_misses += 1
         raster_started = time.perf_counter()
         raster_key = (
             id(geometry),
@@ -4023,8 +7623,11 @@ class HorizonOverlay(QObject):
             and raster_key == self._terrain_raster_cache_key
             and self._terrain_raster_cache is not None
         ):
+            self._last_raster_cache_hit = True
             triangle_id, bary_u, bary_v = self._terrain_raster_cache
         else:
+            self._last_raster_cache_hit = False
+            self._terrain_raster_builds += 1
             _depth, triangle_id, bary_u, bary_v = _rasterize_terrain_triangles(
                 scaled_xy,
                 geometry.depth,
@@ -4044,9 +7647,15 @@ class HorizonOverlay(QObject):
             ),
             dtype=np.uint8,
         )
+        resolved_material = None
+        vibrant_enabled = (
+            normalize_surface_visual_style(
+                self.render_settings.surface_visual_style
+            )
+            == SurfaceVisualStyle.VIBRANT.value
+        )
+        detailed_vibrant = vibrant_enabled and not bool(interaction_active)
         if np.any(covered):
-            # A shared mesh index always supplies byte-identical RGBA to both
-            # incident triangles.
             vertex_rows = np.asarray(geometry.vertex_rows, dtype=np.int32)
             vertex_domain = np.asarray(geometry.vertex_domain, dtype=np.uint8)
             polar_vertices = vertex_domain == 0
@@ -4054,33 +7663,339 @@ class HorizonOverlay(QObject):
             polar_columns = np.where(
                 polar_vertices, geometry.vertex_columns, 0
             )
-            values = np.asarray(
-                vertex_rgba[
-                    polar_rows,
-                    polar_columns,
-                ],
+            resolved_entry = self._resolve_screen_material(
+                asset,
+                geometry,
+                triangle_id,
+                bary_u,
+                bary_v,
+                covered,
+                vertex_materials,
+                patch_materials,
+                raster_key=raster_key,
+                material_key=material_key,
+                render_scale=render_scale,
+            )
+            resolved_material = resolved_entry.materials
+            triangle_materials = resolved_entry.triangle_materials
+            triangle_surface_xy = resolved_entry.triangle_surface_xy
+            protected_categories = resolved_entry.protected
+            material_valid = np.asarray(
+                triangle_materials.valid, dtype=bool
+            )
+            categorical = np.asarray(
+                triangle_materials.categorical, dtype=bool
+            )
+            class_ids = np.asarray(
+                triangle_materials.class_ids, dtype=np.int64
+            )
+            source_indices = np.asarray(
+                triangle_materials.source_indices, dtype=np.int16
+            )
+            light_values = np.asarray(
+                vertex_light[polar_rows, polar_columns], dtype=np.float64
+            )
+            solar_values = np.asarray(
+                (
+                    vertex_solar[polar_rows, polar_columns]
+                    if vertex_solar is not None
+                    else np.zeros(polar_rows.shape, dtype=np.float32)
+                ),
                 dtype=np.float64,
+            )
+            lunar_values = np.asarray(
+                (
+                    vertex_lunar[polar_rows, polar_columns]
+                    if vertex_lunar is not None
+                    else np.zeros(polar_rows.shape, dtype=np.float32)
+                ),
+                dtype=np.float64,
+            )
+            elevation_values = None
+            normal_x_values = None
+            normal_y_values = None
+            normal_z_values = None
+            if detailed_vibrant:
+                elevation_values = np.asarray(
+                    asset.elevations[polar_rows, polar_columns],
+                    dtype=np.float64,
+                )
+                normal_x_values = np.asarray(
+                    asset.normal_x[polar_rows, polar_columns],
+                    dtype=np.float64,
+                )
+                normal_y_values = np.asarray(
+                    asset.normal_y[polar_rows, polar_columns],
+                    dtype=np.float64,
+                )
+                normal_z_values = np.asarray(
+                    asset.normal_z[polar_rows, polar_columns],
+                    dtype=np.float64,
             )
             patch_vertices = vertex_domain == 1
             if np.any(patch_vertices):
-                values = values.copy()
-                values[patch_vertices] = np.asarray(
-                    patch_vertex_rgba[
+                light_values = light_values.copy()
+                solar_values = solar_values.copy()
+                lunar_values = lunar_values.copy()
+                if detailed_vibrant:
+                    elevation_values = elevation_values.copy()
+                    normal_x_values = normal_x_values.copy()
+                    normal_y_values = normal_y_values.copy()
+                    normal_z_values = normal_z_values.copy()
+                patch_rows = vertex_rows[patch_vertices]
+                patch_columns = geometry.vertex_columns[patch_vertices]
+                light_values[patch_vertices] = np.asarray(
+                    patch_vertex_light[
                         vertex_rows[patch_vertices],
                         geometry.vertex_columns[patch_vertices],
                     ],
                     dtype=np.float64,
                 )
-            interpolated_grid, _ = _interpolate_triangle_values(
+                if patch_vertex_solar is not None:
+                    solar_values[patch_vertices] = np.asarray(
+                        patch_vertex_solar[
+                            vertex_rows[patch_vertices],
+                            geometry.vertex_columns[patch_vertices],
+                        ],
+                        dtype=np.float64,
+                    )
+                if patch_vertex_lunar is not None:
+                    lunar_values[patch_vertices] = np.asarray(
+                        patch_vertex_lunar[
+                            vertex_rows[patch_vertices],
+                            geometry.vertex_columns[patch_vertices],
+                        ],
+                        dtype=np.float64,
+                    )
+                if detailed_vibrant:
+                    elevation_values[patch_vertices] = np.asarray(
+                        asset.near_patch_elevations[
+                            vertex_rows[patch_vertices],
+                            geometry.vertex_columns[patch_vertices],
+                        ],
+                        dtype=np.float64,
+                    )
+                    normal_x_values[patch_vertices] = np.asarray(
+                        asset.near_patch_normal_x[
+                            vertex_rows[patch_vertices],
+                            geometry.vertex_columns[patch_vertices],
+                        ],
+                        dtype=np.float64,
+                    )
+                    normal_y_values[patch_vertices] = np.asarray(
+                        asset.near_patch_normal_y[
+                            vertex_rows[patch_vertices],
+                            geometry.vertex_columns[patch_vertices],
+                        ],
+                        dtype=np.float64,
+                    )
+                    normal_z_values[patch_vertices] = np.asarray(
+                        asset.near_patch_normal_z[
+                            vertex_rows[patch_vertices],
+                            geometry.vertex_columns[patch_vertices],
+                        ],
+                        dtype=np.float64,
+                    )
+            surface_cache = getattr(
+                getattr(self, "profile", None), "surface_samples", None
+            )
+            continuous_channels = [
+                light_values[..., None],
+                np.asarray(geometry.depth, dtype=np.float64)[..., None],
+                triangle_surface_xy,
+                solar_values[..., None],
+                lunar_values[..., None],
+            ]
+            if detailed_vibrant:
+                continuous_channels.extend(
+                    (
+                        elevation_values[..., None],
+                        normal_x_values[..., None],
+                        normal_y_values[..., None],
+                        normal_z_values[..., None],
+                    )
+                )
+            continuous_values = np.concatenate(
+                tuple(continuous_channels), axis=2
+            )
+            interpolated_continuous, _ = (
+                _interpolate_triangle_continuous_values(
                 triangle_id,
                 bary_u,
                 bary_v,
-                values,
+                continuous_values,
                 flat=self.render_settings.terrain_shading_mode == "flat",
+                )
             )
-            rgba_high[covered] = np.clip(
-                np.rint(interpolated_grid[covered]), 0, 255
-            ).astype(np.uint8)
+            maximum_distance_m = (
+                self._maximum_terrain_distance_m()
+                or float(np.nanmax(geometry.depth))
+            )
+            material_pixels = covered & resolved_material.valid
+            material_rgba = resolved_material.base_rgba
+            if vibrant_enabled:
+                detail_scale = 1.0 if detailed_vibrant else 0.0
+                material_rgba = _apply_categorical_solar_response(
+                    material_rgba,
+                    resolved_material,
+                    interpolated_continuous[..., 4],
+                    material_pixels,
+                    strength=self.render_settings.vibrant_intensity,
+                    midscale_variation=(
+                        self.render_settings.vibrant_material_midscale_variation
+                        * detail_scale
+                    ),
+                    microscale_variation=(
+                        self.render_settings
+                        .vibrant_material_microscale_variation
+                        * detail_scale
+                    ),
+                    slope_influence=(
+                        self.render_settings.vibrant_material_slope_influence
+                        * detail_scale
+                    ),
+                    snow_rock_blend=(
+                        self.render_settings.vibrant_snow_rock_blend
+                        * detail_scale
+                    ),
+                    water_shore_variation=(
+                        self.render_settings.vibrant_water_shore_variation
+                        * detail_scale
+                    ),
+                    normal_x=(
+                        interpolated_continuous[..., 7]
+                        if detailed_vibrant
+                        else None
+                    ),
+                    normal_y=(
+                        interpolated_continuous[..., 8]
+                        if detailed_vibrant
+                        else None
+                    ),
+                    normal_z=(
+                        interpolated_continuous[..., 9]
+                        if detailed_vibrant
+                        else None
+                    ),
+                    source_legend_ids=tuple(
+                        _sample_cache_value(
+                            surface_cache, "source_legend_ids", ()
+                        )
+                        or ()
+                    ),
+                )
+            composed = compose_vertex_rgba(
+                material_rgba,
+                interpolated_continuous[..., 0],
+                interpolated_continuous[..., 1],
+                self.render_settings,
+                maximum_distance_m=maximum_distance_m,
+                horizon_rgb=(
+                    (
+                        sky_color.red(),
+                        sky_color.green(),
+                        sky_color.blue(),
+                    )
+                    if isinstance(sky_color, QColor)
+                    else None
+                ),
+                atmosphere_strength=0.0 if vibrant_enabled else 1.0,
+            )
+            if vibrant_enabled:
+                valley_haze = None
+                if detailed_vibrant:
+                    relief_occlusion = _vibrant_relief_occlusion(
+                        interpolated_continuous[..., 6],
+                        interpolated_continuous[..., 9],
+                        material_pixels,
+                        radius_px=(
+                            self.render_settings
+                            .vibrant_ambient_occlusion_radius_px
+                            * render_scale
+                        ),
+                        relief_scale_m=(
+                            self.render_settings
+                            .vibrant_ambient_occlusion_relief_scale_m
+                        ),
+                    )
+                    composed = _apply_vibrant_ambient_occlusion(
+                        composed,
+                        relief_occlusion,
+                        material_pixels,
+                        strength=(
+                            self.render_settings
+                            .vibrant_ambient_occlusion_strength
+                        ),
+                    )
+                    valley_haze = _vibrant_valley_haze(
+                        relief_occlusion,
+                        interpolated_continuous[..., 1],
+                        material_pixels,
+                        maximum_distance_m=maximum_distance_m,
+                        strength=(
+                            self.render_settings.vibrant_valley_haze_strength
+                        ),
+                    )
+                composed = apply_vibrant_color_grade(
+                    composed,
+                    interpolated_continuous[..., 0],
+                    interpolated_continuous[..., 1],
+                    self.render_settings,
+                    maximum_distance_m=maximum_distance_m,
+                    valid_mask=material_pixels,
+                    additional_haze=valley_haze,
+                    daylight_factor=(
+                        light_factors.solar_ambient
+                        if light_factors is not None
+                        else 1.0
+                    ),
+                    moonlight_factor=(
+                        light_factors.lunar_strength
+                        if light_factors is not None
+                        else 0.0
+                    ),
+                    solar_exposure=interpolated_continuous[..., 4],
+                    lunar_exposure=interpolated_continuous[..., 5],
+                    atmosphere_rgb=(
+                        (
+                            sky_color.red(),
+                            sky_color.green(),
+                            sky_color.blue(),
+                        )
+                        if isinstance(sky_color, QColor)
+                        else None
+                    ),
+                )
+            rgba_high[material_pixels] = composed[material_pixels]
+            if vibrant_enabled:
+                rgba_high = _soften_categorical_edges(
+                    rgba_high,
+                    resolved_material,
+                    covered,
+                    strength=(
+                        self.render_settings.categorical_edge_smoothing_strength
+                    ),
+                    protected=protected_categories,
+                )
+                rgba_high = _apply_vibrant_bloom(
+                    rgba_high,
+                    material_pixels,
+                    self.render_settings,
+                    render_scale=render_scale,
+                    light_intensity=interpolated_continuous[..., 0],
+                    distance_m=interpolated_continuous[..., 1],
+                    maximum_distance_m=maximum_distance_m,
+                    daylight_factor=(
+                        light_factors.solar_ambient
+                        if light_factors is not None
+                        else 1.0
+                    ),
+                    moonlight_factor=(
+                        light_factors.lunar_strength
+                        if light_factors is not None
+                        else 0.0
+                    ),
+                )
         self._last_terrain_raster_s = time.perf_counter() - raster_started
 
         settings = self.render_settings
@@ -4137,8 +8052,98 @@ class HorizonOverlay(QObject):
         ).copy()
         if render_width != int(width) or render_height != int(height):
             image = image.scaled(
-                int(width), int(height), Qt.IgnoreAspectRatio, Qt.FastTransformation
+                int(width),
+                int(height),
+                Qt.IgnoreAspectRatio,
+                Qt.SmoothTransformation,
             )
+        visible_material_categories = (
+            resolved_material is not None
+            and np.any(
+                np.asarray(resolved_material.valid, dtype=bool)
+                & np.asarray(resolved_material.categorical, dtype=bool)
+            )
+        )
+        self._terrain_resolved_materials = (
+            resolved_material if visible_material_categories else None
+        )
+        if (
+            self.render_settings.terrain_surface_diagnostics_enabled
+            and resolved_material is not None
+        ):
+            material_rgba = np.zeros_like(rgba_high)
+            diagnostic_pixels = covered & resolved_material.valid
+            material_rgba[diagnostic_pixels] = resolved_material.base_rgba[
+                diagnostic_pixels
+            ]
+            material_image = QImage(
+                material_rgba.data,
+                int(render_width),
+                int(render_height),
+                int(material_rgba.strides[0]),
+                QImage.Format_RGBA8888,
+            ).copy()
+            if render_width != int(width) or render_height != int(height):
+                material_image = material_image.scaled(
+                    int(width),
+                    int(height),
+                    Qt.IgnoreAspectRatio,
+                    Qt.SmoothTransformation,
+                )
+            visible_categories = (
+                diagnostic_pixels & resolved_material.categorical
+            )
+            histogram = {}
+            if np.any(visible_categories):
+                pairs = np.column_stack(
+                    (
+                        resolved_material.source_indices[visible_categories],
+                        resolved_material.class_ids[visible_categories],
+                    )
+                )
+                unique_pairs, counts = np.unique(
+                    pairs, axis=0, return_counts=True
+                )
+                histogram = {
+                    f"{int(source)}:{int(class_id)}": int(count)
+                    for (source, class_id), count in zip(unique_pairs, counts)
+                }
+            categorical_vertices = categorical & material_valid
+            mixed_triangles = int(
+                np.count_nonzero(
+                    np.any(categorical_vertices, axis=1)
+                    & np.any(~categorical_vertices, axis=1)
+                )
+            )
+            categorical_counts = {1: 0, 2: 0, 3: 0}
+            for triangle_index in np.flatnonzero(
+                np.any(categorical_vertices, axis=1)
+            ):
+                mask = categorical_vertices[triangle_index]
+                identities = np.column_stack(
+                    (
+                        source_indices[triangle_index, mask],
+                        class_ids[triangle_index, mask],
+                    )
+                )
+                count = int(len(np.unique(identities, axis=0)))
+                categorical_counts[min(3, max(1, count))] += 1
+            self._terrain_material_image = material_image
+            self._terrain_surface_diagnostics = {
+                "class_histogram": histogram,
+                "categorical_triangles": {
+                    str(key): int(value)
+                    for key, value in categorical_counts.items()
+                },
+                "mixed_triangles": mixed_triangles,
+                "material_resolution_s": float(
+                    self._last_material_resolution_s
+                ),
+                "rasterization_s": float(self._last_terrain_raster_s),
+            }
+        elif not self.render_settings.terrain_surface_diagnostics_enabled:
+            self._terrain_material_image = None
+            self._terrain_surface_diagnostics = {}
         if PERFORMANCE_FLAGS.relief_cached:
             self._terrain_surface_image_cache_key = cache_key
             self._terrain_surface_image_cache = image
@@ -4329,6 +8334,7 @@ class HorizonOverlay(QObject):
         terrain_shading_enabled=True,
         projection_fn_numpy=None,
         interaction_active=False,
+        light_context: TerrainCelestialLightContext | None = None,
     ):
         self._draw_terrain_surface_2d(
             painter,
@@ -4346,6 +8352,8 @@ class HorizonOverlay(QObject):
             sun_az,
             terrain_shading_enabled=terrain_shading_enabled,
             projection_fn_numpy=projection_fn_numpy,
+            interaction_active=interaction_active,
+            light_context=light_context,
         )
 
     def _draw_profile_horizon_cap(
@@ -4491,6 +8499,7 @@ class HorizonOverlay(QObject):
         terrain_shading_enabled=True,
         sky_color=None,
         interaction_active=False,
+        light_context: TerrainCelestialLightContext | None = None,
     ):
         """
         Draw one filled silhouette band using the shared sky projection.
@@ -4604,6 +8613,7 @@ class HorizonOverlay(QObject):
                     sun_az,
                     band_pts,
                     sky_color,
+                    light_context=light_context,
                 )
             elif cacheable_fill and self._profile_polygon_cache_view_key is not None:
                 painter.setBrush(QBrush(color))
@@ -4742,6 +8752,7 @@ class HorizonOverlay(QObject):
         sun_az,
         band_pts,
         sky_color,
+        light_context: TerrainCelestialLightContext | None = None,
     ):
         for sx_arr, sy_arr, az_arr, h_arr in zip(
             list_sx, list_sy, list_az, list_h
@@ -4757,19 +8768,56 @@ class HorizonOverlay(QObject):
             if len(f_sx) < 2:
                 continue
 
-            self._fill_strip_downward_numpy(
-                painter, [f_sx], [f_sy], base_color, bottom_y, solid=True
+            light_grid = self._terrain_profile_light_grid(
+                f_az,
+                f_h,
+                sun_alt,
+                sun_az,
+                band_pts,
+                light_context=light_context,
             )
-
-            shade_values = self._terrain_shade_values(
-                f_az, f_h, sun_alt, sun_az, band_pts
+            shade_values = light_grid.intensity
+            band_distance = float(
+                getattr(band_pts, "band_max", 0.0) or 0.0
             )
             if np.nanmax(np.abs(shade_values - 1.0)) < 0.006:
+                color = self._compose_profile_light_color(
+                    base_color,
+                    float(np.nanmean(shade_values)),
+                    band_distance,
+                    sky_color,
+                    light_grid.factors,
+                    solar_exposure=float(
+                        np.nanmean(light_grid.solar_exposure)
+                    ),
+                    lunar_exposure=float(
+                        np.nanmean(light_grid.lunar_exposure)
+                    ),
+                )
+                self._fill_strip_downward_numpy(
+                    painter, [f_sx], [f_sy], color, bottom_y, solid=True
+                )
                 continue
 
             min_x = float(np.nanmin(f_sx))
             max_x = float(np.nanmax(f_sx))
             if max_x - min_x < 1.0:
+                color = self._compose_profile_light_color(
+                    base_color,
+                    float(np.nanmean(shade_values)),
+                    band_distance,
+                    sky_color,
+                    light_grid.factors,
+                    solar_exposure=float(
+                        np.nanmean(light_grid.solar_exposure)
+                    ),
+                    lunar_exposure=float(
+                        np.nanmean(light_grid.lunar_exposure)
+                    ),
+                )
+                self._fill_strip_downward_numpy(
+                    painter, [f_sx], [f_sy], color, bottom_y, solid=True
+                )
                 continue
 
             path = QPainterPath()
@@ -4786,20 +8834,41 @@ class HorizonOverlay(QObject):
             stops = []
             for idx in stop_indices:
                 pos = _clamp01((float(f_sx[idx]) - min_x) / (max_x - min_x))
-                stops.append((pos, float(shade_values[idx])))
+                stops.append(
+                    (
+                        pos,
+                        float(shade_values[idx]),
+                        float(light_grid.solar_exposure[idx]),
+                        float(light_grid.lunar_exposure[idx]),
+                    )
+                )
             stops.sort(key=lambda item: item[0])
 
             last_pos = -1.0
-            for pos, shade in stops:
+            for pos, shade, solar_exposure, lunar_exposure in stops:
                 if pos <= last_pos + 0.001:
                     continue
-                color = _shade_color(base_color, shade, sky_color)
+                color = self._compose_profile_light_color(
+                    base_color,
+                    shade,
+                    band_distance,
+                    sky_color,
+                    light_grid.factors,
+                    solar_exposure=solar_exposure,
+                    lunar_exposure=lunar_exposure,
+                )
                 color.setAlpha(255)
                 gradient.setColorAt(pos, color)
                 last_pos = pos
             if last_pos < 1.0:
-                color = _shade_color(
-                    base_color, float(shade_values[-1]), sky_color
+                color = self._compose_profile_light_color(
+                    base_color,
+                    float(shade_values[-1]),
+                    band_distance,
+                    sky_color,
+                    light_grid.factors,
+                    solar_exposure=float(light_grid.solar_exposure[-1]),
+                    lunar_exposure=float(light_grid.lunar_exposure[-1]),
                 )
                 color.setAlpha(255)
                 gradient.setColorAt(1.0, color)

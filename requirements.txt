@@ -1,4 +1,5 @@
 PyQt5>=5.15.9,<5.16
+PyQtWebEngine>=5.15.7,<5.16
 numpy>=1.26,<3
 skyfield>=1.46,<2
 astropy>=6,<8

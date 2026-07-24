@@ -12,20 +12,33 @@ import urllib.parse
 import zipfile
 import math
 import tempfile
-import time
-from dataclasses import dataclass
+import traceback
+from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 
-from TerraLab.common.app_paths import ensure_runtime_layout
 from TerraLab.common.data_library import DataLibrary
 from TerraLab.common.utils import get_config_value, set_config_value
+from TerraLab.data.copernicus_orthophoto import (
+    ADAPTED_ATTRIBUTION,
+    ATTRIBUTION,
+    DATA_POLICY_URL,
+    IMAGE_SERVER_URL,
+    PRODUCT_NAME as COPERNICUS_ORTHOPHOTO_PRODUCT,
+    PRODUCT_URL as COPERNICUS_ORTHOPHOTO_PRODUCT_URL,
+    SERVICE_COVERAGE_WGS84,
+    WMS_URL,
+    CopernicusOrthophotoManager,
+    DownloadRequest,
+)
 from TerraLab.tools.convert_planck_dust import convert_planck_fits_to_cache
 from TerraLab.terrain.asc_cache_builder import materialize_asc_caches_spawned
 from TerraLab.terrain.data_sources import (
     DataSourceRegistry,
+    LayerRole,
     LayerType,
+    SelectionMode,
     SourceHealthStatus,
 )
 from TerraLab.terrain.source_inspection import inspect_data_source
@@ -134,6 +147,29 @@ def _progress(
         pass
 
 
+def _json_payload(value: Any) -> Any:
+    """Return a manifest-safe representation of a core result object."""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        return _json_payload(value.to_dict())
+    if is_dataclass(value):
+        return _json_payload(asdict(value))
+    if isinstance(value, Mapping):
+        return {
+            str(key): _json_payload(item) for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_payload(item) for item in value]
+    raw_value = getattr(value, "value", None)
+    if raw_value is not None and raw_value is not value:
+        return _json_payload(raw_value)
+    return str(value)
+
+
 class AssetManager:
     def __init__(self, library: DataLibrary | None = None) -> None:
         self.library = library or DataLibrary.current(create=True)
@@ -199,13 +235,30 @@ class AssetManager:
             ),
             "orthophoto": AssetSpec(
                 asset_id="orthophoto",
-                title="Ortofoto",
-                source_url="",
-                accepted_formats="GeoTIFF o raster RGB/RGBA georeferenciat",
-                credits="Font aportada per l'usuari.",
+                title="Ortofoto Copernicus",
+                source_url=COPERNICUS_ORTHOPHOTO_PRODUCT_URL,
+                accepted_formats=(
+                    "GeoTIFF RGB U16/U8, GeoTIFF RGB U8 comprimit "
+                    "o raster RGB/RGBA georeferenciat"
+                ),
+                credits=ATTRIBUTION,
                 allow_multiple=True,
+                # This download needs a geographic request, not one static
+                # file URL.  The onboarding dialog enables it explicitly and
+                # routes it through CopernicusOrthophotoManager.
                 auto_download_url=None,
+                provider="Copernicus Land Monitoring Service",
                 semantic_type=LayerType.ORTHOPHOTO_RGB.value,
+                nominal_resolution_m=10.0,
+                nominal_crs="EPSG:3035",
+                geographic_extent=(
+                    "Europa; cobertura efectiva consultada al servei "
+                    "ArcGIS ImageServer"
+                ),
+                citation=COPERNICUS_ORTHOPHOTO_PRODUCT,
+                license_note=(
+                    f"{ATTRIBUTION} Política de dades: {DATA_POLICY_URL}"
+                ),
             ),
             "surface_rgb": AssetSpec(
                 asset_id="surface_rgb",
@@ -510,7 +563,39 @@ class AssetManager:
             install_state = str(
                 manifest_state.get("install_state", "") or ""
             )
-            if effective is not None:
+            download_manifest_path = str(
+                manifest_state.get("download_manifest_path", "") or ""
+            )
+            estimate_state = manifest_state.get("selection_estimate", {})
+            if not isinstance(estimate_state, Mapping):
+                estimate_state = {}
+            estimated_download_bytes = 0
+            for estimate_key in (
+                "compressed_estimate_bytes",
+                "estimated_compressed_bytes",
+                "raw_u16_bytes",
+                "raw_u8_bytes",
+            ):
+                try:
+                    estimated_download_bytes = int(
+                        estimate_state.get(estimate_key, 0) or 0
+                    )
+                except (TypeError, ValueError):
+                    estimated_download_bytes = 0
+                if estimated_download_bytes > 0:
+                    break
+            active_orthophoto_install = (
+                asset_id == "orthophoto"
+                and install_state
+                in {
+                    "downloading",
+                    "partial",
+                    "paused",
+                    "registering",
+                    "error",
+                }
+            )
+            if effective is not None and not active_orthophoto_install:
                 install_state = "prepared"
             elif partial is not None and partial.downloaded_bytes > 0:
                 install_state = {
@@ -540,9 +625,40 @@ class AssetManager:
                 "expected_bytes": int(
                     partial.expected_size
                     if partial is not None
-                    else self.get_spec(asset_id).expected_download_bytes
+                    else (
+                        estimated_download_bytes
+                        or self.get_spec(asset_id).expected_download_bytes
+                    )
                 ),
-                "resumable": bool(partial is not None and partial.resumable),
+                "resumable": bool(
+                    (partial is not None and partial.resumable)
+                    or (
+                        download_manifest_path
+                        and Path(download_manifest_path).is_file()
+                        and install_state
+                        in {
+                            "downloading",
+                            "partial",
+                            "paused",
+                            "error",
+                        }
+                    )
+                    or (
+                        asset_id == "orthophoto"
+                        and install_state
+                        in {
+                            "downloading",
+                            "partial",
+                            "paused",
+                            "error",
+                        }
+                        and isinstance(
+                            manifest_state.get("copernicus_request"),
+                            Mapping,
+                        )
+                    )
+                ),
+                "download_manifest_path": download_manifest_path,
             }
         if asset_id == "ngc_catalog":
             p = self._manifest_asset_path(asset_id) or (
@@ -778,6 +894,20 @@ class AssetManager:
                 resolved = candidate.resolve(strict=False)
                 if self.library.contains(resolved) and self._path_has_content(resolved):
                     managed_paths.append(resolved)
+        if normalized_id == "orthophoto":
+            # Dynamic Copernicus exports do not have one static
+            # ``auto_download_url``, so ``_download_target`` cannot discover
+            # their resumable fragment manifests.  They are nevertheless
+            # TerraLab-owned data and must be included in an explicit
+            # "Eliminar de la biblioteca" operation.
+            copernicus_download_root = (
+                Path(self.layout["downloads"]) / "copernicus-hrim-2018"
+            ).resolve(strict=False)
+            if (
+                self.library.contains(copernicus_download_root)
+                and self._path_has_content(copernicus_download_root)
+            ):
+                managed_paths.append(copernicus_download_root)
 
         managed = self._deduplicate_parent_paths(managed_paths)
         external = self._deduplicate_parent_paths(external_paths)
@@ -1195,17 +1325,35 @@ class AssetManager:
         managed: bool,
     ) -> dict[str, object]:
         spec = self.get_spec(asset_id)
+        # ``orthophoto`` also accepts arbitrary user rasters.  Product
+        # metadata is attached only by the Copernicus download branch so a
+        # linked/copied local TIFF is never falsely attributed to Copernicus.
+        generic_orthophoto = asset_id == "orthophoto"
         metadata: dict[str, object] = {
             "managed": bool(managed),
             "asset_id": str(asset_id),
             "semantic_type": str(spec.semantic_type or ""),
-            "provider": str(spec.provider or ""),
-            "official_url": str(spec.source_url or ""),
-            "nominal_resolution_m": spec.nominal_resolution_m,
-            "nominal_crs": str(spec.nominal_crs or ""),
-            "geographic_extent_description": str(spec.geographic_extent or ""),
-            "citation": str(spec.citation or ""),
-            "license_note": str(spec.license_note or ""),
+            "provider": "" if generic_orthophoto else str(spec.provider or ""),
+            "official_url": (
+                "" if generic_orthophoto else str(spec.source_url or "")
+            ),
+            "nominal_resolution_m": (
+                None if generic_orthophoto else spec.nominal_resolution_m
+            ),
+            "nominal_crs": (
+                "" if generic_orthophoto else str(spec.nominal_crs or "")
+            ),
+            "geographic_extent_description": (
+                ""
+                if generic_orthophoto
+                else str(spec.geographic_extent or "")
+            ),
+            "citation": (
+                "" if generic_orthophoto else str(spec.citation or "")
+            ),
+            "license_note": (
+                "" if generic_orthophoto else str(spec.license_note or "")
+            ),
         }
         if asset_id in {"surface_rgb", "surface_categorical"}:
             metadata.update(
@@ -1391,6 +1539,7 @@ class AssetManager:
         candidate = Path(path).expanduser().resolve(strict=False)
         if not candidate.exists():
             raise FileNotFoundError(str(candidate))
+        user_orthophoto = asset_id == "orthophoto"
         source = self._register_data_source(
             candidate,
             layer_type,
@@ -1398,8 +1547,14 @@ class AssetManager:
             priority=int(priority),
             provenance="external",
             metadata=self._geospatial_metadata(asset_id, managed=False),
-            attribution=self.get_spec(asset_id).credits,
-            license=self.get_spec(asset_id).license_note,
+            attribution=(
+                "Font d'ortofoto aportada per l'usuari."
+                if user_orthophoto
+                else self.get_spec(asset_id).credits
+            ),
+            license=(
+                "" if user_orthophoto else self.get_spec(asset_id).license_note
+            ),
         )
         self._mark_asset_state(asset_id, True, "")
         return source
@@ -1532,6 +1687,350 @@ class AssetManager:
             else "",
         }
 
+    def _download_and_prepare_copernicus_orthophoto(
+        self,
+        *,
+        progress_callback: Optional[ProgressFn],
+        options: Optional[Dict[str, object]],
+        cancelled: Callable[[], bool] | None,
+    ) -> Dict[str, object]:
+        """Download, validate and register one selected Copernicus mosaic."""
+
+        opts = dict(options or {})
+        raw_request = opts.get("copernicus_request")
+        if not isinstance(raw_request, Mapping):
+            raise ValueError(
+                "La descàrrega d'ortofoto necessita una selecció geogràfica "
+                "Copernicus vàlida."
+            )
+        request = DownloadRequest.from_dict(dict(raw_request))
+        request_payload = _json_payload(request)
+        if not isinstance(request_payload, dict):
+            raise ValueError("La petició Copernicus no es pot serialitzar.")
+
+        download_root = (
+            Path(self.layout["downloads"]) / "copernicus-hrim-2018"
+        )
+        dataset_root = Path(self.layout["data_surface"])
+        diagnostic_log_path = (
+            Path(self.layout["logs"]) / "copernicus_orthophoto_last.log"
+        )
+        download_root.mkdir(parents=True, exist_ok=True)
+        dataset_root.mkdir(parents=True, exist_ok=True)
+        self._mark_install_state(
+            "orthophoto",
+            "downloading",
+            copernicus_request=request_payload,
+            product_url=COPERNICUS_ORTHOPHOTO_PRODUCT_URL,
+            service_url=IMAGE_SERVER_URL,
+            download_root=str(download_root),
+        )
+
+        try:
+            manager = CopernicusOrthophotoManager(
+                download_root,
+                dataset_root,
+            )
+            configure_diagnostics = getattr(
+                manager, "set_diagnostic_log_path", None
+            )
+            if callable(configure_diagnostics):
+                configure_diagnostics(diagnostic_log_path)
+            result = manager.run(
+                request,
+                progress_callback=progress_callback,
+                cancelled=cancelled,
+            )
+            if cancelled is not None and cancelled():
+                raise AssetOperationCancelled(
+                    "Descàrrega d'ortofoto pausada; el manifest i els "
+                    "fragments vàlids es conserven."
+                )
+
+            output_path = Path(result.output_path).expanduser().resolve(
+                strict=False
+            )
+            manifest_path = Path(result.manifest_path).expanduser().resolve(
+                strict=False
+            )
+            if not output_path.is_file():
+                raise FileNotFoundError(
+                    "El gestor Copernicus no ha publicat el GeoTIFF final: "
+                    f"{output_path}"
+                )
+
+            result_request = _json_payload(result.request)
+            if not isinstance(result_request, dict):
+                result_request = request_payload
+            estimate_payload = _json_payload(result.estimate)
+            if not isinstance(estimate_payload, dict):
+                estimate_payload = {}
+            result_metadata = _json_payload(
+                getattr(result, "metadata", {})
+            )
+            if not isinstance(result_metadata, dict):
+                result_metadata = {}
+            adaptations = result_metadata.get("adaptations", {})
+            if not isinstance(adaptations, Mapping):
+                adaptations = {}
+
+            resolution = result_request.get(
+                "resolution_m",
+                request_payload.get("resolution_m", 10.0),
+            )
+            pixel_type = str(
+                result_request.get(
+                    "pixel_type",
+                    request_payload.get("pixel_type", ""),
+                )
+                or ""
+            ).upper()
+            output_format = str(
+                result_request.get(
+                    "output_format",
+                    result_request.get(
+                        "format",
+                        request_payload.get(
+                            "output_format",
+                            request_payload.get("format", "GeoTIFF"),
+                        ),
+                    ),
+                )
+                or "GeoTIFF"
+            )
+            compression = str(
+                result_request.get(
+                    "compression",
+                    request_payload.get("compression", ""),
+                )
+                or ""
+            )
+            downloaded_utc = (
+                datetime.now(timezone.utc)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+            metadata = self._geospatial_metadata(
+                "orthophoto",
+                managed=True,
+            )
+            metadata.update(
+                {
+                    "product_id": str(
+                        result_metadata.get(
+                            "product_id",
+                            "copernicus-hrim-2018-true-colour",
+                        )
+                    ),
+                    "product_name": str(
+                        result_metadata.get(
+                            "product_name",
+                            COPERNICUS_ORTHOPHOTO_PRODUCT,
+                        )
+                    ),
+                    "reference_year": 2018,
+                    "provider": "Copernicus Land Monitoring Service",
+                    "official_url": str(
+                        result_metadata.get(
+                            "product_url",
+                            COPERNICUS_ORTHOPHOTO_PRODUCT_URL,
+                        )
+                    ),
+                    "product_url": str(
+                        result_metadata.get(
+                            "product_url",
+                            COPERNICUS_ORTHOPHOTO_PRODUCT_URL,
+                        )
+                    ),
+                    "service_url": str(
+                        result_metadata.get(
+                            "service_url", IMAGE_SERVER_URL
+                        )
+                    ),
+                    "wms_url": str(
+                        result_metadata.get("wms_url", WMS_URL)
+                    ),
+                    "data_policy_url": str(
+                        result_metadata.get(
+                            "data_policy_url", DATA_POLICY_URL
+                        )
+                    ),
+                    "service_coverage_wgs84": _json_payload(
+                        SERVICE_COVERAGE_WGS84
+                    ),
+                    "citation": COPERNICUS_ORTHOPHOTO_PRODUCT,
+                    "license_note": (
+                        f"{ATTRIBUTION} Política de dades: "
+                        f"{DATA_POLICY_URL}"
+                    ),
+                    "source_product": COPERNICUS_ORTHOPHOTO_PRODUCT,
+                    "download_service": "ArcGIS ImageServer exportImage",
+                    "download_manifest_path": str(manifest_path),
+                    "downloaded_utc": str(
+                        result_metadata.get(
+                            "downloaded_utc", downloaded_utc
+                        )
+                    ),
+                    "download_request": result_request,
+                    "download_extent_wgs84": result_request.get(
+                        "bbox_wgs84",
+                        result_request.get("bbox"),
+                    ),
+                    "selection_estimate": estimate_payload,
+                    "download_result_metadata": result_metadata,
+                    "selected_resolution_m": result_metadata.get(
+                        "resolution_m", resolution
+                    ),
+                    "output_format": str(
+                        result_metadata.get("format", output_format)
+                    ),
+                    "pixel_type": str(
+                        result_metadata.get(
+                            "pixel_type", pixel_type
+                        )
+                    ).upper(),
+                    "compression": str(
+                        result_metadata.get(
+                            "compression", compression
+                        )
+                    ),
+                    "output_crs": "EPSG:3035",
+                    "source_product_crs": "EPSG:3035",
+                    "service_published_crs": "EPSG:3857",
+                    "reprojected": bool(
+                        adaptations.get("reprojected", True)
+                    ),
+                    "cropped": bool(
+                        adaptations.get(
+                            "clipped",
+                            adaptations.get("cropped", True),
+                        )
+                    ),
+                    "converted": bool(
+                        adaptations.get(
+                            "converted",
+                            pixel_type == "U8"
+                            or compression.upper()
+                            not in {"", "NONE", "UNCOMPRESSED"},
+                        )
+                    ),
+                    "adapted_by_terralab": True,
+                    "attribution": ADAPTED_ATTRIBUTION,
+                    "no_official_endorsement": True,
+                }
+            )
+            self._mark_install_state(
+                "orthophoto",
+                "registering",
+                path=str(output_path),
+                download_manifest_path=str(manifest_path),
+                copernicus_request=result_request,
+                selection_estimate=estimate_payload,
+            )
+            display_name = str(
+                opts.get("display_name")
+                or (
+                    f"Copernicus HRIM 2018 True Colour · "
+                    f"{float(resolution):g} m"
+                )
+            )
+            source = self._register_data_source(
+                output_path,
+                LayerType.ORTHOPHOTO_RGB,
+                display_name=display_name,
+                priority=int(opts.get("priority", 0) or 0),
+                provenance="managed",
+                attribution=ADAPTED_ATTRIBUTION,
+                license=(
+                    "Copernicus Land Monitoring Service data policy: "
+                    f"{DATA_POLICY_URL}. Data adaptada per TerraLab; "
+                    "sense aval oficial de la Unió Europea, Copernicus "
+                    "ni l'European Environment Agency."
+                ),
+                metadata=metadata,
+            )
+            # The orthophoto preference is independent from the preferred
+            # land-cover encoding and from the Ortofoto/Categòric switch.
+            self.data_sources.set_selection(
+                LayerRole.ORTHOPHOTO,
+                source.id,
+                mode=SelectionMode.MANUAL,
+            )
+            self._mark_asset_state(
+                "orthophoto",
+                True,
+                str(output_path),
+            )
+            self._mark_install_state(
+                "orthophoto",
+                "prepared",
+                path=str(output_path),
+                source_id=str(source.id),
+                download_manifest_path=str(manifest_path),
+                copernicus_request=result_request,
+                selection_estimate=estimate_payload,
+            )
+            _progress(
+                progress_callback,
+                100.0,
+                "Completat: ortofoto Copernicus registrada.",
+            )
+            return {
+                "ok": True,
+                "stored_in": str(output_path),
+                "source_id": str(source.id),
+                "manifest_path": str(manifest_path),
+                "request": result_request,
+                "estimate": estimate_payload,
+                "downloaded_fragments": int(
+                    getattr(result, "downloaded_fragments", 0) or 0
+                ),
+                "reused_fragments": int(
+                    getattr(result, "reused_fragments", 0) or 0
+                ),
+            }
+        except AssetOperationCancelled:
+            self._mark_install_state(
+                "orthophoto",
+                "paused",
+                copernicus_request=request_payload,
+            )
+            raise
+        except Exception as exc:
+            try:
+                diagnostic_log_path.parent.mkdir(
+                    parents=True, exist_ok=True
+                )
+                with diagnostic_log_path.open(
+                    "a", encoding="utf-8", newline="\n"
+                ) as handle:
+                    handle.write(
+                        "\nTerraLab asset integration failure\n"
+                        f"{traceback.format_exc()}\n"
+                    )
+            except OSError:
+                pass
+            if cancelled is not None and cancelled():
+                self._mark_install_state(
+                    "orthophoto",
+                    "paused",
+                    copernicus_request=request_payload,
+                )
+                raise AssetOperationCancelled(
+                    "Descàrrega d'ortofoto pausada; el manifest i els "
+                    "fragments vàlids es conserven."
+                ) from exc
+            self._mark_install_state(
+                "orthophoto",
+                "error",
+                error=str(exc),
+                diagnostic_log_path=str(diagnostic_log_path),
+                copernicus_request=request_payload,
+            )
+            raise RuntimeError(
+                f"{exc}\n\nLog de diagnòstic: {diagnostic_log_path}"
+            ) from exc
+
     def download_and_prepare(
         self,
         asset_id: str,
@@ -1540,6 +2039,12 @@ class AssetManager:
         cancelled: Callable[[], bool] | None = None,
     ) -> Dict[str, object]:
         spec = self.get_spec(asset_id)
+        if asset_id == "orthophoto":
+            return self._download_and_prepare_copernicus_orthophoto(
+                progress_callback=progress_callback,
+                options=options,
+                cancelled=cancelled,
+            )
         if not spec.auto_download_url:
             raise ValueError(
                 f"Asset {asset_id} does not support automatic download."
@@ -1837,6 +2342,16 @@ class AssetManager:
                     staging_registered_path = tiffs[-1]
 
                 metadata = self._geospatial_metadata(asset_id, managed=True)
+                source_attribution = (
+                    "Font d'ortofoto aportada per l'usuari."
+                    if asset_id == "orthophoto"
+                    else self.get_spec(asset_id).credits
+                )
+                source_license = (
+                    ""
+                    if asset_id == "orthophoto"
+                    else self.get_spec(asset_id).license_note
+                )
                 self._mark_install_state(asset_id, "registering")
                 _progress(
                     progress_callback,
@@ -1876,8 +2391,8 @@ class AssetManager:
                             display_name=display_name,
                             priority=int(opts.get("priority", 0) or 0),
                             provenance="managed",
-                            attribution=self.get_spec(asset_id).credits,
-                            license=self.get_spec(asset_id).license_note,
+                            attribution=source_attribution,
+                            license=source_license,
                             metadata=metadata,
                         )
                         raise
@@ -1899,8 +2414,8 @@ class AssetManager:
                     display_name=display_name,
                     priority=int(opts.get("priority", 0) or 0),
                     provenance="managed",
-                    attribution=self.get_spec(asset_id).credits,
-                    license=self.get_spec(asset_id).license_note,
+                    attribution=source_attribution,
+                    license=source_license,
                     metadata=metadata,
                 )
 

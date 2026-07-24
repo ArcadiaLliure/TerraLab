@@ -181,10 +181,11 @@ _DESCRIPTORS = (
         LayerGroup.EARTH,
         "Ortofoto",
         "orthophoto",
-        "Raster RGB/RGBA georeferenciat aportat per l'usuari.",
+        "Copernicus HR Image Mosaic 2018 True Colour (10 m) o "
+        "raster RGB/RGBA georeferenciat aportat per l'usuari.",
         "Paleta sintètica",
         True,
-        False,
+        True,
     ),
     LayerDescriptor(
         LayerId.EARTH_SURFACE_CATEGORICAL,

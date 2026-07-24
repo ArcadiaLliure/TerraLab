@@ -304,6 +304,8 @@ class HorizonWorker(QObject):
         visible_radius_m = None
         view_azimuth_deg = 0.0
         view_fov_deg = 360.0
+        viewport_width_px = None
+        viewport_height_px = None
         surface_mode = None
         atomic_surface_swap = False
         if isinstance(profile, dict) and "profile" in profile:
@@ -312,6 +314,8 @@ class HorizonWorker(QObject):
             visible_radius_m = profile.get("visible_radius_m")
             view_azimuth_deg = float(profile.get("view_azimuth_deg", 0.0) or 0.0)
             view_fov_deg = float(profile.get("view_fov_deg", 360.0) or 360.0)
+            viewport_width_px = profile.get("viewport_width_px")
+            viewport_height_px = profile.get("viewport_height_px")
             surface_mode = (
                 str(
                     profile.get(
@@ -373,6 +377,8 @@ class HorizonWorker(QObject):
                         visible_radius_m=visible_radius_m,
                         view_azimuth_deg=view_azimuth_deg,
                         view_fov_deg=view_fov_deg,
+                        viewport_width_px=viewport_width_px,
+                        viewport_height_px=viewport_height_px,
                         generation=generation,
                         stage=stage,
                         surface_mode=surface_mode,

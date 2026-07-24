@@ -195,6 +195,11 @@ class CanvasInputHandler:
         - None.
         """
         c = self._canvas
+        tooltip_updater = getattr(
+            c, "_update_surface_tooltip_for_pointer", None
+        )
+        if callable(tooltip_updater):
+            tooltip_updater(event)
         if c.drawing_mode_enabled():
             if c.dragging:
                 dx = event.x() - c.last_mouse_x

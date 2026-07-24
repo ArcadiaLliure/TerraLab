@@ -15,6 +15,10 @@ from TerraLab.terrain.land_cover.legends.s2glc import (
     s2glc_classes_to_rgba,
 )
 from TerraLab.terrain.land_cover.legends.category_info import category_info
+from TerraLab.terrain.land_cover.visual_styles import (
+    preserve_small_region,
+    vibrant_land_cover_rgba,
+)
 from TerraLab.data.assets_manager import AssetManager
 from TerraLab.data.layer_manager import LayerGroup, LayerId, LayerManager
 from TerraLab.common.data_library import DataLibrary
@@ -25,9 +29,89 @@ from TerraLab.terrain.surface import (
     CategoricalSurfaceProvider,
     RgbCategoricalSurfaceProvider,
     RgbSurfaceProvider,
+    SurfaceSamplingRequest,
     SurfaceSamplingService,
+    _lod_factors_for_polar_grid,
     raster_grids_aligned,
 )
+
+
+def test_vibrant_palette_preserves_semantic_distinctions():
+    built = vibrant_land_cover_rgba("s2glc_europe_2017", 62)
+    forest = vibrant_land_cover_rgba("s2glc_europe_2017", 83)
+    meadow = vibrant_land_cover_rgba("s2glc_europe_2017", 102)
+    water = vibrant_land_cover_rgba("s2glc_europe_2017", 162)
+
+    assert built == (142, 150, 160, 255)
+    assert forest is not None and forest[1] > forest[0]
+    assert meadow is not None and meadow != forest
+    assert water is not None and water[2] > water[0]
+    assert len({built, forest, meadow, water}) == 4
+
+
+def test_vibrant_palette_matches_the_configured_botw_colours():
+    expected = {
+        62: (0x8E, 0x96, 0xA0, 255),
+        73: (0xF5, 0xC2, 0x42, 255),
+        75: (0xC2, 0x35, 0x76, 255),
+        82: (0x3F, 0xAE, 0x64, 255),
+        83: (0x1D, 0x7A, 0x52, 255),
+        102: (0x9E, 0xD6, 0x3B, 255),
+        103: (0x7C, 0x8C, 0x4A, 255),
+        104: (0x5F, 0xBF, 0x8E, 255),
+        105: (0x2E, 0xC4, 0xB6, 255),
+        106: (0x6B, 0x45, 0x52, 255),
+        121: (0xC7, 0xBE, 0xA0, 255),
+        123: (0xC9, 0xEF, 0xF5, 255),
+        162: (0x2E, 0x86, 0xD6, 255),
+    }
+
+    assert {
+        code: vibrant_land_cover_rgba("s2glc_europe_2017", code)
+        for code in expected
+    } == expected
+
+
+def test_botw_palette_does_not_replace_original_s2glc_colours():
+    rgba, valid = s2glc_classes_to_rgba(np.asarray((62, 162)))
+
+    np.testing.assert_array_equal(
+        rgba,
+        np.asarray(
+            ((210, 0, 0, 255), (20, 69, 249, 255)),
+            dtype=np.uint8,
+        ),
+    )
+    np.testing.assert_array_equal(valid, (True, True))
+
+
+def test_vibrant_regularization_protects_small_semantic_features():
+    assert preserve_small_region("s2glc_europe_2017", 62)
+    assert preserve_small_region("s2glc_europe_2017", 162)
+    assert preserve_small_region("clcplus_backbone", 1)
+    assert not preserve_small_region("s2glc_europe_2017", 83)
+
+
+def test_categorical_screen_space_lod_keeps_near_exact_and_caps_far_footprint():
+    factors = _lod_factors_for_polar_grid(
+        np.asarray([10.0, 100_000.0]),
+        np.asarray([0.0, 1.0, 2.0, 3.0]),
+        10.0,
+        viewport_width_px=1920,
+        view_fov_deg=100.0,
+        categorical=True,
+    )
+
+    assert np.all(factors[0] == 1)
+    assert np.all(factors[1] <= 32)
+    assert np.all(np.isin(factors, (1, 2, 4, 8, 16, 32, 64, 128)))
+    request = SurfaceSamplingRequest(
+        profile=object(),
+        viewport_width_px=1920,
+        viewport_height_px=1080,
+    )
+    assert request.viewport_width_px == 1920
+    assert request.viewport_height_px == 1080
 
 
 def _write_raster(
@@ -305,7 +389,11 @@ def test_s2glc_registry_is_complete_deterministic_and_unknown_is_transparent():
     y = np.asarray([50.0] * 5)
     first, first_valid = s2glc_classes_to_rgba(classes, x=x, y=y)
     second, second_valid = s2glc_classes_to_rgba(classes, x=x, y=y)
+    distant, _ = s2glc_classes_to_rgba(
+        classes, x=x + 100_000.0, y=y - 50_000.0
+    )
     assert np.array_equal(first, second)
+    assert np.array_equal(first, distant)
     assert np.array_equal(first_valid, second_valid)
     assert first_valid.tolist() == [True, True, False, True, False]
     assert first[0].tolist() == first[1].tolist()

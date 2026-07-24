@@ -1,3 +1,4 @@
+import hashlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -12,8 +13,11 @@ from TerraLab.terrain.data_sources import (
 )
 from TerraLab.terrain.surface import (
     CategoricalSurfaceProvider,
+    RgbCategoricalSurfaceProvider,
     SurfaceSamplingRequest,
     SurfaceSamplingService,
+    _surface_cache_from_payload,
+    _surface_cache_payload,
 )
 from TerraLab.terrain.surface_store import AtomicNpzStore
 
@@ -36,6 +40,26 @@ def _write_categorical(path, data):
         compress="lzw",
     ) as dataset:
         dataset.write(data, 1)
+    return path
+
+
+def _write_rgb_categorical(path, rgba):
+    import rasterio
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=rgba.shape[1],
+        width=rgba.shape[2],
+        count=4,
+        dtype=np.uint8,
+        crs="EPSG:25831",
+        transform=from_origin(0.0, float(rgba.shape[1]), 1.0, 1.0),
+        compress="lzw",
+    ) as dataset:
+        dataset.write(rgba)
     return path
 
 
@@ -162,6 +186,187 @@ def test_categorical_lod_reads_real_rows_and_reuses_sparse_tiles(tmp_path):
         second_provider.close()
 
 
+def _sample_cell(provider, row, column, factor):
+    dataset = provider._datasets[0]
+    return provider.sample_classes(
+        np.asarray([float(column) + 0.5]),
+        np.asarray([float(dataset.height - row) - 0.5]),
+        input_crs="EPSG:25831",
+        lod_factors=np.asarray([factor], dtype=np.int16),
+    )
+
+
+@pytest.mark.parametrize("factor", [1, 2, 4, 8])
+def test_categorical_lod_uniform_cells_preserve_integer_classes(tmp_path, factor):
+    data = np.full((9, 9), 83, dtype=np.uint8)
+    path = _write_categorical(tmp_path / f"uniform-{factor}.tif", data)
+    provider = CategoricalSurfaceProvider(path)
+    provider.initialize()
+    try:
+        batch = _sample_cell(provider, 0, 0, factor)
+        assert batch.valid.tolist() == [True]
+        assert batch.classes.dtype == np.int64
+        assert batch.classes.tolist() == [83]
+    finally:
+        provider.close()
+
+
+def test_categorical_nearest_does_not_round_large_integer_class_ids(tmp_path):
+    class_id = 2**24 + 3
+    data = np.full((2, 2), class_id, dtype=np.uint32)
+    path = _write_categorical(tmp_path / "uint32-classes.tif", data)
+    provider = CategoricalSurfaceProvider(path)
+    provider.initialize()
+    try:
+        nearest = provider.sample_classes(
+            np.asarray([0.5]),
+            np.asarray([1.5]),
+            input_crs="EPSG:25831",
+        )
+        lod_one = _sample_cell(provider, 0, 0, 1)
+        assert nearest.classes.tolist() == [class_id]
+        assert lod_one.classes.tolist() == [class_id]
+    finally:
+        provider.close()
+
+
+def test_categorical_lod_uses_mode_instead_of_central_pixel(tmp_path):
+    data = np.full((8, 8), 83, dtype=np.uint8)
+    data[2, 2] = 105
+    path = _write_categorical(tmp_path / "modal-majority.tif", data)
+    provider = CategoricalSurfaceProvider(path)
+    provider.initialize()
+    try:
+        batch = _sample_cell(provider, 1, 1, 4)
+        assert batch.valid.tolist() == [True]
+        assert batch.classes.tolist() == [83]
+        assert provider._datasets[0].lod_modal_cells == 1
+    finally:
+        provider.close()
+
+
+@pytest.mark.parametrize("isolated_class", [62, 162])
+def test_s2glc_lod_isolates_small_buildings_and_water(
+    tmp_path, isolated_class
+):
+    data = np.full((8, 8), 83, dtype=np.uint8)
+    data[2, 2] = isolated_class
+    path = _write_categorical(
+        tmp_path / f"isolated-{isolated_class}.tif", data
+    )
+    provider = CategoricalSurfaceProvider(
+        path, legend_id="s2glc_europe_2017"
+    )
+    provider.initialize()
+    try:
+        batch = _sample_cell(provider, 1, 1, 4)
+        assert batch.valid.tolist() == [True]
+        assert batch.classes.tolist() == [isolated_class]
+    finally:
+        provider.close()
+
+
+def test_rgb_categorical_lod_decodes_pixels_before_modal_reduction(tmp_path):
+    green = np.asarray((20, 120, 40, 255), dtype=np.uint8)
+    violet = np.asarray((130, 80, 180, 255), dtype=np.uint8)
+    rgba = np.broadcast_to(green[:, None, None], (4, 4, 4)).copy()
+    rgba[:, 2, 2] = violet
+    path = _write_rgb_categorical(tmp_path / "rgb-modal.tif", rgba)
+    provider = RgbCategoricalSurfaceProvider(
+        path,
+        legend_id="external",
+        class_colors={83: tuple(green), 105: tuple(violet)},
+    )
+    provider.initialize()
+    try:
+        batch = _sample_cell(provider, 1, 1, 4)
+        assert batch.valid.tolist() == [True]
+        assert batch.classes.tolist() == [83]
+    finally:
+        provider.close()
+
+
+def test_rgb_s2glc_lod_isolates_a_single_building(tmp_path):
+    forest = np.asarray((8, 98, 0, 255), dtype=np.uint8)
+    building = np.asarray((210, 0, 0, 255), dtype=np.uint8)
+    rgba = np.broadcast_to(forest[:, None, None], (4, 4, 4)).copy()
+    rgba[:, 2, 2] = building
+    path = _write_rgb_categorical(tmp_path / "rgb-isolated-building.tif", rgba)
+    provider = RgbCategoricalSurfaceProvider(
+        path, legend_id="s2glc_europe_2017"
+    )
+    provider.initialize()
+    try:
+        batch = _sample_cell(provider, 1, 1, 4)
+        assert batch.valid.tolist() == [True]
+        assert batch.classes.tolist() == [62]
+    finally:
+        provider.close()
+
+
+def test_categorical_lod_ties_prefer_centre_then_smallest_class(tmp_path):
+    data = np.full((4, 4), 255, dtype=np.uint8)
+    data[0:2, 0:2] = np.asarray([[10, 20], [20, 10]], dtype=np.uint8)
+    data[0:2, 2:4] = np.asarray([[20, 10], [255, 255]], dtype=np.uint8)
+    path = _write_categorical(tmp_path / "modal-ties.tif", data)
+    provider = CategoricalSurfaceProvider(path)
+    provider.initialize()
+    try:
+        centre_wins = _sample_cell(provider, 0, 0, 2)
+        smallest_wins = _sample_cell(provider, 0, 2, 2)
+        assert centre_wins.classes.tolist() == [10]
+        assert smallest_wins.classes.tolist() == [10]
+    finally:
+        provider.close()
+
+
+def test_categorical_lod_handles_nodata_and_clipped_raster_edges(tmp_path):
+    data = np.full((10, 10), 255, dtype=np.uint8)
+    data[8:, 8:] = np.asarray([[105, 83], [83, 83]], dtype=np.uint8)
+    path = _write_categorical(tmp_path / "modal-edge.tif", data)
+    provider = CategoricalSurfaceProvider(path)
+    provider.initialize()
+    try:
+        invalid = _sample_cell(provider, 1, 1, 8)
+        clipped = _sample_cell(provider, 9, 9, 8)
+        assert invalid.valid.tolist() == [False]
+        assert clipped.valid.tolist() == [True]
+        assert clipped.classes.tolist() == [83]
+    finally:
+        provider.close()
+
+
+def test_categorical_lod_rejects_legacy_central_pixel_tile(tmp_path):
+    data = np.full((4, 4), 83, dtype=np.uint8)
+    path = _write_categorical(tmp_path / "legacy-tile.tif", data)
+    store = AtomicNpzStore(tmp_path / "surface-cache", budget_bytes=1024**2)
+    provider = CategoricalSurfaceProvider(path, tile_store=store)
+    provider.initialize()
+    try:
+        dataset = provider._datasets[0]
+        digest = hashlib.blake2b(digest_size=20)
+        digest.update(dataset.lod_identity.encode("ascii"))
+        digest.update(b"categorical-lod-modal-v2")
+        identity = digest.hexdigest()
+        store.save(
+            f"tiles/{identity}/1/f2/r0_c0",
+            {"schema": 1, "dataset": identity, "bands": [1]},
+            {
+                "positions": np.asarray([0], dtype=np.int32),
+                "values": np.asarray([[105.0]], dtype=np.float32),
+                "valid": np.asarray([True]),
+            },
+        )
+
+        batch = _sample_cell(provider, 0, 0, 2)
+
+        assert batch.classes.tolist() == [83]
+        assert dataset.lod_windows_read == 1
+        assert dataset.lod_cache_hits == 0
+    finally:
+        provider.close()
+
+
 def test_categorical_lod_sampling_is_cancellable_between_source_rows(tmp_path):
     data = np.full((64, 10_000), 10, dtype=np.uint8)
     path = _write_categorical(tmp_path / "cancel-striped.tif", data)
@@ -250,6 +455,26 @@ def test_surface_result_cache_survives_restart_and_partial_fov_is_typed(tmp_path
         assert same.source_legend_ids == partial.source_legend_ids
         assert restarted._persistent_store.stats.hits >= 1
         assert provider._datasets[0].lod_rows_read == 0
+        np.testing.assert_array_equal(
+            same.profile_class_ids, partial.profile_class_ids
+        )
+        np.testing.assert_array_equal(
+            same.profile_categorical, partial.profile_categorical
+        )
+        np.testing.assert_array_equal(
+            same.profile_source_indices, partial.profile_source_indices
+        )
+        np.testing.assert_array_equal(
+            same.profile_lod_factors, partial.profile_lod_factors
+        )
+        np.testing.assert_array_equal(
+            same.profile_raster_rows, partial.profile_raster_rows
+        )
+        metadata, arrays = _surface_cache_payload(same)
+        assert metadata["schema"] == 4
+        old_metadata = dict(metadata, schema=3)
+        with pytest.raises(ValueError, match="Unsupported surface cache schema"):
+            _surface_cache_from_payload(old_metadata, arrays)
     finally:
         restarted.close()
 

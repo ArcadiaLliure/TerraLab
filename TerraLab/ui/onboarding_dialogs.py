@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -236,6 +238,51 @@ class _AssetJobWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class _CopernicusNodataProbeWorker(QObject):
+    """Run the advisory sea/NoData sample without blocking Qt's UI thread."""
+
+    completed = pyqtSignal(object, str, bool)
+
+    def __init__(self, request: object) -> None:
+        super().__init__()
+        self.request = request
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    @pyqtSlot()
+    def run(self) -> None:
+        if self._cancel_event.is_set():
+            self.completed.emit(None, "", True)
+            return
+        try:
+            from TerraLab.data.copernicus_orthophoto import (
+                ArcGISImageServerClient,
+            )
+
+            # This is an advisory 128 × 128 request.  Keep its timeout well
+            # below the fragment-download timeout while still allowing a slow
+            # public service to answer.
+            client = ArcGISImageServerClient(
+                timeout=(8.0, 30.0),
+                max_retries=1,
+            )
+            result = client.estimate_nodata_fraction(
+                self.request,
+                sample_size=128,
+                cancelled=self._cancel_event.is_set,
+            )
+        except Exception as exc:
+            self.completed.emit(
+                None,
+                "" if self._cancel_event.is_set() else str(exc),
+                self._cancel_event.is_set(),
+            )
+            return
+        self.completed.emit(result, "", self._cancel_event.is_set())
+
+
 class _AssetBackgroundJob(QObject):
     """Application-owned asset task whose UI can be detached and restored."""
 
@@ -351,6 +398,11 @@ class AssetOnboardingDialog(QDialog):
         self._worker = None
         self._job: Optional[_AssetBackgroundJob] = None
         self._job_detached = False
+        self._copernicus_probe_thread: Optional[QThread] = None
+        self._copernicus_probe_worker: Optional[
+            _CopernicusNodataProbeWorker
+        ] = None
+        self._copernicus_probe_context: Optional[tuple[object, object]] = None
         self._gaia_tap_process: Optional[QProcess] = None
         self._gaia_tap_out_buffer = ""
         self._gaia_tap_log_path: Optional[Path] = None
@@ -418,6 +470,21 @@ class AssetOnboardingDialog(QDialog):
                 "Opcional (avancat): pots executar-ho manualment amb:\n"
                 "python tools/download_gaia_tiles.py --mag-limit 0 --tile-size-deg 10"
             )
+        elif self.asset_id == "orthophoto":
+            try:
+                copernicus_log_path = (
+                    Path(self.manager.layout["logs"])
+                    / "copernicus_orthophoto_last.log"
+                )
+                extra_help = (
+                    "\n\nLog persistent de la descàrrega:\n"
+                    f"{copernicus_log_path}"
+                )
+            except Exception:
+                extra_help = (
+                    "\n\nLog persistent de la descàrrega:\n"
+                    "<biblioteca>/logs/copernicus_orthophoto_last.log"
+                )
         product_help = ""
         if self.spec.provider and self.spec.nominal_resolution_m:
             product_help = (
@@ -505,7 +572,13 @@ class AssetOnboardingDialog(QDialog):
         )
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         partial = self.manager.partial_download(self.asset_id)
-        if partial is not None and partial.resumable:
+        resumable_orthophoto = bool(
+            self.asset_id == "orthophoto"
+            and self.manager.asset_status("orthophoto").get(
+                "resumable", False
+            )
+        )
+        if (partial is not None and partial.resumable) or resumable_orthophoto:
             self.btn_auto_download.setText("Reprendre descàrrega")
         self.btn_auto_download.clicked.connect(self._auto_download)
         actions.addWidget(self.btn_auto_download)
@@ -548,7 +621,11 @@ class AssetOnboardingDialog(QDialog):
         self.btn_background.clicked.connect(self._continue_in_background)
         footer.addWidget(self.btn_background)
         self.btn_cancel = QPushButton("Cancel·lar tasca")
-        if self.asset_id in {"surface_rgb", "surface_categorical"}:
+        if self.asset_id in {
+            "orthophoto",
+            "surface_rgb",
+            "surface_categorical",
+        }:
             self.btn_cancel.setText("Pausar descàrrega")
         self.btn_cancel.setVisible(False)
         self.btn_cancel.clicked.connect(self._cancel_job)
@@ -572,7 +649,7 @@ class AssetOnboardingDialog(QDialog):
         self._restore_active_download()
 
     def _supports_auto_download(self) -> bool:
-        if self.asset_id == "gaia_catalog":
+        if self.asset_id in {"gaia_catalog", "orthophoto"}:
             return True
         return bool(self.spec.auto_download_url)
 
@@ -732,6 +809,423 @@ class AssetOnboardingDialog(QDialog):
                 options=self._collect_options(),
             )
 
+    @staticmethod
+    def _copernicus_estimate_value(
+        estimate: object,
+        name: str,
+        default: int = 0,
+    ) -> int:
+        value = (
+            estimate.get(name, default)
+            if isinstance(estimate, dict)
+            else getattr(estimate, name, default)
+        )
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return max(0, int(default))
+
+    def _confirm_copernicus_download(
+        self,
+        request: object,
+        estimate: object,
+        *,
+        nodata_fraction: float | None = None,
+        nodata_probe_error: str = "",
+    ) -> bool:
+        """Check disk space and confirm the selected download size."""
+
+        from TerraLab.data import copernicus_orthophoto as copernicus_core
+
+        format_bytes_dual = copernicus_core.format_bytes_dual
+        bbox = getattr(request, "bbox_wgs84", None)
+        coverage = copernicus_core.SERVICE_COVERAGE_WGS84
+        bbox_values = (
+            float(getattr(bbox, "west")),
+            float(getattr(bbox, "south")),
+            float(getattr(bbox, "east")),
+            float(getattr(bbox, "north")),
+        )
+        if all(
+            hasattr(coverage, field)
+            for field in ("west", "south", "east", "north")
+        ):
+            coverage_values = (
+                float(getattr(coverage, "west")),
+                float(getattr(coverage, "south")),
+                float(getattr(coverage, "east")),
+                float(getattr(coverage, "north")),
+            )
+        else:
+            coverage_values = tuple(
+                float(value) for value in coverage
+            )
+        west, south, east, north = bbox_values
+        cov_west, cov_south, cov_east, cov_north = coverage_values
+        intersects_coverage = not (
+            east <= cov_west
+            or west >= cov_east
+            or north <= cov_south
+            or south >= cov_north
+        )
+        if not intersects_coverage:
+            QMessageBox.critical(
+                self,
+                "Fora de la cobertura Copernicus",
+                "El rectangle no intersecta la cobertura publicada del "
+                "servei. Selecciona una àrea d'Europa.",
+            )
+            return False
+        partially_outside = not (
+            west >= cov_west
+            and south >= cov_south
+            and east <= cov_east
+            and north <= cov_north
+        )
+
+        width_px = self._copernicus_estimate_value(
+            estimate, "width_px"
+        )
+        height_px = self._copernicus_estimate_value(
+            estimate, "height_px"
+        )
+        pixel_count = self._copernicus_estimate_value(
+            estimate, "pixel_count"
+        )
+        raw_u16 = self._copernicus_estimate_value(
+            estimate, "raw_u16_bytes"
+        )
+        raw_u8 = self._copernicus_estimate_value(
+            estimate, "raw_u8_bytes"
+        )
+        compressed = self._copernicus_estimate_value(
+            estimate,
+            "compressed_estimate_max_bytes",
+            self._copernicus_estimate_value(
+                estimate, "compressed_estimate_bytes"
+            ),
+        )
+        fragment_count = self._copernicus_estimate_value(
+            estimate, "fragment_count"
+        )
+        if (
+            width_px <= 0
+            or height_px <= 0
+            or pixel_count <= 0
+            or raw_u8 <= 0
+            or raw_u16 <= 0
+            or fragment_count <= 0
+        ):
+            QMessageBox.critical(
+                self,
+                "Selecció Copernicus no vàlida",
+                "No s'han pogut verificar les dimensions i els fragments "
+                "de la selecció. No s'iniciarà la descàrrega.",
+            )
+            return False
+
+        request_payload = (
+            request.to_dict()
+            if hasattr(request, "to_dict")
+            and callable(request.to_dict)
+            else {}
+        )
+        pixel_type = str(
+            request_payload.get(
+                "pixel_type",
+                getattr(request, "pixel_type", "U8"),
+            )
+            or "U8"
+        ).upper()
+        output_format = str(
+            request_payload.get(
+                "output_format",
+                request_payload.get(
+                    "format",
+                    getattr(request, "output_format", "GeoTIFF"),
+                ),
+            )
+            or "GeoTIFF"
+        )
+        selected_raw = raw_u16 if pixel_type == "U16" else raw_u8
+        estimated_output = compressed or selected_raw
+        # ArcGIS clips native U16 samples when TIFF/U8 is requested, so the
+        # robust pipeline transports U16 fragments even for a visual U8
+        # output.  Account for that intermediate data, the final mosaic and
+        # its overview pyramid instead of assuming two U8 copies.
+        try:
+            required_free = int(
+                copernicus_core.CopernicusOrthophotoManager
+                .required_working_space(
+                    estimate,
+                    pending_fragment_bytes=raw_u16,
+                )
+            )
+        except Exception:
+            final_with_overviews = int(
+                math.ceil(estimated_output * 1.34)
+            )
+            subtotal = raw_u16 + final_with_overviews
+            margin = max(
+                256_000_000,
+                int(math.ceil(subtotal * 0.15)),
+            )
+            required_free = subtotal + margin
+        try:
+            free_bytes = int(shutil.disk_usage(self.manager.library.root).free)
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "No s'ha pogut comprovar el disc",
+                str(exc),
+            )
+            return False
+        if free_bytes < required_free:
+            QMessageBox.critical(
+                self,
+                "Espai insuficient",
+                "La selecció necessita aproximadament "
+                f"{format_bytes_dual(required_free)} lliures, incloent "
+                "fragments, mosaic final i marge de seguretat.\n\n"
+                f"Espai disponible: {format_bytes_dual(free_bytes)}.",
+            )
+            return False
+
+        size_gb = estimated_output / 1_000_000_000.0
+        if size_gb < 1.0:
+            severity = "Descàrrega de mida normal."
+        elif size_gb < 10.0:
+            severity = "Advertiment lleu: la descàrrega supera 1 GB."
+        elif size_gb < 50.0:
+            severity = "Advertiment important: la descàrrega supera 10 GB."
+        elif size_gb <= 100.0:
+            severity = (
+                "Confirmació reforçada: la descàrrega supera 50 GB."
+            )
+        else:
+            severity = (
+                "La descàrrega supera 100 GB. Es recomana reduir l'àrea "
+                "o utilitzar una resolució menor."
+            )
+        spatial_warnings = []
+        if partially_outside:
+            spatial_warnings.append(
+                "Una part del rectangle queda fora de la cobertura "
+                "publicada i pot produir NoData."
+            )
+        if nodata_fraction is not None and nodata_fraction > 0.50:
+            spatial_warnings.append(
+                "La mostra 128 × 128 estima aproximadament "
+                f"{nodata_fraction * 100.0:.1f}% de mar o NoData."
+            )
+        if nodata_probe_error:
+            spatial_warnings.append(
+                "No s'ha pogut completar la mostra orientativa de mar o "
+                "NoData. La descàrrega validarà igualment cada fragment."
+            )
+        warning_text = (
+            "\n".join(spatial_warnings) + "\n\n"
+            if spatial_warnings
+            else ""
+        )
+        transport_line = (
+            "Transport dels fragments: RGB U16 natiu"
+            + (
+                " (conversió U8 global local)\n"
+                if pixel_type == "U8"
+                else "\n"
+            )
+        )
+
+        answer = QMessageBox.question(
+            self,
+            "Confirmar descàrrega Copernicus",
+            f"{severity}\n\n{warning_text}"
+            f"Raster: {width_px:,} × {height_px:,} píxels\n"
+            f"Píxels totals: {pixel_count:,}\n"
+            f"RGB U16 sense compressió: {format_bytes_dual(raw_u16)}\n"
+            f"RGB U8 sense compressió: {format_bytes_dual(raw_u8)}\n"
+            "Mida comprimida estimada: "
+            f"{format_bytes_dual(estimated_output)}\n"
+            f"{transport_line}"
+            f"Fragments: {fragment_count}\n"
+            f"Format: {output_format} · {pixel_type}\n"
+            "Espai temporal recomanat: "
+            f"{format_bytes_dual(required_free)}\n"
+            f"Espai disponible: {format_bytes_dual(free_bytes)}\n\n"
+            "La mida comprimida és una estimació orientativa.\n"
+            "Vols iniciar la descàrrega?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No if size_gb >= 10.0 else QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            return False
+        if size_gb < 50.0:
+            return True
+        reinforced = QMessageBox.question(
+            self,
+            "Confirmació reforçada",
+            "Aquesta tasca pot ocupar molt espai i trigar força temps. "
+            "Els fragments vàlids es conservaran si la pauses.\n\n"
+            "Confirma una segona vegada que vols continuar.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return reinforced == QMessageBox.Yes
+
+    def _restore_controls_after_copernicus_probe(self) -> None:
+        self.btn_open_source.setEnabled(True)
+        self.btn_attach.setEnabled(True)
+        self.btn_attach_folder.setEnabled(True)
+        self.btn_auto_download.setEnabled(self._supports_auto_download())
+        self.btn_close.setEnabled(True)
+        self.btn_cancel.setText(
+            "Pausar descàrrega"
+            if self.asset_id
+            in {"orthophoto", "surface_rgb", "surface_categorical"}
+            else "Cancel·lar tasca"
+        )
+        self.btn_cancel.setVisible(False)
+        self.btn_background.setVisible(False)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+
+    def _launch_copernicus_download(self, request: object) -> None:
+        request_payload = request.to_dict()
+        try:
+            resolution_m = float(
+                request_payload.get(
+                    "resolution_m",
+                    getattr(request, "resolution_m", 10.0),
+                )
+            )
+        except (TypeError, ValueError):
+            resolution_m = 10.0
+        self._start_job(
+            mode="download",
+            files=[],
+            options={
+                "copernicus_request": request_payload,
+                "display_name": (
+                    "Copernicus HRIM 2018 True Colour · "
+                    f"{resolution_m:g} m"
+                ),
+            },
+        )
+
+    def _on_copernicus_probe_completed(
+        self,
+        result: object,
+        error_message: str,
+        cancelled: bool,
+    ) -> None:
+        context = self._copernicus_probe_context
+        self._copernicus_probe_context = None
+        self._restore_controls_after_copernicus_probe()
+        if context is None:
+            return
+        request, estimate = context
+        if bool(cancelled):
+            self.lbl_status.setText("Comprovació Copernicus cancel·lada.")
+            return
+        nodata_fraction = None
+        if result is not None:
+            try:
+                nodata_fraction = float(
+                    getattr(result, "fraction", result)
+                )
+            except (TypeError, ValueError):
+                nodata_fraction = None
+        self.lbl_status.setText(
+            "Comprovació espacial completada."
+            if not error_message
+            else "La mostra NoData no està disponible; es continuarà validant."
+        )
+        if self._confirm_copernicus_download(
+            request,
+            estimate,
+            nodata_fraction=nodata_fraction,
+            nodata_probe_error=str(error_message or ""),
+        ):
+            self._launch_copernicus_download(request)
+
+    def _on_copernicus_probe_thread_finished(self) -> None:
+        self._copernicus_probe_worker = None
+        self._copernicus_probe_thread = None
+
+    def _start_copernicus_preflight(
+        self,
+        request: object,
+        estimate: object,
+    ) -> None:
+        thread = self._copernicus_probe_thread
+        if thread is not None and thread.isRunning():
+            return
+        thread = QThread(self)
+        worker = _CopernicusNodataProbeWorker(request)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.completed.connect(self._on_copernicus_probe_completed)
+        worker.completed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._on_copernicus_probe_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._copernicus_probe_thread = thread
+        self._copernicus_probe_worker = worker
+        self._copernicus_probe_context = (request, estimate)
+        self._set_running_controls(allow_background=False)
+        self.btn_cancel.setText("Cancel·lar comprovació")
+        self.progress.setRange(0, 0)
+        self.lbl_status.setText(
+            "Comprovant cobertura real de mar i NoData en segon pla…"
+        )
+        thread.start()
+
+    def _auto_download_copernicus_orthophoto(self) -> None:
+        from TerraLab.data.copernicus_orthophoto import (
+            DownloadRequest,
+            estimate_selection,
+        )
+        from TerraLab.ui.copernicus_orthophoto_dialog import (
+            CopernicusOrthophotoSelectionDialog,
+        )
+
+        initial_request = None
+        try:
+            previous = self.manager.library.asset_state(
+                "orthophoto"
+            ).get("copernicus_request")
+            if isinstance(previous, dict):
+                initial_request = DownloadRequest.from_dict(previous)
+        except Exception:
+            initial_request = None
+        dialog = CopernicusOrthophotoSelectionDialog(
+            self,
+            initial_request=initial_request,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        request = dialog.download_request
+        if request is None:
+            QMessageBox.warning(
+                self,
+                "Selecció necessària",
+                "Dibuixa una àrea vàlida abans de descarregar.",
+            )
+            return
+        estimate = getattr(dialog, "_estimate", None)
+        if estimate is None:
+            try:
+                estimate = estimate_selection(request)
+            except Exception as exc:
+                QMessageBox.critical(
+                    self,
+                    "No s'ha pogut estimar la selecció",
+                    str(exc),
+                )
+                return
+        self._start_copernicus_preflight(request, estimate)
+
     def _auto_download(self):
         if self.asset_id == "gaia_catalog":
             state = self._load_gaia_tap_state()
@@ -756,6 +1250,9 @@ class AssetOnboardingDialog(QDialog):
                     self._start_gaia_tap_process(resume=True)
                     return
             self._start_gaia_tap_process(resume=False)
+            return
+        if self.asset_id == "orthophoto":
+            self._auto_download_copernicus_orthophoto()
             return
         if not self.spec.auto_download_url:
             return
@@ -1515,6 +2012,19 @@ class AssetOnboardingDialog(QDialog):
             job.start()
 
     def _cancel_job(self) -> None:
+        probe_thread = getattr(self, "_copernicus_probe_thread", None)
+        probe_worker = getattr(self, "_copernicus_probe_worker", None)
+        if (
+            probe_thread is not None
+            and probe_thread.isRunning()
+            and probe_worker is not None
+        ):
+            probe_worker.cancel()
+            self.btn_cancel.setEnabled(False)
+            self.lbl_status.setText(
+                "Cancel·lant la comprovació Copernicus…"
+            )
+            return
         process = getattr(self, "_gaia_tap_process", None)
         if process is not None and process.state() != QProcess.NotRunning:
             self.btn_cancel.setEnabled(False)
@@ -1609,7 +2119,13 @@ class AssetOnboardingDialog(QDialog):
             QMessageBox.information(self, "TerraLab", str(error_message))
         else:
             self.lbl_status.setText("Error durant la preparacio de dades.")
-            QMessageBox.critical(self, "TerraLab", str(error_message))
+            message_box = QMessageBox(self)
+            message_box.setIcon(QMessageBox.Critical)
+            message_box.setWindowTitle("TerraLab")
+            message_box.setTextFormat(Qt.PlainText)
+            message_box.setText(str(error_message))
+            message_box.setStandardButtons(QMessageBox.Ok)
+            message_box.exec_()
 
     def reject(self):
         """Executa el metode reject de la classe AssetOnboardingDialog.
@@ -1620,6 +2136,19 @@ class AssetOnboardingDialog(QDialog):
         Retorna:
         - None.
         """
+        probe_thread = getattr(self, "_copernicus_probe_thread", None)
+        probe_worker = getattr(self, "_copernicus_probe_worker", None)
+        if (
+            probe_thread is not None
+            and probe_thread.isRunning()
+            and probe_worker is not None
+        ):
+            probe_worker.cancel()
+            self.btn_cancel.setEnabled(False)
+            self.lbl_status.setText(
+                "Cancel·lant la comprovació Copernicus…"
+            )
+            return
         process = self._gaia_tap_process
         job = self._job
         if (
