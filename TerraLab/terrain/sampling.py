@@ -7,10 +7,8 @@ from typing import Any, Callable
 
 import numpy as np
 
-from TerraLab.terrain.render_pipeline import (
-    TerrainSamplingSettings,
-    apparent_elevation_radians,
-)
+from TerraLab.terrain.domain.curvature import apparent_elevation_radians
+from TerraLab.terrain.render.sampling import TerrainSamplingSettings
 
 
 @dataclass(frozen=True, slots=True)

@@ -7,6 +7,7 @@ import time
 from PyQt5.QtCore import QRectF, Qt, QTimer
 from PyQt5.QtWidgets import QApplication, QWidget
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import set_config_value
 from TerraLab.widgets.spherical_math import screen_to_sky
 from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
@@ -805,7 +806,7 @@ class CanvasInputHandler:
                 if hasattr(c, "scope_controller"):
                     c.scope_controller.user_center_fixed_once = True
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "CanvasInputHandler.handle_wheel")
             
             if event.modifiers() & Qt.ControlModifier:
                 c._scope_wheel_zoom(steps)

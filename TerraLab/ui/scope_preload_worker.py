@@ -13,9 +13,10 @@ from typing import Any
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 from TerraLab.render.stars_renderer import build_scope_spatial_index_payload
-from TerraLab.widgets.sky_legacy_components import (
+from TerraLab.data.catalogs.star_catalog import (
     STAR_CATALOG_NAKED_EYE_MAX_MAG,
 )
 
@@ -43,7 +44,7 @@ def _resolve_no_gaia_path(stars_dir: str | None) -> str:
             str(runtime_data_dir_for("gaia") / "no_gaia_stars.json")
         )
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_resolve_no_gaia_path")
     candidates.append(
         str(
             Path(__file__).resolve().parents[1]
@@ -85,7 +86,7 @@ def _load_cached_meta(path: Path) -> dict[str, Any]:
         if isinstance(payload, dict):
             return payload
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_load_cached_meta")
     return {}
 
 
@@ -155,7 +156,7 @@ class ScopeFullPreloadWorker(QObject):
         cmd = [
             sys.executable,
             "-m",
-            "TerraLab.tools.scope_preload_cache",
+            "TerraLab.data.catalogs.scope_preload_cache",
             "--runtime-npz",
             str(runtime_npz_path or ""),
             "--stars-dir",
@@ -197,7 +198,7 @@ class ScopeFullPreloadWorker(QObject):
                     if text:
                         print(f"[ScopePreload] {text}")
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "ScopeFullPreloadWorker.run._drain_stderr")
 
         stderr_thread = threading.Thread(
             target=_drain_stderr, args=(proc.stderr,), daemon=True

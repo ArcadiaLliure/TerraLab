@@ -15,15 +15,14 @@ from typing import Any
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal
 
-from TerraLab.common.performance import (
-    DEFAULT_PERFORMANCE_BUDGET,
-    GenerationController,
-    PERFORMANCE_FLAGS,
-)
+from TerraLab.common.exception_reporting import log_suppressed_exception
+from TerraLab.common.cancellation import GenerationController
+from TerraLab.common.performance.budget import DEFAULT_PERFORMANCE_BUDGET
+from TerraLab.common.performance.flags import PERFORMANCE_FLAGS
 from TerraLab.data.star_catalog_store import create_star_catalog_store
 from TerraLab.data.tile_manifest import TileEntry, TileManifest
 from TerraLab.render.stars_renderer import build_scope_spatial_index_payload
-from TerraLab.widgets.sky_legacy_components import (
+from TerraLab.data.catalogs.star_catalog import (
     _bp_rp_to_rgb_arrays,
     _load_no_gaia_star_arrays,
 )
@@ -58,7 +57,7 @@ class StarDataCoordinator(QObject):
                     f"{int(len(self._no_gaia_supplement.get('ra', [])))} stars"
                 )
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "StarDataCoordinator.__init__")
         self._active_dataset: dict[str, Any] = _empty_dataset()
 
         io_workers = min(4, max(1, int(os.cpu_count() or 4) // 4))
@@ -438,7 +437,7 @@ class StarDataCoordinator(QObject):
                                 "attached to general tile dataset"
                             )
                         except Exception:
-                            pass
+                            log_suppressed_exception(__name__, "StarDataCoordinator._load_tile_worker")
                 if not is_general:
                     if str(tile.tile_id) == str(
                         self._scope_pending_focus_tile_id

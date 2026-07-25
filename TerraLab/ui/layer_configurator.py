@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from PyQt5.QtCore import QEvent, QEasingCurve, QPropertyAnimation, QTimer, QUrl, Qt, pyqtSignal
@@ -54,15 +55,26 @@ _STATE_ICON = {
 }
 
 
+AssetDialogFactory = Callable[[object, str, QWidget], QDialog]
+
+
 class _LayerRow(QFrame):
     changed = pyqtSignal(str, str)
     interacted = pyqtSignal(str)
 
-    def __init__(self, manager: LayerManager, layer_id: LayerId, parent=None) -> None:
+    def __init__(
+        self,
+        manager: LayerManager,
+        layer_id: LayerId,
+        parent=None,
+        *,
+        asset_dialog_factory: AssetDialogFactory | None = None,
+    ) -> None:
         super().__init__(parent)
         self.manager = manager
         self.layer_id = layer_id
         self.descriptor = manager.descriptor(layer_id)
+        self._asset_dialog_factory = asset_dialog_factory
         self.setObjectName("assetRow")
 
         root = QVBoxLayout(self)
@@ -336,9 +348,9 @@ class _LayerRow(QFrame):
         self.changed.emit(self.layer_id.value, "source")
 
     def _open_asset_wizard(self) -> None:
-        from TerraLab.ui.onboarding_dialogs import AssetOnboardingDialog
-
-        dialog = AssetOnboardingDialog(
+        if self._asset_dialog_factory is None:
+            return
+        dialog = self._asset_dialog_factory(
             self.manager.assets,
             self.descriptor.asset_id,
             self,
@@ -436,7 +448,13 @@ class _SurfaceGroupRow(QFrame):
 
     changed = pyqtSignal(str, str)
 
-    def __init__(self, manager: LayerManager, parent=None) -> None:
+    def __init__(
+        self,
+        manager: LayerManager,
+        parent=None,
+        *,
+        asset_dialog_factory: AssetDialogFactory | None = None,
+    ) -> None:
         super().__init__(parent)
         self.manager = manager
         self.setObjectName("assetRow")
@@ -498,7 +516,12 @@ class _SurfaceGroupRow(QFrame):
             title_font.setBold(True)
             title_label.setFont(title_font)
             root.addWidget(title_label)
-            row = _LayerRow(manager, layer_id, self)
+            row = _LayerRow(
+                manager,
+                layer_id,
+                self,
+                asset_dialog_factory=asset_dialog_factory,
+            )
             row.visible.setVisible(False)
             row.activate_button.setVisible(False)
             self.rows[layer_id] = row
@@ -594,7 +617,13 @@ class LayerConfiguratorWidget(QWidget):
     layerChanged = pyqtSignal(str, str)
     libraryChangeRequested = pyqtSignal()
 
-    def __init__(self, manager: LayerManager, parent=None) -> None:
+    def __init__(
+        self,
+        manager: LayerManager,
+        parent=None,
+        *,
+        asset_dialog_factory: AssetDialogFactory | None = None,
+    ) -> None:
         super().__init__(parent)
         self.manager = manager
         self._rows: dict[LayerId, _LayerRow] = {}
@@ -645,7 +674,11 @@ class LayerConfiguratorWidget(QWidget):
                 if descriptor.id in surface_ids:
                     if descriptor.id is not LayerId.EARTH_ORTHOPHOTO:
                         continue
-                    surface_group = _SurfaceGroupRow(manager, content)
+                    surface_group = _SurfaceGroupRow(
+                        manager,
+                        content,
+                        asset_dialog_factory=asset_dialog_factory,
+                    )
                     surface_group.changed.connect(self.layerChanged)
                     surface_group.changed.connect(self._row_changed)
                     self._surface_groups.append(surface_group)
@@ -655,7 +688,12 @@ class LayerConfiguratorWidget(QWidget):
                         self._rows[surface_id] = row
                     layout.addWidget(surface_group)
                     continue
-                row = _LayerRow(manager, descriptor.id, content)
+                row = _LayerRow(
+                    manager,
+                    descriptor.id,
+                    content,
+                    asset_dialog_factory=asset_dialog_factory,
+                )
                 row.changed.connect(self.layerChanged)
                 row.changed.connect(self._row_changed)
                 self._rows[descriptor.id] = row

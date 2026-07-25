@@ -12,7 +12,7 @@ from pyproj import Geod
 from TerraLab.common.utils import get_config_value
 from TerraLab.terrain.providers import create_elevation_provider
 from TerraLab.terrain.crs import meridian_convergence_degrees
-from TerraLab.terrain.render_pipeline import apparent_elevation_degrees
+from TerraLab.terrain.domain.curvature import apparent_elevation_degrees
 from TerraLab.terrain.visibility_range import EARTH_RADIUS_M, TerrainRangeSettings
 
 

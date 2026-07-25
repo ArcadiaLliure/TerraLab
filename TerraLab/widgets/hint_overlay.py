@@ -2,7 +2,6 @@
 # Apareix sobre el canvas durant 2 segons quan l'usuari interactua
 # (zoom, canvi de temps, reubicació) i s'esvaeix suaument.
 
-import math
 
 from PyQt5.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath

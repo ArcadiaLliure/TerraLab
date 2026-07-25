@@ -3,7 +3,7 @@ import math
 import numpy as np
 
 from TerraLab.ui.canvas_selection import CanvasSelection
-from TerraLab.ui.sky_widget_impl import AstroCanvas
+from TerraLab.ui.astro_canvas import AstroCanvas
 
 
 def test_normalize_planet_key():

@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.light_pollution.modes import LP_MODE_AUTOMATIC
 from TerraLab.scene.camera import Camera
 from TerraLab.scene.render_state import RenderState
@@ -150,7 +151,7 @@ class SceneController:
             try:
                 array.setflags(write=False)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "SceneController.build_render_state")
 
         estat_camera = Camera(
             azimuth_offset=float(self.azimuth_offset),

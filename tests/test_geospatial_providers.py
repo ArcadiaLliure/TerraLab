@@ -19,7 +19,7 @@ from TerraLab.terrain.crs import (
     CoordinateTransformService,
 )
 from TerraLab.terrain.data_sources import DataSource, LayerType
-from TerraLab.terrain.engine import build_flat_horizon_profile
+from TerraLab.terrain.domain.profile import build_flat_horizon_profile
 from TerraLab.terrain.providers import (
     AscRasterProvider,
     ElevationProviderChain,

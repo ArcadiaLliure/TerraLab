@@ -6,7 +6,7 @@ import io
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -50,7 +50,7 @@ def _default_runtime_dust_path() -> str:
 @dataclass
 class _OverlayConfig:
     enabled: bool = True
-    texture_path: str = _default_runtime_texture_path()
+    texture_path: str = field(default_factory=_default_runtime_texture_path)
     opacity: float = 0.65
     blend_mode: str = "add"
     ra_offset_deg: float = 180.0
@@ -59,7 +59,7 @@ class _OverlayConfig:
     lon_flip: bool = True
     sample_scale: float = 1.0
     dust_map_enabled: bool = False
-    dust_map_path: str = _default_runtime_dust_path()
+    dust_map_path: str = field(default_factory=_default_runtime_dust_path)
     dust_density_strength: float = 0.0
     dust_extinction_strength: float = 0.65
     auto_opacity: bool = True

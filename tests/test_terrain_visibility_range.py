@@ -3,7 +3,10 @@ import math
 import numpy as np
 import pytest
 
-from TerraLab.terrain.engine import HorizonBaker, HorizonProfile, generate_bands, limit_profile_radius
+from TerraLab.terrain.domain.bands import generate_bands
+from TerraLab.terrain.domain.profile import HorizonProfile, limit_profile_radius
+from TerraLab.terrain.persistence.profile_npz import load_profile, save_profile
+from TerraLab.terrain.raycast.baker import HorizonBaker
 from TerraLab.terrain.visibility_range import (
     EARTH_RADIUS_M,
     TerrainRangeSettings,
@@ -93,11 +96,14 @@ def test_view_mesh_contains_real_cartesian_geometry_below_the_observer():
 def test_profile_radius_metadata_invalidates_legacy_and_short_cache(tmp_path):
     base = dict(azimuths=np.array([0.0]), bands=[])
     legacy_path = tmp_path / "legacy.npz"
-    HorizonProfile(**base).save(str(legacy_path))
-    assert not HorizonProfile.load(str(legacy_path)).covers_radius(1.0)
+    save_profile(HorizonProfile(**base), str(legacy_path))
+    assert not load_profile(str(legacy_path)).covers_radius(1.0)
     ranged_path = tmp_path / "ranged.npz"
-    HorizonProfile(**base, resolved_radius_m=300_000.0).save(str(ranged_path))
-    loaded = HorizonProfile.load(str(ranged_path))
+    save_profile(
+        HorizonProfile(**base, resolved_radius_m=300_000.0),
+        str(ranged_path),
+    )
+    loaded = load_profile(str(ranged_path))
     assert loaded.covers_radius(300_000.0)
     assert not loaded.covers_radius(300_001.0)
 

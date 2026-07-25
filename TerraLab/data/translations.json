@@ -1,3 +1,1276 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:ecbe1487972c90b2f46fc687b826cbe335773f8117c27612bac626920981878e
-size 42781
+{
+    "Astro.Lat": {
+        "ca": "Latitud:",
+        "es": "Latitud:",
+        "en": "Latitude:",
+        "fr": "Latitude :",
+        "it": "Latitudine:"
+    },
+    "Astro.Lon": {
+        "ca": "Longitud:",
+        "es": "Longitud:",
+        "en": "Longitude:",
+        "fr": "Longitude :",
+        "it": "Longitudine:"
+    },
+    "Astro.ExtraHeight": {
+        "ca": "Alçada extra (m):",
+        "es": "Altura extra (m):",
+        "en": "Extra Height (m):",
+        "fr": "Hauteur supp. (m) :",
+        "it": "Altezza extra (m):"
+    },
+    "Astro.ExtraHeightTooltip": {
+        "ca": "Afegeix elevació al teu punt d'observació per sobre del terreny base obtingut del DEM.",
+        "es": "Añade elevación a tu punto de observación por encima del terreno base obtenido del DEM.",
+        "en": "Adds elevation to your observation point above the base terrain obtained from the DEM.",
+        "fr": "Ajoute de l'élévation à votre point d'observation au-dessus du terrain de base obtenu à partir du MNT.",
+        "it": "Aggiunge quota al tuo punto di osservazione sopra il terreno di base ottenuto dal DEM."
+    },
+    "Astro.AltitudeInfo": {
+        "ca": "Altitud terreny: {dem} m | Total observador: {total} m",
+        "es": "Altitud terreno: {dem} m | Total observador: {total} m",
+        "en": "Terrain altitude: {dem} m | Total observer: {total} m",
+        "fr": "Altitude terrain: {dem} m | Observateur total: {total} m",
+        "it": "Altitudine terreno: {dem} m | Totale osservatore: {total} m"
+    },
+    "Astro.Relocate": {
+        "ca": "Reubicar",
+        "es": "Reubicar",
+        "en": "Relocate",
+        "fr": "Relocaliser",
+        "it": "Riposiziona"
+    },
+    "Astro.ViewZenith": {
+        "ca": "Zenit",
+        "es": "Cénit",
+        "en": "Zenith",
+        "fr": "Zénith",
+        "it": "Zenit"
+    },
+    "Astro.ViewHorizontal": {
+        "ca": "Horitzó",
+        "es": "Horizonte",
+        "en": "Horizon",
+        "fr": "Horizon",
+        "it": "Orizzonte"
+    },
+    "Astro.RealTimeButton": {
+        "ca": "Temps Real",
+        "es": "Tiempo Real",
+        "en": "Real Time",
+        "fr": "Temps Réel",
+        "it": "Tempo Reale"
+    },
+    "Astro.RealTime": {
+        "ca": "Temps real",
+        "es": "Tiempo real",
+        "en": "Real time",
+        "fr": "Temps réel",
+        "it": "Tempo reale"
+    },
+    "Astro.TerrainConfig": {
+        "ca": "Configurar MDT / Mapes",
+        "es": "Configurar MDT / Mapas",
+        "en": "Configure DEM / Maps",
+        "fr": "Configurer MNT / Cartes",
+        "it": "Configura DEM / Mappe"
+    },
+    "Astro.Circumpolar": {
+        "ca": "Circumpolar",
+        "es": "Circumpolar",
+        "en": "Circumpolar",
+        "fr": "Circumpolaire",
+        "it": "Circumpolare"
+    },
+    "Astro.Sky": {
+        "ca": "Cel",
+        "es": "Cielo",
+        "en": "Sky",
+        "fr": "Ciel",
+        "it": "Cielo"
+    },
+    "Astro.Horizon": {
+        "ca": "Horitzó",
+        "es": "Horizonte",
+        "en": "Horizon",
+        "fr": "Horizon",
+        "it": "Orizzonte"
+    },
+    "Astro.HorizonTooltip": {
+        "ca": "Mostrar/Amagar línia d'horitzó base",
+        "es": "Mostrar/Ocultar línea de horizonte base",
+        "en": "Show/Hide base horizon line",
+        "fr": "Afficher/Masquer la ligne d'horizon de base",
+        "it": "Mostra/Nascondi linea dell'orizzonte di base"
+    },
+    "Astro.Topography": {
+        "ca": "Topografia",
+        "es": "Topografía",
+        "en": "Topography",
+        "fr": "Topographie",
+        "it": "Topografia"
+    },
+    "Astro.TopographyTooltip": {
+        "ca": "Activar terreny 3D detallat",
+        "es": "Activar terreno 3D detallado",
+        "en": "Enable detailed 3D terrain",
+        "fr": "Activer le terrain 3D détaillé",
+        "it": "Attiva terreno 3D dettagliato"
+    },
+    "Astro.LoadingTopography": {
+        "ca": "⏳ Carregant topografia...",
+        "es": "⏳ Cargando topografía...",
+        "en": "⏳ Loading topography...",
+        "fr": "⏳ Chargement de la topographie…",
+        "it": "⏳ Caricamento topografia…"
+    },
+    "Astro.RecalcTopography": {
+        "ca": "⏳ Recalculant topografia...",
+        "es": "⏳ Recalculando topografía...",
+        "en": "⏳ Recalculating topography...",
+        "fr": "⏳ Recalcul de la topographie…",
+        "it": "⏳ Ricalcolo topografia…"
+    },
+    "Astro.LoadingCelestial": {
+        "ca": "⏳ Carregant dades celestes...",
+        "es": "⏳ Cargando datos celestes...",
+        "en": "⏳ Loading celestial data...",
+        "fr": "⏳ Chargement des données célestes…",
+        "it": "⏳ Caricamento dati celesti…"
+    },
+    "Astro.Mag": {
+        "ca": "Magnitud",
+        "es": "Magnitud",
+        "en": "Magnitude",
+        "fr": "Magnitude",
+        "it": "Magnitudine"
+    },
+    "Astro.Size": {
+        "ca": "Mida",
+        "es": "Tamaño",
+        "en": "Size",
+        "fr": "Taille",
+        "it": "Dimensione"
+    },
+    "Astro.Spk": {
+        "ca": "Puntes",
+        "es": "Puntas",
+        "en": "Spikes",
+        "fr": "Pointes",
+        "it": "Punte"
+    },
+    "Astro.MoonIllusion": {
+        "ca": "Il·lusió Lunar",
+        "es": "Ilusión Lunar",
+        "en": "Moon Illusion",
+        "fr": "Illusion Lunaire",
+        "it": "Illusione Lunare"
+    },
+    "Astro.SunName": {
+        "ca": "Sol",
+        "es": "Sol",
+        "en": "Sun",
+        "fr": "Soleil",
+        "it": "Sole"
+    },
+    "Astro.MoonName": {
+        "ca": "Lluna",
+        "es": "Luna",
+        "en": "Moon",
+        "fr": "Lune",
+        "it": "Luna"
+    },
+    "Astro.Train": {
+        "ca": "Entrenat",
+        "es": "Entrenado",
+        "en": "Train",
+        "fr": "Entraîné",
+        "it": "Addestrato"
+    },
+    "Astro.TrainTooltip": {
+        "ca": "Observador entrenat (Redueix la il·lusió)",
+        "es": "Observador entrenado (Reduce la ilusión)",
+        "en": "Trained Observer (Reduces Illusion)",
+        "fr": "Observateur entraîné (Réduit l'illusion)",
+        "it": "Osservatore addestrato (Riduce l'illusione)"
+    },
+    "Astro.LockEcl": {
+        "ca": "BlocEcl",
+        "es": "BlocEcl",
+        "en": "LockEcl",
+        "fr": "VerrÉcl",
+        "it": "BlocEcl"
+    },
+    "Astro.LockEclTooltip": {
+        "ca": "Bloquejar escala durant eclipsi (Precisió científica)",
+        "es": "Bloquear escala durante eclipse (Precisión científica)",
+        "en": "Lock Scale during Eclipse (Scientific Accuracy)",
+        "fr": "Verrouiller l'échelle pendant l'éclipse (Précision scientifique)",
+        "it": "Blocca scala durante eclissi (Precisione scientifica)"
+    },
+    "Astro.PureColors": {
+        "ca": "Colors purs",
+        "es": "Colores puros",
+        "en": "Pure Colors",
+        "fr": "Couleurs pures",
+        "it": "Colori puri"
+    },
+    "Astro.PureColorsTooltip": {
+        "ca": "Utilitza índex B-V pur sense desaturació visual",
+        "es": "Utiliza índice B-V puro sin desaturación visual",
+        "en": "Uses pure B-V index without visual desaturation",
+        "fr": "Utilise l'indice B-V pur sans désaturation visuelle",
+        "it": "Utilizza l'indice B-V puro senza desaturazione visiva"
+    },
+    "Astro.Stars": {
+        "ca": "ESTRELLES",
+        "es": "ESTRELLAS",
+        "en": "STARS",
+        "fr": "ÉTOILES",
+        "it": "STELLE"
+    },
+    "Astro.Looking": {
+        "ca": "MIRANT",
+        "es": "MIRANDO",
+        "en": "LOOKING",
+        "fr": "DIRECTION",
+        "it": "GUARDANDO"
+    },
+    "Astro.N": {
+        "ca": "N",
+        "es": "N",
+        "en": "N",
+        "fr": "N",
+        "it": "N"
+    },
+    "Astro.NE": {
+        "ca": "NE",
+        "es": "NE",
+        "en": "NE",
+        "fr": "NE",
+        "it": "NE"
+    },
+    "Astro.E": {
+        "ca": "E",
+        "es": "E",
+        "en": "E",
+        "fr": "E",
+        "it": "E"
+    },
+    "Astro.SE": {
+        "ca": "SE",
+        "es": "SE",
+        "en": "SE",
+        "fr": "SE",
+        "it": "SE"
+    },
+    "Astro.S": {
+        "ca": "S",
+        "es": "S",
+        "en": "S",
+        "fr": "S",
+        "it": "S"
+    },
+    "Astro.SW": {
+        "ca": "SO",
+        "es": "SO",
+        "en": "SW",
+        "fr": "SO",
+        "it": "SO"
+    },
+    "Astro.W": {
+        "ca": "O",
+        "es": "O",
+        "en": "W",
+        "fr": "O",
+        "it": "O"
+    },
+    "Astro.NW": {
+        "ca": "NO",
+        "es": "NO",
+        "en": "NW",
+        "fr": "NO",
+        "it": "NO"
+    },
+    "Horizon.LoadingMaps": {
+        "ca": "⏳ Carregant mapes: {loaded}/{total} ({pct}%)",
+        "es": "⏳ Cargando mapas: {loaded}/{total} ({pct}%)",
+        "en": "⏳ Loading maps: {loaded}/{total} ({pct}%)",
+        "fr": "⏳ Chargement des cartes : {loaded}/{total} ({pct}%)",
+        "it": "⏳ Caricamento mappe: {loaded}/{total} ({pct}%)"
+    },
+    "Horizon.CalculatingHorizon": {
+        "ca": "⏳ Calculant horitzó: {pct}%",
+        "es": "⏳ Calculando horizonte: {pct}%",
+        "en": "⏳ Calculating horizon: {pct}%",
+        "fr": "⏳ Calcul de l'horizon : {pct}%",
+        "it": "⏳ Calcolo dell'orizzonte: {pct}%"
+    },
+    "Horizon.CalculatingHorizonGeneric": {
+        "ca": "⏳ Calculant horitzó...",
+        "es": "⏳ Calculando horizonte...",
+        "en": "⏳ Calculating horizon...",
+        "fr": "⏳ Calcul de l'horizon…",
+        "it": "⏳ Calcolo dell'orizzonte…"
+    },
+    "Month.Jan": {
+        "ca": "Gen",
+        "es": "Ene",
+        "en": "Jan",
+        "fr": "Jan",
+        "it": "Gen"
+    },
+    "Month.Feb": {
+        "ca": "Feb",
+        "es": "Feb",
+        "en": "Feb",
+        "fr": "Fév",
+        "it": "Feb"
+    },
+    "Month.Mar": {
+        "ca": "Mar",
+        "es": "Mar",
+        "en": "Mar",
+        "fr": "Mar",
+        "it": "Mar"
+    },
+    "Month.Apr": {
+        "ca": "Abr",
+        "es": "Abr",
+        "en": "Apr",
+        "fr": "Avr",
+        "it": "Apr"
+    },
+    "Month.May": {
+        "ca": "Mai",
+        "es": "May",
+        "en": "May",
+        "fr": "Mai",
+        "it": "Mag"
+    },
+    "Month.Jun": {
+        "ca": "Jun",
+        "es": "Jun",
+        "en": "Jun",
+        "fr": "Jun",
+        "it": "Giu"
+    },
+    "Month.Jul": {
+        "ca": "Jul",
+        "es": "Jul",
+        "en": "Jul",
+        "fr": "Jul",
+        "it": "Lug"
+    },
+    "Month.Aug": {
+        "ca": "Ago",
+        "es": "Ago",
+        "en": "Aug",
+        "fr": "Aoû",
+        "it": "Ago"
+    },
+    "Month.Sep": {
+        "ca": "Set",
+        "es": "Sep",
+        "en": "Sep",
+        "fr": "Sep",
+        "it": "Set"
+    },
+    "Month.Oct": {
+        "ca": "Oct",
+        "es": "Oct",
+        "en": "Oct",
+        "fr": "Oct",
+        "it": "Ott"
+    },
+    "Month.Nov": {
+        "ca": "Nov",
+        "es": "Nov",
+        "en": "Nov",
+        "fr": "Nov",
+        "it": "Nov"
+    },
+    "Month.Dec": {
+        "ca": "Des",
+        "es": "Dic",
+        "en": "Dec",
+        "fr": "Déc",
+        "it": "Dic",
+        "de": "Dez"
+    },
+    "Terrain.ConfigTitle": {
+        "ca": "Configuració de Mapes Topogràfics",
+        "es": "Configuración de Mapas Topográficos",
+        "en": "Topographic Map Configuration",
+        "fr": "Configuration des cartes topographiques",
+        "it": "Configurazione mappe topografiche",
+        "de": "Konfiguration topografischer Karten"
+    },
+    "Terrain.ConfigDesc": {
+        "ca": "TerraLab necessita dades d'elevació (MDT) per generar l'horitzó real.\nSi no en disposes, s'utilitzarà un paisatge generat proceduralment.\n\nFormats suportats: .asc (ESRI ASCII Grid) o .tif (GeoTIFF).",
+        "es": "TerraLab necesita datos de elevación (MDT) para generar el horizonte real.\nSi no dispones de ellos, se utilizará un paisaje generado proceduralmente.\n\nFormatos soportados: .asc (ESRI ASCII Grid) o .tif (GeoTIFF).",
+        "en": "TerraLab needs elevation data (DEM) to generate the real horizon.\nIf unavailable, a procedurally generated landscape will be used.\n\nSupported formats: .asc (ESRI ASCII Grid) or .tif (GeoTIFF).",
+        "fr": "TerraLab a besoin de données d'élévation (MNT) pour générer l'horizon réel.\nSans celles-ci, un paysage procédural sera utilisé.\n\nFormats supportés : .asc (ESRI ASCII Grid) ou .tif (GeoTIFF).",
+        "it": "TerraLab ha bisogno di dati di elevazione (DEM) per generare l'orizzonte reale.\nIn assenza di dati, verrà usato un paesaggio procedurale.\n\nFormati supportati: .asc (ESRI ASCII Grid) o .tif (GeoTIFF).",
+        "de": "TerraLab benötigt Höhendaten (DGM) zur Berechnung des echten Horizonts.\nFehlen diese, wird eine prozedurale Landschaft verwendet.\n\nUnterstützte Formate: .asc (ESRI ASCII Grid) oder .tif (GeoTIFF)."
+    },
+    "Terrain.DownloadICGC": {
+        "ca": "Descarregar MDT de Catalunya (ICGC)",
+        "es": "Descargar MDT de Cataluña (ICGC)",
+        "en": "Download Catalonia DEM (ICGC)",
+        "fr": "Télécharger le MNT de Catalogne (ICGC)",
+        "it": "Scarica il DEM della Catalogna (ICGC)",
+        "de": "DGM Katalonien herunterladen (ICGC)"
+    },
+    "Terrain.DownloadCopernicus": {
+        "ca": "Descarregar DEM d'Europa (Copernicus / GISCO-EU)",
+        "es": "Descargar DEM de Europa (Copernicus / GISCO-EU)",
+        "en": "Download European DEM (Copernicus / GISCO-EU)",
+        "fr": "Télécharger le MNT Europe (Copernicus / GISCO-EU)",
+        "it": "Scarica il DEM Europa (Copernicus / GISCO-EU)",
+        "de": "Europa-DGM herunterladen (Copernicus / GISCO-EU)"
+    },
+    "Terrain.DownloadCopernicusTooltip": {
+        "ca": "El DEM europeu de 25m de resolució del projecte Copernicus/GISCO cobreix tot el continent. Disponible per descàrrega lliure en fitxers de 5×5 graus.",
+        "es": "El DEM europeo de 25m de resolución del proyecto Copernicus/GISCO cubre todo el continente. Disponible para descarga libre en ficheros de 5×5 grados.",
+        "en": "The 25m-resolution European DEM from Copernicus/GISCO covers the whole continent. Available for free download in 5×5 degree tiles.",
+        "fr": "Le MNT européen à 25m de résolution du projet Copernicus/GISCO couvre tout le continent. Disponible en téléchargement gratuit par tuiles de 5×5 degrés.",
+        "it": "Il DEM europeo a 25m di risoluzione del progetto Copernicus/GISCO copre l'intero continente. Disponibile gratuitamente in tile da 5×5 gradi.",
+        "de": "Das europaweite DGM mit 25m Auflösung (Copernicus/GISCO) deckt den gesamten Kontinent ab. Kostenlos als 5×5-Grad-Kacheln verfügbar."
+    },
+    "Terrain.DownloadWorld": {
+        "ca": "ℹ Per a altres regions del món, consulteu l'agència cartogràfica del vostre país (p. ex. USGS, IGN, OS, BKG…).",
+        "es": "ℹ Para otras regiones del mundo, consultad la agencia cartográfica de vuestro país (p. ej. USGS, IGN, OS, BKG…).",
+        "en": "ℹ For other world regions, consult your national mapping agency (e.g. USGS, IGN, OS, BKG…).",
+        "fr": "ℹ Pour les autres régions du monde, consultez l'agence cartographique nationale (ex. USGS, IGN, OS, BKG…).",
+        "it": "ℹ Per altre regioni del mondo, consultare l'agenzia cartografica nazionale (es. USGS, IGN, OS, BKG…).",
+        "de": "ℹ Für andere Weltregionen wenden Sie sich an Ihre nationale Kartografieagentur (z. B. USGS, IGN, OS, BKG…)."
+    },
+    "Terrain.CurrentPath": {
+        "ca": "Ruta actual: (No configurada)",
+        "es": "Ruta actual: (No configurada)",
+        "en": "Current path: (Not configured)",
+        "fr": "Chemin actuel : (Non configuré)",
+        "it": "Percorso attuale: (Non configurato)",
+        "de": "Aktueller Pfad: (Nicht konfiguriert)"
+    },
+    "Terrain.CurrentPathSet": {
+        "ca": "Ruta actual: {path}",
+        "es": "Ruta actual: {path}",
+        "en": "Current path: {path}",
+        "fr": "Chemin actuel : {path}",
+        "it": "Percorso attuale: {path}",
+        "de": "Aktueller Pfad: {path}"
+    },
+    "Terrain.SelectFolder": {
+        "ca": "Seleccionar Carpeta DEM...",
+        "es": "Seleccionar Carpeta DEM...",
+        "en": "Select DEM Folder...",
+        "fr": "Sélectionner dossier MNT...",
+        "it": "Seleziona cartella DEM...",
+        "de": "DGM-Ordner auswählen..."
+    },
+    "Terrain.SelectFolderDialog": {
+        "ca": "Seleccionar carpeta amb fitxers .asc o .tif",
+        "es": "Seleccionar carpeta con ficheros .asc o .tif",
+        "en": "Select folder containing .asc or .tif files",
+        "fr": "Sélectionner le dossier contenant des fichiers .asc ou .tif",
+        "it": "Seleziona cartella con file .asc o .tif",
+        "de": "Ordner mit .asc- oder .tif-Dateien auswählen"
+    },
+    "Terrain.EmptyFolder": {
+        "ca": "Carpeta buida o sense DEM suportat",
+        "es": "Carpeta vacía o sin DEM soportado",
+        "en": "Empty folder or unsupported DEM",
+        "fr": "Dossier vide ou format MNT non supporté",
+        "it": "Cartella vuota o formato DEM non supportato",
+        "de": "Leerer Ordner oder nicht unterstütztes DGM-Format"
+    },
+    "Terrain.EmptyFolderMsg": {
+        "ca": "No s'han trobat arxius .asc, .txt o .tif en aquesta carpeta.\nAssegureu-vos de descomprimir els mapes aquí.",
+        "es": "No se han encontrado archivos .asc, .txt o .tif en esta carpeta.\nAsegúrate de descomprimir los mapas aquí.",
+        "en": "No .asc, .txt or .tif files were found in this folder.\nMake sure to extract the map files here.",
+        "fr": "Aucun fichier .asc, .txt ou .tif trouvé dans ce dossier.\nAssurez-vous de décompresser les cartes ici.",
+        "it": "Nessun file .asc, .txt o .tif trovato in questa cartella.\nAssicurati di estrarre i file mappa qui.",
+        "de": "Keine .asc-, .txt- oder .tif-Dateien in diesem Ordner gefunden.\nBitte entpacken Sie die Kartendaten hier."
+    },
+    "Terrain.CloseButton": {
+        "ca": "Tancar",
+        "es": "Cerrar",
+        "en": "Close",
+        "fr": "Fermer",
+        "it": "Chiudi",
+        "de": "Schließen"
+    },
+    "Terrain.Recommendation": {
+        "ca": "ℹ Recomanació: Descarregueu almenys 150km a la redona en fitxers trossejats (5×5° o similar).",
+        "es": "ℹ Recomendación: Descargar al menos 150km a la redonda en ficheros troceados (5×5° o similar).",
+        "en": "ℹ Recommendation: Download at least 150km around your location in tiled files (5×5° or similar).",
+        "fr": "ℹ Recommandation : Téléchargez au moins 150 km autour en tuiles (5×5° ou similaire).",
+        "it": "ℹ Raccomandazione: Scaricare almeno 150km intorno in file a riquadri (5×5° o simile).",
+        "de": "ℹ Empfehlung: Mindestens 150 km Umkreis als Kacheln herunterladen (5×5° oder ähnlich)."
+    },
+    "Horizon.QualityLabel": {
+        "ca": "Qualitat de l'horitzó:",
+        "es": "Calidad del horizonte:",
+        "en": "Horizon quality:",
+        "fr": "Qualité de l'horizon :",
+        "it": "Qualità dell'orizzonte:",
+        "de": "Horizontqualität:"
+    },
+    "Horizon.QualityTooltip": {
+        "ca": "Nombre de capes de profunditat del terreny.\nMés capes = millor gradient visual, major temps de càlcul inicial.",
+        "es": "Número de capas de profundidad del terreno.\nMás capas = mejor gradiente visual, mayor tiempo de cálculo inicial.",
+        "en": "Number of terrain depth layers.\nMore layers = better visual gradient, longer initial computation.",
+        "fr": "Nombre de couches de profondeur du terrain.\nPlus de couches = meilleur dégradé visuel, calcul initial plus long.",
+        "it": "Numero di strati di profondità del terreno.\nPiù strati = gradiente visivo migliore, calcolo iniziale più lungo.",
+        "de": "Anzahl der Tiefenschichten des Geländes.\nMehr Ebenen = besserer visueller Verlauf, längere Erstberechnung."
+    },
+    "Horizon.QualityLow": {
+        "ca": "Baix (10 capes)",
+        "es": "Bajo (10 capas)",
+        "en": "Low (10 layers)",
+        "fr": "Bas (10 couches)",
+        "it": "Bassa (10 strati)",
+        "de": "Niedrig (10 Ebenen)"
+    },
+    "Horizon.QualityNormal": {
+        "ca": "Normal (20 capes)",
+        "es": "Normal (20 capas)",
+        "en": "Normal (20 layers)",
+        "fr": "Normal (20 couches)",
+        "it": "Normale (20 strati)",
+        "de": "Normal (20 Ebenen)"
+    },
+    "Horizon.QualityHigh": {
+        "ca": "Alt (40 capes)",
+        "es": "Alto (40 capas)",
+        "en": "High (40 layers)",
+        "fr": "Élevé (40 couches)",
+        "it": "Alta (40 strati)",
+        "de": "Hoch (40 Ebenen)"
+    },
+    "Horizon.QualityUltra": {
+        "ca": "Ultra (60 capes)",
+        "es": "Ultra (60 capas)",
+        "en": "Ultra (60 layers)",
+        "fr": "Ultra (60 couches)",
+        "it": "Ultra (60 strati)",
+        "de": "Ultra (60 Ebenen)"
+    },
+    "Horizon.QualityExtreme": {
+        "ca": "Extrem (80 capes)",
+        "es": "Extremo (80 capas)",
+        "en": "Extreme (80 layers)",
+        "fr": "Extrême (80 couches)",
+        "it": "Estremo (80 strati)",
+        "de": "Extrem (80 Ebenen)"
+    },
+    "Horizon.QualityNote": {
+        "ca": "📝 El canvi s'aplica al proper càlcul de l'horitzó (\"Regenerar\").",
+        "es": "📝 El cambio se aplica en el próximo cálculo del horizonte (\"Regenerar\").",
+        "en": "📝 Change takes effect on the next horizon calculation (\"Regenerate\").",
+        "fr": "📝 Le changement prend effet au prochain calcul de l'horizon (« Régénérer »).",
+        "it": "📝 La modifica viene applicata al prossimo calcolo dell'orizzonte (\"Rigenera\").",
+        "de": "📝 Die Änderung wird bei der nächsten Horizontberechnung (\"Neu berechnen\") wirksam."
+    },
+    "HUD.ZoomHint": {
+        "ca": "FOV {fov}°  ·  {focal}mm",
+        "es": "FOV {fov}°  ·  {focal}mm",
+        "en": "FOV {fov}°  ·  {focal}mm",
+        "fr": "FOV {fov}°  ·  {focal}mm",
+        "it": "FOV {fov}°  ·  {focal}mm",
+        "de": "FOV {fov}°  ·  {focal}mm"
+    },
+    "HUD.TimeHint": {
+        "ca": "🕐 {local_h} local  ·  UT {ut_h}",
+        "es": "🕐 {local_h} local  ·  UT {ut_h}",
+        "en": "🕐 {local_h} local  ·  UT {ut_h}",
+        "fr": "🕐 {local_h} locale  ·  UT {ut_h}",
+        "it": "🕐 {local_h} locale  ·  UT {ut_h}",
+        "de": "🕐 {local_h} Ortszeit  ·  UT {ut_h}"
+    },
+    "HUD.LocationHint": {
+        "ca": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m",
+        "es": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m",
+        "en": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m",
+        "fr": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m",
+        "it": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m",
+        "de": "📍 {lat}°, {lon}°  ·  {dem} m + {offset} m"
+    },
+    "Astro.StartCircumpolar": {
+        "ca": "Iniciar circumpolar",
+        "es": "Iniciar circumpolar",
+        "en": "Start circumpolar",
+        "fr": "Demarrer circumpolaire",
+        "it": "Avvia circumpolare",
+        "de": "Zirkumpolar starten"
+    },
+    "Astro.StopCircumpolar": {
+        "ca": "Aturar circumpolar",
+        "es": "Detener circumpolar",
+        "en": "Stop circumpolar",
+        "fr": "Arreter circumpolaire",
+        "it": "Ferma circumpolare",
+        "de": "Zirkumpolar stoppen"
+    },
+    "Astro.SearchPlaceholder": {
+        "ca": "Cercar astre...",
+        "es": "Buscar astro...",
+        "en": "Search object...",
+        "fr": "Chercher astre...",
+        "it": "Cerca astro..."
+    },
+    "Astro.ScopeButton": {
+        "ca": "Tub / Telescopi",
+        "es": "Tubo / Telescopio",
+        "en": "Tube / Telescope",
+        "fr": "Tube / Telescope",
+        "it": "Tubo / Telescopio"
+    },
+    "Astro.ToolsButton": {
+        "ca": "Eines",
+        "es": "Herramientas",
+        "en": "Tools",
+        "fr": "Outils",
+        "it": "Strumenti"
+    },
+    "Astro.ScopeFocal": {
+        "ca": "Focal (mm)",
+        "es": "Focal (mm)",
+        "en": "Focal (mm)",
+        "fr": "Focale (mm)",
+        "it": "Focale (mm)"
+    },
+    "Astro.ScopeInstrumentProfile": {
+        "ca": "Instrument",
+        "es": "Instrumento",
+        "en": "Instrument",
+        "fr": "Instrument",
+        "it": "Strumento"
+    },
+    "Astro.ScopeInstrumentTelescope": {
+        "ca": "Telescopi",
+        "es": "Telescopio",
+        "en": "Telescope",
+        "fr": "Telescope",
+        "it": "Telescopio"
+    },
+    "Astro.ScopeInstrumentAPSC": {
+        "ca": "APS-C",
+        "es": "APS-C",
+        "en": "APS-C",
+        "fr": "APS-C",
+        "it": "APS-C"
+    },
+    "Astro.ScopeInstrumentFullFrame": {
+        "ca": "Full Frame",
+        "es": "Full Frame",
+        "en": "Full Frame",
+        "fr": "Full Frame",
+        "it": "Full Frame"
+    },
+    "Astro.ScopeAperture": {
+        "ca": "Obertura (mm)",
+        "es": "Apertura (mm)",
+        "en": "Aperture (mm)",
+        "fr": "Ouverture (mm)",
+        "it": "Apertura (mm)"
+    },
+    "Astro.ScopeFNumber": {
+        "ca": "f/",
+        "es": "f/",
+        "en": "f/",
+        "fr": "f/",
+        "it": "f/"
+    },
+    "Astro.ScopeApertureInput": {
+        "ca": "Entrada obertura",
+        "es": "Entrada apertura",
+        "en": "Aperture input",
+        "fr": "Entree ouverture",
+        "it": "Ingresso apertura"
+    },
+    "Astro.ScopeApertureModeMM": {
+        "ca": "Diametre (mm)",
+        "es": "Diametro (mm)",
+        "en": "Diameter (mm)",
+        "fr": "Diametre (mm)",
+        "it": "Diametro (mm)"
+    },
+    "Astro.ScopeApertureModeF": {
+        "ca": "Numero f/",
+        "es": "Numero f/",
+        "en": "f/ number",
+        "fr": "Nombre f/",
+        "it": "Numero f/"
+    },
+    "Astro.ScopeEyepiece": {
+        "ca": "Ocular (mm)",
+        "es": "Ocular (mm)",
+        "en": "Eyepiece (mm)",
+        "fr": "Oculaire (mm)",
+        "it": "Oculare (mm)"
+    },
+    "Astro.ScopeEyePupil": {
+        "ca": "Pupil·la ull (mm)",
+        "es": "Pupila ojo (mm)",
+        "en": "Eye pupil (mm)",
+        "fr": "Pupille oeil (mm)",
+        "it": "Pupilla occhio (mm)"
+    },
+    "Astro.ScopeOpticalLosses": {
+        "ca": "Perdues (mag)",
+        "es": "Perdidas (mag)",
+        "en": "Losses (mag)",
+        "fr": "Pertes (mag)",
+        "it": "Perdite (mag)"
+    },
+    "Astro.ScopeExtinction": {
+        "ca": "Extincio k",
+        "es": "Extincion k",
+        "en": "Extinction k",
+        "fr": "Extinction k",
+        "it": "Estinzione k"
+    },
+    "Astro.ScopeISO": {
+        "ca": "ISO",
+        "es": "ISO",
+        "en": "ISO",
+        "fr": "ISO",
+        "it": "ISO"
+    },
+    "Astro.ScopeExposure": {
+        "ca": "Exposicio (s)",
+        "es": "Exposicion (s)",
+        "en": "Exposure (s)",
+        "fr": "Exposition (s)",
+        "it": "Esposizione (s)"
+    },
+    "Astro.ScopeShape": {
+        "ca": "Format",
+        "es": "Formato",
+        "en": "Format",
+        "fr": "Format",
+        "it": "Formato"
+    },
+    "Astro.ScopeAspect": {
+        "ca": "Aspecte",
+        "es": "Aspecto",
+        "en": "Aspect",
+        "fr": "Aspect",
+        "it": "Aspetto"
+    },
+    "Astro.ScopeAspectAuto": {
+        "ca": "Auto (sensor)",
+        "es": "Auto (sensor)",
+        "en": "Auto (sensor)",
+        "fr": "Auto (capteur)",
+        "it": "Auto (sensore)"
+    },
+    "Astro.ScopeAspectCustom": {
+        "ca": "Personalitzat",
+        "es": "Personalizado",
+        "en": "Custom",
+        "fr": "Personnalise",
+        "it": "Personalizzato"
+    },
+    "Astro.ScopeCircle": {
+        "ca": "Cercle",
+        "es": "Circulo",
+        "en": "Circle",
+        "fr": "Cercle",
+        "it": "Cerchio"
+    },
+    "Astro.ScopeRectangle": {
+        "ca": "Rectangle",
+        "es": "Rectangulo",
+        "en": "Rectangle",
+        "fr": "Rectangle",
+        "it": "Rettangolo"
+    },
+    "Astro.ScopeSensor": {
+        "ca": "Sensor",
+        "es": "Sensor",
+        "en": "Sensor",
+        "fr": "Capteur",
+        "it": "Sensore"
+    },
+    "Astro.ScopeSensorTiny": {
+        "ca": "Sensor 1/2.8",
+        "es": "Sensor 1/2.8",
+        "en": "Sensor 1/2.8",
+        "fr": "Capteur 1/2.8",
+        "it": "Sensore 1/2.8"
+    },
+    "Astro.ScopeSensorAPSC": {
+        "ca": "APS-C",
+        "es": "APS-C",
+        "en": "APS-C",
+        "fr": "APS-C",
+        "it": "APS-C"
+    },
+    "Astro.ScopeSensorFullFrame": {
+        "ca": "Full Frame",
+        "es": "Full Frame",
+        "en": "Full Frame",
+        "fr": "Full Frame",
+        "it": "Full Frame"
+    },
+    "Astro.ScopeMoveMode": {
+        "ca": "Moviment",
+        "es": "Movimiento",
+        "en": "Movement",
+        "fr": "Mouvement",
+        "it": "Movimento"
+    },
+    "Astro.AutoMode": {
+        "ca": "Automatic",
+        "es": "Automatico",
+        "en": "Automatic",
+        "fr": "Automatique",
+        "it": "Automatico"
+    },
+    "Astro.ManualMode": {
+        "ca": "Manual",
+        "es": "Manual",
+        "en": "Manual",
+        "fr": "Manuel",
+        "it": "Manuale"
+    },
+    "Astro.BortleLabel": {
+        "ca": "Bortle",
+        "es": "Bortle",
+        "en": "Bortle",
+        "fr": "Bortle",
+        "it": "Bortle"
+    },
+    "Astro.MagnitudeLabel": {
+        "ca": "Magnitud",
+        "es": "Magnitud",
+        "en": "Magnitude",
+        "fr": "Magnitude",
+        "it": "Magnitudine"
+    },
+    "Astro.LPModeTooltip": {
+        "ca": "Mode de visibilitat: Automatic (Bortle satel·lit) / Manual (magnitud limit ull nu)",
+        "es": "Modo de visibilidad: Automatico (Bortle satelite) / Manual (magnitud limite a ojo)",
+        "en": "Visibility mode: Automatic (satellite Bortle) / Manual (naked-eye limiting magnitude)",
+        "fr": "Mode de visibilite: Automatique (Bortle satellite) / Manuel (magnitude limite a l'oeil nu)",
+        "it": "Modalita visibilita: Automatico (Bortle satellite) / Manuale (magnitudine limite a occhio nudo)"
+    },
+    "Astro.ResetByLocation": {
+        "ca": "Reset per ubicacio",
+        "es": "Reset por ubicacion",
+        "en": "Reset by location",
+        "fr": "Reinit par position",
+        "it": "Reset per posizione"
+    },
+    "Astro.ScopeSlow": {
+        "ca": "Lent",
+        "es": "Lento",
+        "en": "Slow",
+        "fr": "Lent",
+        "it": "Lento"
+    },
+    "Astro.ScopeFast": {
+        "ca": "Rapid",
+        "es": "Rapido",
+        "en": "Fast",
+        "fr": "Rapide",
+        "it": "Rapido"
+    },
+    "Astro.ScopeActivate": {
+        "ca": "Activar mira",
+        "es": "Activar mira",
+        "en": "Activate scope",
+        "fr": "Activer viseur",
+        "it": "Attiva mirino"
+    },
+    "Astro.ScopeExit": {
+        "ca": "Sortir",
+        "es": "Salir",
+        "en": "Exit",
+        "fr": "Quitter",
+        "it": "Esci"
+    },
+    "Astro.ToolRuler": {
+        "ca": "Regla",
+        "es": "Regla",
+        "en": "Ruler",
+        "fr": "Regle",
+        "it": "Righello"
+    },
+    "Astro.ToolSquare": {
+        "ca": "Quadrat",
+        "es": "Cuadrado",
+        "en": "Square",
+        "fr": "Carre",
+        "it": "Quadrato"
+    },
+    "Astro.ToolRectangle": {
+        "ca": "Rectangle",
+        "es": "Rectangulo",
+        "en": "Rectangle",
+        "fr": "Rectangle",
+        "it": "Rettangolo"
+    },
+    "Astro.ToolCircle": {
+        "ca": "Cercle",
+        "es": "Circulo",
+        "en": "Circle",
+        "fr": "Cercle",
+        "it": "Cerchio"
+    },
+    "Astro.ToolClear": {
+        "ca": "Netejar",
+        "es": "Limpiar",
+        "en": "Clear",
+        "fr": "Effacer",
+        "it": "Pulisci"
+    },
+    "Astro.MeasureToolsSection": {
+        "ca": "Eines de mesura",
+        "es": "Herramientas de medida",
+        "en": "Measurement tools",
+        "fr": "Outils de mesure",
+        "it": "Strumenti di misura"
+    },
+    "Astro.ConstellationToolsSection": {
+        "ca": "Eines de constel·lacions",
+        "es": "Herramientas de constelaciones",
+        "en": "Constellation tools",
+        "fr": "Outils de constellations",
+        "it": "Strumenti costellazioni"
+    },
+    "Astro.ConstellationVisibility": {
+        "ca": "Mostrar constel·lacions",
+        "es": "Mostrar constelaciones",
+        "en": "Show constellations",
+        "fr": "Afficher constellations",
+        "it": "Mostra costellazioni"
+    },
+    "Astro.ConstellationDrawMode": {
+        "ca": "Mode dibuix",
+        "es": "Modo dibujo",
+        "en": "Draw mode",
+        "fr": "Mode dessin",
+        "it": "Modalita disegno"
+    },
+    "Astro.ConstellationNew": {
+        "ca": "Nova constel·lació",
+        "es": "Nueva constelación",
+        "en": "New constellation",
+        "fr": "Nouvelle constellation",
+        "it": "Nuova costellazione"
+    },
+    "Astro.ConstellationFinish": {
+        "ca": "Acabar constel·lació",
+        "es": "Acabar constelación",
+        "en": "Finish constellation",
+        "fr": "Terminer constellation",
+        "it": "Termina costellazione"
+    },
+    "Astro.ConstellationEraser": {
+        "ca": "Borrador",
+        "es": "Borrador",
+        "en": "Eraser",
+        "fr": "Gomme",
+        "it": "Gomma"
+    },
+    "Astro.ConstellationDeleteAll": {
+        "ca": "Esborrar totes",
+        "es": "Borrar todas",
+        "en": "Delete all",
+        "fr": "Tout supprimer",
+        "it": "Elimina tutte"
+    },
+    "Astro.ConstellationDeleteSelected": {
+        "ca": "Esborrar seleccionades ({n})",
+        "es": "Borrar seleccionadas ({n})",
+        "en": "Delete selected ({n})",
+        "fr": "Supprimer selectionnees ({n})",
+        "it": "Elimina selezionate ({n})"
+    },
+    "Astro.ConstellationRename": {
+        "ca": "Renombrar",
+        "es": "Renombrar",
+        "en": "Rename",
+        "fr": "Renommer",
+        "it": "Rinomina"
+    },
+    "Astro.ConstellationStatus": {
+        "ca": "Grups: {n} | Actiu: {name}",
+        "es": "Grupos: {n} | Activo: {name}",
+        "en": "Groups: {n} | Active: {name}",
+        "fr": "Groupes : {n} | Actif : {name}",
+        "it": "Gruppi: {n} | Attivo: {name}"
+    },
+    "Astro.ConstellationDialogTitle": {
+        "ca": "Constel·lacio",
+        "es": "Constelacion",
+        "en": "Constellation",
+        "fr": "Constellation",
+        "it": "Costellazione"
+    },
+    "Astro.ConstellationNamePrompt": {
+        "ca": "Nom",
+        "es": "Nombre",
+        "en": "Name",
+        "fr": "Nom",
+        "it": "Nome"
+    },
+    "Astro.ConstellationDefaultName": {
+        "ca": "Constel·lacio",
+        "es": "Constelacion",
+        "en": "Constellation",
+        "fr": "Constellation",
+        "it": "Costellazione"
+    },
+    "Astro.ConstellationSplitSuffix": {
+        "ca": "part",
+        "es": "parte",
+        "en": "part",
+        "fr": "partie",
+        "it": "parte"
+    },
+    "Astro.ContextGoto": {
+        "ca": "Goto",
+        "es": "Goto",
+        "en": "Goto",
+        "fr": "Goto",
+        "it": "Goto"
+    },
+    "Scope.ClickCenter": {
+        "ca": "Click per fixar el centre de la mira",
+        "es": "Click para fijar el centro de la mira",
+        "en": "Click to set scope center",
+        "fr": "Cliquez pour fixer le centre du viseur",
+        "it": "Click per fissare il centro del mirino"
+    },
+    "Scope.CapturingPhoto": {
+        "ca": "Fent foto...",
+        "es": "Tomando foto...",
+        "en": "Capturing photo...",
+        "fr": "Capture en cours...",
+        "it": "Scatto in corso..."
+    },
+    "Scope.DeepError": {
+        "ca": "Error de carrega",
+        "es": "Error de carga",
+        "en": "Load error",
+        "fr": "Erreur de chargement",
+        "it": "Errore di caricamento"
+    },
+    "Scope.HudFovCircle": {
+        "ca": "FOV: {d}",
+        "es": "FOV: {d}",
+        "en": "FOV: {d}",
+        "fr": "FOV: {d}",
+        "it": "FOV: {d}"
+    },
+    "Scope.HudFovRect": {
+        "ca": "FOV: {w} x {h}",
+        "es": "FOV: {w} x {h}",
+        "en": "FOV: {w} x {h}",
+        "fr": "FOV: {w} x {h}",
+        "it": "FOV: {w} x {h}"
+    },
+    "Scope.HudSlow": {
+        "ca": "LENT",
+        "es": "LENTO",
+        "en": "SLOW",
+        "fr": "LENT",
+        "it": "LENTO"
+    },
+    "Scope.HudFast": {
+        "ca": "RAPID",
+        "es": "RAPIDO",
+        "en": "FAST",
+        "fr": "RAPIDE",
+        "it": "RAPIDO"
+    },
+    "Scope.HudMove": {
+        "ca": "Moviment",
+        "es": "Movimiento",
+        "en": "Movement",
+        "fr": "Mouvement",
+        "it": "Movimento"
+    },
+    "Scope.HudCoords": {
+        "ca": "RA {ra} | Dec {dec}",
+        "es": "RA {ra} | Dec {dec}",
+        "en": "RA {ra} | Dec {dec}",
+        "fr": "RA {ra} | Dec {dec}",
+        "it": "RA {ra} | Dec {dec}"
+    },
+    "Scope.HudMagModel": {
+        "ca": "mLim {mlim:.2f} | M {magx:.1f}x",
+        "es": "mLim {mlim:.2f} | M {magx:.1f}x",
+        "en": "mLim {mlim:.2f} | M {magx:.1f}x",
+        "fr": "mLim {mlim:.2f} | M {magx:.1f}x",
+        "it": "mLim {mlim:.2f} | M {magx:.1f}x"
+    },
+    "Scope.HudExitPupil": {
+        "ca": "Pupil·la sortida: {v:.2f} mm",
+        "es": "Pupila salida: {v:.2f} mm",
+        "en": "Exit pupil: {v:.2f} mm",
+        "fr": "Pupille sortie: {v:.2f} mm",
+        "it": "Pupilla uscita: {v:.2f} mm"
+    },
+    "Scope.HudAirmass": {
+        "ca": "Airmass X: {v:.3f}",
+        "es": "Airmass X: {v:.3f}",
+        "en": "Airmass X: {v:.3f}",
+        "fr": "Airmass X: {v:.3f}",
+        "it": "Airmass X: {v:.3f}"
+    },
+    "Scope.HudExtinctionK": {
+        "ca": "Extincio k: {v:.3f}",
+        "es": "Extincion k: {v:.3f}",
+        "en": "Extinction k: {v:.3f}",
+        "fr": "Extinction k: {v:.3f}",
+        "it": "Estinzione k: {v:.3f}"
+    },
+    "Scope.HudLossMag": {
+        "ca": "Perdua: {v:.3f} mag",
+        "es": "Perdida: {v:.3f} mag",
+        "en": "Loss: {v:.3f} mag",
+        "fr": "Perte: {v:.3f} mag",
+        "it": "Perdita: {v:.3f} mag"
+    },
+    "Scope.HudTransmission": {
+        "ca": "Transmissio: {v:.3f}",
+        "es": "Transmision: {v:.3f}",
+        "en": "Transmission: {v:.3f}",
+        "fr": "Transmission: {v:.3f}",
+        "it": "Trasmissione: {v:.3f}"
+    },
+    "Measure.Distance": {
+        "ca": "Distancia: {v:.3f}°",
+        "es": "Distancia: {v:.3f}°",
+        "en": "Distance: {v:.3f}°",
+        "fr": "Distance: {v:.3f}°",
+        "it": "Distanza: {v:.3f}°"
+    },
+    "Measure.Width": {
+        "ca": "Amplada: {v:.3f}°",
+        "es": "Ancho: {v:.3f}°",
+        "en": "Width: {v:.3f}°",
+        "fr": "Largeur: {v:.3f}°",
+        "it": "Larghezza: {v:.3f}°"
+    },
+    "Measure.Height": {
+        "ca": "Alcada: {v:.3f}°",
+        "es": "Alto: {v:.3f}°",
+        "en": "Height: {v:.3f}°",
+        "fr": "Hauteur: {v:.3f}°",
+        "it": "Altezza: {v:.3f}°"
+    },
+    "Measure.Area": {
+        "ca": "Area: {v:.3f} deg²",
+        "es": "Area: {v:.3f} deg²",
+        "en": "Area: {v:.3f} deg²",
+        "fr": "Aire: {v:.3f} deg²",
+        "it": "Area: {v:.3f} deg²"
+    },
+    "Measure.Diameter": {
+        "ca": "Diametre: {v:.3f} deg",
+        "es": "Diametro: {v:.3f} deg",
+        "en": "Diameter: {v:.3f} deg",
+        "fr": "Diametre: {v:.3f} deg",
+        "it": "Diametro: {v:.3f} deg"
+    },
+    "Scope.ZoomHint": {
+        "ca": "Telescopi {focal} mm  ·  FOV {fov}",
+        "es": "Telescopio {focal} mm  ·  FOV {fov}",
+        "en": "Scope {focal} mm  ·  FOV {fov}",
+        "fr": "Telescope {focal} mm  ·  FOV {fov}",
+        "it": "Telescopio {focal} mm  ·  FOV {fov}"
+    },
+    "Astro.SearchNotFound": {
+        "ca": "No s'ha trobat l'objecte '{name}' a l'index.",
+        "es": "No se ha encontrado el objeto '{name}' en el indice.",
+        "en": "Object '{name}' not found in index.",
+        "fr": "Objet '{name}' introuvable dans l'index.",
+        "it": "Oggetto '{name}' non trovato nell'indice."
+    },
+    "Astro.ObjectBelowHorizon": {
+        "ca": "Objecte sota l'horitzo ({alt:.1f} deg)",
+        "es": "Objeto bajo el horizonte ({alt:.1f} deg)",
+        "en": "Object below horizon ({alt:.1f} deg)",
+        "fr": "Objet sous l'horizon ({alt:.1f} deg)",
+        "it": "Oggetto sotto l'orizzonte ({alt:.1f} deg)"
+    },
+    "Astro.Climate": {
+        "ca": "Clima",
+        "es": "Clima",
+        "en": "Weather",
+        "fr": "Meteo",
+        "it": "Clima"
+    },
+    "Astro.ClimateFallbackActive": {
+        "ca": "Clima real no disponible (fallback)",
+        "es": "Clima real no disponible (fallback)",
+        "en": "Real weather unavailable (fallback)",
+        "fr": "Meteo reelle indisponible (fallback)",
+        "it": "Meteo reale non disponibile (fallback)"
+    },
+    "Astro.CopernicusDialogTitle": {
+        "ca": "Configuracio Copernicus Climate",
+        "es": "Configuracion Copernicus Climate",
+        "en": "Copernicus Climate setup",
+        "fr": "Configuration Copernicus Climate",
+        "it": "Configurazione Copernicus Climate"
+    },
+    "Astro.CopernicusDialogIntro": {
+        "ca": "Per activar dades online de clima i aerosols, crea un compte gratuit al CDS i genera la teva API key.",
+        "es": "Para activar datos online de clima y aerosoles, crea una cuenta gratuita en CDS y genera tu API key.",
+        "en": "To enable online climate and aerosol data, create a free CDS account and generate your API key.",
+        "fr": "Pour activer les donnees en ligne de meteo et aerosols, creez un compte gratuit CDS et generez votre API key.",
+        "it": "Per attivare dati online meteo e aerosol, crea un account CDS gratuito e genera la tua API key."
+    },
+    "Astro.CopernicusDialogUrl": {
+        "ca": "Obrir guia",
+        "es": "Abrir guia",
+        "en": "Open guide",
+        "fr": "Ouvrir guide",
+        "it": "Apri guida"
+    },
+    "Astro.CopernicusDialogEnterKey": {
+        "ca": "Introduir API key",
+        "es": "Introducir API key",
+        "en": "Enter API key",
+        "fr": "Entrer API key",
+        "it": "Inserisci API key"
+    },
+    "Astro.CopernicusDialogSkip": {
+        "ca": "Ometre",
+        "es": "Omitir",
+        "en": "Skip",
+        "fr": "Ignorer",
+        "it": "Salta"
+    },
+    "Astro.CopernicusDialogKeyPrompt": {
+        "ca": "Enganxa la teva API key del CDS",
+        "es": "Pega tu API key de CDS",
+        "en": "Paste your CDS API key",
+        "fr": "Collez votre API key CDS",
+        "it": "Incolla la tua API key CDS"
+    },
+    "Astro.CopernicusDialogSaved": {
+        "ca": "API key desada a la configuracio local.",
+        "es": "API key guardada en la configuracion local.",
+        "en": "API key saved in local config.",
+        "fr": "API key enregistree dans la configuration locale.",
+        "it": "API key salvata nella configurazione locale."
+    },
+    "Astro.CopernicusDialogEmpty": {
+        "ca": "No s'ha introduit cap key. Es fara servir fallback offline.",
+        "es": "No se ha introducido ninguna key. Se usara fallback offline.",
+        "en": "No key entered. Offline fallback will be used.",
+        "fr": "Aucune key saisie. Le fallback hors ligne sera utilise.",
+        "it": "Nessuna key inserita. Verra usato fallback offline."
+    }
+}

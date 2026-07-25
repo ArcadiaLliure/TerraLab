@@ -1,0 +1,115 @@
+"""Developer utility for Gaia ECSV/CSV stacking and runtime artifacts."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+# Allow running as a standalone script: `python tools/import_gaia_catalog.py ...`
+if __package__ in (None, ""):
+    _repo_root = Path(__file__).resolve().parents[2]
+    if str(_repo_root) not in sys.path:
+        sys.path.insert(0, str(_repo_root))
+
+from TerraLab.common.data_library import DataLibrary
+from TerraLab.util.gaia_importer import build_gaia_catalog_from_tables
+
+
+def _default_output_dir() -> str:
+    layout = DataLibrary.current(require_configured=True).layout(create=True)
+    return str(Path(layout["data_gaia"]).resolve())
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Stack Gaia ECSV/CSV/ZST files and build runtime artifacts"
+    )
+    parser.add_argument(
+        "inputs", nargs="+", help="Input Gaia tables (.ecsv, .csv or .zst)"
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="",
+        help=(
+            "Destination folder. If omitted, configure the TerraLab data "
+            "library or set TERRALAB_DATA_ROOT."
+        ),
+    )
+    parser.add_argument(
+        "--basename", default="stars_catalog", help="Output base name"
+    )
+    parser.add_argument(
+        "--zst-level", type=int, default=12, help="Zstandard level"
+    )
+    parser.add_argument(
+        "--write-npz", dest="write_npz", action="store_true", default=False
+    )
+    parser.add_argument(
+        "--no-write-npz", dest="write_npz", action="store_false"
+    )
+    parser.add_argument(
+        "--write-npy", dest="write_npy", action="store_true", default=True
+    )
+    parser.add_argument(
+        "--no-write-npy", dest="write_npy", action="store_false"
+    )
+    parser.add_argument(
+        "--write-zst", dest="write_zst", action="store_true", default=False
+    )
+    parser.add_argument(
+        "--no-write-zst", dest="write_zst", action="store_false"
+    )
+    parser.add_argument(
+        "--build-healpy-index",
+        dest="build_healpy_index",
+        action="store_true",
+        default=False,
+    )
+    parser.add_argument(
+        "--no-build-healpy-index",
+        dest="build_healpy_index",
+        action="store_false",
+    )
+    parser.add_argument(
+        "--healpy-nside",
+        type=int,
+        default=512,
+        help="HEALPix NSIDE (power of 2)",
+    )
+    parser.add_argument(
+        "--healpy-chunk-rows",
+        type=int,
+        default=1_000_000,
+        help="Rows per HEALPix build chunk",
+    )
+    args = parser.parse_args()
+
+    def _progress(percent: float, message: str) -> None:
+        print(f"[gaia-import] {percent:5.1f}% {message}")
+
+    try:
+        output_dir = str(args.output_dir).strip() or _default_output_dir()
+    except Exception as exc:
+        parser.error(str(exc))
+
+    summary = build_gaia_catalog_from_tables(
+        args.inputs,
+        output_dir,
+        output_basename=args.basename,
+        zst_level=args.zst_level,
+        write_npz=bool(args.write_npz),
+        write_npy=bool(args.write_npy),
+        write_zst=bool(args.write_zst),
+        build_healpy_index=bool(args.build_healpy_index),
+        healpy_nside=int(args.healpy_nside),
+        healpy_chunk_rows=int(args.healpy_chunk_rows),
+        progress_callback=_progress,
+    )
+    print(json.dumps(summary, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

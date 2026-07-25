@@ -4,8 +4,7 @@
 
 import os
 
-from PyQt5.QtCore import Qt, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import (
     QComboBox,
     QCheckBox,
@@ -329,14 +328,15 @@ class TerrainConfigDialog(QDialog):
         suffix = ""
         if settings.mode == "auto":
             try:
-                ground = self.parent().horizon_worker.get_bare_elevation(
+                coordinator = self.parent().terrain_coordinator
+                ground = coordinator.get_bare_elevation(
                     float(self.parent().latitude), float(self.parent().longitude)
                 )
                 if ground is None:
                     raise ValueError("observer elevation unavailable")
                 observer_elevation = (
                     float(ground)
-                    + float(self.parent().horizon_worker.observer_offset)
+                    + float(coordinator.observer_offset)
                     + 1.7
                 )
             except Exception:

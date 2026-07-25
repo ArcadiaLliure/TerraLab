@@ -2,17 +2,23 @@ import math
 
 import numpy as np
 
-from TerraLab.terrain.engine import compute_polar_mesh_normals
-from TerraLab.terrain.render_pipeline import (
+from TerraLab.terrain.mesh.normals import compute_polar_mesh_normals
+from TerraLab.terrain.render.config import (
     SurfaceVisualStyle,
     TerrainCelestialLightContext,
     TerrainRenderSettings,
-    apply_vibrant_color_grade,
+)
+from TerraLab.terrain.render.atmosphere import (
     atmospheric_fog_factor,
-    compose_vertex_rgba,
+    vibrant_depth_haze_factor,
+)
+from TerraLab.terrain.render.lighting import (
     lambert_intensity,
     terrain_celestial_light_factors,
-    vibrant_depth_haze_factor,
+)
+from TerraLab.terrain.render.materials import (
+    apply_vibrant_color_grade,
+    compose_vertex_rgba,
 )
 
 

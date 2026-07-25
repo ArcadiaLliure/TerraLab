@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from TerraLab.terrain.engine import HorizonBaker
+from TerraLab.terrain.raycast.baker import HorizonBaker
 
 
 class _AlwaysOutOfCoverageProvider:

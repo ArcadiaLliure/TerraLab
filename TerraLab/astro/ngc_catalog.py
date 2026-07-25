@@ -7,7 +7,8 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import List, Optional
+from TerraLab.common.exception_reporting import log_suppressed_exception
 
 _NAME_RE = re.compile(r"^(NGC|IC)\s*0*([0-9]+[A-Za-z]?)$", re.IGNORECASE)
 _TOKEN_RE = re.compile(r"[A-Za-z0-9']+")
@@ -121,7 +122,7 @@ def _parse_ra_deg(
             ss = abs(float(sexa[2])) if len(sexa) >= 3 else 0.0
             return float((hh + mm / 60.0 + ss / 3600.0) * 15.0) % 360.0
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_parse_ra_deg")
 
     out = _to_opt_float(text)
     if out is None:
@@ -148,7 +149,7 @@ def _parse_dec_deg(value: object) -> Optional[float]:
             out = sign * (dd + mm / 60.0 + ss / 3600.0)
             return float(max(-90.0, min(90.0, out)))
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_parse_dec_deg")
 
     out = _to_opt_float(text)
     if out is None:

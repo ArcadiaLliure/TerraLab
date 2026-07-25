@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from PyQt5.QtCore import QDate, QPointF, Qt
 from PyQt5.QtWidgets import QApplication, QCalendarWidget, QDialog, QVBoxLayout
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 from TerraLab.common.utils import (
     get_config_value,
@@ -19,7 +20,7 @@ from TerraLab.light_pollution.modes import (
     is_automatic_mode,
     resolve_bortle_class,
 )
-from TerraLab.widgets.sky_legacy_components import (
+from TerraLab.data.catalogs.star_catalog import (
     STAR_CATALOG_NAKED_EYE_MAX_MAG,
     _bp_rp_to_rgb_arrays,
     _build_celestial_objects_from_arrays,
@@ -64,7 +65,7 @@ def recompute_visual_magnitude_model(
         try:
             focal_mm = float(widget.scope_focal_spin.value())
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "recompute_visual_magnitude_model")
     aperture_mm_effective = widget._effective_scope_aperture_mm(focal_mm)
     instrument_profile = str(
         getattr(widget, "scope_instrument_profile", "telescope")
@@ -126,7 +127,7 @@ def recompute_visual_magnitude_model(
             if current_sensor:
                 sensor_profile = str(current_sensor)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "recompute_visual_magnitude_model")
 
     inputs = VisualMagnitudeInputs(
         aperture_mm=aperture_mm_effective,
@@ -192,7 +193,7 @@ def request_relocation(widget):
                 widget.observer_timezone = str(tz_name)
                 set_config_value("observer_timezone", widget.observer_timezone)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "request_relocation")
 
         if hasattr(widget, "weather"):
             widget.weather.set_location(widget.latitude, widget.longitude)
@@ -223,17 +224,16 @@ def request_relocation(widget):
             widget.latitude, widget.longitude, widget.manual_day
         )
 
-        if hasattr(widget, "horizon_worker"):
-            bare = widget.horizon_worker.get_bare_elevation(
-                widget.latitude, widget.longitude
-            )
-            widget._last_dem_elevation = bare
-            widget.update_altitude_label()
+        bare = widget.terrain_coordinator.get_bare_elevation(
+            widget.latitude, widget.longitude
+        )
+        widget._last_dem_elevation = bare
+        widget.update_altitude_label()
         if is_automatic_mode(getattr(widget, "light_pollution_mode", None)):
             try:
                 widget.recalculate_automatic_light_pollution()
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "request_relocation")
 
         if hasattr(widget.canvas, "hint_overlay"):
             dem_m = getattr(widget, "_last_dem_elevation", None)
@@ -378,7 +378,7 @@ def widget_update_loop(widget):
             try:
                 widget._ensure_scope_catalog_loaded(force_now=False)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "widget_update_loop")
 
     if run_climate_tick:
         widget._refresh_climate_status_indicator()
@@ -390,7 +390,7 @@ def widget_update_loop(widget):
 
             widget_refresh_gaia_download_feedback(widget)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "widget_update_loop")
     widget.canvas.update()
 
 

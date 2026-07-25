@@ -84,31 +84,8 @@ def sky_color_phys(
     *,
     bortle=1,
     twilight_factor=1.0,
-    impl=None,
 ):
-    """Sky color helper with optional legacy delegation."""
-    if callable(impl):
-        return impl(
-            view_alt,
-            view_az,
-            sun_alt,
-            sun_az,
-            bortle=bortle,
-            twilight_factor=twilight_factor,
-        )
-    return sky_color_phys_impl(
-        view_alt,
-        view_az,
-        sun_alt,
-        sun_az,
-        bortle=bortle,
-        twilight_factor=twilight_factor,
-    )
-
-
-def sky_color_phys_impl(
-    view_alt, view_az, sun_alt, sun_az, *, bortle=1, twilight_factor=1.0
-):
+    """Return the physically-inspired sky colour for one view direction."""
     keyframes = [
         {
             "alt": 20.0,
@@ -263,6 +240,7 @@ def sky_color_phys_impl(
 
 
 def draw_background(
+    canvas,
     painter,
     sun_alt,
     sun_az,
@@ -270,29 +248,8 @@ def draw_background(
     *,
     dimming=1.0,
     cache=None,
-    canvas=None,
-    impl=None,
 ):
-    """Sky background draw helper with optional legacy delegation."""
-    if callable(impl):
-        result = impl(painter, sun_alt, sun_az, view_az, dimming=dimming)
-    else:
-        result = draw_background_impl(
-            canvas,
-            painter,
-            sun_alt,
-            sun_az,
-            view_az,
-            dimming=dimming,
-        )
-    if isinstance(cache, dict):
-        cache["value"] = result
-    return result
-
-
-def draw_background_impl(
-    canvas, painter, sun_alt, sun_az, view_az, *, dimming=1.0
-):
+    """Draw and cache the sky background for ``canvas``."""
     if canvas is None:
         return None
 
@@ -387,4 +344,7 @@ def draw_background_impl(
         alpha = int((1.0 - dimming) * 255)
         alpha = max(0, min(255, alpha))
         painter.fillRect(rect, QColor(0, 0, 0, alpha))
-    return canvas._bg_cache_pixmap
+    result = canvas._bg_cache_pixmap
+    if isinstance(cache, dict):
+        cache["value"] = result
+    return result

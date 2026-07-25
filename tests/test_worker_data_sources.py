@@ -11,7 +11,7 @@ from TerraLab.terrain.data_sources import (
     LayerSelectionService,
     LayerType,
 )
-from TerraLab.terrain.engine import build_flat_horizon_profile
+from TerraLab.terrain.domain.profile import build_flat_horizon_profile
 from TerraLab.terrain.terrain_coordinator import TerrainCoordinator
 from TerraLab.terrain.worker import HorizonWorker
 
@@ -269,7 +269,7 @@ def test_terrain_coordinator_runs_pending_surface_refresh_when_profile_arrives(
         )
         assert coordinator._surface_request_generation == 0
 
-        coordinator.ingest_profile_payload(profile)
+        coordinator._on_profile_ready(profile)
         deadline = time.monotonic() + 2.0
         while not entered.is_set() and time.monotonic() < deadline:
             app.processEvents()
@@ -297,7 +297,7 @@ def test_terrain_coordinator_can_cancel_pending_surface_refresh(monkeypatch):
     try:
         coordinator.request_surface_refresh(view_fov_deg=80.0)
         coordinator.cancel_surface_refresh()
-        coordinator.ingest_profile_payload(object())
+        coordinator._on_profile_ready(object())
 
         assert coordinator._pending_surface_request is None
         assert coordinator._surface_request_generation == 0

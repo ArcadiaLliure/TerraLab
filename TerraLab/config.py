@@ -1,5 +1,3 @@
-import os
-import sys
 
 from TerraLab.common.utils import (
     _load_config,
@@ -136,7 +134,7 @@ class ConfigManager:
 
     def get_terrain_render_settings(self):
         """Return the validated 2.5D colour, shading and horizon settings."""
-        from TerraLab.terrain.render_pipeline import TerrainRenderSettings
+        from TerraLab.terrain.render.config import TerrainRenderSettings
 
         values = {
             key: self.get(key, getattr(TerrainRenderSettings(), key))
@@ -146,7 +144,7 @@ class ConfigManager:
 
     def get_terrain_sampling_settings(self):
         """Return the validated subprocess-safe terrain sampling policy."""
-        from TerraLab.terrain.render_pipeline import TerrainSamplingSettings
+        from TerraLab.terrain.render.sampling import TerrainSamplingSettings
 
         values = {
             key: self.get(key, getattr(TerrainSamplingSettings(), key))

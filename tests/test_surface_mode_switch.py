@@ -8,8 +8,9 @@ from TerraLab.terrain.land_cover.legends.category_info import (
     LandCoverCategoryInfo,
 )
 from TerraLab.terrain.data_sources import LayerType, SurfaceMode
+from TerraLab.ui.astro_canvas import AstroCanvas
+from TerraLab.ui.astronomical_widget import AstronomicalWidget
 from TerraLab.ui.canvas_input_handler import CanvasInputHandler
-from TerraLab.ui.sky_widget_impl import AstroCanvas, AstronomicalWidget
 
 
 class _Selector:
@@ -155,7 +156,7 @@ def test_visual_style_switch_is_independent_of_surface_source(monkeypatch):
     )
     widget.layer_manager.data_sources.surface_mode = SurfaceMode.ORTHOPHOTO
     monkeypatch.setattr(
-        "TerraLab.ui.sky_widget_impl.get_config_value",
+        "TerraLab.ui.widget_mixins.layers.get_config_value",
         lambda key, default=None: (
             "vibrant" if key == "surface_visual_style" else default
         ),
@@ -179,7 +180,7 @@ def test_visual_style_change_reloads_only_visual_render_settings(monkeypatch):
     updates = []
     refreshes = []
     monkeypatch.setattr(
-        "TerraLab.ui.sky_widget_impl.set_config_value",
+        "TerraLab.ui.widget_mixins.layers.set_config_value",
         lambda key, value: saved.append((key, value)),
     )
     widget.terrain_coordinator = SimpleNamespace(
@@ -256,7 +257,7 @@ def test_out_of_coverage_orthophoto_is_rejected_with_explanation(monkeypatch):
     )
     messages = []
     monkeypatch.setattr(
-        "TerraLab.ui.sky_widget_impl.QMessageBox.information",
+        "TerraLab.ui.widget_mixins.surface_data.QMessageBox.information",
         lambda _parent, title, message: messages.append((title, message)),
     )
     widget.latitude = 41.21535
@@ -320,7 +321,7 @@ def test_standard_tooltip_event_shows_cached_categorical_description(
 ):
     shown = []
     monkeypatch.setattr(
-        "TerraLab.ui.sky_widget_impl.QToolTip",
+        "TerraLab.ui.canvas_mixins.interaction.QToolTip",
         SimpleNamespace(
             showText=lambda *args: shown.append(args),
             hideText=lambda: None,
@@ -349,7 +350,7 @@ def test_mouse_move_shows_categorical_tooltip_without_waiting_for_qt_delay(
 ):
     shown = []
     monkeypatch.setattr(
-        "TerraLab.ui.sky_widget_impl.QToolTip",
+        "TerraLab.ui.canvas_mixins.interaction.QToolTip",
         SimpleNamespace(
             showText=lambda *args: shown.append(args),
             hideText=lambda: None,
@@ -386,7 +387,7 @@ def test_tooltip_is_suppressed_while_dragging_or_in_orthophoto(
     lookups = []
     hidden = []
     monkeypatch.setattr(
-        "TerraLab.ui.sky_widget_impl.QToolTip",
+        "TerraLab.ui.canvas_mixins.interaction.QToolTip",
         SimpleNamespace(
             showText=lambda *_args: None,
             hideText=lambda: hidden.append(True),

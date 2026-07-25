@@ -9,6 +9,7 @@ import unicodedata
 from pathlib import Path
 from typing import Optional
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.astro.ngc_catalog import iter_ngc_aliases, load_ngc_catalog
 from TerraLab.common.utils import getTraduction
 
@@ -352,7 +353,7 @@ def load_named_star_entries(path: str | Path | None = None):
                 try:
                     info["source_id"] = int(row[sid_i])
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "load_named_star_entries")
             out.append(info)
         except Exception:
             continue

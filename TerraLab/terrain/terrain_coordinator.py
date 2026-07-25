@@ -9,6 +9,7 @@ from typing import Any
 
 from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.terrain.worker import HorizonWorker
 
 
@@ -19,6 +20,7 @@ class TerrainCoordinator(QObject):
     horizon_preview_ready = pyqtSignal(object)
     horizon_progress = pyqtSignal(object)
     horizon_error = pyqtSignal(str)
+    bortle_estimate_ready = pyqtSignal(int, float, float, int)
 
     # Calling a QObject method directly does not honour its thread affinity.
     # These private signals are therefore the only entry points used for work
@@ -26,6 +28,9 @@ class TerrainCoordinator(QObject):
     _initialize_requested = pyqtSignal()
     _bake_requested = pyqtSignal(object)
     _surface_refresh_requested = pyqtSignal(object)
+    _reload_requested = pyqtSignal()
+    _observer_offset_requested = pyqtSignal(float)
+    _bortle_requested = pyqtSignal(float, float, int)
 
     def __init__(self, tiles_dir: str | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -42,11 +47,21 @@ class TerrainCoordinator(QObject):
         self._surface_refresh_requested.connect(
             self._worker.request_surface_refresh, type=Qt.QueuedConnection
         )
+        self._reload_requested.connect(
+            self._worker.reload_config, type=Qt.QueuedConnection
+        )
+        self._observer_offset_requested.connect(
+            self._worker.set_observer_offset, type=Qt.QueuedConnection
+        )
+        self._bortle_requested.connect(
+            self._worker.request_bortle_estimate, type=Qt.QueuedConnection
+        )
 
         self._worker.profile_ready.connect(self._on_profile_ready)
         self._worker.preview_ready.connect(self._on_preview_ready)
         self._worker.progress_state.connect(self.horizon_progress)
         self._worker.error_occurred.connect(self.horizon_error)
+        self._worker.bortle_estimate_ready.connect(self.bortle_estimate_ready)
 
         self._thread.start()
 
@@ -60,7 +75,7 @@ class TerrainCoordinator(QObject):
             self._worker.cancel_surface_sampling()
             self._worker.abort_current_job()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "TerrainCoordinator.shutdown")
         try:
             self._thread.requestInterruption()
             self._thread.quit()
@@ -68,14 +83,14 @@ class TerrainCoordinator(QObject):
                 self._thread.terminate()
                 self._thread.wait(1500)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "TerrainCoordinator.shutdown")
         # No worker code can still be using these resources after the thread
         # has stopped, so final cleanup is safe even though its event loop is
         # no longer available for a queued invocation.
         try:
             self._worker.shutdown()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "TerrainCoordinator.shutdown")
 
     @property
     def thread(self) -> QThread:
@@ -88,6 +103,41 @@ class TerrainCoordinator(QObject):
     def request_bake(self, job: dict[str, Any]) -> None:
         """Envia un job de bake de terreny al worker."""
         self._bake_requested.emit(job)
+
+    def reload_config(self) -> None:
+        """Queue provider reconfiguration on the terrain thread."""
+
+        self._reload_requested.emit()
+
+    def set_observer_offset(self, offset: float) -> None:
+        """Queue an observer-height update on the terrain thread."""
+
+        self._observer_offset_requested.emit(float(offset))
+
+    @property
+    def observer_offset(self) -> float:
+        return float(getattr(self._worker, "observer_offset", 0.0))
+
+    def get_progress_text(self) -> str:
+        """Return the worker's lock-protected progress snapshot."""
+
+        return self._worker.get_progress_text()
+
+    def get_bare_elevation(self, lat: float, lon: float) -> float | None:
+        """Read the initialized provider through the canonical terrain owner."""
+
+        return self._worker.get_bare_elevation(float(lat), float(lon))
+
+    def request_bortle_estimate(
+        self, lat: float, lon: float, request_id: int = 0
+    ) -> None:
+        """Queue one light-pollution estimate on the terrain thread."""
+
+        self._bortle_requested.emit(
+            float(lat),
+            float(lon),
+            int(request_id),
+        )
 
     def abort_current_job(self) -> None:
         """Demana cancelacio del bake en curs."""
@@ -146,14 +196,6 @@ class TerrainCoordinator(QObject):
     def get_profile(self) -> object | None:
         """Retorna l'ultim perfil final disponible."""
         return self._current_profile
-
-    def ingest_profile_payload(self, payload: object) -> None:
-        """Ingesta un payload de perfil extern i el publica com a final."""
-        self._on_profile_ready(payload)
-
-    def ingest_preview_payload(self, payload: object) -> None:
-        """Ingesta un payload de previsualització extern."""
-        self._on_preview_ready(payload)
 
     def _on_profile_ready(self, payload: object) -> None:
         profile_obj = payload

@@ -19,6 +19,7 @@ import rasterio
 from rasterio.crs import CRS
 from rasterio.windows import Window, from_bounds
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.locks import RASTERIO_LOCK
 from TerraLab.light_pollution.bortle import sqm_to_bortle_class
 from TerraLab.terrain.crs import (
@@ -178,7 +179,7 @@ class LightPollutionSampler:
                     return CRS.from_epsg(3857)
                 return CRS.from_epsg(3857)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "LightPollutionSampler._guess_missing_crs")
         return CRS.from_epsg(4326)
 
     def _resolve_src_crs(self, src) -> CRS:

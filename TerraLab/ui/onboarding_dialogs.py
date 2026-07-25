@@ -46,6 +46,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import (
     getTraduction,
     get_config_value,
@@ -164,19 +165,19 @@ def _keep_gaia_process_alive(
         try:
             _GAIA_BACKGROUND_PROCESSES.remove(proc)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_keep_gaia_process_alive._cleanup")
         for stored_key, stored_proc in tuple(_GAIA_BACKGROUND_DOWNLOADS.items()):
             if stored_proc is proc:
                 _GAIA_BACKGROUND_DOWNLOADS.pop(stored_key, None)
         try:
             proc.deleteLater()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_keep_gaia_process_alive._cleanup")
 
     try:
         proc.finished.connect(_cleanup)
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_keep_gaia_process_alive")
 
 
 class _AssetJobWorker(QObject):
@@ -257,7 +258,7 @@ class _CopernicusNodataProbeWorker(QObject):
             self.completed.emit(None, "", True)
             return
         try:
-            from TerraLab.data.copernicus_orthophoto import (
+            from TerraLab.data.copernicus import (
                 ArcGISImageServerClient,
             )
 
@@ -835,7 +836,7 @@ class AssetOnboardingDialog(QDialog):
     ) -> bool:
         """Check disk space and confirm the selected download size."""
 
-        from TerraLab.data import copernicus_orthophoto as copernicus_core
+        from TerraLab.data import copernicus as copernicus_core
 
         format_bytes_dual = copernicus_core.format_bytes_dual
         bbox = getattr(request, "bbox_wgs84", None)
@@ -1182,7 +1183,7 @@ class AssetOnboardingDialog(QDialog):
         thread.start()
 
     def _auto_download_copernicus_orthophoto(self) -> None:
-        from TerraLab.data.copernicus_orthophoto import (
+        from TerraLab.data.copernicus import (
             DownloadRequest,
             estimate_selection,
         )
@@ -1320,7 +1321,7 @@ class AssetOnboardingDialog(QDialog):
                         self.manager.layout.get("gaia_mag_limit_default", 0.0)
                     )
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "AssetOnboardingDialog._start_gaia_tap_process")
                 mag_dialog = QInputDialog(self)
                 mag_dialog.setWindowTitle("Gaia TAP")
                 mag_dialog.setLabelText("Magnitud maxima G (0 = sense limit):")
@@ -1362,7 +1363,7 @@ class AssetOnboardingDialog(QDialog):
             if log_path.exists():
                 log_path.unlink()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._start_gaia_tap_process")
 
         process = QProcess(self)
         process.setWorkingDirectory(str(project_root))
@@ -1562,7 +1563,7 @@ class AssetOnboardingDialog(QDialog):
             if "progress_percent" in state:
                 return float(max(0.0, min(100.0, float(state.get("progress_percent", 0.0) or 0.0))))
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._state_progress_percent")
         deep_tiles = state.get("deep_tiles")
         if not isinstance(deep_tiles, dict):
             return 0.0
@@ -1624,7 +1625,7 @@ class AssetOnboardingDialog(QDialog):
         try:
             timer.stop()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._stop_gaia_state_watch_timer")
 
     def _poll_gaia_state_feedback(self) -> None:
         """Actualitza progrés del diàleg des de fitxer d'estat Gaia."""
@@ -1661,13 +1662,13 @@ class AssetOnboardingDialog(QDialog):
                 self.manager.layout.get("gaia_max_concurrent_requests")
             )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._gaia_max_parallel_requests")
         try:
             raw_candidates.append(
                 get_config_value("gaia_max_concurrent_requests", 2)
             )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._gaia_max_parallel_requests")
         raw_candidates.append(2)
 
         for raw_value in raw_candidates:
@@ -1699,19 +1700,19 @@ class AssetOnboardingDialog(QDialog):
         try:
             proc.readyReadStandardOutput.disconnect(self._on_gaia_tap_output)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._cleanup_gaia_tap_process")
         try:
             proc.finished.disconnect(self._on_gaia_tap_finished)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._cleanup_gaia_tap_process")
         try:
             proc.errorOccurred.disconnect(self._on_gaia_tap_error)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._cleanup_gaia_tap_process")
         try:
             proc.deleteLater()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._cleanup_gaia_tap_process")
         self._gaia_tap_process = None
         self._gaia_tap_out_buffer = ""
 
@@ -1722,21 +1723,21 @@ class AssetOnboardingDialog(QDialog):
         try:
             proc.readyReadStandardOutput.disconnect(self._on_gaia_tap_output)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._detach_gaia_tap_process_for_background")
         try:
             proc.finished.disconnect(self._on_gaia_tap_finished)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._detach_gaia_tap_process_for_background")
         try:
             proc.errorOccurred.disconnect(self._on_gaia_tap_error)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._detach_gaia_tap_process_for_background")
         try:
             app = QApplication.instance()
             if app is not None:
                 proc.setParent(app)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._detach_gaia_tap_process_for_background")
         _keep_gaia_process_alive(
             proc, _background_job_key(self.manager, self.asset_id)
         )
@@ -1831,7 +1832,7 @@ class AssetOnboardingDialog(QDialog):
                 with self._gaia_tap_log_path.open("a", encoding="utf-8") as handle:
                     handle.write(text + "\n")
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._append_gaia_tap_log_line")
         self.txt_process_log.append(text)
         self.lbl_status.setText(text)
 
@@ -1843,7 +1844,7 @@ class AssetOnboardingDialog(QDialog):
                     self.progress.setRange(0, 100)
                 self.progress.setValue(pct)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AssetOnboardingDialog._append_gaia_tap_log_line")
 
         m2 = re.search(
             r"\[gaia-tap\]\s+download\s+([0-9]+(?:\.[0-9]+)?)%", text
@@ -1854,7 +1855,7 @@ class AssetOnboardingDialog(QDialog):
                 self.progress.setRange(0, 100)
                 self.progress.setValue(pct2)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AssetOnboardingDialog._append_gaia_tap_log_line")
 
         m3 = re.search(
             r"\[gaia-progress\]\s+([0-9]+(?:\.[0-9]+)?)%\s*(.*)$",
@@ -1875,7 +1876,7 @@ class AssetOnboardingDialog(QDialog):
                     )
                     self.lbl_status.setText(f"{status} ({pct3}%)")
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AssetOnboardingDialog._append_gaia_tap_log_line")
 
         if "[gaia-ui]" in text:
             self._maybe_close_after_visible_ready()
@@ -1965,7 +1966,7 @@ class AssetOnboardingDialog(QDialog):
             try:
                 err_txt = str(proc.errorString() or err_txt)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AssetOnboardingDialog._on_gaia_tap_error")
         log_hint = self._gaia_tap_log_hint()
         self._cleanup_gaia_tap_process()
         self.btn_cancel.setVisible(False)
@@ -2167,7 +2168,7 @@ class AssetOnboardingDialog(QDialog):
                         proc.kill()
                         proc.waitForFinished(2000)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AssetOnboardingDialog.reject")
             self._cleanup_gaia_tap_process()
         super().reject()
 
@@ -2286,7 +2287,9 @@ class WelcomeOnboardingDialog(QDialog):
         panel_layout.addWidget(subtitle)
 
         self.layer_configurator = LayerConfiguratorWidget(
-            LayerManager(self.manager), panel
+            LayerManager(self.manager),
+            panel,
+            asset_dialog_factory=AssetOnboardingDialog,
         )
         panel_layout.addWidget(self.layer_configurator, 1)
         layout.addWidget(panel, 1)

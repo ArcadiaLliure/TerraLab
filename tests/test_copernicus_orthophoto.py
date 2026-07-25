@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import math
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,8 +16,11 @@ from rasterio.io import MemoryFile
 from rasterio.crs import CRS
 from rasterio.transform import from_origin
 
-from TerraLab.data import copernicus_orthophoto as copernicus
-from TerraLab.data.copernicus_orthophoto import (
+from TerraLab.data import copernicus
+from TerraLab.data.copernicus import manager as copernicus_manager
+from TerraLab.data.copernicus import planning as copernicus_planning
+from TerraLab.data.copernicus import validation as copernicus_validation
+from TerraLab.data.copernicus import (
     ArcGISImageServerClient,
     BBoxWgs84,
     CopernicusDownloadCancelled,
@@ -44,7 +49,7 @@ def _fixed_projected_bounds(monkeypatch, width_m: float, height_m: float):
         3_000_000.0 + height_m,
     )
     monkeypatch.setattr(
-        copernicus,
+        copernicus_planning,
         "transform_bounds_to_3035",
         lambda _bbox: bounds,
     )
@@ -633,12 +638,12 @@ def test_arcgis_etrs89_extended_laea_wkt_is_accepted_as_epsg_3035(
                 "units": "m",
             }
 
-    assert copernicus._is_epsg_3035(_AuthoritylessArcGISCrs())
+    assert copernicus_validation._is_epsg_3035(_AuthoritylessArcGISCrs())
     validation = copernicus.validate_fragment_raster(
         path, fragment, request
     )
     assert validation.width_px == fragment.width_px
-    assert copernicus._is_epsg_3035(arcgis_crs)
+    assert copernicus_validation._is_epsg_3035(arcgis_crs)
 
 
 def test_client_rejects_truncated_or_non_raster_http_content(
@@ -826,7 +831,7 @@ def test_manifest_persists_valid_fragments_and_rejects_corruption(
     reopened = DownloadManifest(manifest_path, plan)
 
     assert reopened.is_complete(fragment, root)
-    payload = copernicus.json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     record = payload["fragments"][fragment.id]
     assert len(record["sha256"]) == 64
     assert record["size_bytes"] == path.stat().st_size
@@ -1081,7 +1086,7 @@ def test_manager_run_resumes_completed_fragments_and_records_final_output(
     assert second.downloaded_fragments == 0
     assert second.reused_fragments == 4
     assert progress[-1][0] == 100.0
-    manifest = copernicus.json.loads(
+    manifest = json.loads(
         Path(second.manifest_path).read_text(encoding="utf-8")
     )
     assert manifest["status"] == "complete"
@@ -1105,7 +1110,7 @@ class _InterruptingClient(_SyntheticClient):
         if self.calls:
             # Let the manager durably mark the first completed future before
             # the second one reports the intentional interruption.
-            copernicus.time.sleep(0.05)
+            time.sleep(0.05)
             raise CopernicusDownloadCancelled("intentional pause")
         return super().download_fragment(
             fragment, request, target_path, **kwargs
@@ -1194,7 +1199,7 @@ def test_manager_reuses_verified_final_without_disk_check_or_mosaic(
         pytest.fail("a valid final mosaic must bypass preflight and rebuilding")
 
     manager.disk_usage = unexpected
-    monkeypatch.setattr(copernicus, "build_mosaic", unexpected)
+    monkeypatch.setattr(copernicus_manager, "build_mosaic", unexpected)
     second = manager.run(request)
 
     assert second.output_path == first.output_path
@@ -1222,13 +1227,13 @@ def test_manager_adopts_valid_final_missing_only_manifest_commit(
     )
     first = manager.run(request)
     manifest_path = Path(first.manifest_path)
-    payload = copernicus.json.loads(
+    payload = json.loads(
         manifest_path.read_text(encoding="utf-8")
     )
     payload.pop("status", None)
     payload.pop("output", None)
     manifest_path.write_text(
-        copernicus.json.dumps(payload),
+        json.dumps(payload),
         encoding="utf-8",
     )
 
@@ -1236,12 +1241,12 @@ def test_manager_adopts_valid_final_missing_only_manifest_commit(
         pytest.fail("a valid orphan final must be adopted without rebuilding")
 
     manager.disk_usage = unexpected
-    monkeypatch.setattr(copernicus, "build_mosaic", unexpected)
+    monkeypatch.setattr(copernicus_manager, "build_mosaic", unexpected)
     second = manager.run(request)
 
     assert second.output_path == first.output_path
     assert second.metadata["reused_final_output"] is True
-    adopted = copernicus.json.loads(
+    adopted = json.loads(
         manifest_path.read_text(encoding="utf-8")
     )
     assert adopted["status"] == "complete"
@@ -1268,12 +1273,12 @@ def test_resume_adopts_unrecorded_fragments_before_space_preflight(
     first = first_manager.run(request)
     Path(first.output_path).unlink()
     manifest_path = Path(first.manifest_path)
-    payload = copernicus.json.loads(
+    payload = json.loads(
         manifest_path.read_text(encoding="utf-8")
     )
     payload["fragments"] = {}
     manifest_path.write_text(
-        copernicus.json.dumps(payload),
+        json.dumps(payload),
         encoding="utf-8",
     )
 
@@ -1290,7 +1295,7 @@ def test_resume_adopts_unrecorded_fragments_before_space_preflight(
     calls_before_resume = list(client.calls)
 
     def resumed_disk_usage(_path):
-        durable = copernicus.json.loads(
+        durable = json.loads(
             manifest_path.read_text(encoding="utf-8")
         )
         assert len(durable["fragments"]) == plan.fragment_count
@@ -1312,7 +1317,7 @@ def test_resume_adopts_unrecorded_fragments_before_space_preflight(
 
 class _SiblingFailureClient:
     def __init__(self):
-        self.fragment_published = copernicus.threading.Event()
+        self.fragment_published = threading.Event()
 
     def download_fragment(
         self,
@@ -1331,7 +1336,7 @@ class _SiblingFailureClient:
                 value=31,
             )
             self.fragment_published.set()
-            copernicus.time.sleep(0.1)
+            time.sleep(0.1)
             return path
         assert self.fragment_published.wait(timeout=1.0)
         raise CopernicusDownloadError("intentional sibling failure")
@@ -1358,7 +1363,7 @@ def test_failed_concurrent_run_adopts_tiff_published_by_sibling(
         failing_manager.run(request)
 
     manifest_path = next((tmp_path / "downloads").glob("*/manifest.json"))
-    payload = copernicus.json.loads(
+    payload = json.loads(
         manifest_path.read_text(encoding="utf-8")
     )
     assert payload["fragments"]["r00000_c00000"]["status"] == "complete"
@@ -1398,14 +1403,18 @@ def test_stale_final_manifest_rebuilds_from_verified_fragments(
     with Path(first.output_path).open("ab") as handle:
         handle.write(b"stale")
 
-    original_build_mosaic = copernicus.build_mosaic
+    original_build_mosaic = copernicus_manager.build_mosaic
     rebuilt = []
 
     def recording_build(*args, **kwargs):
         rebuilt.append(True)
         return original_build_mosaic(*args, **kwargs)
 
-    monkeypatch.setattr(copernicus, "build_mosaic", recording_build)
+    monkeypatch.setattr(
+        copernicus_manager,
+        "build_mosaic",
+        recording_build,
+    )
     result = manager.run(request)
 
     assert rebuilt == [True]

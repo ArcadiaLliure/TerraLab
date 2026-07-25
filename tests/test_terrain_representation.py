@@ -7,7 +7,11 @@ import numpy as np
 import pytest
 
 from TerraLab.terrain import bake_process
-from TerraLab.terrain.engine import HorizonProfile, build_flat_horizon_profile
+from TerraLab.terrain.domain.profile import (
+    HorizonProfile,
+    build_flat_horizon_profile,
+)
+from TerraLab.terrain.persistence.profile_npz import load_profile, save_profile
 from TerraLab.terrain.representation import (
     TerrainGeometrySource,
     TerrainRepresentationMode,
@@ -57,8 +61,8 @@ def test_horizon_profile_roundtrip_preserves_representation_contract(
         elevation_source_status="available",
     )
 
-    profile.save(path)
-    loaded = HorizonProfile.load(path)
+    save_profile(profile, path)
+    loaded = load_profile(path)
 
     assert loaded.schema_version >= 2
     assert loaded.representation_mode is TerrainRepresentationMode.PROFILE
@@ -88,7 +92,7 @@ def test_horizon_profile_loads_legacy_npz_as_relief(tmp_path: Path) -> None:
         band_0_heights=band["heights"],
     )
 
-    loaded = HorizonProfile.load(path)
+    loaded = load_profile(path)
 
     assert loaded.schema_version == 1
     assert loaded.representation_mode is TerrainRepresentationMode.RELIEF
@@ -128,8 +132,8 @@ def test_flat_surface_sampling_distances_survive_profile_round_trip(
     )
     path = tmp_path / "flat_profile.npz"
 
-    profile.save(path)
-    loaded = HorizonProfile.load(path)
+    save_profile(profile, path)
+    loaded = load_profile(path)
 
     assert np.all(loaded.bands[0]["dists"] == 0.0)
     assert np.all(loaded.bands[0]["surface_dists"] > 0.0)
@@ -183,7 +187,7 @@ def test_bake_without_dem_completes_with_explicit_flat_fallback(
         ]
     )
 
-    loaded = HorizonProfile.load(output)
+    loaded = load_profile(output)
     assert returned.representation_mode is mode
     assert loaded.representation_mode is mode
     assert loaded.geometry_source is TerrainGeometrySource.FLAT_FALLBACK
@@ -339,8 +343,8 @@ def test_real_dem_builds_mesh_only_for_relief(
         ]
     )
 
-    loaded = HorizonProfile.load(output)
-    loaded_preview = HorizonProfile.load(preview)
+    loaded = load_profile(output)
+    loaded_preview = load_profile(preview)
     assert _FakeBaker.build_calls == expected_build_calls
     assert (returned.terrain_mesh is not None) is expects_mesh
     assert (loaded.terrain_mesh is not None) is expects_mesh
@@ -474,8 +478,8 @@ def test_bake_persists_observer_sample_fallback_source_in_preview_and_final(
         ]
     )
 
-    loaded = HorizonProfile.load(output)
-    loaded_preview = HorizonProfile.load(preview)
+    loaded = load_profile(output)
+    loaded_preview = load_profile(preview)
     for profile in (returned, loaded, loaded_preview):
         assert profile.elevation_source_ids == (
             "local-dem",

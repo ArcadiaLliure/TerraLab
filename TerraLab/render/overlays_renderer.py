@@ -10,10 +10,20 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from PyQt5.QtCore import QPointF, QRectF, Qt
-from PyQt5.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen, QRadialGradient, QTransform
+from PyQt5.QtGui import (
+    QBrush,
+    QColor,
+    QFont,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QRadialGradient,
+    QTransform,
+)
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import getTraduction
-from TerraLab.widgets.sky_legacy_components import AstroEngine
+from TerraLab.astro.engine import AstroEngine
 
 try:
     from skyfield.api import wgs84
@@ -32,103 +42,24 @@ class OverlaysRenderer:
 
 
 def draw_sun_skyfield(
-    painter,
-    alt,
-    az,
-    radius,
-    color,
-    corona_opacity,
-    pixels_per_deg,
-    *,
-    project_fn,
-    register_sky_object_fn,
-    canvas=None,
-    impl=None,
+    canvas, painter, alt, az, radius, color, corona_opacity, pixels_per_deg
 ):
-    if callable(impl):
-        return impl(painter, alt, az, radius, color, corona_opacity, pixels_per_deg)
-    return draw_sun_skyfield_impl(canvas, painter, alt, az, radius, color, corona_opacity, pixels_per_deg)
-
-
-def draw_moon_skyfield(
-    painter,
-    alt,
-    az,
-    illum,
-    rotation_deg,
-    radius,
-    alpha,
-    *,
-    is_eclipsing=False,
-    is_day=False,
-    sun_params=None,
-    pixels_per_deg=None,
-    tint_color=None,
-    project_fn,
-    register_sky_object_fn,
-    canvas=None,
-    impl=None,
-):
-    if callable(impl):
-        return impl(
-            painter,
-            alt,
-            az,
-            illum,
-            rotation_deg,
-            radius,
-            alpha,
-            is_eclipsing=is_eclipsing,
-            is_day=is_day,
-            sun_params=sun_params,
-            pixels_per_deg=pixels_per_deg,
-            tint_color=tint_color,
-        )
-    return draw_moon_skyfield_impl(
-        canvas,
-        painter,
-        alt,
-        az,
-        illum,
-        rotation_deg,
-        radius,
-        alpha,
-        is_eclipsing=is_eclipsing,
-        is_day=is_day,
-        sun_params=sun_params,
-        pixels_per_deg=pixels_per_deg,
-        tint_color=tint_color,
-    )
-
-
-def draw_planet(
-    painter,
-    alt,
-    az,
-    name,
-    col,
-    sz,
-    mag,
-    *,
-    key=None,
-    project_fn,
-    register_sky_object_fn,
-    canvas=None,
-    impl=None,
-):
-    if callable(impl):
-        return impl(painter, alt, az, name, col, sz, mag, key=key)
-    return draw_planet_impl(canvas, painter, alt, az, name, col, sz, mag, key=key)
-
-
-def draw_sun_skyfield_impl(canvas, painter, alt, az, radius, color, corona_opacity, pixels_per_deg):
     if canvas is None:
         return
     pt = canvas.project_universal_stereo(alt, az)
     if not pt:
         return
     x, y = pt
-    canvas._register_visible_sky_object("sun", "sun", getTraduction("Astro.SunName", "Sun"), alt, az, x, y, radius)
+    canvas._register_visible_sky_object(
+        "sun",
+        "sun",
+        getTraduction("Astro.SunName", "Sun"),
+        alt,
+        az,
+        x,
+        y,
+        radius,
+    )
     if canvas.scope_mode_enabled():
         painter.save()
         painter.translate(x, y)
@@ -143,9 +74,15 @@ def draw_sun_skyfield_impl(canvas, painter, alt, az, radius, color, corona_opaci
         painter.setBrush(Qt.NoBrush)
         grad = QRadialGradient(x, y, radius * 12.0)
         c_scale = sun_alpha_factor * sun_alpha_factor
-        grad.setColorAt(0.0, QColor(255, 255, 255, int(255 * corona_opacity * c_scale)))
-        grad.setColorAt(0.1, QColor(200, 220, 255, int(220 * corona_opacity * c_scale)))
-        grad.setColorAt(0.25, QColor(100, 100, 255, int(100 * corona_opacity * c_scale)))
+        grad.setColorAt(
+            0.0, QColor(255, 255, 255, int(255 * corona_opacity * c_scale))
+        )
+        grad.setColorAt(
+            0.1, QColor(200, 220, 255, int(220 * corona_opacity * c_scale))
+        )
+        grad.setColorAt(
+            0.25, QColor(100, 100, 255, int(100 * corona_opacity * c_scale))
+        )
         grad.setColorAt(1.0, QColor(0, 0, 50, 0))
         painter.setBrush(QBrush(grad))
         painter.setPen(Qt.NoPen)
@@ -159,9 +96,15 @@ def draw_sun_skyfield_impl(canvas, painter, alt, az, radius, color, corona_opaci
     core_col = QColor(255, 255, 255, alpha_core)
     if alt < 5.0:
         t_set = (5.0 - alt) / 5.0
-        core_col = QColor(255, 255 - int(50 * t_set), 255 - int(100 * t_set), alpha_core)
+        core_col = QColor(
+            255, 255 - int(50 * t_set), 255 - int(100 * t_set), alpha_core
+        )
     body_grad.setColorAt(0.0, core_col)
-    body_mid = QColor(255, 255, 240, alpha_core) if alt > 10 else QColor(color.lighter(120))
+    body_mid = (
+        QColor(255, 255, 240, alpha_core)
+        if alt > 10
+        else QColor(color.lighter(120))
+    )
     body_mid.setAlpha(alpha_core)
     body_grad.setColorAt(0.85, body_mid)
     body_grad.setColorAt(1.0, color)
@@ -175,10 +118,27 @@ def draw_sun_skyfield_impl(canvas, painter, alt, az, radius, color, corona_opaci
         glow_grad = QRadialGradient(0, 0, glow_radius)
         g_scale = sun_alpha_factor * sun_alpha_factor
         glow_grad.setColorAt(0.0, QColor(255, 255, 255, int(255 * g_scale)))
-        glow_grad.setColorAt(0.05, QColor(color.red(), color.green(), color.blue(), int(200 * g_scale)))
-        glow_grad.setColorAt(0.1, QColor(color.red(), color.green(), color.blue(), int(100 * g_scale)))
-        glow_grad.setColorAt(0.4, QColor(color.red(), color.green(), color.blue(), int(30 * g_scale)))
-        glow_grad.setColorAt(1.0, QColor(color.red(), color.green(), color.blue(), 0))
+        glow_grad.setColorAt(
+            0.05,
+            QColor(
+                color.red(), color.green(), color.blue(), int(200 * g_scale)
+            ),
+        )
+        glow_grad.setColorAt(
+            0.1,
+            QColor(
+                color.red(), color.green(), color.blue(), int(100 * g_scale)
+            ),
+        )
+        glow_grad.setColorAt(
+            0.4,
+            QColor(
+                color.red(), color.green(), color.blue(), int(30 * g_scale)
+            ),
+        )
+        glow_grad.setColorAt(
+            1.0, QColor(color.red(), color.green(), color.blue(), 0)
+        )
         painter.setBrush(QBrush(glow_grad))
         painter.setCompositionMode(QPainter.CompositionMode_Screen)
         painter.drawEllipse(QPointF(0, 0), glow_radius, glow_radius)
@@ -186,7 +146,7 @@ def draw_sun_skyfield_impl(canvas, painter, alt, az, radius, color, corona_opaci
     painter.restore()
 
 
-def draw_moon_skyfield_impl(
+def draw_moon_skyfield(
     canvas,
     painter,
     alt,
@@ -210,8 +170,14 @@ def draw_moon_skyfield_impl(
         sf_cache = getattr(canvas, "_sf_cache", None)
         if isinstance(sf_cache, dict):
             data = sf_cache.get("data", None)
-            m_cached = data.get("moon", None) if isinstance(data, dict) else None
-            if isinstance(m_cached, dict) and ("alt" in m_cached) and ("az" in m_cached):
+            m_cached = (
+                data.get("moon", None) if isinstance(data, dict) else None
+            )
+            if (
+                isinstance(m_cached, dict)
+                and ("alt" in m_cached)
+                and ("az" in m_cached)
+            ):
                 c_alt = float(m_cached.get("alt"))
                 c_az = float(m_cached.get("az")) % 360.0
                 dalt = abs(float(alt) - c_alt)
@@ -226,17 +192,26 @@ def draw_moon_skyfield_impl(
                         print(
                             "[MoonDebug] draw input vs cache drift "
                             f"deg={drift:.3f} "
-                            f"draw=({float(alt):.3f},{float(az)%360.0:.3f}) "
+                            f"draw=({float(alt):.3f},{float(az) % 360.0:.3f}) "
                             f"cache=({c_alt:.3f},{c_az:.3f})"
                         )
                         canvas._moon_draw_cache_drift_log_ts = now_mono
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "draw_moon_skyfield")
     pt = canvas.project_universal_stereo(alt, az)
     if not pt:
         return
     x, y = pt
-    canvas._register_visible_sky_object("moon", "moon", getTraduction("Astro.MoonName", "Moon"), alt, az, x, y, radius)
+    canvas._register_visible_sky_object(
+        "moon",
+        "moon",
+        getTraduction("Astro.MoonName", "Moon"),
+        alt,
+        az,
+        x,
+        y,
+        radius,
+    )
     r = radius
     if pixels_per_deg is None:
         pixels_per_deg = radius / 0.26
@@ -250,7 +225,9 @@ def draw_moon_skyfield_impl(
         painter.save()
         painter.setOpacity(1.0)
         painter.translate(x, y)
-        sky_col = canvas.sky_color_phys(alt, az, sun_alt_for_sky, sun_az_for_sky)
+        sky_col = canvas.sky_color_phys(
+            alt, az, sun_alt_for_sky, sun_az_for_sky
+        )
         painter.setBrush(sky_col)
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(QPointF(0, 0), r, r)
@@ -266,7 +243,9 @@ def draw_moon_skyfield_impl(
         pt_s = canvas.project_universal_stereo(s_alt, s_az)
         if pt_s:
             sx, sy = pt_s
-            raw_s_path = canvas.get_refracted_body_path(s_rad, s_alt, pixels_per_deg)
+            raw_s_path = canvas.get_refracted_body_path(
+                s_rad, s_alt, pixels_per_deg
+            )
             t_s = QTransform()
             t_s.translate(sx, sy)
             final_s_path = t_s.map(raw_s_path)
@@ -274,7 +253,9 @@ def draw_moon_skyfield_impl(
             # Sun/Moon pixel radii. A forced +1 px Moon causes abrupt ingress
             # when the discs are small on screen.
             target_r = float(r)
-            raw_m_path = canvas.get_refracted_body_path(target_r, alt, pixels_per_deg)
+            raw_m_path = canvas.get_refracted_body_path(
+                target_r, alt, pixels_per_deg
+            )
             t_m = QTransform()
             t_m.translate(x, y)
             final_m_path = t_m.map(raw_m_path)
@@ -297,7 +278,11 @@ def draw_moon_skyfield_impl(
         ell_path = QPainterPath()
         w_ell = abs((2.0 * illum - 1.0) * r)
         ell_path.addEllipse(QPointF(0, 0), w_ell, r)
-        final_path = path.united(ell_path) if illum >= 0.5 else path.subtracted(ell_path)
+        final_path = (
+            path.united(ell_path)
+            if illum >= 0.5
+            else path.subtracted(ell_path)
+        )
 
         painter.setPen(Qt.NoPen)
         base_col = tint_color if tint_color else QColor(240, 240, 235)
@@ -307,7 +292,9 @@ def draw_moon_skyfield_impl(
         painter.rotate(rotation_deg)
 
         m_r, m_g, m_b = base_col.red(), base_col.green(), base_col.blue()
-        maria_col = QColor(max(0, m_r - 20), max(0, m_g - 20), max(0, m_b - 10))
+        maria_col = QColor(
+            max(0, m_r - 20), max(0, m_g - 20), max(0, m_b - 10)
+        )
         painter.setBrush(maria_col)
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(QPointF(-r * 0.2, -r * 0.4), r * 0.25, r * 0.25)
@@ -321,7 +308,7 @@ def draw_moon_skyfield_impl(
     painter.setOpacity(1.0)
 
 
-def draw_planet_impl(canvas, painter, alt, az, name, col, sz, mag, *, key=None):
+def draw_planet(canvas, painter, alt, az, name, col, sz, mag, *, key=None):
     if canvas is None:
         return
     pt = canvas.project_universal_stereo(alt, az)
@@ -329,7 +316,9 @@ def draw_planet_impl(canvas, painter, alt, az, name, col, sz, mag, *, key=None):
         return
     x, y = pt
     pkey = canvas._normalize_planet_key(key if key is not None else name)
-    canvas._register_visible_sky_object("planet", pkey, name, alt, az, x, y, sz, mag=mag)
+    canvas._register_visible_sky_object(
+        "planet", pkey, name, alt, az, x, y, sz, mag=mag
+    )
     painter.setBrush(col)
     painter.setPen(Qt.NoPen)
     painter.drawEllipse(QPointF(x, y), sz, sz)
@@ -337,43 +326,7 @@ def draw_planet_impl(canvas, painter, alt, az, name, col, sz, mag, *, key=None):
     painter.drawText(int(x) + 10, int(y), f"{name} {mag:.1f}")
 
 
-def draw_compass(painter, *, canvas=None, impl=None):
-    if callable(impl):
-        return impl(painter)
-    return draw_compass_impl(canvas, painter)
-
-
-def draw_light_domes(painter, profile, eff_sun_alt, eclipse_dimming, *, canvas=None, impl=None):
-    if callable(impl):
-        return impl(painter, profile, eff_sun_alt, eclipse_dimming)
-    return draw_light_domes_impl(canvas, painter, profile, eff_sun_alt, eclipse_dimming)
-
-
-def draw_ngc_overlay(painter, ut_hour: float, day_of_year_utc: int, *, canvas=None, impl=None):
-    if callable(impl):
-        return impl(painter, ut_hour, day_of_year_utc)
-    return draw_ngc_overlay_impl(canvas, painter, ut_hour, day_of_year_utc)
-
-
-def draw_satellites(painter, ut_hour, *, canvas=None, impl=None):
-    if callable(impl):
-        return impl(painter, ut_hour)
-    return draw_satellites_impl(canvas, painter, ut_hour)
-
-
-def get_moon_projection(hour, *, canvas=None, impl=None):
-    if callable(impl):
-        return impl(hour)
-    return get_moon_projection_impl(canvas, hour)
-
-
-def get_eclipse_dimming_factor(ut_hour, day_of_year, *, canvas=None, impl=None):
-    if callable(impl):
-        return impl(ut_hour, day_of_year)
-    return get_eclipse_dimming_factor_impl(canvas, ut_hour, day_of_year)
-
-
-def draw_compass_impl(canvas, painter):
+def draw_compass(canvas, painter):
     if canvas is None:
         return
     w = canvas.width()
@@ -414,7 +367,9 @@ def ngc_symbol_for_type(obj_type: str) -> str:
     return "??"
 
 
-def draw_ngc_overlay_impl(canvas, painter: QPainter, ut_hour: float, day_of_year_utc: int) -> None:
+def draw_ngc_overlay(
+    canvas, painter: QPainter, ut_hour: float, day_of_year_utc: int
+) -> None:
     if canvas is None:
         return
     canvas.visible_ngc_objects = []
@@ -422,7 +377,11 @@ def draw_ngc_overlay_impl(canvas, painter: QPainter, ut_hour: float, day_of_year
     if parent is None or not hasattr(parent, "_load_ngc_search_entries"):
         return
     try:
-        sun_alt = float(canvas.get_sun_alt_az(float(ut_hour), float(parent.latitude), int(day_of_year_utc))[0])
+        sun_alt = float(
+            canvas.get_sun_alt_az(
+                float(ut_hour), float(parent.latitude), int(day_of_year_utc)
+            )[0]
+        )
     except Exception:
         sun_alt = 90.0
     if sun_alt > -6.0:
@@ -456,11 +415,19 @@ def draw_ngc_overlay_impl(canvas, painter: QPainter, ut_hour: float, day_of_year
         try:
             eff_mag = float(getattr(obj, "effective_mag", 99.0))
             maj_deg = max(0.05, float(getattr(obj, "maj_deg", 0.0) or 0.0))
-            min_deg = max(0.03, float(getattr(obj, "min_deg", maj_deg) or maj_deg))
-            if not (bool(getattr(obj, "messier_nr", None)) or eff_mag <= 8.8 or maj_deg >= 0.30):
+            min_deg = max(
+                0.03, float(getattr(obj, "min_deg", maj_deg) or maj_deg)
+            )
+            if not (
+                bool(getattr(obj, "messier_nr", None))
+                or eff_mag <= 8.8
+                or maj_deg >= 0.30
+            ):
                 continue
 
-            alt, az = canvas._ra_dec_to_alt_az(obj.ra_deg, obj.dec_deg, ut_hour, day_of_year_utc)
+            alt, az = canvas._ra_dec_to_alt_az(
+                obj.ra_deg, obj.dec_deg, ut_hour, day_of_year_utc
+            )
             if float(alt) < -2.0:
                 continue
             pt = canvas.project_universal_stereo(alt, az)
@@ -468,7 +435,12 @@ def draw_ngc_overlay_impl(canvas, painter: QPainter, ut_hour: float, day_of_year
                 continue
             cx = float(pt[0])
             cy = float(pt[1])
-            if cx < -140.0 or cx > (w + 140.0) or cy < -140.0 or cy > (h + 140.0):
+            if (
+                cx < -140.0
+                or cx > (w + 140.0)
+                or cy < -140.0
+                or cy > (h + 140.0)
+            ):
                 continue
 
             rx = max(3.0, min(84.0, 0.5 * maj_deg * ppd))
@@ -486,10 +458,14 @@ def draw_ngc_overlay_impl(canvas, painter: QPainter, ut_hour: float, day_of_year
 
             symbol = ngc_symbol_for_type(getattr(obj, "obj_type", ""))
             label = getattr(obj, "common_name", None) or (
-                f"M{obj.messier_nr}" if getattr(obj, "messier_nr", None) else getattr(obj, "name", "NGC")
+                f"M{obj.messier_nr}"
+                if getattr(obj, "messier_nr", None)
+                else getattr(obj, "name", "NGC")
             )
             painter.setPen(QPen(QColor(226, 236, 255, min(255, alpha + 24))))
-            painter.drawText(int(cx + rx + 6.0), int(cy - 5.0), f"{symbol} {label}")
+            painter.drawText(
+                int(cx + rx + 6.0), int(cy - 5.0), f"{symbol} {label}"
+            )
             visible_ngc.append(
                 {
                     "obj": obj,
@@ -511,7 +487,7 @@ def draw_ngc_overlay_impl(canvas, painter: QPainter, ut_hour: float, day_of_year
     canvas.visible_ngc_objects = visible_ngc
 
 
-def draw_light_domes_impl(canvas, painter, profile, eff_sun_alt, eclipse_dimming):
+def draw_light_domes(canvas, painter, profile, eff_sun_alt, eclipse_dimming):
     if canvas is None:
         return
     if eff_sun_alt >= 0:
@@ -525,8 +501,14 @@ def draw_light_domes_impl(canvas, painter, profile, eff_sun_alt, eclipse_dimming
     if twilight_factor <= 0.01:
         return
 
-    show_sun_moon_effects = canvas._parent_checkbox_checked("chk_sun_moon", default=True)
-    if show_sun_moon_effects and canvas._sf_cache and canvas._sf_cache.get("data"):
+    show_sun_moon_effects = canvas._parent_checkbox_checked(
+        "chk_sun_moon", default=True
+    )
+    if (
+        show_sun_moon_effects
+        and canvas._sf_cache
+        and canvas._sf_cache.get("data")
+    ):
         m_data = canvas._sf_cache["data"].get("moon")
         if m_data and m_data["alt"] > -5.0:
             m_alt, m_az = m_data["alt"], m_data["az"]
@@ -534,21 +516,33 @@ def draw_light_domes_impl(canvas, painter, profile, eff_sun_alt, eclipse_dimming
             m_pt = canvas.project_universal_stereo(m_alt, m_az)
             if m_pt:
                 mx, my = m_pt
-                m_glow_radius = 150.0 * canvas.zoom_level * (1.0 + (90.0 - abs(m_alt)) / 90.0)
+                m_glow_radius = (
+                    150.0
+                    * canvas.zoom_level
+                    * (1.0 + (90.0 - abs(m_alt)) / 90.0)
+                )
                 m_glow_alpha = int(200 * m_illum * twilight_factor)
                 if m_glow_alpha > 5:
                     grad_moon = QRadialGradient(QPointF(mx, my), m_glow_radius)
-                    grad_moon.setColorAt(0.0, QColor(255, 255, 255, m_glow_alpha // 2))
-                    grad_moon.setColorAt(0.5, QColor(255, 255, 255, m_glow_alpha // 4))
+                    grad_moon.setColorAt(
+                        0.0, QColor(255, 255, 255, m_glow_alpha // 2)
+                    )
+                    grad_moon.setColorAt(
+                        0.5, QColor(255, 255, 255, m_glow_alpha // 4)
+                    )
                     grad_moon.setColorAt(1.0, QColor(0, 0, 0, 0))
                     painter.save()
                     painter.setBrush(grad_moon)
                     painter.setPen(Qt.NoPen)
-                    painter.drawEllipse(QPointF(mx, my), m_glow_radius, m_glow_radius)
+                    painter.drawEllipse(
+                        QPointF(mx, my), m_glow_radius, m_glow_radius
+                    )
                     painter.restore()
 
 
-def draw_single_city_dome(canvas, painter, profile, idx, dist, twilight_factor):
+def draw_single_city_dome(
+    canvas, painter, profile, idx, dist, twilight_factor
+):
     if canvas is None:
         return
     canvas._dome_count += 1
@@ -581,7 +575,9 @@ def draw_single_city_dome(canvas, painter, profile, idx, dist, twilight_factor):
     c_trans = QColor(0, 0, 0, 0)
 
     max_rad = canvas.width() * 0.4
-    rad_x = min(max_rad, log_intensity * 30.0 * canvas.zoom_level * dist_factor)
+    rad_x = min(
+        max_rad, log_intensity * 30.0 * canvas.zoom_level * dist_factor
+    )
     rad_y = rad_x * 0.35
 
     painter.save()
@@ -601,23 +597,28 @@ def draw_single_city_dome(canvas, painter, profile, idx, dist, twilight_factor):
     painter.restore()
 
 
-
-
-
-def get_moon_projection_impl(canvas, hour):
+def get_moon_projection(canvas, hour):
     if canvas is None:
         return None
 
     q_hour = round(float(hour) * 60.0) / 60.0
     if q_hour in canvas._moon_pos_cache:
-        moon_ra, moon_dec, sun_ra, sun_dec, m_dist = canvas._moon_pos_cache[q_hour]
+        moon_ra, moon_dec, sun_ra, sun_dec, m_dist = canvas._moon_pos_cache[
+            q_hour
+        ]
     else:
         dt_utc = canvas.get_datetime_utc(q_hour)
         jd_utc = canvas.julian_day(dt_utc)
         d = jd_utc - 2451545.0
         moon_ra, moon_dec, m_dist = canvas.get_moon_ra_dec(d)
         sun_ra, sun_dec = canvas.get_sun_ra_dec(d)
-        canvas._moon_pos_cache[q_hour] = (moon_ra, moon_dec, sun_ra, sun_dec, m_dist)
+        canvas._moon_pos_cache[q_hour] = (
+            moon_ra,
+            moon_dec,
+            sun_ra,
+            sun_dec,
+            m_dist,
+        )
 
     dt_utc = canvas.get_datetime_utc(q_hour)
     jd_utc = canvas.julian_day(dt_utc)
@@ -635,7 +636,9 @@ def get_moon_projection_impl(canvas, hour):
     sin_alt = sin_dec * sin_lat + cos_dec * cos_lat * math.cos(ha_rad)
     alt = math.degrees(math.asin(max(-1.0, min(1.0, sin_alt))))
 
-    cos_az = (sin_dec - sin_alt * sin_lat) / (math.cos(math.radians(alt)) * cos_lat + 1e-10)
+    cos_az = (sin_dec - sin_alt * sin_lat) / (
+        math.cos(math.radians(alt)) * cos_lat + 1e-10
+    )
     az = math.degrees(math.acos(max(-1.0, min(1.0, cos_az))))
     if math.sin(ha_rad) > 0:
         az = 360 - az
@@ -649,7 +652,9 @@ def get_moon_projection_impl(canvas, hour):
     mr_rad = math.radians(moon_ra)
     sd_rad = math.radians(sun_dec)
     md_rad = math.radians(moon_dec)
-    cos_psi = math.sin(sd_rad) * math.sin(md_rad) + math.cos(sd_rad) * math.cos(md_rad) * math.cos(sr_rad - mr_rad)
+    cos_psi = math.sin(sd_rad) * math.sin(md_rad) + math.cos(
+        sd_rad
+    ) * math.cos(md_rad) * math.cos(sr_rad - mr_rad)
     k = (1.0 + cos_psi) / 2.0
 
     diff_ra = (moon_ra - sun_ra) % 360
@@ -657,9 +662,13 @@ def get_moon_projection_impl(canvas, hour):
 
     s_ha = lst - sun_ra
     s_ha_rad = math.radians(s_ha)
-    s_sin_alt = math.sin(sd_rad) * sin_lat + math.cos(sd_rad) * cos_lat * math.cos(s_ha_rad)
+    s_sin_alt = math.sin(sd_rad) * sin_lat + math.cos(
+        sd_rad
+    ) * cos_lat * math.cos(s_ha_rad)
     s_alt = math.degrees(math.asin(max(-1.0, min(1.0, s_sin_alt))))
-    s_cos_az = (math.sin(sd_rad) - s_sin_alt * sin_lat) / (math.cos(math.radians(s_alt)) * cos_lat + 1e-10)
+    s_cos_az = (math.sin(sd_rad) - s_sin_alt * sin_lat) / (
+        math.cos(math.radians(s_alt)) * cos_lat + 1e-10
+    )
     s_az = math.degrees(math.acos(max(-1.0, min(1.0, s_cos_az))))
     if math.sin(s_ha_rad) > 0:
         s_az = 360 - s_az
@@ -684,7 +693,8 @@ def get_moon_projection_impl(canvas, hour):
 
     return (sx, sy, radius, k, angle_deg, is_waxing, s_alt)
 
-def draw_satellites_impl(canvas, painter, ut_hour):
+
+def draw_satellites(canvas, painter, ut_hour):
     if canvas is None:
         return
 
@@ -753,7 +763,9 @@ def draw_satellites_impl(canvas, painter, ut_hour):
     to_obs = (-rx / dist, -ry / dist, -rz / dist)
     s_norm = math.sqrt(sx * sx + sy * sy + sz * sz)
     to_sun = (sx / s_norm, sy / s_norm, sz / s_norm)
-    cos_phi = to_sun[0] * to_obs[0] + to_sun[1] * to_obs[1] + to_sun[2] * to_obs[2]
+    cos_phi = (
+        to_sun[0] * to_obs[0] + to_sun[1] * to_obs[1] + to_sun[2] * to_obs[2]
+    )
     phi = math.acos(max(-1.0, min(1.0, cos_phi)))
 
     mag = AstroEngine.calculate_satellite_magnitude(dist, phi, std_mag=-1.8)
@@ -774,14 +786,16 @@ def draw_satellites_impl(canvas, painter, ut_hour):
     painter.drawText(int(pt[0]) + size, int(pt[1]), f"SAT M:{mag:.1f}")
 
 
-def get_eclipse_dimming_factor_impl(canvas, ut_hour, day_of_year):
+def get_eclipse_dimming_factor(canvas, ut_hour, day_of_year):
     if canvas is None or wgs84 is None:
         return 1.0
 
     try:
         ts = canvas.parent_widget.ts
         eph = canvas.parent_widget.eph
-        observer = wgs84.latlon(canvas.parent_widget.latitude, canvas.parent_widget.longitude)
+        observer = wgs84.latlon(
+            canvas.parent_widget.latitude, canvas.parent_widget.longitude
+        )
 
         now = datetime.now()
         y = getattr(canvas.parent_widget, "manual_year", now.year)
@@ -847,9 +861,13 @@ def _angular_radius_px_local(
         samples = []
 
         # Sample 1: altitude offset.
-        p_alt = canvas.project_universal_stereo(float(alt_deg) + ang, float(az_deg))
+        p_alt = canvas.project_universal_stereo(
+            float(alt_deg) + ang, float(az_deg)
+        )
         if p_alt:
-            samples.append(math.hypot(float(p_alt[0]) - cx, float(p_alt[1]) - cy))
+            samples.append(
+                math.hypot(float(p_alt[0]) - cx, float(p_alt[1]) - cy)
+            )
 
         # Sample 2: azimuth offset corrected by cos(alt) to keep angular distance.
         cos_alt = max(0.15, abs(math.cos(math.radians(float(alt_deg)))))
@@ -858,14 +876,16 @@ def _angular_radius_px_local(
             (float(az_deg) + (ang / cos_alt)) % 360.0,
         )
         if p_az:
-            samples.append(math.hypot(float(p_az[0]) - cx, float(p_az[1]) - cy))
+            samples.append(
+                math.hypot(float(p_az[0]) - cx, float(p_az[1]) - cy)
+            )
 
         if samples:
             value = float(sum(samples) / len(samples))
             if math.isfinite(value) and value > 0.0:
                 return value
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_angular_radius_px_local")
 
     return max(1.0, float(angular_radius_deg) * float(fallback_pixels_per_deg))
 
@@ -880,8 +900,11 @@ def _disc_visibility_floor_px(canvas) -> float:
         return 2.0
 
 
-def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_light=1.0, mag_limit=None):
-    if mag_limit is None: mag_limit = 6.0
+def draw_skyfield_objects(
+    canvas, painter, ut_hour, day_of_year, ambient_light=1.0, mag_limit=None
+):
+    if mag_limit is None:
+        mag_limit = 6.0
     show_sun_moon = bool(
         canvas._parent_checkbox_checked("chk_sun_moon", default=True)
     )
@@ -889,15 +912,14 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         canvas._parent_checkbox_checked("chk_planets", default=True)
     )
     # USE CACHE if available
-    if hasattr(canvas, '_sf_cache') and canvas._sf_cache['data']:
+    if hasattr(canvas, "_sf_cache") and canvas._sf_cache["data"]:
         try:
-            data = canvas._sf_cache['data']
-            
+            data = canvas._sf_cache["data"]
+
             # Physical scaling setup (real angular size)
             w, h = canvas.width(), canvas.height()
             R_proj = min(w, h) / 2.0 * canvas.zoom_level
             pixels_per_deg = R_proj / 90.0
-            celestial_scale = 1.0
             scope_enabled = bool(canvas.scope_mode_enabled())
             scope_disc_cap_px = None
             scope_planet_cap_px = None
@@ -906,43 +928,48 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
             # in wide scope fields (zoomed out), cap disc sizes so they do not
             # explode into oversized balls.
             if scope_enabled:
-                celestial_scale = 1.0
-            
+                pass
+
             # Sun Data
-            s = data.get('sun', {})
-            alt_s_deg = float(s.get('alt', -90.0))
-            az_s_deg = float(s.get('az', 0.0))
-            sun_ang_radius_deg = float(s.get('rad_deg', 0.2666))
-            
+            s = data.get("sun", {})
+            alt_s_deg = float(s.get("alt", -90.0))
+            az_s_deg = float(s.get("az", 0.0))
+            sun_ang_radius_deg = float(s.get("rad_deg", 0.2666))
+
             # Moon Data
-            m = data.get('moon', {})
-            alt_m_real_deg = float(m.get('alt', -90.0))
-            az_m_real_deg = float(m.get('az', 0.0))
-            moon_ang_radius_deg = float(m.get('rad_deg', 0.2725))
-            sep_real = m.get('sep_real', None)
+            m = data.get("moon", {})
+            alt_m_real_deg = float(m.get("alt", -90.0))
+            az_m_real_deg = float(m.get("az", 0.0))
+            moon_ang_radius_deg = float(m.get("rad_deg", 0.2725))
+            sep_real = m.get("sep_real", None)
             if sep_real is None:
                 try:
                     alt_s_r = math.radians(float(alt_s_deg))
                     az_s_r = math.radians(float(az_s_deg))
                     alt_m_r = math.radians(float(alt_m_real_deg))
                     az_m_r = math.radians(float(az_m_real_deg))
-                    cos_sep = (
-                        math.sin(alt_s_r) * math.sin(alt_m_r)
-                        + math.cos(alt_s_r) * math.cos(alt_m_r) * math.cos(az_s_r - az_m_r)
+                    cos_sep = math.sin(alt_s_r) * math.sin(alt_m_r) + math.cos(
+                        alt_s_r
+                    ) * math.cos(alt_m_r) * math.cos(az_s_r - az_m_r)
+                    sep_real = math.degrees(
+                        math.acos(max(-1.0, min(1.0, cos_sep)))
                     )
-                    sep_real = math.degrees(math.acos(max(-1.0, min(1.0, cos_sep))))
                 except Exception:
                     sep_real = 180.0
             sep_real = float(sep_real)
-            physical_overlap_deg = float(sun_ang_radius_deg) + float(moon_ang_radius_deg)
-            physical_total_margin_deg = abs(float(sun_ang_radius_deg) - float(moon_ang_radius_deg))
+            physical_overlap_deg = float(sun_ang_radius_deg) + float(
+                moon_ang_radius_deg
+            )
+            physical_total_margin_deg = abs(
+                float(sun_ang_radius_deg) - float(moon_ang_radius_deg)
+            )
             is_eclipsing_physical = float(sep_real) < physical_overlap_deg
             is_total_physical = (
                 is_eclipsing_physical
                 and float(sep_real) <= physical_total_margin_deg
                 and float(moon_ang_radius_deg) >= float(sun_ang_radius_deg)
             )
-            
+
             # Start from physical topocentric positions.
             alt_m_vis = float(alt_m_real_deg)
             az_m_vis = float(az_m_real_deg)
@@ -958,8 +985,12 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
             # Previous visual "separation compensation" displaced the Moon
             # relative to selection/highlight layers.
 
-            sun_ang_vis_deg = float(sun_ang_radius_deg) * float(disc_scale) * float(scale_s)
-            moon_ang_vis_deg = float(moon_ang_radius_deg) * float(disc_scale) * float(scale_m)
+            sun_ang_vis_deg = (
+                float(sun_ang_radius_deg) * float(disc_scale) * float(scale_s)
+            )
+            moon_ang_vis_deg = (
+                float(moon_ang_radius_deg) * float(disc_scale) * float(scale_m)
+            )
             sun_radius_px = _angular_radius_px_local(
                 canvas,
                 float(alt_s_deg),
@@ -986,106 +1017,140 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
             c_golden = QColor(255, 200, 100)
             c_horizon = QColor(255, 60, 20)
             c_deep = QColor(100, 20, 10)
-            
+
             def interpolate_col_loc(c1, c2, t):
                 r = c1.red() + (c2.red() - c1.red()) * t
                 g = c1.green() + (c2.green() - c1.green()) * t
                 b = c1.blue() + (c2.blue() - c1.blue()) * t
                 return QColor(int(r), int(g), int(b))
-            
-            if alt_s_deg > 20.0: sun_color = c_zenith
+
+            if alt_s_deg > 20.0:
+                sun_color = c_zenith
             elif alt_s_deg > 5.0:
-                 t_col = (20.0 - alt_s_deg) / 15.0
-                 sun_color = interpolate_col_loc(c_zenith, c_golden, t_col)
+                t_col = (20.0 - alt_s_deg) / 15.0
+                sun_color = interpolate_col_loc(c_zenith, c_golden, t_col)
             elif alt_s_deg > -2.0:
-                 t_col = (5.0 - alt_s_deg) / 7.0
-                 sun_color = interpolate_col_loc(c_golden, c_horizon, t_col)
-            else: sun_color = c_deep
-            
+                t_col = (5.0 - alt_s_deg) / 7.0
+                sun_color = interpolate_col_loc(c_golden, c_horizon, t_col)
+            else:
+                sun_color = c_deep
+
             # Corona visibility must follow physical totality, not enlarged visual discs.
             corona_opacity = 1.0 if is_total_physical else 0.0
-            
+
             # Weather Dimming
             eff_sun_color = QColor(sun_color)
             eff_corona_opacity = corona_opacity
             dim_factor = canvas._sun_weather_dim_factor()
             if dim_factor > 0.01:
                 original_alpha = eff_sun_color.alpha()
-                eff_sun_color.setAlpha(int(original_alpha * (1.0 - dim_factor * 0.995)))
-                eff_corona_opacity *= (1.0 - dim_factor)
-            
+                eff_sun_color.setAlpha(
+                    int(original_alpha * (1.0 - dim_factor * 0.995))
+                )
+                eff_corona_opacity *= 1.0 - dim_factor
+
             visual_ppd = pixels_per_deg * disc_scale
-            
+
             if show_sun_moon:
-                canvas.draw_sun_skyfield(painter, alt_s_deg, az_s_deg, sun_radius_px, eff_sun_color, eff_corona_opacity, visual_ppd)
-            
+                canvas.draw_sun_skyfield(
+                    painter,
+                    alt_s_deg,
+                    az_s_deg,
+                    sun_radius_px,
+                    eff_sun_color,
+                    eff_corona_opacity,
+                    visual_ppd,
+                )
+
             # Illumination (Approx)
-            elongation = sep_real # Roughly close enough for visual phase if not precise
+            elongation = sep_real  # Roughly close enough for visual phase if not precise
             illumination = (1 - math.cos(math.radians(elongation))) / 2
-            angle_to_sun = math.atan2(alt_s_deg - alt_m_vis, az_s_deg - az_m_vis)
+            angle_to_sun = math.atan2(
+                alt_s_deg - alt_m_vis, az_s_deg - az_m_vis
+            )
             rotation_deg = math.degrees(angle_to_sun)
-            
+
             # Eclipse check for daytime moon visibility should follow physical overlap.
             is_eclipsing = is_eclipsing_physical
-            
+
             # Draw Moon
             moon_tint = QColor(240, 240, 235)
-            # ... tint logic ... 
+            # ... tint logic ...
             if alt_m_vis < 20.0:
-                 t_moon_set = max(0.0, min(1.0, (20.0 - alt_m_vis) / 20.0))
-                 r = int(240 * (1-t_moon_set) + 255 * t_moon_set)
-                 g = int(240 * (1-t_moon_set) + 200 * t_moon_set)
-                 b = int(235 * (1-t_moon_set) + 100 * t_moon_set)
-                 moon_tint = QColor(r, g, b)
-                 
+                t_moon_set = max(0.0, min(1.0, (20.0 - alt_m_vis) / 20.0))
+                r = int(240 * (1 - t_moon_set) + 255 * t_moon_set)
+                g = int(240 * (1 - t_moon_set) + 200 * t_moon_set)
+                b = int(235 * (1 - t_moon_set) + 100 * t_moon_set)
+                moon_tint = QColor(r, g, b)
+
             if show_sun_moon:
-                canvas.draw_moon_skyfield(painter, alt_m_vis, az_m_vis, illumination, rotation_deg, moon_radius_px, 1.0, is_eclipsing, (alt_s_deg > -6), sun_params=(alt_s_deg, az_s_deg, sun_radius_px), pixels_per_deg=visual_ppd, tint_color=moon_tint)
-            
+                canvas.draw_moon_skyfield(
+                    painter,
+                    alt_m_vis,
+                    az_m_vis,
+                    illumination,
+                    rotation_deg,
+                    moon_radius_px,
+                    1.0,
+                    is_eclipsing,
+                    (alt_s_deg > -6),
+                    sun_params=(alt_s_deg, az_s_deg, sun_radius_px),
+                    pixels_per_deg=visual_ppd,
+                    tint_color=moon_tint,
+                )
+
             # Planets
             if show_planets:
-                for p in data.get('planets', []):
+                for p in data.get("planets", []):
                     # Recompute visibility
-                    p_alt = float(p.get('alt', -90.0))
-                    p_az = float(p.get('az', 0.0))
+                    p_alt = float(p.get("alt", -90.0))
+                    p_az = float(p.get("az", 0.0))
                     s_alt_rad = math.radians(alt_s_deg)
                     s_az_rad = math.radians(az_s_deg)
                     p_alt_rad = math.radians(p_alt)
                     p_az_rad = math.radians(p_az)
-                    
+
                     sin_p = math.sin(p_alt_rad)
                     sin_s = math.sin(s_alt_rad)
                     cos_p = math.cos(p_alt_rad)
                     cos_s = math.cos(s_alt_rad)
-                    
-                    cos_gamma = sin_p*sin_s + cos_p*cos_s*math.cos(p_az_rad - s_az_rad)
-                    
+
+                    cos_gamma = sin_p * sin_s + cos_p * cos_s * math.cos(
+                        p_az_rad - s_az_rad
+                    )
+
                     # Glare/Directional Modifier (Strict -4.0)
                     dir_modifier = -4.0 * cos_gamma
-                    
+
                     # Airmass Extinction for Planets
                     h_p = max(0.1, p_alt)
-                    airmass_p = 1.0 / (math.sin(math.radians(h_p)) + 0.15 * (h_p + 3.885)**-1.253)
-                    k_p = float(getattr(canvas.parent_widget, "scope_k_fallback", 0.20))
+                    airmass_p = 1.0 / (
+                        math.sin(math.radians(h_p))
+                        + 0.15 * (h_p + 3.885) ** -1.253
+                    )
+                    k_p = float(
+                        getattr(canvas.parent_widget, "scope_k_fallback", 0.20)
+                    )
                     p_ext = k_p * (airmass_p - 1.0)
-                    
+
                     local_limit = mag_limit + dir_modifier - p_ext
-                    
+
                     # Caching handles magnitude now
-                    mag = p.get('mag', -2.0)
-                    
+                    mag = p.get("mag", -2.0)
+
                     # Visibility Check (Magnitude vs Limit)
                     # "Brighter than limit" means (mag < limit)
                     diff = local_limit - mag
                     fade_in = max(0.0, min(1.0, diff * 2.0))
-                    
+
                     if fade_in > 0.01:
-                        p_sz = float(p.get('sz', 6.0))
+                        p_sz = float(p.get("sz", 6.0))
                         p_rad = max(2.0, (p_sz / 10.0) * pixels_per_deg * 2.0)
                         if scope_planet_cap_px is not None:
                             p_rad = min(p_rad, float(scope_planet_cap_px))
-                        
+
                         # Apply fade to alpha
-                        p_col_src = p.get('col', QColor(200, 200, 200))
+                        p_col_src = p.get("col", QColor(200, 200, 200))
                         if isinstance(p_col_src, QColor):
                             p_col = QColor(p_col_src)
                         else:
@@ -1094,7 +1159,7 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                             except Exception:
                                 p_col = QColor(200, 200, 200)
                         p_col.setAlphaF(fade_in)
-                        p_name = str(p.get('name', p.get('key', 'Planet')))
+                        p_name = str(p.get("name", p.get("key", "Planet")))
                         canvas.draw_planet(
                             painter,
                             p_alt,
@@ -1103,7 +1168,7 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                             p_col,
                             p_rad,
                             mag,
-                            key=p.get('key'),
+                            key=p.get("key"),
                         )
 
             return
@@ -1116,25 +1181,27 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                 print(f"[Overlay] Skyfield cache render fallback: {e}")
                 canvas._overlay_cache_render_error_log_ts = now_mono
             pass
-    
+
     # Fallback to Original Logic if no cache
     try:
         ts = canvas.parent_widget.ts
         eph = canvas.parent_widget.eph
-        observer = wgs84.latlon(canvas.parent_widget.latitude, canvas.parent_widget.longitude)
-        
+        observer = wgs84.latlon(
+            canvas.parent_widget.latitude, canvas.parent_widget.longitude
+        )
+
         now = datetime.now()
-        y = getattr(canvas.parent_widget, 'manual_year', now.year)
+        y = getattr(canvas.parent_widget, "manual_year", now.year)
         base_date = datetime(y, 1, 1) + timedelta(days=day_of_year)
         target_dt = base_date + timedelta(hours=ut_hour)
-        
+
         t = ts.from_datetime(target_dt.replace(tzinfo=timezone.utc))
-        
+
         # Physical Scaling setup
         w, h = canvas.width(), canvas.height()
         R_proj = min(w, h) / 2.0 * canvas.zoom_level
         pixels_per_deg = R_proj / 90.0
-        
+
         # Dynamic Scale Logic:
         # - Zoom < 2.0 (Wide): Use Large Scale (12.0) so they are visible "icons".
         # - Zoom > 10.0 (Tele): Use Real Scale (1.0) so geometry is perfect.
@@ -1142,28 +1209,27 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         w, h = canvas.width(), canvas.height()
         R_proj = min(w, h) / 2.0 * canvas.zoom_level
         pixels_per_deg = R_proj / 90.0
-        
-        earth = eph['earth']
-        sun = eph['sun']
-        moon = eph['moon']
+
+        earth = eph["earth"]
+        sun = eph["sun"]
+        moon = eph["moon"]
         obs_loc = earth + observer
-        
+
         # "No alterar el tamaÃ±o mÃ¡s que por el efecto del zoom".
         # User request: "Me gustarÃ­a que, al ampliar, tambiÃ©n se ampliara el Sol y la Luna."
         # Previous logic (12.0 / zoom) kept the size static on screen.
         # We now use a constant scale so it grows naturally with the camera zoom (pixels_per_deg).
         # We use 10.0 as a base "Cinematic Scale" so it looks impressive but not overwhelming.
-        celestial_scale = 1.0
         scope_enabled = bool(canvas.scope_mode_enabled())
         if scope_enabled:
-            celestial_scale = 1.0
-        
+            pass
+
         # --- Position Retargeting (The "Shift" Fix) ---
         # To fix contact time without shrinking:
         # We must move the Moon visually away from the Sun so that the inflated disks
         # touch exactly when the real disks touch.
         # Visual_Distance = Real_Distance * celestial_scale.
-        
+
         # Constants for Angular Size (km)
         SUN_RADIUS_KM = 696340.0
         MOON_RADIUS_KM = 1737.4
@@ -1171,7 +1237,7 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         # 1. Get Sun Position (Anchor)
         ast_sun = obs_loc.at(t).observe(sun)
         alt_s, az_s, _ = ast_sun.apparent().altaz()
-        
+
         # 2. Get Moon Position (Real)
         ast_moon = obs_loc.at(t).observe(moon)
         alt_m_real, az_m_real, _ = ast_moon.apparent().altaz()
@@ -1179,22 +1245,28 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         # Calculate Real Angular Size
         d_sun_km = ast_sun.distance().km
         d_moon_km = ast_moon.distance().km
-        
+
         # Formula: theta_diam = 2 * atan(r/d). We need radius (theta_diam / 2)
         sun_ang_radius_deg = math.degrees(math.atan(SUN_RADIUS_KM / d_sun_km))
-        moon_ang_radius_deg = math.degrees(math.atan(MOON_RADIUS_KM / d_moon_km))
-        
+        moon_ang_radius_deg = math.degrees(
+            math.atan(MOON_RADIUS_KM / d_moon_km)
+        )
+
         # 3. Calculate Separation
         sep_real = ast_sun.separation_from(ast_moon).degrees
-        physical_overlap_deg = float(sun_ang_radius_deg) + float(moon_ang_radius_deg)
-        physical_total_margin_deg = abs(float(sun_ang_radius_deg) - float(moon_ang_radius_deg))
+        physical_overlap_deg = float(sun_ang_radius_deg) + float(
+            moon_ang_radius_deg
+        )
+        physical_total_margin_deg = abs(
+            float(sun_ang_radius_deg) - float(moon_ang_radius_deg)
+        )
         is_eclipsing_physical = float(sep_real) < physical_overlap_deg
         is_total_physical = (
             is_eclipsing_physical
             and float(sep_real) <= physical_total_margin_deg
             and float(moon_ang_radius_deg) >= float(sun_ang_radius_deg)
         )
-        
+
         # Start from physical topocentric positions.
         alt_m_vis = float(alt_m_real.degrees)
         az_m_vis = float(az_m_real.degrees)
@@ -1210,12 +1282,19 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
             cache_data = None
         if isinstance(cache_data, dict):
             m_cached = cache_data.get("moon", None)
-            if isinstance(m_cached, dict) and ("alt" in m_cached) and ("az" in m_cached):
+            if (
+                isinstance(m_cached, dict)
+                and ("alt" in m_cached)
+                and ("az" in m_cached)
+            ):
                 try:
                     cached_alt = float(m_cached.get("alt"))
                     cached_az = float(m_cached.get("az")) % 360.0
                     raw_dalt = abs(float(alt_m_vis) - cached_alt)
-                    raw_daz = abs((((float(az_m_vis) - cached_az) + 180.0) % 360.0) - 180.0)
+                    raw_daz = abs(
+                        (((float(az_m_vis) - cached_az) + 180.0) % 360.0)
+                        - 180.0
+                    )
                     drift_deg = math.hypot(raw_dalt, raw_daz)
                     if drift_deg > 0.5:
                         now_mono = float(time.monotonic())
@@ -1226,14 +1305,14 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                             print(
                                 "[MoonDebug] fallback/live vs cache drift "
                                 f"deg={drift_deg:.3f} "
-                                f"live=({float(alt_m_vis):.3f},{float(az_m_vis)%360.0:.3f}) "
+                                f"live=({float(alt_m_vis):.3f},{float(az_m_vis) % 360.0:.3f}) "
                                 f"cache=({cached_alt:.3f},{cached_az:.3f})"
                             )
                             canvas._moon_cache_drift_log_ts = now_mono
                     alt_m_vis = cached_alt
                     az_m_vis = cached_az
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "draw_skyfield_objects")
 
         # Real-size mode: no perceptual/cinematic inflation.
         scale_s = 1.0
@@ -1245,8 +1324,12 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         # relative to selection/highlight layers.
 
         # Clamp min radius
-        sun_ang_vis_deg = float(sun_ang_radius_deg) * float(disc_scale) * float(scale_s)
-        moon_ang_vis_deg = float(moon_ang_radius_deg) * float(disc_scale) * float(scale_m)
+        sun_ang_vis_deg = (
+            float(sun_ang_radius_deg) * float(disc_scale) * float(scale_s)
+        )
+        moon_ang_vis_deg = (
+            float(moon_ang_radius_deg) * float(disc_scale) * float(scale_m)
+        )
         sun_radius_px = _angular_radius_px_local(
             canvas,
             float(alt_s.degrees),
@@ -1264,42 +1347,42 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
         min_disc_px = _disc_visibility_floor_px(canvas)
         sun_radius_px = max(float(min_disc_px), float(sun_radius_px))
         moon_radius_px = max(float(min_disc_px), float(moon_radius_px))
-        
+
         # --- SUN COLOR (Atmospheric Extinction) ---
         # Zenith: White/Yellow
         # Horizon: Red/Orange
         # Deep Horizon: Dark Red
         s_alt_deg = alt_s.degrees
-        
+
         def interpolate_col(c1, c2, t):
             r = c1.red() + (c2.red() - c1.red()) * t
             g = c1.green() + (c2.green() - c1.green()) * t
             b = c1.blue() + (c2.blue() - c1.blue()) * t
             return QColor(int(r), int(g), int(b))
 
-        c_zenith = QColor(255, 255, 240) # White-Yellow
-        c_golden = QColor(255, 200, 100) # Orange
+        c_zenith = QColor(255, 255, 240)  # White-Yellow
+        c_golden = QColor(255, 200, 100)  # Orange
         c_horizon = QColor(255, 60, 20)  # Red
-        c_deep = QColor(100, 20, 10)     # Dark Red
-        
+        c_deep = QColor(100, 20, 10)  # Dark Red
+
         if s_alt_deg > 20.0:
-             sun_color = c_zenith
+            sun_color = c_zenith
         elif s_alt_deg > 5.0:
-             t_col = (20.0 - s_alt_deg) / 15.0 # 0..1
-             sun_color = interpolate_col(c_zenith, c_golden, t_col)
+            t_col = (20.0 - s_alt_deg) / 15.0  # 0..1
+            sun_color = interpolate_col(c_zenith, c_golden, t_col)
         elif s_alt_deg > -2.0:
-             t_col = (5.0 - s_alt_deg) / 7.0
-             sun_color = interpolate_col(c_golden, c_horizon, t_col)
+            t_col = (5.0 - s_alt_deg) / 7.0
+            sun_color = interpolate_col(c_golden, c_horizon, t_col)
         else:
-             sun_color = c_deep
+            sun_color = c_deep
 
         # --- CORONA LOGIC ---
         # Totality must be decided from physical overlap, not inflated disc rendering.
         corona_opacity = 1.0 if is_total_physical else 0.0
-        
+
         # Draw Sun (Background)
         visual_ppd = pixels_per_deg * disc_scale
-        
+
         # Weather Dimming (Clouds/Rain obscuring Sun)
         eff_sun_color = QColor(sun_color)
         eff_corona_opacity = corona_opacity
@@ -1308,118 +1391,157 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
             original_alpha = eff_sun_color.alpha()
             new_alpha = int(original_alpha * (1.0 - dim_factor * 0.995))
             eff_sun_color.setAlpha(new_alpha)
-            eff_corona_opacity *= (1.0 - dim_factor)
+            eff_corona_opacity *= 1.0 - dim_factor
 
         if show_sun_moon:
-            canvas.draw_sun_skyfield(painter, alt_s.degrees, az_s.degrees, sun_radius_px, eff_sun_color, eff_corona_opacity, visual_ppd)
-        
+            canvas.draw_sun_skyfield(
+                painter,
+                alt_s.degrees,
+                az_s.degrees,
+                sun_radius_px,
+                eff_sun_color,
+                eff_corona_opacity,
+                visual_ppd,
+            )
+
         s_earth = earth.at(t).observe(sun)
         m_earth = earth.at(t).observe(moon)
         # This is elongation (angle between Sun and Moon seen from Earth)
         elongation = s_earth.separation_from(m_earth).degrees
-        
+
         # Correct Formula for Illumination based on Elongation:
         # Elongation 0 deg (New Moon) -> k = 0
         # Elongation 180 deg (Full Moon) -> k = 1
         illumination = (1 - math.cos(math.radians(elongation))) / 2
-        
+
         # Rotation for phase
-        angle_to_sun = math.atan2(alt_s.degrees - alt_m_vis, az_s.degrees - az_m_vis)
+        angle_to_sun = math.atan2(
+            alt_s.degrees - alt_m_vis, az_s.degrees - az_m_vis
+        )
         rotation_deg = math.degrees(angle_to_sun)
-        
+
         # Eclipse flag for daytime moon visibility follows physical overlap.
         is_eclipsing = is_eclipsing_physical
 
         # Daytime Visibility Check
         moon_alpha = 1.0
-        is_day = (s_alt_deg > -6.0)
-        
-        if s_alt_deg > 0: # Bright Day
+        is_day = s_alt_deg > -6.0
+
+        if s_alt_deg > 0:  # Bright Day
             # Check Overlap for silhouette preservation (Eclipse)
             if is_eclipsing:
-                moon_alpha = 1.0 # Silhouette is solid
+                moon_alpha = 1.0  # Silhouette is solid
             else:
                 # Fade out thin crescent in bright day
                 moon_alpha = max(0.0, min(1.0, illumination * 2.0))
-        
+
         # Moon Color Logic (Atmospheric)
         # Normal: (240, 240, 235)
         # Horizon: Yellow/Reddish tint
         moon_tint = QColor(240, 240, 235)
         if alt_m_vis < 20.0:
-             t_moon_set = max(0.0, min(1.0, (20.0 - alt_m_vis) / 20.0))
-             # Blend towards Orange (255, 200, 100)
-             r = int(240 * (1-t_moon_set) + 255 * t_moon_set)
-             g = int(240 * (1-t_moon_set) + 200 * t_moon_set)
-             b = int(235 * (1-t_moon_set) + 100 * t_moon_set)
-             moon_tint = QColor(r, g, b)
+            t_moon_set = max(0.0, min(1.0, (20.0 - alt_m_vis) / 20.0))
+            # Blend towards Orange (255, 200, 100)
+            r = int(240 * (1 - t_moon_set) + 255 * t_moon_set)
+            g = int(240 * (1 - t_moon_set) + 200 * t_moon_set)
+            b = int(235 * (1 - t_moon_set) + 100 * t_moon_set)
+            moon_tint = QColor(r, g, b)
 
         if show_sun_moon:
-            canvas.draw_moon_skyfield(painter, alt_m_vis, az_m_vis, illumination, rotation_deg, moon_radius_px, moon_alpha, is_eclipsing, is_day, sun_params=(alt_s.degrees, az_s.degrees, sun_radius_px), pixels_per_deg=visual_ppd, tint_color=moon_tint)
-        
+            canvas.draw_moon_skyfield(
+                painter,
+                alt_m_vis,
+                az_m_vis,
+                illumination,
+                rotation_deg,
+                moon_radius_px,
+                moon_alpha,
+                is_eclipsing,
+                is_day,
+                sun_params=(alt_s.degrees, az_s.degrees, sun_radius_px),
+                pixels_per_deg=visual_ppd,
+                tint_color=moon_tint,
+            )
+
         # Logger (Every 30s)
         now_ts = time.time()
-        if not hasattr(canvas, 'last_log_time'): canvas.last_log_time = 0
+        if not hasattr(canvas, "last_log_time"):
+            canvas.last_log_time = 0
         if now_ts - canvas.last_log_time > 99999999999:
             canvas.last_log_time = now_ts
             off = canvas.get_simulated_tz_offset(day_of_year)
-            print(f"SKYFIELD LOG [UTC{off:+.0f}]: "
-                  f"SUN(Alt={alt_s.degrees:.4f}Â°, Az={az_s.degrees:.4f}Â°) | "
-                  f"MOON(Alt={alt_m_real.degrees:.4f}Â°, Az={az_m_real.degrees:.4f}Â°)")
-        
+            print(
+                f"SKYFIELD LOG [UTC{off:+.0f}]: "
+                f"SUN(Alt={alt_s.degrees:.4f}Â°, Az={az_s.degrees:.4f}Â°) | "
+                f"MOON(Alt={alt_m_real.degrees:.4f}Â°, Az={az_m_real.degrees:.4f}Â°)"
+            )
+
         # 3. Planets (All times, visibility depends on Magnitude Limit)
         # The manual check 'if s_alt_deg < -6' prevented Venus/Jupiter from appearing in Civil Twilight.
         # Removed it. The 'mag <= local_limit' check inside handles it correctly.
         if show_planets:
             planets = {
-                'mercury': ('Mercury', QColor(169, 169, 169), 4),
-                'venus': ('Venus', QColor(255, 220, 150), 7),
-                'mars': ('Mars', QColor(255, 100, 80), 5),
-                'jupiter barycenter': ('Jupiter', QColor(220, 180, 140), 12),
-                'saturn barycenter': ('Saturn', QColor(240, 210, 150), 10),
-                'uranus barycenter': ('Uranus', QColor(173, 216, 230), 6),
-                'neptune barycenter': ('Neptune', QColor(100, 100, 255), 6),
-                'pluto barycenter': ('Pluto', QColor(200, 180, 160), 3),
+                "mercury": ("Mercury", QColor(169, 169, 169), 4),
+                "venus": ("Venus", QColor(255, 220, 150), 7),
+                "mars": ("Mars", QColor(255, 100, 80), 5),
+                "jupiter barycenter": ("Jupiter", QColor(220, 180, 140), 12),
+                "saturn barycenter": ("Saturn", QColor(240, 210, 150), 10),
+                "uranus barycenter": ("Uranus", QColor(173, 216, 230), 6),
+                "neptune barycenter": ("Neptune", QColor(100, 100, 255), 6),
+                "pluto barycenter": ("Pluto", QColor(200, 180, 160), 3),
             }
-            
+
             for key, (name, col, sz) in planets.items():
                 try:
                     p = eph[key]
                     ast = obs_loc.at(t).observe(p)
                     alt_p, az_p, dist = ast.apparent().altaz()
-                    
+
                     if alt_p.degrees > -5:
                         # phase_angle calculation omitted for perf, assuming 0 (Full)
                         phase_angle = 0.0
-                        mag = canvas.calculate_planet_magnitude(name, dist.au, phase_angle)
-                        p_rad = max(2.0, (sz/10.0) * pixels_per_deg * 2.0)
-                        
+                        mag = canvas.calculate_planet_magnitude(
+                            name, dist.au, phase_angle
+                        )
+                        p_rad = max(2.0, (sz / 10.0) * pixels_per_deg * 2.0)
+
                         # --- DIRECTIONAL VISIBILITY FOR PLANETS ---
                         # Same logic as stars
                         p_alt_rad = math.radians(alt_p.degrees)
                         p_az_rad = math.radians(az_p.degrees)
-                        s_alt_rad = math.radians(alt_s.degrees) # Use variables from scope
+                        s_alt_rad = math.radians(
+                            alt_s.degrees
+                        )  # Use variables from scope
                         s_az_rad = math.radians(az_s.degrees)
-                        
+
                         sin_p = math.sin(p_alt_rad)
                         sin_s = math.sin(s_alt_rad)
                         cos_p = math.cos(p_alt_rad)
                         cos_s = math.cos(s_alt_rad)
-                        
-                        cos_gamma = sin_p*sin_s + cos_p*cos_s*math.cos(p_az_rad - s_az_rad)
-                        
+
+                        cos_gamma = sin_p * sin_s + cos_p * cos_s * math.cos(
+                            p_az_rad - s_az_rad
+                        )
+
                         # PLANET SPECIFIC VISIBILITY:
                         # Reverting to strict penalty as per user request.
                         # Even bright planets are lost in the sun's glare if too close.
                         dir_modifier = -1.5 * cos_gamma
 
                         h_p = max(0.1, alt_p.degrees)
-                        airmass_p = 1.0 / (math.sin(math.radians(h_p)) + 0.15 * (h_p + 3.885)**-1.253)
-                        k_p = float(getattr(canvas.parent_widget, "scope_k_fallback", 0.20))
+                        airmass_p = 1.0 / (
+                            math.sin(math.radians(h_p))
+                            + 0.15 * (h_p + 3.885) ** -1.253
+                        )
+                        k_p = float(
+                            getattr(
+                                canvas.parent_widget, "scope_k_fallback", 0.20
+                            )
+                        )
                         p_ext = k_p * (airmass_p - 1.0)
 
                         local_limit = mag_limit + dir_modifier - p_ext
-                        
+
                         # NO HARD CUTOFF
                         # Rely purely on the Star-Like Visibility Algorithm
                         pass
@@ -1427,28 +1549,46 @@ def draw_skyfield_objects_impl(canvas, painter, ut_hour, day_of_year, ambient_li
                         # Soft Fade
                         diff = local_limit - mag
                         fade_in = max(0.0, min(1.0, diff * 2.0))
-                        
+
                         if fade_in > 0.01:
                             # Clone color to apply alpha
                             p_col = QColor(col)
                             p_col.setAlphaF(fade_in)
-                            canvas.draw_planet(painter, alt_p.degrees, az_p.degrees, name, p_col, p_rad, mag, key=key)
-                except: continue
+                            canvas.draw_planet(
+                                painter,
+                                alt_p.degrees,
+                                az_p.degrees,
+                                name,
+                                p_col,
+                                p_rad,
+                                mag,
+                                key=key,
+                            )
+                except Exception:
+                    continue
 
         # 4. Satellites
-        if hasattr(canvas.parent_widget, 'show_satellites') and canvas.parent_widget.show_satellites:
+        if (
+            hasattr(canvas.parent_widget, "show_satellites")
+            and canvas.parent_widget.show_satellites
+        ):
             for sat_def in canvas.parent_widget.satellites:
                 try:
-                    sat = sat_def['obj']
+                    sat = sat_def["obj"]
                     topo = (sat - obs_loc).at(t)
                     alt_sat, az_sat, dist_sat = topo.altaz()
                     if alt_sat.degrees > 0:
-                        mag = sat_def.get('std_mag', -1.8)
-                        canvas.draw_satellite(painter, alt_sat.degrees, az_sat.degrees, sat_def['name'], mag)
-                except: pass
+                        mag = sat_def.get("std_mag", -1.8)
+                        canvas.draw_satellite(
+                            painter,
+                            alt_sat.degrees,
+                            az_sat.degrees,
+                            sat_def["name"],
+                            mag,
+                        )
+                except Exception:
+                    log_suppressed_exception(__name__, "draw_skyfield_objects")
 
-    except Exception as e:
+    except Exception:
         # print(f"Skyfield Error: {e}")
-        pass
-
-
+        log_suppressed_exception(__name__, "draw_skyfield_objects")

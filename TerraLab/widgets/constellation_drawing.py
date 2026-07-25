@@ -8,6 +8,7 @@ from typing import Callable, Dict, List, Optional, Set, Tuple
 from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import getTraduction
 from TerraLab.widgets.spherical_math import slerp_arc_points
 
@@ -39,7 +40,7 @@ class ConstellationDrawingController:
     - snap to visible stars
     - independent groups
     - JSON persistence (name + ordered nodes)
-    - selective eraser (node-level and segment-level)
+    - explicit node, segment, and group selection/deletion
     - persistent labels
     """
 
@@ -47,7 +48,6 @@ class ConstellationDrawingController:
         self.data_path = str(data_path)
         self.enabled = False
         self.visible = True
-        self.eraser_mode = False
         self.snap_radius_px = 16.0
         self.node_pick_radius_px = 11.0
         self.segment_pick_radius_px = 9.0
@@ -94,17 +94,6 @@ class ConstellationDrawingController:
         self.visible = bool(visible)
         if not self.visible:
             self.clear_selection()
-
-    def set_eraser_mode(self, enabled: bool) -> None:
-        """Defineix eraser mode a la instancia de ConstellationDrawingController.
-
-        Par?metres:
-        - enabled (bool): Valor del parametre 'enabled'.
-
-        Retorna:
-        - None.
-        """
-        self.eraser_mode = bool(enabled)
 
     def clear_selection(self) -> None:
         """Executa el metode clear_selection de la classe ConstellationDrawingController.
@@ -774,21 +763,6 @@ class ConstellationDrawingController:
         node_hit = self._pick_node(sx, sy, project_fn, radec_to_sky_fn)
         seg_hit = self._pick_segment(sx, sy, project_fn, radec_to_sky_fn)
 
-        if self.eraser_mode:
-            if node_hit is not None:
-                self.selected_group_index, self.selected_node_index = node_hit
-                self.selected_segment_index = None
-                self.delete_selected()
-                return True
-            if seg_hit is not None:
-                self.selected_group_index, self.selected_segment_index = (
-                    seg_hit
-                )
-                self.selected_node_index = None
-                self.delete_selected()
-                return True
-            return True
-
         if (node_hit is not None) and (not force_add):
             # Allow closing the active constellation by clicking the first node again.
             hit_gi, hit_ni = node_hit
@@ -1084,10 +1058,6 @@ class ConstellationDrawingController:
             self.preview_ra_dec = None
             self.preview_snapped = False
             return False
-        if self.eraser_mode:
-            self.preview_ra_dec = None
-            self.preview_snapped = False
-            return False
         gi = self.active_group_index
         if gi is None or not (0 <= gi < len(self.groups)):
             self.preview_ra_dec = None
@@ -1110,7 +1080,7 @@ class ConstellationDrawingController:
                 self.preview_snapped = True
                 return True
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "ConstellationDrawingController.on_mouse_move")
 
         # Preview can follow cursor, but clicks only commit when snapping to a visible star.
         ra_dec = screen_to_radec_fn(float(sx), float(sy))
@@ -1283,7 +1253,7 @@ class ConstellationDrawingController:
         project_fn: Callable[[float, float], Optional[Tuple[float, float]]],
         radec_to_sky_fn: Callable[[float, float], Optional[SkyCoord]],
     ) -> None:
-        if not self.enabled or not self.visible or self.eraser_mode:
+        if not self.enabled or not self.visible:
             return
         if not self.group_drawing_active:
             return

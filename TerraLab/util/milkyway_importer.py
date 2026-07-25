@@ -7,6 +7,7 @@ from typing import Callable, Optional
 
 import numpy as np
 from astropy.io import fits
+from TerraLab.common.exception_reporting import log_suppressed_exception
 
 try:
     from PIL import Image
@@ -25,7 +26,7 @@ def _progress(
     try:
         callback(float(percent), str(message))
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_progress")
 
 
 def _robust_normalize(channel: np.ndarray) -> np.ndarray:

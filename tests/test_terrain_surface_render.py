@@ -5,42 +5,50 @@ import numpy as np
 from PyQt5.QtCore import QPointF
 from PyQt5.QtGui import QColor, QImage, QPainter, QPolygonF
 
-from TerraLab.terrain.overlay import (
-    HorizonOverlay,
+from TerraLab.terrain.overlay import HorizonOverlay
+from TerraLab.terrain.render.geometry import (
+    _apply_horizon_coverage,
+    _geometry_horizon_y,
+    _regularize_categorical_regions,
+    _soften_categorical_edges,
+)
+from TerraLab.terrain.render.overlay_types import (
     TerrainMaterialSamples,
     _TerrainGeometryMetrics,
     _TerrainSurfaceGeometry,
     _TerrainSurfaceSpan,
     _TerrainTriangleGeometry,
+)
+from TerraLab.terrain.render.palette import (
     _apply_categorical_solar_response,
     _apply_categorical_territorial_variation,
-    _apply_horizon_coverage,
     _apply_vibrant_ambient_occlusion,
     _apply_vibrant_bloom,
-    _geometry_horizon_y,
-    _interpolate_triangle_values,
     _qcolor_from_rgba,
-    _rasterize_terrain_triangles,
-    _regularize_categorical_regions,
-    _resolve_surface_material,
-    _resolve_triangle_material,
     _resolve_terrain_render_path,
-    _soften_categorical_edges,
     _surface_cache_has_categorical_material,
     _vibrant_categorical_palette,
     _vibrant_relief_occlusion,
     _vibrant_valley_haze,
 )
+from TerraLab.terrain.render.triangle_raster import (
+    _interpolate_triangle_values,
+    _rasterize_terrain_triangles,
+    _resolve_surface_material,
+    _resolve_triangle_material,
+)
 from TerraLab.terrain.representation import (
     TerrainGeometrySource,
     TerrainRepresentationMode,
 )
-from TerraLab.terrain.render_pipeline import (
+from TerraLab.terrain.render.config import (
     TerrainCelestialLightContext,
     TerrainRenderSettings,
-    compose_vertex_rgba,
+)
+from TerraLab.terrain.render.lighting import (
     light_direction_enu,
 )
+from TerraLab.terrain.render.materials import compose_vertex_rgba
 from TerraLab.ui.canvas_runtime_helpers import (
     _terrain_celestial_light_context,
     _terrain_relief_enabled_for_frame,

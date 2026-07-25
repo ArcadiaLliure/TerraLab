@@ -290,10 +290,7 @@ def load_split_npy_dir(path: Path) -> Dict[str, np.ndarray]:
     }
     for key, p in optional.items():
         if p.exists():
-            try:
-                raw[key] = np.load(p, allow_pickle=False)
-            except Exception:
-                raw[key] = np.load(p, allow_pickle=True)
+            raw[key] = np.load(p, allow_pickle=False)
     return _canonicalize(raw)
 
 

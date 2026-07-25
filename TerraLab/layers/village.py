@@ -1,8 +1,7 @@
 import math
-import os
 import random
 
-from PyQt5.QtCore import QObject, QPointF, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QObject, QPointF, QRectF, Qt, pyqtSignal
 from PyQt5.QtGui import (
     QBrush,
     QColor,
@@ -13,13 +12,6 @@ from PyQt5.QtGui import (
     QPolygonF,
     QRadialGradient,
 )
-
-try:
-    from TerraLab.terrain.engine import HorizonProfile, load_profile
-
-    HORIZON_ENGINE_AVAILABLE = True
-except ImportError:
-    HORIZON_ENGINE_AVAILABLE = False
 
 # --- CONFIGURATION ---
 VILLAGE_SCALE = (
@@ -134,7 +126,7 @@ class MountainParams:
         self.points = self._generate()
 
     def _generate(self):
-        rng = random.Random(self.seed)
+        random.Random(self.seed)
         pts = []
         steps = 180  # 2 degree steps
 
@@ -302,8 +294,8 @@ class MinkaHouse:
             rs = math.sin(rad)
 
             # Local vectors
-            vx_x, vx_z = bw * rc, bw * rs
-            vz_x, vz_z = -bd * rs, bd * rc
+            _vx_x, _vx_z = bw * rc, bw * rs
+            _vz_x, _vz_z = -bd * rs, bd * rc
 
             # Center offset
             off_x, off_z = cx * rc - cz * rs, cx * rs + cz * rc
@@ -343,9 +335,6 @@ class MinkaHouse:
                         # Let's assume raw units are 'Degrees' in the local cluster?
                         # No, self.main_w is 4.0 ~ 4 degrees?
                         # Yes, standard house size ~ 5 deg width is reasonable.
-
-                        d_az = lx  # degrees
-                        d_alt = ly  # degrees
 
                         # Standard stereographic maps lat/lon. "Depth" is just radius.
                         # We just map flat on the surface for now, ignore true depth Z except for draw order.
@@ -559,7 +548,6 @@ class MinkaHouse:
             # Roof
             # Peak
             # Make roof prominent overhang
-            overhang = 1.2
             p_peak = projection_fn(self.alt + bh + 1.5, self.az + off_x)
 
             # Eaves points (approximate by expanding the top quad)
@@ -575,10 +563,10 @@ class MinkaHouse:
                 top_r = QPointF(*fv[2])
 
                 # Overhang hack: extend bottom corners of roof slightly out
-                v_l = top_l - top_r
-                v_r = top_r - top_l
+                top_l - top_r
+                top_r - top_l
                 # Normalize? Nah, just simplistic extension
-                ext_l = top_l + QPointF(-10, 0)  # Screen space hack? Bad.
+                top_l + QPointF(-10, 0)  # Screen space hack? Bad.
                 # Let's trust proper verts.
 
                 poly_roof = QPolygonF([top_l, top_r, peak])
@@ -1020,7 +1008,7 @@ class VillageOverlay(QObject):
 
     def set_profile(self, profile):
         """Receive new horizon profile and regenerate village on the terrain."""
-        print(f"[VillageOverlay] Profile updated. Regenerating village...")
+        print("[VillageOverlay] Profile updated. Regenerating village...")
         self.profile = profile
         # self._generate() #TODO: Molt millorable i poc madur. es desactiva temporalment
         self.request_update.emit()
@@ -1157,8 +1145,8 @@ class VillageOverlay(QObject):
                 all_objects.append(("house", h))
             for t in self.trees:
                 all_objects.append(("tree", t))
-            for l in self.lanterns:
-                all_objects.append(("lantern", l))
+            for lantern in self.lanterns:
+                all_objects.append(("lantern", lantern))
 
             # Sort by distance (scale) then altitude?
             # Actually, sort by scale (smaller = further = draw first)
@@ -1182,7 +1170,7 @@ class VillageOverlay(QObject):
 
             # Rotation Logic
             pt_up = proj_objects(center_alt + 1.0, center_az)
-            current_scale = getattr(obj, "custom_scale", 1.0)
+            getattr(obj, "custom_scale", 1.0)
 
             angle_rad = 0.0
             if pt_up:

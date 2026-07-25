@@ -1,8 +1,8 @@
 import numpy as np
 from types import SimpleNamespace
 
-from TerraLab.terrain.engine import HorizonBaker
-from TerraLab.terrain.render_pipeline import TerrainSamplingSettings
+from TerraLab.terrain.raycast.baker import HorizonBaker
+from TerraLab.terrain.render.sampling import TerrainSamplingSettings
 from TerraLab.terrain.sampling import (
     adaptive_refine_ray,
     build_adaptive_base_distances,

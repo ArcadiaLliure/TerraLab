@@ -7,7 +7,6 @@ from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
 
 from TerraLab.common.utils import getTraduction
 from TerraLab.widgets.spherical_math import (
-    angular_distance,
     destination_point,
     screen_to_sky,
     slerp_arc_points,

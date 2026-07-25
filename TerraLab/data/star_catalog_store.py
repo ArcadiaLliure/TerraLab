@@ -10,11 +10,10 @@ from typing import Iterator
 
 import numpy as np
 
-from TerraLab.common.performance import (
-    DEFAULT_PERFORMANCE_BUDGET,
-    ByteLRU,
-    GenerationToken,
-)
+from TerraLab.common.exception_reporting import log_suppressed_exception
+from TerraLab.common.cache import ByteLRU
+from TerraLab.common.cancellation import GenerationToken
+from TerraLab.common.performance.budget import DEFAULT_PERFORMANCE_BUDGET
 from TerraLab.data.tile_manifest import TileManifest
 
 
@@ -222,7 +221,7 @@ class HealpixStarCatalogStore(StarCatalogStore):
             if mmap is not None:
                 mmap.close()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "HealpixStarCatalogStore.close")
         self._closed = True
 
 

@@ -1,13 +1,43 @@
-"""Deferred controls UI builder extracted from sky_widget_impl."""
+"""Deferred controls builder for the astronomical widget."""
 
 from __future__ import annotations
 
+from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtWidgets import (
+    QCheckBox,
+    QFrame,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QShortcut,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
+
+from TerraLab.common.utils import getTraduction, set_config_value
+from TerraLab.data.layer_manager import LayerId
+from TerraLab.light_pollution.modes import (
+    LP_MODE_AUTOMATIC,
+    LP_MODE_BORTLE,
+    LP_MODE_MAGNITUDE,
+)
+from TerraLab.ui.time_bar import ClickableLabel, RusticTimeBar
+from TerraLab.widgets.measurement_tools import (
+    TOOL_CIRCLE,
+    TOOL_NONE,
+    TOOL_RECTANGLE,
+    TOOL_RULER,
+    TOOL_SQUARE,
+)
+from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
+
 
 def build_deferred_controls_ui(widget):
-    # Resolve all legacy symbols from sky_widget_impl without duplicating imports.
-    from TerraLab.ui import sky_widget_impl as _impl
+    from TerraLab.ui.astro_canvas import AstroCanvas
 
-    globals().update(_impl.__dict__)
     self = widget
     if getattr(self, "_deferred_controls_ready", False):
         return
@@ -378,11 +408,11 @@ def build_deferred_controls_ui(widget):
     def make_sld(layout, label, r, val, cb, value_formatter=None):
         h = QHBoxLayout()
         h.setSpacing(4)
-        l = QLabel(label)
-        l.setStyleSheet(
+        label_widget = QLabel(label)
+        label_widget.setStyleSheet(
             "font-style: normal; font-weight: normal; min-width: 65px;"
         )
-        h.addWidget(l)
+        h.addWidget(label_widget)
         l_min = QLabel(str(r[0]))
         l_min.setStyleSheet("font-size: 8px; color: #000;")
         h.addWidget(l_min)
@@ -394,6 +424,7 @@ def build_deferred_controls_ui(widget):
         l_max = QLabel(str(r[1]))
         l_max.setStyleSheet("font-size: 8px; color: #000;")
         h.addWidget(l_max)
+
         def format_value(value):
             if value_formatter is None:
                 return str(value)
@@ -406,6 +437,7 @@ def build_deferred_controls_ui(widget):
         s._lbl_min = l_min
         s._lbl_max = l_max
         s._lbl_curr = l_curr
+
         def on_changed(new_val):
             l_curr.setText(f"[{format_value(new_val)}]")
             if cb:
@@ -421,7 +453,7 @@ def build_deferred_controls_ui(widget):
 
         s.set_silent_value = set_silent_value
         layout.addLayout(h)
-        return s, l
+        return s, label_widget
 
     self.slider_size, _ = make_sld(
         v_sld,
@@ -1047,9 +1079,7 @@ def build_deferred_controls_ui(widget):
     self.lbl_surface_style_original.setStyleSheet("font-size: 9px;")
     h_visual_style.addWidget(self.lbl_surface_style_original)
     self.slider_surface_visual_style = QSlider(Qt.Horizontal)
-    self.slider_surface_visual_style.setObjectName(
-        "surfaceVisualStyleSwitch"
-    )
+    self.slider_surface_visual_style.setObjectName("surfaceVisualStyleSwitch")
     self.slider_surface_visual_style.setRange(0, 1)
     self.slider_surface_visual_style.setSingleStep(1)
     self.slider_surface_visual_style.setPageStep(1)
@@ -1072,9 +1102,11 @@ def build_deferred_controls_ui(widget):
         "QSlider::handle:horizontal:focus {"
         " border: 2px solid #2b6ca3; background: #fff8de; }"
     )
-    current_surface_style = str(
-        get_config_value("surface_visual_style", "original") or "original"
-    ).strip().lower()
+    current_surface_style = (
+        str(get_config_value("surface_visual_style", "original") or "original")
+        .strip()
+        .lower()
+    )
     self.slider_surface_visual_style.setValue(
         1 if current_surface_style == "vibrant" else 0
     )
@@ -1145,7 +1177,7 @@ def build_deferred_controls_ui(widget):
     self.combo_layers.setStyleSheet("font-style: normal; font-weight: normal;")
     try:
         curr_layers = int(get_config_value("horizon_quality", 80))
-    except:
+    except Exception:
         curr_layers = 80
     self.combo_layers.setCurrentText(str(curr_layers))
     self.combo_layers.currentTextChanged.connect(self.on_layers_changed)
@@ -1153,29 +1185,48 @@ def build_deferred_controls_ui(widget):
     v_earth.addLayout(h_lay)
     h_depth = QHBoxLayout()
     self.lbl_terrain_depth = QLabel()
-    self.lbl_terrain_depth.setStyleSheet("font-size: 9px; font-weight: normal;")
+    self.lbl_terrain_depth.setStyleSheet(
+        "font-size: 9px; font-weight: normal;"
+    )
     h_depth.addWidget(self.lbl_terrain_depth)
     self.slider_terrain_depth = QSlider(Qt.Horizontal)
     self.slider_terrain_depth.setRange(1, 530)
     self.slider_terrain_depth.setSingleStep(1)
     self.slider_terrain_depth.setPageStep(10)
-    from TerraLab.terrain.visibility_range import TerrainRangeSettings, resolve_visibility_range
+    from TerraLab.terrain.visibility_range import (
+        TerrainRangeSettings,
+        resolve_visibility_range,
+    )
+
     range_settings = TerrainRangeSettings.from_mapping(
         get_config_value("terrain_visibility_range", {})
     )
-    default_depth = resolve_visibility_range(range_settings, 0.0).resolved_radius_m / 1000.0
-    initial_depth = int(round(float(get_config_value("terrain_display_radius_km", default_depth))))
+    default_depth = (
+        resolve_visibility_range(range_settings, 0.0).resolved_radius_m
+        / 1000.0
+    )
+    initial_depth = int(
+        round(
+            float(get_config_value("terrain_display_radius_km", default_depth))
+        )
+    )
     self.slider_terrain_depth.setValue(max(1, min(530, initial_depth)))
     self.slider_terrain_depth.setToolTip(
-        getTraduction("Terrain.DepthTooltip", "Profunditat topogràfica visible en km")
+        getTraduction(
+            "Terrain.DepthTooltip", "Profunditat topogràfica visible en km"
+        )
     )
-    self.slider_terrain_depth.valueChanged.connect(self.on_terrain_depth_changed)
+    self.slider_terrain_depth.valueChanged.connect(
+        self.on_terrain_depth_changed
+    )
     h_depth.addWidget(self.slider_terrain_depth, 1)
     v_earth.addLayout(h_depth)
     self._update_terrain_depth_label(self.slider_terrain_depth.value())
     h_rays = QHBoxLayout()
     self.lbl_terrain_ray_precision = QLabel()
-    self.lbl_terrain_ray_precision.setStyleSheet("font-size: 9px; font-weight: normal;")
+    self.lbl_terrain_ray_precision.setStyleSheet(
+        "font-size: 9px; font-weight: normal;"
+    )
     h_rays.addWidget(self.lbl_terrain_ray_precision)
     self.slider_terrain_ray_precision = QSlider(Qt.Horizontal)
     from TerraLab.terrain.ray_precision import (
@@ -1185,6 +1236,7 @@ def build_deferred_controls_ui(widget):
         RAY_STEP_SLIDER_SCALE,
         ray_step_to_slider,
     )
+
     self.slider_terrain_ray_precision.setRange(
         int(MIN_RAY_STEP_DEG * RAY_STEP_SLIDER_SCALE),
         int(MAX_RAY_STEP_DEG * RAY_STEP_SLIDER_SCALE),
@@ -1192,7 +1244,9 @@ def build_deferred_controls_ui(widget):
     self.slider_terrain_ray_precision.setSingleStep(5)
     self.slider_terrain_ray_precision.setPageStep(50)
     self.slider_terrain_ray_precision.setValue(
-        ray_step_to_slider(get_config_value("horizon_ray_step_deg", DEFAULT_RAY_STEP_DEG))
+        ray_step_to_slider(
+            get_config_value("horizon_ray_step_deg", DEFAULT_RAY_STEP_DEG)
+        )
     )
     self.slider_terrain_ray_precision.setToolTip(
         getTraduction(
@@ -1206,7 +1260,9 @@ def build_deferred_controls_ui(widget):
     )
     h_rays.addWidget(self.slider_terrain_ray_precision, 1)
     v_earth.addLayout(h_rays)
-    self._update_terrain_ray_precision_label(self.slider_terrain_ray_precision.value())
+    self._update_terrain_ray_precision_label(
+        self.slider_terrain_ray_precision.value()
+    )
     v_earth.addStretch()
     panels_layout.addWidget(gb_earth, 1)
     self.panels_widget = QWidget()

@@ -1,30 +1,22 @@
 ﻿"""Nova facade d'AstronomicalWidget centrada en UI + coordinadors.
 
-Manté compatibilitat temporal amb implementacio legacy de sky_widget_impl.
+The public class composes focused UI responsibility mixins.
 """
 
 from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 
-try:
-    import numpy as np
-except Exception:  # pragma: no cover
-    np = None
+import numpy as np
+from PyQt5.QtCore import QTimer, pyqtSignal
 
-try:
-    from PyQt5.QtCore import QTimer
-except Exception:  # pragma: no cover
-    QTimer = None
-
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.astro.ephemeris_coordinator import EphemerisCoordinator
-from TerraLab.common.deprecation_registry import (
-    emit_deprecation_warning,
-    register_deprecated_method,
-)
-from TerraLab.common.performance import PERFORMANCE_FLAGS
+from TerraLab.common.custom_widget_base import CustomWidgetBase
+from TerraLab.common.performance.flags import PERFORMANCE_FLAGS
 from TerraLab.data.star_data_coordinator import StarDataCoordinator
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
@@ -33,28 +25,33 @@ from TerraLab.light_pollution.modes import (
 )
 from TerraLab.scene.scene_controller import SceneController
 from TerraLab.terrain.terrain_coordinator import TerrainCoordinator
-from TerraLab.ui.sky_widget_impl import AstronomicalWidget as LegacyAstronomicalWidget
-from TerraLab.widgets.sky_legacy_components import STAR_CATALOG_NAKED_EYE_MAX_MAG
-
-
-register_deprecated_method(
-    entry_id="TerraLab.ui.sky_widget_impl.AstronomicalWidget.update_loop",
-    module_path="TerraLab.ui.sky_widget_impl",
-    class_name="AstronomicalWidget",
-    method_name="update_loop",
-    replacement="TerraLab.scene.scene_controller.SceneController.update",
-    phase_introduced=12,
-    notes="Bucle de temps i frame state delegat a SceneController",
+from TerraLab.data.catalogs.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
+from TerraLab.ui.widget_mixins import (
+    WidgetBootstrapTerrainMixin,
+    WidgetControlsTimeMixin,
+    WidgetHorizonScopeMixin,
+    WidgetLayersMixin,
+    WidgetSurfaceDataMixin,
 )
 
 
-class AstronomicalWidget(LegacyAstronomicalWidget):
-    """Widget de UI que agrega coordinadors nous sense trencar compatibilitat."""
+class AstronomicalWidget(
+    WidgetSurfaceDataMixin,
+    WidgetLayersMixin,
+    WidgetControlsTimeMixin,
+    WidgetHorizonScopeMixin,
+    WidgetBootstrapTerrainMixin,
+    CustomWidgetBase,
+):
+    """Own the astronomical UI lifecycle and its application coordinators."""
+
+    request_render_signal = pyqtSignal()
+    request_trails_signal = pyqtSignal()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        # Coordinadors nous (fase 4-10) en parallel al flux legacy.
+        # Coordinators own the canonical scene, terrain and ephemeris state.
         self.scene_controller = SceneController(
             latitude=float(getattr(self, "latitude", 0.0)),
             longitude=float(getattr(self, "longitude", 0.0)),
@@ -91,34 +88,31 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
         self.terrain_coordinator.horizon_error.connect(
             self._on_terrain_coordinator_error
         )
+        self.terrain_coordinator.horizon_preview_ready.connect(
+            self.queue_horizon_preview
+        )
+        self.terrain_coordinator.bortle_estimate_ready.connect(
+            self.on_horizon_bortle_estimate
+        )
         self.ephemeris_coordinator = EphemerisCoordinator()
         self.ephemeris_coordinator.ephemeris_ready.connect(
             self._on_async_ephemeris_ready
         )
-        self._horizon_worker_bridge_connected = False
         self._gaia_attach_timer = None
-        if QTimer is not None:
-            self._gaia_attach_timer = QTimer(self)
-            self._gaia_attach_timer.setInterval(1500)
-            self._gaia_attach_timer.timeout.connect(
-                self._poll_incremental_gaia_updates
-            )
-            self._gaia_attach_timer.start()
-        self._attach_legacy_horizon_bridge()
-
-    def _attach_legacy_horizon_bridge(self) -> None:
-        """Connecta el worker legacy d'horitzó amb `TerrainCoordinator`."""
-        self._try_connect_horizon_worker()
-        if QTimer is None:
-            return
-        # El worker legacy es crea de manera diferida al bootstrap.
-        QTimer.singleShot(700, self._try_connect_horizon_worker)
-        QTimer.singleShot(1600, self._try_connect_horizon_worker)
+        self._gaia_attach_timer = QTimer(self)
+        self._gaia_attach_timer.setInterval(1500)
+        self._gaia_attach_timer.timeout.connect(
+            self._poll_incremental_gaia_updates
+        )
+        self._gaia_attach_timer.start()
 
     def _on_terrain_coordinator_progress(self, state) -> None:
         """Show surface-raster progress without treating it as a DEM bake."""
 
-        if not isinstance(state, dict) or state.get("kind") != "surface":
+        if not isinstance(state, dict):
+            return
+        if state.get("kind") != "surface":
+            self.on_horizon_progress_state(state)
             return
         percent = max(0.0, min(100.0, float(state.get("percent", 0.0))))
         raw_phase = str(state.get("phase", "") or "")
@@ -163,12 +157,15 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
     def _on_terrain_coordinator_error(self, message: str) -> None:
         text = str(message or "").strip()
         if text:
-            self.on_horizon_progress(text)
+            self._active_horizon_job_id = None
+            self.on_horizon_progress(f"Error horitzó: {text}")
 
     def _on_terrain_coordinator_ready(self, payload) -> None:
         """Publish a completed surface cache atomically on the GUI thread."""
 
         if not isinstance(payload, dict) or payload.get("kind") != "surface":
+            self.cancel_pending_horizon_preview()
+            self.on_horizon_profile_ready(payload)
             return
         profile = payload.get("profile")
         if profile is None:
@@ -191,7 +188,7 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
         band_defs = getattr(visible_profile, "_band_defs", None)
         if band_defs is not None:
             try:
-                from TerraLab.terrain.overlay import generate_layer_defs
+                from TerraLab.terrain.render.palette import generate_layer_defs
 
                 layer_defs = generate_layer_defs(band_defs)
             except Exception as exc:
@@ -265,7 +262,7 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
             try:
                 self.star_data_coordinator.shutdown()
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AstronomicalWidget._try_attach_star_data_coordinator")
             self.star_data_coordinator = None
 
         if self.star_data_coordinator is None:
@@ -407,7 +404,7 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
         try:
             self._reload_star_catalog_async()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AstronomicalWidget._maybe_reload_general_tile_incrementally")
         self._try_attach_star_data_coordinator(force_general_reload=True)
         try:
             self._set_gaia_extension_status_label(
@@ -415,7 +412,7 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
                 keep_seconds=8.0,
             )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AstronomicalWidget._maybe_reload_general_tile_incrementally")
 
     def _ensure_asset_before_enable(self, checkbox, checked: bool, asset_id: str) -> bool:
         """Evita onboarding forçat de Gaia si la descarrega ja està en curs."""
@@ -425,7 +422,7 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
                 try:
                     self._persist_visibility_state("estrelles", True)
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "AstronomicalWidget._ensure_asset_before_enable")
                 try:
                     from TerraLab.ui.widget_misc_helpers import (
                         widget_refresh_gaia_download_feedback,
@@ -433,63 +430,64 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
 
                     widget_refresh_gaia_download_feedback(self)
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "AstronomicalWidget._ensure_asset_before_enable")
                 return True
         return super()._ensure_asset_before_enable(checkbox, checked, asset_id)
 
-    def _try_connect_horizon_worker(self) -> None:
-        """Intenta vincular senyals del worker legacy quan estigui disponible."""
-        if self._horizon_worker_bridge_connected:
-            return
-        worker_horizon = getattr(self, "horizon_worker", None)
-        if worker_horizon is None:
-            return
-        try:
-            worker_horizon.profile_ready.connect(
-                self.terrain_coordinator.ingest_profile_payload
-            )
-            worker_horizon.preview_ready.connect(
-                self.terrain_coordinator.ingest_preview_payload
-            )
-            self._horizon_worker_bridge_connected = True
-            existing_profile = getattr(self, "_full_horizon_profile", None)
-            if existing_profile is not None:
-                self.terrain_coordinator.ingest_profile_payload(existing_profile)
-        except Exception:
-            pass
-
     def closeEvent(self, event):
-        """Allibera coordinadors nous abans de tancar el widget."""
+        """Release application coordinators before closing the widget."""
         try:
             if self._gaia_attach_timer is not None:
                 self._gaia_attach_timer.stop()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
         try:
             if self.star_data_coordinator is not None:
                 self.star_data_coordinator.shutdown()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
         try:
             self.terrain_coordinator.shutdown()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
         try:
             self.ephemeris_coordinator.shutdown()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
         return super().closeEvent(event)
 
     def update_loop(self):
-        """DEPRECATED: useu SceneController.update() en el nou bucle de frame."""
-        emit_deprecation_warning(
-            "TerraLab.ui.sky_widget_impl.AstronomicalWidget.update_loop",
-            "TerraLab.scene.scene_controller.SceneController.update",
-        )
+        """Advance time, coordinators and rendering exactly once per frame."""
+        if bool(getattr(self, "_updates_paused", False)):
+            return
         try:
             timer_interval_ms = 16.0
             if hasattr(self, "timer") and callable(getattr(self.timer, "interval", None)):
                 timer_interval_ms = float(self.timer.interval())
+                if self.timer.interval() != 16:
+                    self.timer.setInterval(16)
+
+            if self.use_real_time:
+                now = datetime.now()
+                self.manual_year = now.year
+                self.manual_day = (now - datetime(now.year, 1, 1)).days
+                if hasattr(self, "lbl_date"):
+                    self.lbl_date.setText(self.format_date(self.manual_day))
+                if hasattr(self, "time_bar"):
+                    self.time_bar.update_params(
+                        self.latitude,
+                        self.longitude,
+                        self.manual_day,
+                    )
+                    self.time_bar.set_time(
+                        now.hour + now.minute / 60.0 + now.second / 3600.0
+                    )
+            else:
+                self.manual_hour = (
+                    self.manual_hour + timer_interval_ms / 3_600_000.0
+                ) % 24.0
+                if hasattr(self, "time_bar"):
+                    self.time_bar.set_time(self.manual_hour)
 
             self.scene_controller.latitude = float(getattr(self, "latitude", self.scene_controller.latitude))
             self.scene_controller.longitude = float(getattr(self, "longitude", self.scene_controller.longitude))
@@ -607,9 +605,9 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
                                     self.star_data_coordinator.load_deep_tile(central_tile_id)
                                     self.star_data_coordinator.preload_adjacent_tiles(central_tile_id)
                                     self.star_data_coordinator.build_scope_index(central_tile_id)
-        except Exception:
-            pass
-        return super().update_loop()
+        except Exception as exc:
+            self._on_star_data_error(f"frame update failed: {exc}")
+        self.canvas.update()
 
     def _on_general_tile_ready(self, payload):
         """Actualitza arrays principals quan arriba la tesela general."""
@@ -688,14 +686,14 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
             try:
                 print(f"[AstronomicalWidget] scope index apply error: {exc}")
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AstronomicalWidget._on_scope_index_ready")
 
     def _on_star_data_error(self, message: str):
         """Log no fatal de errors del coordinador de dades d'estrelles."""
         try:
             print(f"[AstronomicalWidget] StarDataCoordinator error: {message}")
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AstronomicalWidget._on_star_data_error")
 
     def _apply_star_payload(self, payload):
         """Assigna arrays de cataleg al widget des del payload del coordinador."""
@@ -727,8 +725,8 @@ class AstronomicalWidget(LegacyAstronomicalWidget):
             try:
                 self.lbl_stars_fallback.hide()
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AstronomicalWidget._apply_star_payload")
         try:
             self._refresh_stars_status_indicator()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AstronomicalWidget._apply_star_payload")

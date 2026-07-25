@@ -4,6 +4,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timedelta, timezone
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import weather_cache_path
 from TerraLab.common.utils import get_config_value
 
@@ -309,7 +310,7 @@ class MetNoWeatherProvider:
             if os.path.exists(self._cache_path):
                 os.remove(self._cache_path)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "MetNoWeatherProvider.clear_cache_file")
 
     def shutdown(self):
         """Executa el metode shutdown de la classe MetNoWeatherProvider.
@@ -325,11 +326,11 @@ class MetNoWeatherProvider:
             if self._future is not None:
                 self._future.cancel()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "MetNoWeatherProvider.shutdown")
         try:
             self._executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "MetNoWeatherProvider.shutdown")
 
     def __del__(self):
         self.shutdown()
@@ -356,7 +357,7 @@ class MetNoWeatherProvider:
             with open(self._cache_path, "w", encoding="utf-8") as fh:
                 json.dump(self._cache, fh, ensure_ascii=False, indent=2)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "MetNoWeatherProvider._save_cache")
 
     def set_location(self, latitude, longitude):
         """Defineix location a la instancia de MetNoWeatherProvider.

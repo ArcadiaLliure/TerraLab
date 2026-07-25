@@ -393,7 +393,7 @@ def test_surface_categorical_precedes_rgb_but_manual_selection_wins(tmp_path):
         priority=999,
         coverage=(-15, 30, 45, 72),
     )
-    rgb = registry.register_path(
+    registry.register_path(
         _touch(tmp_path, "surface/ortho.tif"),
         LayerType.SURFACE_RGB,
         source_id="ortho",

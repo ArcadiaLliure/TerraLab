@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "suite": "runtime",
+  "captured_utc": "2026-07-16",
+  "notes": "Synthetic CPU baseline; cold raster and Gaia timings require local data paths.",
+  "legacy": {
+    "raycast_50m_150km_0_5deg": {
+      "samples": 443520,
+      "elapsed_s": 1.314
+    },
+    "raycast_5m_150km_0_5deg": {
+      "samples": 4359600,
+      "elapsed_s": 13.23,
+      "python_hot_loop_fraction": 0.84
+    },
+    "relief_mesh_417x720": {
+      "samples": 300240,
+      "elapsed_s": 0.525
+    }
+  },
+  "vectorized_synthetic": {
+    "raycast_5m_150km_0_5deg": {
+      "elapsed_s": 0.332,
+      "includes_relief_distance_union": true,
+      "measured_without_raster_io": true
+    }
+  }
+}

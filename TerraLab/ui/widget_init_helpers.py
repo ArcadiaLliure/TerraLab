@@ -1,10 +1,46 @@
-"""Initialization helpers extracted from sky_widget_impl."""
+"""Initialization helpers for the astronomical widget."""
 
 from __future__ import annotations
 
+import os
+import time
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+from PyQt5.QtCore import QPointF, QThread, QTimer, Qt
+from PyQt5.QtWidgets import QLabel, QWidget
+
+from TerraLab.astro.search_engine import AstroSearchEngine
+from TerraLab.common.app_paths import constellations_path
+from TerraLab.common.custom_widget_base import CustomWidgetBase
+from TerraLab.common.utils import (
+    get_base_dir,
+    get_config_value,
+    set_config_value,
+)
+from TerraLab.data.assets_manager import AssetManager
+from TerraLab.data.catalogs.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
+from TerraLab.debug.diagnostics import Diagnostics
+from TerraLab.layers.village import VillageOverlay
+from TerraLab.light_pollution.modes import normalize_light_pollution_mode
+from TerraLab.render.sky_renderer import SkyRenderer
+from TerraLab.render.workers.star_render import StarRenderWorker
+from TerraLab.scene.camera import Camera
+from TerraLab.terrain.overlay import HorizonOverlay
+from TerraLab.ui.canvas_input_handler import CanvasInputHandler
+from TerraLab.ui.canvas_selection import CanvasSelection
+from TerraLab.widgets.constellation_drawing import (
+    ConstellationDrawingController,
+)
+from TerraLab.widgets.measurement_tools import MeasurementController
+from TerraLab.widgets.scope_ui_manager import ScopeUIManager
+from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
+from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeEngine
+from TerraLab.weather.system import WeatherSystem
+
+
 def astro_canvas_init(obj, parent):
-    from TerraLab.ui import sky_widget_impl as _impl
-    globals().update(_impl.__dict__)
     self = obj
     QWidget.__init__(self, parent)
     self.parent_widget = parent
@@ -160,8 +196,6 @@ def astro_canvas_init(obj, parent):
     self._selection_pulse_timer.timeout.connect(self._selection_pulse_tick)
 
 def astronomical_widget_init(obj, parent=None, **kwargs):
-    from TerraLab.ui import sky_widget_impl as _impl
-    globals().update(_impl.__dict__)
     self = obj
     # 1. Initialize properties required by UI/Canvas
     self.asset_manager = AssetManager()

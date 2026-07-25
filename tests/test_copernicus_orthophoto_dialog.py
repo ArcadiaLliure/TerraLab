@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PyQt5.QtCore import QObject, pyqtSignal
 from PyQt5.QtWidgets import QApplication, QDialogButtonBox, QWidget
 
-from TerraLab.data.copernicus_orthophoto import (
+from TerraLab.data.copernicus import (
     BBoxWgs84,
     DownloadRequest,
     WMS_URL,

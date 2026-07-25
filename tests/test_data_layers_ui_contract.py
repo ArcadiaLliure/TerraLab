@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 from TerraLab.data.layer_manager import LayerId, LayerState
 from TerraLab.light_pollution.modes import LP_MODE_BORTLE
+from TerraLab.ui.astronomical_widget import AstronomicalWidget
 from TerraLab.ui.data_layers_dialog import DataLayerChanges, _DATA_LAYERS_STYLE
-from TerraLab.ui.sky_widget_impl import AstronomicalWidget
 
 
 class _CheckedBox:
@@ -50,7 +50,7 @@ def test_user_click_on_missing_layer_opens_focused_library(monkeypatch):
     )
     widget.open_data_layers_dialog = lambda **kwargs: opened.append(kwargs)
     monkeypatch.setattr(
-        "TerraLab.ui.sky_widget_impl.QTimer.singleShot",
+        "TerraLab.ui.widget_mixins.bootstrap_terrain.QTimer.singleShot",
         lambda _delay, callback: callback(),
     )
 
@@ -77,12 +77,13 @@ def test_light_pollution_can_enable_with_runtime_fallback_without_onboarding(
 ):
     config_writes = []
     monkeypatch.setattr(
-        "TerraLab.ui.sky_widget_impl.set_config_value",
+        "TerraLab.ui.widget_mixins.layers.set_config_value",
         lambda key, value: config_writes.append((key, value)),
     )
     dummy = SimpleNamespace(
         chk_light_pollution=_CheckedBox(True),
         light_pollution_mode=LP_MODE_BORTLE,
+        terrain_coordinator=SimpleNamespace(reload_config=lambda: None),
         _persist_visibility_state=lambda *_args: None,
         _apply_light_pollution_graphics=lambda: None,
         _ensure_asset_before_enable=lambda *_args: (_ for _ in ()).throw(
@@ -189,15 +190,30 @@ def test_checked_surface_layer_requests_initial_refresh_once():
     assert dummy._initial_surface_refresh_requested is True
 
 
-def test_disabling_surface_layer_does_not_start_sampling():
+def test_disabling_surface_layer_hides_material_and_does_not_start_sampling(
+    monkeypatch,
+):
     refresh_calls = []
     cancel_calls = []
+    visibility_calls = []
+    tooltip_hides = []
+    monkeypatch.setattr(
+        "TerraLab.ui.widget_mixins.layers.QToolTip.hideText",
+        lambda: tooltip_hides.append(True),
+    )
     dummy = SimpleNamespace(
         terrain_coordinator=SimpleNamespace(
             request_surface_refresh=lambda **kwargs: refresh_calls.append(kwargs),
             cancel_surface_refresh=lambda: cancel_calls.append(True),
         ),
-        canvas=SimpleNamespace(update=lambda: None),
+        canvas=SimpleNamespace(
+            horizon_overlay=SimpleNamespace(
+                set_surface_visible=lambda visible: visibility_calls.append(
+                    bool(visible)
+                )
+            ),
+            update=lambda: None,
+        ),
         _persist_visibility_state=lambda *_args: None,
         _surface_refresh_view_kwargs=lambda: {"view_fov_deg": 75.0},
     )
@@ -206,3 +222,5 @@ def test_disabling_surface_layer_does_not_start_sampling():
 
     assert refresh_calls == []
     assert cancel_calls == [True]
+    assert visibility_calls == [False]
+    assert tooltip_hides == [True]

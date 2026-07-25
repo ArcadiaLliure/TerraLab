@@ -1,68 +1,73 @@
+"""TerraLab desktop application entry point."""
+
+from __future__ import annotations
+
+import argparse
 import faulthandler
-import os
 import sys
-import traceback
-
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication
-
-from TerraLab.common.timestamped_print import enable_timestamped_print
-from TerraLab.ui.data_library_dialog import ensure_data_library_for_gui
-from TerraLab.ui.sky_widget import AstronomicalWidget
+from collections.abc import Sequence
 
 
-class StandaloneAstronomicalWidget(AstronomicalWidget):
-    def __init__(self):
-        # Initialize as standard window (frameless=False)
-        super().__init__(parent=None, frameless=False)
-        self.setWindowTitle("TerraLab Standalone")
-        self.resize(1024, 768)
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="terralab",
+        description="Start the TerraLab astronomical terrain viewer.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="TerraLab 0.1.0",
+    )
+    return parser
 
-    def keyPressEvent(self, event):
-        """Executa el metode keyPressEvent de la classe StandaloneAstronomicalWidget.
 
-        Par?metres:
-        - event (Any): Valor del parametre 'event'.
+def run() -> int:
+    """Construct and run the GUI after command-line parsing has completed."""
 
-        Retorna:
-        - None.
-        """
-        if event.key() == Qt.Key_F11:
-            if self.isFullScreen():
-                self.showNormal()
-            else:
-                self.showFullScreen()
-        else:
+    from PyQt5.QtCore import Qt
+    from PyQt5.QtWidgets import QApplication
+
+    from TerraLab.common.data_library import DataLibrary
+    from TerraLab.common.timestamped_print import enable_timestamped_print
+    from TerraLab.ui.data_library_dialog import ensure_data_library_for_gui
+    from TerraLab.ui.astronomical_widget import AstronomicalWidget
+
+    class StandaloneAstronomicalWidget(AstronomicalWidget):
+        def __init__(self) -> None:
+            super().__init__(parent=None, frameless=False)
+            self.setWindowTitle("TerraLab")
+            self.resize(1024, 768)
+
+        def keyPressEvent(self, event) -> None:
+            if event.key() == Qt.Key_F11:
+                self.showNormal() if self.isFullScreen() else self.showFullScreen()
+                return
             super().keyPressEvent(event)
 
-
-def main():
     enable_timestamped_print()
-
-    # Qt WebEngine must share the application's OpenGL contexts.  This
-    # attribute has to be set before constructing QApplication; setting it
-    # lazily when the Copernicus map dialog opens is already too late.
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts, True)
+    app = QApplication([sys.argv[0]])
 
-    # Persist native crashes (segfault/abort) to file for post-mortem analysis.
-    crash_log = os.path.join(os.getcwd(), "terralab_crash.log")
-    try:
-        faulthandler.enable(open(crash_log, "a", encoding="utf-8"))
-        print(f"[TerraLab] Fault handler enabled: {crash_log}")
-    except Exception as e:
-        print(f"[TerraLab] Warning: could not enable faulthandler: {e}")
-
-    app = QApplication(sys.argv)
-
-    # Data-heavy services are constructed by the widget, so require the
-    # user-controlled library before any coordinator or cache can be created.
     ensure_data_library_for_gui()
+    logs_dir = DataLibrary.current(create=True).layout(create=True)["logs"]
+    crash_log = logs_dir / "terralab_crash.log"
+    crash_handle = None
+    try:
+        crash_handle = crash_log.open("a", encoding="utf-8")
+        faulthandler.enable(crash_handle)
+        widget = StandaloneAstronomicalWidget()
+        widget.show()
+        return int(app.exec_())
+    finally:
+        if crash_handle is not None:
+            faulthandler.disable()
+            crash_handle.close()
 
-    widget = StandaloneAstronomicalWidget()
-    widget.show()
 
-    sys.exit(app.exec_())
+def main(argv: Sequence[str] | None = None) -> int:
+    build_parser().parse_args(argv)
+    return run()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

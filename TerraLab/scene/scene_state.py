@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import get_base_dir, get_config_value
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
@@ -17,7 +18,7 @@ from TerraLab.light_pollution.modes import (
 )
 from TerraLab.scene.camera import Camera
 from TerraLab.util.math2d import clamp
-from TerraLab.widgets.sky_legacy_components import (
+from TerraLab.data.catalogs.constants import (
     STAR_CATALOG_NAKED_EYE_MAX_MAG,
 )
 
@@ -97,7 +98,7 @@ def build_star_scene_state(
             _, _, detected_year_utc, _ = canvas._get_current_utc_context()
             year_utc = int(detected_year_utc)
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "build_star_scene_state")
 
     canvas._sync_camera_state()
     scope_enabled = bool(canvas.scope_mode_enabled())
@@ -476,7 +477,7 @@ def build_star_scene_state(
                     )
                 )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "build_star_scene_state")
 
     ra_render = getattr(pw, "np_ra", None)
     dec_render = getattr(pw, "np_dec", None)
@@ -525,7 +526,7 @@ def build_star_scene_state(
                         g_render = getattr(pw, "_scope_base_g", None)
                         b_render = getattr(pw, "_scope_base_b", None)
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "build_star_scene_state")
 
     if scope_enabled and hasattr(canvas, "scope_controller"):
         ctrl = canvas.scope_controller
@@ -548,7 +549,7 @@ def build_star_scene_state(
             extras["scope_fov_diag_deg"] = fov_diag_ctx
             extras["scope_fov_penalty_mag"] = fov_penalty_mag
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "build_star_scene_state")
         center = getattr(ctrl, "center", None)
         if center is None:
             center = (
@@ -578,7 +579,7 @@ def build_star_scene_state(
                     extras["scope_preselect_dec_pad_deg"] = float(dec_pad)
                     extras["scope_preselect_ra_pad_deg"] = float(ra_pad)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "build_star_scene_state")
 
     return SceneState(
         camera=canvas.camera,

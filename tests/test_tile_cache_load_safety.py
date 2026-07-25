@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from TerraLab.terrain.engine import TileCache
+from TerraLab.terrain.infrastructure.dem_tiles import TileCache
 
 
 def _make_local_tmp_dir() -> Path:
@@ -33,7 +33,10 @@ def test_tile_cache_npy_load_uses_safe_mode(monkeypatch):
         captured_kwargs.update(kwargs)
         return real_np_load(*args, **kwargs)
 
-    monkeypatch.setattr("TerraLab.terrain.engine.np.load", _spy_np_load)
+    monkeypatch.setattr(
+        "TerraLab.terrain.infrastructure.dem_tiles.np.load",
+        _spy_np_load,
+    )
 
     try:
         cache = TileCache(capacity=2)

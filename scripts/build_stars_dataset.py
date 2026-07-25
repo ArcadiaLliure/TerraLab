@@ -7,8 +7,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
-import os
 import shutil
 import time
 from pathlib import Path
@@ -129,7 +129,7 @@ def concat_chunks(
         keys.update(c.keys())
 
     out: Dict[str, np.ndarray] = {}
-    total_rows = len(chunks[0]["ra"]) if chunks else 0
+    len(chunks[0]["ra"]) if chunks else 0
     for key in sorted(keys):
         arrays = [c[key] for c in chunks if key in c and len(c[key]) > 0]
         if not arrays:
@@ -141,10 +141,8 @@ def concat_chunks(
 def _read_named_star_json_supplement(
     path: Path,
 ) -> Dict[str, np.ndarray] | None:
-    # Temporary patch:
-    # gaia_stars.json is used to backfill missing bright/named stars while the ECSV
-    # source is incomplete. This must remain optional: if the JSON disappears later,
-    # the build must continue from ECSV only without crashing.
+    # Optional named-star supplement. The ECSV catalog remains authoritative;
+    # this source only fills bright named objects absent from that catalog.
     if not path.exists():
         return None
 
@@ -355,10 +353,8 @@ def main() -> None:
         f"({final_zst.stat().st_size / (1024*1024):.1f} MiB, {time.time()-t_stage:.2f}s)"
     )
 
-    try:
+    with contextlib.suppress(OSError):
         temp_npz.unlink()
-    except Exception:
-        pass
 
     dt = time.time() - t0
     print(

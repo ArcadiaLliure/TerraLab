@@ -12,6 +12,7 @@ from typing import Optional
 
 from PyQt5.QtCore import QObject, QMetaObject, Qt, pyqtSignal, pyqtSlot
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import (
     getTraduction,
     get_config_value,
@@ -19,7 +20,8 @@ from TerraLab.common.utils import (
 )
 from TerraLab.common.perf_events import append_perf_event
 from TerraLab.config import ConfigManager
-from TerraLab.terrain.engine import HorizonProfile, generate_bands
+from TerraLab.terrain.domain.bands import generate_bands
+from TerraLab.terrain.persistence.profile_npz import load_profile
 from TerraLab.terrain.data_sources import DataSourceRegistry, LayerSelectionService
 
 
@@ -461,7 +463,7 @@ class HorizonWorker(QObject):
                 try:
                     resource.close()
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "HorizonWorker.shutdown")
             setattr(self, resource_name, None)
 
     @staticmethod
@@ -638,7 +640,7 @@ class HorizonWorker(QObject):
             runtime_paths = ensure_runtime_layout()
             append_candidate(runtime_paths.get("data_elevation"))
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "HorizonWorker._dem_path_candidates")
 
         project_root = Path(__file__).resolve().parents[1]
         append_candidate(project_root / "data" / "elevation")
@@ -703,7 +705,7 @@ class HorizonWorker(QObject):
                     try:
                         self.light_sampler.close()
                     except Exception:
-                        pass
+                        log_suppressed_exception(__name__, "HorizonWorker.initialize")
                 self.light_sampler = self._build_light_sampler()
                 self.needs_reload = False
                 self._initialize_running = False
@@ -718,7 +720,7 @@ class HorizonWorker(QObject):
                 try:
                     self.light_sampler.close()
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "HorizonWorker.initialize")
             self.provider = None
             self.light_sampler = None
             self.is_initialized = False
@@ -1154,7 +1156,7 @@ class HorizonWorker(QObject):
                 if raw:
                     print(f"{prefix}{raw}")
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "HorizonWorker._drain_stream_to_stderr")
 
     def _emit_progress_state(self, state: dict) -> None:
         state = dict(state)
@@ -1307,7 +1309,7 @@ class HorizonWorker(QObject):
                     if not snapshot_path or not os.path.exists(snapshot_path):
                         continue
                     try:
-                        profile = HorizonProfile.load(snapshot_path)
+                        profile = load_profile(snapshot_path)
                         profile._band_defs = band_defs
                         self.preview_ready.emit(
                             {
@@ -1328,7 +1330,7 @@ class HorizonWorker(QObject):
                         raise RuntimeError(
                             "Horizon bake completed without profile output"
                         )
-                    profile = HorizonProfile.load(profile_path)
+                    profile = load_profile(profile_path)
                     profile._band_defs = band_defs
                     self.profile_ready.emit(
                         {"job_id": active_job_id, "profile": profile}
@@ -1376,7 +1378,7 @@ class HorizonWorker(QObject):
                     if proc.stderr:
                         proc.stderr.close()
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "HorizonWorker.request_bake")
             self._cleanup_temp_dir(temp_dir)
             self._store_progress(None)
             self.progress_message.emit("")

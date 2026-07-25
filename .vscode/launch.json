@@ -1,3 +1,13 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:9ee21018efe94bbee25d5f35be96e6f5acad2179b6db245ebc2f6afd0439eab2
-size 309
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: TerraLab Module",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "TerraLab",
+            "justMyCode": false,
+            "cwd": "${workspaceFolder}"
+        }
+    ]
+}

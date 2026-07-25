@@ -1,200 +1,28 @@
-"""Bootstrap/runtime helpers extracted from sky_widget_impl."""
+"""Bootstrap and runtime helpers for the astronomical widget."""
 
 from __future__ import annotations
 
-from TerraLab.common.deprecation_registry import (
-    emit_deprecation_warning,
-    register_deprecated_method,
-)
+import os
+import time
 
-register_deprecated_method(
-    entry_id="TerraLab.ui.widget_bootstrap_helpers.widget_ensure_scope_catalog_loaded",
-    module_path="TerraLab.ui.widget_bootstrap_helpers",
-    class_name=None,
-    method_name="widget_ensure_scope_catalog_loaded",
-    replacement="TerraLab.data.star_data_coordinator.StarDataCoordinator.load_deep_tile",
-    phase_introduced=7,
-    notes="Carrega deep legacy substituida per carrega per teseles",
-)
-register_deprecated_method(
-    entry_id="TerraLab.ui.widget_bootstrap_helpers.widget_ensure_scope_spatial_index_warmup",
-    module_path="TerraLab.ui.widget_bootstrap_helpers",
-    class_name=None,
-    method_name="widget_ensure_scope_spatial_index_warmup",
-    replacement="TerraLab.data.star_data_coordinator.StarDataCoordinator.build_scope_index",
-    phase_introduced=7,
-    notes="Escalfament d'index scope mogut al coordinador de dades",
-)
+import numpy as np
+from PyQt5.QtCore import QThread, QTimer
 
-
-def _bind_impl_globals():
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
-
-
-def _set_horizon_progress_label_async(widget, msg: str) -> None:
-    text = str(msg or "")
-    widget._last_horizon_progress_text = text
-    lbl = getattr(widget, "lbl_loading", None)
-    if lbl is None:
-        return
-    if not text:
-        lbl.hide()
-        return
-    lbl.setText(text)
-    fm = lbl.fontMetrics()
-    required_w = fm.horizontalAdvance(text) + 28
-    required_h = max(fm.height() + 12, 32)
-    lbl.resize(
-        min(max(required_w, 360), max(360, widget.width() - 20)),
-        required_h,
-    )
-    if lbl.isHidden():
-        lbl.show()
-        lbl.raise_()
-    # Asynchronous repaint request (do not block UI thread with repaint()).
-    lbl.update()
-
-
-def _on_horizon_progress_state_from_worker(widget, state):
-    _bind_impl_globals()
-    if not isinstance(state, dict):
-        return
-    job_id = str(state.get("job_id", "") or "")
-    if (
-        job_id
-        and getattr(widget, "_active_horizon_job_id", None)
-        and job_id != widget._active_horizon_job_id
-    ):
-        return
-    percent = max(0.0, min(100.0, float(state.get("percent", 0.0))))
-    phase = str(state.get("phase", "") or "")
-    now_mono = float(time.perf_counter())
-    last_ui_ts = float(getattr(widget, "_horizon_progress_ui_ts", 0.0))
-    min_interval = max(
-        0.05, float(getattr(widget, "_horizon_progress_min_interval_s", 0.10))
-    )
-    is_final = percent >= 99.9 or phase in {"save", "done"}
-    if (not is_final) and (now_mono - last_ui_ts) < min_interval:
-        return
-    widget._horizon_progress_ui_ts = now_mono
-    percent_text = f"{percent:.1f}"
-    if percent_text.endswith(".0"):
-        percent_text = percent_text[:-2]
-    current = state.get("current")
-    total = state.get("total")
-    msg = getTraduction(
-        "Horizon.CalculatingHorizon", "Calculating horizon: {pct}%"
-    ).format(pct=percent_text)
-    if current is not None and total:
-        msg = f"{msg} - {int(current)}/{int(total)}"
-    _set_horizon_progress_label_async(widget, msg)
-
-
-def _on_horizon_worker_error(widget, error_message: str) -> None:
-    """Publica errors del bake d'horitzo a la UI i reinicia estat minim."""
-    _bind_impl_globals()
-    message_text = str(error_message or "").strip()
-    if not message_text:
-        message_text = "Error desconegut al bake d'horitzo"
-    print(f"[HorizonWorker] THREAD ERROR: {message_text}")
-    widget._active_horizon_job_id = None
-    _set_horizon_progress_label_async(widget, f"Error horitzo: {message_text}")
-
-
-def _on_horizon_bortle_estimate_from_worker(
-    widget,
-    request_id: int,
-    lat: float,
-    lon: float,
-    bortle_value: int,
-) -> None:
-    """Propaga l'estimacio Bortle del worker cap al widget UI."""
-    _bind_impl_globals()
-    try:
-        widget.on_horizon_bortle_estimate(
-            int(request_id),
-            float(lat),
-            float(lon),
-            int(bortle_value),
-        )
-    except Exception as exc:
-        print(f"[AstroWidget] Bortle estimate callback error: {exc}")
-
-
-def _cancel_pending_horizon_preview(widget) -> None:
-    next_id = int(getattr(widget, "_horizon_preview_schedule_id", 0)) + 1
-    widget._horizon_preview_schedule_id = next_id
-    widget._horizon_preview_flush_scheduled = False
-    widget._horizon_preview_pending_payload = None
-
-
-def _flush_horizon_preview_payload(widget, schedule_id: int) -> None:
-    _bind_impl_globals()
-    if int(schedule_id) != int(
-        getattr(widget, "_horizon_preview_schedule_id", 0)
-    ):
-        return
-    widget._horizon_preview_flush_scheduled = False
-    payload = getattr(widget, "_horizon_preview_pending_payload", None)
-    widget._horizon_preview_pending_payload = None
-    if not isinstance(payload, dict):
-        return
-    # Reuse the existing UI handler for profile->overlay application.
-    widget.on_horizon_preview_ready(payload)
-    widget._horizon_preview_last_apply_ts = float(time.perf_counter())
-    if getattr(widget, "_horizon_preview_pending_payload", None) is not None:
-        widget._horizon_preview_flush_scheduled = True
-        next_id = int(getattr(widget, "_horizon_preview_schedule_id", 0)) + 1
-        widget._horizon_preview_schedule_id = next_id
-        min_interval = max(
-            0.10,
-            float(getattr(widget, "_horizon_preview_min_interval_s", 0.50)),
-        )
-        QTimer.singleShot(
-            int(round(min_interval * 1000.0)),
-            lambda w=widget, sid=next_id: _flush_horizon_preview_payload(
-                w, sid
-            ),
-        )
-
-
-def _on_horizon_preview_ready_from_worker(widget, payload):
-    _bind_impl_globals()
-    if not isinstance(payload, dict):
-        return
-    job_id = str(payload.get("job_id", "") or "")
-    if job_id and job_id != getattr(widget, "_active_horizon_job_id", None):
-        return
-    widget._horizon_preview_pending_payload = dict(payload)
-    if bool(getattr(widget, "_horizon_preview_flush_scheduled", False)):
-        return
-    now_mono = float(time.perf_counter())
-    last_apply = float(getattr(widget, "_horizon_preview_last_apply_ts", 0.0))
-    min_interval = max(
-        0.10, float(getattr(widget, "_horizon_preview_min_interval_s", 0.50))
-    )
-    delay = max(0.0, min_interval - max(0.0, now_mono - last_apply))
-    widget._horizon_preview_flush_scheduled = True
-    next_id = int(getattr(widget, "_horizon_preview_schedule_id", 0)) + 1
-    widget._horizon_preview_schedule_id = next_id
-    QTimer.singleShot(
-        int(round(delay * 1000.0)),
-        lambda w=widget, sid=next_id: _flush_horizon_preview_payload(w, sid),
-    )
-
-
-def _on_horizon_profile_ready_from_worker(widget, payload):
-    _bind_impl_globals()
-    _cancel_pending_horizon_preview(widget)
-    # Final profile should be applied immediately; old logic remains in widget method.
-    widget.on_horizon_profile_ready(payload)
+from TerraLab.common.exception_reporting import log_suppressed_exception
+from TerraLab.common.deprecation_registry import emit_deprecation_warning
+from TerraLab.common.perf_events import append_perf_event
+from TerraLab.common.utils import get_config_value
+from TerraLab.data.catalogs.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
+from TerraLab.data.catalogs.star_catalog import _bp_rp_to_rgb_arrays
+from TerraLab.light_pollution.modes import is_automatic_mode
+from TerraLab.ui.scope_preload_worker import ScopeFullPreloadWorker
+from TerraLab.ui.workers.catalog_loader import CatalogLoaderWorker
+from TerraLab.ui.workers.scope_index import ScopeIndexWarmWorker
+from TerraLab.ui.workers.skyfield_loader import SkyfieldLoaderWorker
 
 
 def _queue_initial_automatic_light_pollution(widget) -> None:
     """Queue the initial location estimate after worker initialization."""
-    _bind_impl_globals()
     if not is_automatic_mode(getattr(widget, "light_pollution_mode", None)):
         return
     try:
@@ -204,7 +32,6 @@ def _queue_initial_automatic_light_pollution(widget) -> None:
 
 
 def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
-    _bind_impl_globals()
     if int(token) != int(getattr(widget, "_catalog_ready_pipeline_token", 0)):
         return
     if stage == 0:
@@ -253,15 +80,12 @@ def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
             try:
                 thread.quit()
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "_run_catalog_ready_pipeline_stage")
 
 
 def widget_start_scope_full_preload_async(
     widget, reason: str = "runtime", force_rebuild: bool = False
 ):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if (
         str(getattr(self, "scope_preload_mode", "startup_full"))
@@ -409,13 +233,10 @@ def widget_start_scope_full_preload_async(
     try:
         thread.setPriority(QThread.LowPriority)
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "widget_start_scope_full_preload_async")
 
 
 def widget_start_async_bootstrap(widget):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if getattr(self, "_async_bootstrap_started", False):
         return
@@ -442,7 +263,7 @@ def widget_start_async_bootstrap(widget):
     self._horizon_preview_flush_scheduled = False
     self._horizon_preview_pending_payload = None
     try:
-        from TerraLab.widgets.scope_runtime_cache import (
+        from TerraLab.data.catalogs.scope_cache import (
             ScopeRuntimeCacheManager,
         )
 
@@ -456,20 +277,19 @@ def widget_start_async_bootstrap(widget):
             tmp_ttl_seconds=1.0,
         )
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "widget_start_async_bootstrap")
     # --- Async Skyfield loading ---
-    if SKYFIELD_AVAILABLE:
-        self._skyfield_thread = QThread()
-        self._skyfield_worker = SkyfieldLoaderWorker()
-        self._skyfield_worker.moveToThread(self._skyfield_thread)
-        self._skyfield_worker.skyfield_ready.connect(self._on_skyfield_ready)
-        self._skyfield_thread.started.connect(self._skyfield_worker.load)
-        self._skyfield_thread.start()
-        try:
-            self._skyfield_thread.setPriority(QThread.LowPriority)
-        except Exception:
-            pass
-        print("[AstroWidget] Skyfield loading in background...")
+    self._skyfield_thread = QThread()
+    self._skyfield_worker = SkyfieldLoaderWorker()
+    self._skyfield_worker.moveToThread(self._skyfield_thread)
+    self._skyfield_worker.skyfield_ready.connect(self._on_skyfield_ready)
+    self._skyfield_thread.started.connect(self._skyfield_worker.load)
+    self._skyfield_thread.start()
+    try:
+        self._skyfield_thread.setPriority(QThread.LowPriority)
+    except Exception:
+        log_suppressed_exception(__name__, "widget_start_async_bootstrap")
+    print("[AstroWidget] Skyfield loading in background...")
     # --- Async Catalog loading ---
     if not bool(getattr(self, "defer_catalog_until_horizon_preview", True)):
         self._start_catalog_loader_async(reason="bootstrap")
@@ -479,53 +299,14 @@ def widget_start_async_bootstrap(widget):
         )
         self._catalog_defer_t0 = time.perf_counter()
         QTimer.singleShot(15000, self._try_start_catalog_loader_deferred)
-    # --- Horizon worker bootstrap ---
-    from TerraLab.terrain.worker import HorizonWorker
-
-    self.horizon_thread = QThread()
-    self.horizon_worker = HorizonWorker()
+    # --- Canonical terrain coordinator bootstrap ---
+    terrain_coordinator = self.terrain_coordinator
     saved_offset = float(get_config_value("observer_offset", 0.0))
-    self.horizon_worker.set_observer_offset(saved_offset)
-    self.horizon_worker.moveToThread(self.horizon_thread)
-    self.horizon_worker.profile_ready.connect(
-        lambda payload, w=self: _on_horizon_profile_ready_from_worker(
-            w, payload
-        )
-    )
-    self.horizon_worker.preview_ready.connect(
-        lambda payload, w=self: _on_horizon_preview_ready_from_worker(
-            w, payload
-        )
-    )
-    self.horizon_worker.progress_state.connect(
-        lambda state, w=self: _on_horizon_progress_state_from_worker(w, state)
-    )
-    self.horizon_worker.bortle_estimate_ready.connect(
-        lambda request_id, lat, lon, bortle_value, w=self: _on_horizon_bortle_estimate_from_worker(
-            w,
-            request_id,
-            lat,
-            lon,
-            bortle_value,
-        )
-    )
-    self.horizon_worker.error_occurred.connect(
-        lambda err, w=self: _on_horizon_worker_error(w, err)
-    )
-    self.request_horizon_bake.connect(self.horizon_worker.request_bake)
-    self.request_horizon_bortle.connect(
-        self.horizon_worker.request_bortle_estimate
-    )
-    print("[AstroWidget] Starting Horizon Thread... (Path managed by Worker)")
-    self.horizon_thread.start()
+    terrain_coordinator.set_observer_offset(saved_offset)
     try:
-        self.horizon_thread.setPriority(QThread.LowPriority)
+        terrain_coordinator.thread.setPriority(QThread.LowPriority)
     except Exception:
-        pass
-    print(
-        f"[AstroWidget] Horizon Thread started. ID: "
-        f"{int(self.horizon_thread.currentThreadId()) if self.horizon_thread.currentThreadId() else 'N/A'}"
-    )
+        log_suppressed_exception(__name__, "widget_start_async_bootstrap")
 
     def trigger_bake():
         print(
@@ -535,9 +316,7 @@ def widget_start_async_bootstrap(widget):
 
     QTimer.singleShot(
         300,
-        lambda: QMetaObject.invokeMethod(
-            self.horizon_worker, "initialize", Qt.QueuedConnection
-        ),
+        terrain_coordinator.initialize,
     )
     QTimer.singleShot(
         550, lambda w=self: _queue_initial_automatic_light_pollution(w)
@@ -556,9 +335,6 @@ def widget_on_catalog_ready(
     np_b,
     np_bp_rp,
 ):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     """Callback when star catalog finishes loading in background."""
     try:
@@ -577,7 +353,7 @@ def widget_on_catalog_ready(
             getattr(worker, "last_source_kind", "unknown") or "unknown"
         )
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "widget_on_catalog_ready")
 
     # Never replace a valid in-memory/deep catalog with a tiny fallback payload.
     fallback_like = (
@@ -626,7 +402,7 @@ def widget_on_catalog_ready(
                 ),
             )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "widget_on_catalog_ready")
         try:
             if np_mag is not None and len(np_mag) > 0:
                 self._catalog_max_mag = max(
@@ -640,7 +416,7 @@ def widget_on_catalog_ready(
                     float(np.nanmax(np.asarray(np_mag, dtype=np.float32))),
                 )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "widget_on_catalog_ready")
     array_rows = int(len(np_ra)) if np_ra is not None else 0
     named_rows = (
         int(len(celestial_objects)) if celestial_objects is not None else 0
@@ -715,7 +491,7 @@ def widget_on_catalog_ready(
     try:
         _scope_try_init_star_data_coordinator(self)
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "widget_on_catalog_ready")
     # Run heavy post-ready work in small queued steps to keep UI responsive.
     next_token = int(getattr(self, "_catalog_ready_pipeline_token", 0)) + 1
     self._catalog_ready_pipeline_token = next_token
@@ -733,9 +509,6 @@ def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
         "TerraLab.ui.widget_bootstrap_helpers.widget_ensure_scope_catalog_loaded",
         "TerraLab.data.star_data_coordinator.StarDataCoordinator.load_deep_tile",
     )
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if np is None:
         return
@@ -851,7 +624,7 @@ def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
     try:
         thread.setPriority(QThread.LowPriority)
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "widget_ensure_scope_catalog_loaded")
     if force_runtime_full:
         print(
             "[AstroWidget] Scope full runtime catalog loading in background..."
@@ -864,7 +637,6 @@ def widget_ensure_scope_catalog_loaded(widget, force_now: bool = False):
 
 def _scope_try_init_star_data_coordinator(widget):
     """Inicialitza coordinador per teseles si hi ha `tile_manifest.json`."""
-    _bind_impl_globals()
     self = widget
     coordinator = getattr(self, "star_data_coordinator", None)
     if coordinator is not None:
@@ -894,14 +666,14 @@ def _scope_try_init_star_data_coordinator(widget):
                 f"{type(exc).__name__}: {exc}"
             )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_scope_try_init_star_data_coordinator")
         return None
 
     self.star_data_coordinator = coordinator
     try:
         print(f"[AstroWidget] StarDataCoordinator ready: {manifest_path}")
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_scope_try_init_star_data_coordinator")
     try:
         coordinator.general_tile_ready.connect(
             lambda payload, w=self: _scope_apply_coordinator_payload(
@@ -929,13 +701,12 @@ def _scope_try_init_star_data_coordinator(widget):
                 f"{type(exc).__name__}: {exc}"
             )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_scope_try_init_star_data_coordinator")
     return coordinator
 
 
 def _scope_apply_coordinator_payload(widget, payload, reason: str) -> None:
     """Aplica dataset actiu del coordinador al widget legacy."""
-    _bind_impl_globals()
     self = widget
     if np is None or (not isinstance(payload, dict)):
         return
@@ -1015,23 +786,22 @@ def _scope_apply_coordinator_payload(widget, payload, reason: str) -> None:
             "ready_deep", reason=f"coordinator_{str(reason)}"
         )
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_scope_apply_coordinator_payload")
     canvas = getattr(self, "canvas", None)
     if canvas is not None:
         try:
             canvas._cached_star_image = None
             canvas._cached_trail_image = None
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_scope_apply_coordinator_payload")
         try:
             canvas.update()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_scope_apply_coordinator_payload")
 
 
 def _scope_apply_coordinator_scope_index(widget, payload) -> None:
     """Aplica index scope publicat pel coordinador al renderer actual."""
-    _bind_impl_globals()
     self = widget
     if not isinstance(payload, dict):
         return
@@ -1065,12 +835,11 @@ def _scope_apply_coordinator_scope_index(widget, payload) -> None:
         try:
             print(f"[AstroWidget] scope index payload apply error: {exc}")
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_scope_apply_coordinator_scope_index")
 
 
 def _scope_pick_scope_region_request(widget, coordinator) -> tuple[str, tuple[str, ...]]:
     """Resol tesela focus i teseles visibles segons el camp real del scope."""
-    _bind_impl_globals()
     self = widget
     canvas = getattr(self, "canvas", None)
     if canvas is None:
@@ -1135,9 +904,6 @@ def widget_ensure_scope_spatial_index_warmup(widget):
         "TerraLab.ui.widget_bootstrap_helpers.widget_ensure_scope_spatial_index_warmup",
         "TerraLab.data.star_data_coordinator.StarDataCoordinator.build_scope_index",
     )
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if np is None:
         return
@@ -1229,7 +995,7 @@ def widget_ensure_scope_spatial_index_warmup(widget):
     try:
         thread.setPriority(QThread.LowPriority)
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "widget_ensure_scope_spatial_index_warmup")
     print(
         "[AstroWidget] Scope spatial index warm-up started "
         f"(<= {target_mag_cap:.2f} mag)."
@@ -1239,9 +1005,6 @@ def widget_ensure_scope_spatial_index_warmup(widget):
 def widget_on_scope_extension_ready(
     widget, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp, loaded_max_mag
 ):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     self._scope_catalog_loading = False
     try:
@@ -1257,7 +1020,7 @@ def widget_on_scope_extension_ready(
             b_path = str(scope_payload.get("b_path", "") or "")
             if not catalog_path or (not os.path.isfile(catalog_path)):
                 raise RuntimeError("Missing runtime mmap catalog path")
-            from TerraLab.widgets.scope_runtime_cache import (
+            from TerraLab.data.catalogs.scope_cache import (
                 ScopeRuntimeCacheManager,
             )
 
@@ -1353,7 +1116,7 @@ def widget_on_scope_extension_ready(
                         max_hint,
                     )
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "widget_on_scope_extension_ready")
             self.refresh_light_pollution_catalog_range()
             self._set_gaia_extension_status_label(
                 "Finalitzat", keep_seconds=20.0
@@ -1400,7 +1163,7 @@ def widget_on_scope_extension_ready(
                         max_hint,
                     )
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "widget_on_scope_extension_ready")
             self.refresh_light_pollution_catalog_range()
             self._set_gaia_extension_status_label(
                 "Finalitzat", keep_seconds=20.0
@@ -1437,7 +1200,7 @@ def widget_on_scope_extension_ready(
                 float(loaded_max_mag),
             )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "widget_on_scope_extension_ready")
         try:
             ext_path = os.path.join(
                 getattr(self, "_stars_catalog_dir", ""),
@@ -1448,7 +1211,7 @@ def widget_on_scope_extension_ready(
                     os.path.getmtime(ext_path)
                 )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "widget_on_scope_extension_ready")
         self._cleanup_scope_catalog_loader()
         if bool(getattr(self, "_scope_preload_pending_activation", False)):
             if not self.canvas.scope_mode_enabled():

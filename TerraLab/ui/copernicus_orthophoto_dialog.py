@@ -2,7 +2,7 @@
 
 The embedded web map is deliberately limited to interaction and display.  The
 authoritative bounding box, projection, pixel dimensions and download request
-remain Python objects from :mod:`TerraLab.data.copernicus_orthophoto`.
+remain Python objects from :mod:`TerraLab.data.copernicus`.
 """
 
 from __future__ import annotations
@@ -53,7 +53,8 @@ except Exception as exc:  # pragma: no cover - depends on the local Qt install
     QWebEngineView = None  # type: ignore[assignment]
     _WEB_ENGINE_IMPORT_ERROR = str(exc)
 
-from TerraLab.data.copernicus_orthophoto import (
+from TerraLab.common.exception_reporting import log_suppressed_exception
+from TerraLab.data.copernicus import (
     ATTRIBUTION,
     BBoxWgs84,
     DATA_POLICY_URL,
@@ -1107,7 +1108,7 @@ class CopernicusOrthophotoSelectionDialog(QDialog):
             try:
                 stopper()
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "CopernicusOrthophotoSelectionDialog.closeEvent")
         super().closeEvent(event)
 
 

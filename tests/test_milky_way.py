@@ -17,9 +17,9 @@ from TerraLab.light_pollution.modes import (
     LP_MODE_MAGNITUDE,
 )
 from TerraLab.scene.camera import Camera
-from TerraLab.scene.render_context import RenderContext
+from TerraLab.render.qt.context import RenderContext
 from TerraLab.scene.scene_state import SceneState
-from TerraLab.tools.convert_planck_dust import convert_planck_fits_to_cache
+from TerraLab.data.converters.planck import convert_planck_fits_to_cache
 
 
 def _image_to_rgba(image: QImage) -> np.ndarray:
@@ -291,9 +291,12 @@ def test_equatorial_to_galactic_conversion_for_galactic_center() -> None:
     ra = np.asarray([266.4051], dtype=np.float32)
     dec = np.asarray([-28.936175], dtype=np.float32)
     l_deg, b_deg = MilkyWayOverlay._equatorial_to_galactic_deg(ra, dec)
-    l = float(l_deg[0] % 360.0)
+    galactic_longitude = float(l_deg[0] % 360.0)
     b = float(b_deg[0])
-    l_err = min(abs(l - 0.0), abs(l - 360.0))
+    l_err = min(
+        abs(galactic_longitude),
+        abs(galactic_longitude - 360.0),
+    )
     assert l_err < 0.2
     assert math.isclose(b, 0.0, abs_tol=0.2)
 

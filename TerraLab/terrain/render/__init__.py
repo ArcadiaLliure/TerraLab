@@ -1,0 +1,1 @@
+"""Pure terrain rendering core."""

@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 from TerraLab.common.data_library import (
-    APP_NAME,
     DataLibrary,
     application_state_root,
     platform_state_base,
@@ -97,8 +96,6 @@ def ephemeris_path() -> Path | None:
     if configured:
         candidates.append(Path(configured))
     candidates.append(library.layout(create=True)["data_ephemeris"] / "de421.bsp")
-    project = _repo_root()
-    candidates.extend((project / "data" / "stars" / "de421.bsp", project / "de421.bsp"))
     for candidate in candidates:
         try:
             if candidate.is_file():

@@ -4,20 +4,11 @@ import sys
 import threading
 from typing import Any, Dict, Optional
 
-from PyQt5.QtCore import QLocale
 from PyQt5.QtGui import (
-    QFont,
     QFontDatabase,
-    QFontInfo,
-    QTextCharFormat,
-    QTextCursor,
-    QTextFormat,
 )
-from PyQt5.QtWidgets import QPlainTextEdit, QTextEdit
 
-from TerraLab.common.app_paths import (
-    config_path as runtime_config_path,
-)
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import (
     ensure_runtime_layout,
     migrate_legacy_config,
@@ -101,7 +92,7 @@ def resource_path(relative_path: str) -> str:
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "resource_path")
     return os.path.abspath(path)
 
 
@@ -112,7 +103,7 @@ def _normalize_translation_payload(
         return {}
 
     # Legacy schema: key -> {lang: value}
-    if payload and all(not (k in LANGUAGE_OPTIONS) for k in payload.keys()):
+    if payload and all(k not in LANGUAGE_OPTIONS for k in payload.keys()):
         out: Dict[str, Dict[str, str]] = {}
         for key, value in payload.items():
             if not isinstance(value, dict):
@@ -215,7 +206,7 @@ def get_config_value(path: str, default=None, *, refresh: bool = False):
         try:
             _clear_cache_config()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "get_config_value")
 
     cfg = _load_config() or {}
     if path in cfg:
@@ -283,7 +274,8 @@ def load_custom_font(font_rel_path: str, base_resolver=None) -> str | None:
             try:
                 _resource_path = resource_path
             except Exception:
-                _resource_path = lambda p: p
+                def _resource_path(p):
+                    return p
         else:
             _resource_path = base_resolver
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from TerraLab.common.exception_reporting import log_suppressed_exception
 
 try:
     import numpy as np
@@ -88,7 +89,7 @@ class CanvasSelection:
                 if math.isfinite(bp_rp_value):
                     star_object["bp_rp"] = bp_rp_value
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "CanvasSelection._build_star_from_catalog")
 
         for channel_name, channel_catalog in (
             ("r", red_catalog),
@@ -142,7 +143,7 @@ class CanvasSelection:
                         "mag": float(star_from_active_catalog.get("mag", 0.0)),
                     }
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "CanvasSelection._resolve_star_from_visible_index")
                 return star_from_active_catalog
 
         # 2) Fallback scope mentre el cataleg profund encara no esta llest.
@@ -171,7 +172,7 @@ class CanvasSelection:
                         "mag": float(fallback_star.get("mag", 0.0)),
                     }
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "CanvasSelection._resolve_star_from_visible_index")
                 return fallback_star
 
         # 3) Ruta legacy eliminada expressament:
@@ -182,7 +183,7 @@ class CanvasSelection:
                 "visible_index": int(star_index),
             }
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "CanvasSelection._resolve_star_from_visible_index")
         return None
 
     @staticmethod
@@ -367,7 +368,7 @@ class CanvasSelection:
                             best_star = star
                             best_dist = d
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "CanvasSelection.pick_star_at")
 
         # Worker path: list[(sx, sy, star_obj)]
         vis = getattr(c, "visible_stars", None)

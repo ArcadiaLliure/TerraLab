@@ -372,6 +372,12 @@ def _changes_for_layer(layer_type: LayerType | str) -> DataLayerChanges:
 class DataLayersDialog(QDialog):
     """Manage datasets and active selections without reopening onboarding."""
 
+    @staticmethod
+    def _create_asset_dialog(manager, asset_id, parent):
+        from TerraLab.ui.onboarding_dialogs import AssetOnboardingDialog
+
+        return AssetOnboardingDialog(manager, asset_id, parent)
+
     def __init__(
         self,
         parent=None,
@@ -409,7 +415,9 @@ class DataLayersDialog(QDialog):
         root.setSpacing(10)
         self.tabs = QTabWidget()
         self.layer_configurator = LayerConfiguratorWidget(
-            self.layer_manager, self.tabs
+            self.layer_manager,
+            self.tabs,
+            asset_dialog_factory=self._create_asset_dialog,
         )
         self.layer_configurator.setObjectName("layerConfiguratorPage")
         self.layer_configurator.layerChanged.connect(

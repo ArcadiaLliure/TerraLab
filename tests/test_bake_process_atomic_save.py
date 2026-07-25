@@ -11,7 +11,7 @@ import pytest
 
 from TerraLab.terrain import bake_process
 from TerraLab.terrain.bake_process import _atomic_save_profile
-from TerraLab.terrain.engine import HorizonProfile
+from TerraLab.terrain.domain.profile import HorizonProfile
 
 
 def _build_profile() -> HorizonProfile:

@@ -29,13 +29,7 @@ class HorizonRenderer:
             callback(ctx, state)
 
 
-def draw_ground_mask(painter, is_day, *, canvas=None, impl=None):
-    if callable(impl):
-        return impl(painter, is_day)
-    return draw_ground_mask_impl(canvas, painter, is_day)
-
-
-def draw_ground_mask_impl(canvas, painter, is_day):
+def draw_ground_mask(canvas, painter, is_day):
     if canvas is None:
         return
 

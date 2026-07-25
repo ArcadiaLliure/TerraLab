@@ -12,8 +12,8 @@ from TerraLab.light_pollution.modes import (
     normalize_light_pollution_mode,
     resolve_bortle_class,
 )
-from TerraLab.ui import sky_widget_impl
-from TerraLab.ui.sky_widget_impl import AstronomicalWidget
+from TerraLab.ui.widget_mixins import layers as light_pollution_ui
+from TerraLab.ui.astronomical_widget import AstronomicalWidget
 from TerraLab.ui.widget_runtime_helpers import request_relocation
 from TerraLab.widgets.telescope_runtime import update_star_rendering_params
 
@@ -121,7 +121,11 @@ def test_each_mode_resolves_its_own_graphical_bortle(mode, expected):
 
 
 def test_automatic_controls_are_locked_to_estimated_bortle(monkeypatch):
-    monkeypatch.setattr(sky_widget_impl, "getTraduction", lambda _key, default: default)
+    monkeypatch.setattr(
+        light_pollution_ui,
+        "getTraduction",
+        lambda _key, default: default,
+    )
     widget = _control_widget(LP_MODE_AUTOMATIC)
 
     AstronomicalWidget._sync_light_pollution_controls(widget)
@@ -136,7 +140,11 @@ def test_automatic_controls_are_locked_to_estimated_bortle(monkeypatch):
 
 
 def test_bortle_controls_are_editable_from_nine_to_one(monkeypatch):
-    monkeypatch.setattr(sky_widget_impl, "getTraduction", lambda _key, default: default)
+    monkeypatch.setattr(
+        light_pollution_ui,
+        "getTraduction",
+        lambda _key, default: default,
+    )
     widget = _control_widget(LP_MODE_BORTLE)
 
     AstronomicalWidget._sync_light_pollution_controls(widget)
@@ -148,7 +156,11 @@ def test_bortle_controls_are_editable_from_nine_to_one(monkeypatch):
 
 
 def test_magnitude_controls_end_at_faintest_catalog_star(monkeypatch):
-    monkeypatch.setattr(sky_widget_impl, "getTraduction", lambda _key, default: default)
+    monkeypatch.setattr(
+        light_pollution_ui,
+        "getTraduction",
+        lambda _key, default: default,
+    )
     widget = _control_widget(LP_MODE_MAGNITUDE)
 
     AstronomicalWidget._sync_light_pollution_controls(widget)
@@ -162,7 +174,7 @@ def test_magnitude_controls_end_at_faintest_catalog_star(monkeypatch):
 def test_selecting_automatic_recalculates_immediately(monkeypatch):
     persisted = []
     monkeypatch.setattr(
-        sky_widget_impl,
+        light_pollution_ui,
         "set_config_value",
         lambda key, value: persisted.append((key, value)),
     )
@@ -212,10 +224,14 @@ def test_location_change_recalculates_only_in_automatic_mode(monkeypatch):
             canvas=canvas,
             bake_debounce_timer=SimpleNamespace(start=lambda _ms: None),
             time_bar=SimpleNamespace(update_params=lambda *_args: None),
-            manual_day=1,
-            recalculate_calls=0,
-            _observer_offset=0.0,
-        )
+                manual_day=1,
+                recalculate_calls=0,
+                _observer_offset=0.0,
+                terrain_coordinator=SimpleNamespace(
+                    get_bare_elevation=lambda _lat, _lon: None
+                ),
+                update_altitude_label=lambda: None,
+            )
         widget.recalculate_automatic_light_pollution = lambda: setattr(
             widget, "recalculate_calls", widget.recalculate_calls + 1
         )

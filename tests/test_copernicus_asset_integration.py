@@ -15,7 +15,7 @@ from TerraLab.data.assets_manager import (
     AssetManager,
     AssetOperationCancelled,
 )
-from TerraLab.data.copernicus_orthophoto import (
+from TerraLab.data.copernicus import (
     ADAPTED_ATTRIBUTION,
     BBoxWgs84,
     DownloadRequest,
@@ -353,7 +353,7 @@ def test_confirmation_uses_async_nodata_result_without_network(
     request = _request()
     questions = []
     monkeypatch.setattr(
-        "TerraLab.data.copernicus_orthophoto.estimate_nodata_fraction",
+        "TerraLab.data.copernicus.estimate_nodata_fraction",
         lambda *_args, **_kwargs: pytest.fail(
             "NoData network probe must not run in the UI confirmation"
         ),

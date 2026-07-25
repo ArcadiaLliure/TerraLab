@@ -9,7 +9,7 @@ from TerraLab.astro.ngc_catalog import (
     iter_ngc_aliases,
     load_ngc_catalog,
 )
-from TerraLab.render.overlays_renderer import draw_skyfield_objects_impl
+from TerraLab.render.overlays_renderer import draw_skyfield_objects
 from TerraLab.render.sky.milkyway_overlay import MilkyWayOverlay
 from TerraLab.render.stars_renderer import StarsRenderer
 from TerraLab.scene.camera import Camera
@@ -18,17 +18,21 @@ from TerraLab.scene.projection import (
     project_universal_stereo_point,
     radec_to_altaz_numpy,
 )
-from TerraLab.terrain.engine import HorizonProfile, compute_polar_mesh_normals
-from TerraLab.terrain.overlay import (
-    HorizonOverlay,
+from TerraLab.terrain.domain.profile import HorizonProfile
+from TerraLab.terrain.mesh.normals import compute_polar_mesh_normals
+from TerraLab.terrain.persistence.profile_npz import load_profile, save_profile
+from TerraLab.terrain.overlay import HorizonOverlay
+from TerraLab.terrain.render.geometry import (
     _build_terrain_surface_spans,
-    _extrema_lod_indices,
-    _rasterize_terrain_triangles,
     _simplify_projected_boundaries,
 )
-from TerraLab.terrain.render_pipeline import TerrainRenderSettings
+from TerraLab.terrain.render.overlay_types import _extrema_lod_indices
+from TerraLab.terrain.render.triangle_raster import (
+    _rasterize_terrain_triangles,
+)
+from TerraLab.terrain.render.config import TerrainRenderSettings
 from TerraLab.terrain.worker import HorizonWorker
-from TerraLab.widgets.sky_widget import AstronomicalWidget
+from TerraLab.ui.astronomical_widget import AstronomicalWidget
 from TerraLab.widgets.telescope_runtime import on_telescope_view_enabled
 
 
@@ -54,8 +58,12 @@ def test_terrain_projection_uses_full_altitude_azimuth_coordinates():
         altitudes, azimuths, width, height, camera
     )
     assert np.all(valid)
-    assert np.max(np.abs(sx - np.array([point[0] for point in expected]))) < 1e-4
-    assert np.max(np.abs(sy - np.array([point[1] for point in expected]))) < 1e-4
+    assert (
+        np.max(np.abs(sx - np.array([point[0] for point in expected]))) < 1e-4
+    )
+    assert (
+        np.max(np.abs(sy - np.array([point[1] for point in expected]))) < 1e-4
+    )
 
     overlay = HorizonOverlay(
         horizon_profile_path=None, allow_procedural_fallback=False
@@ -161,9 +169,9 @@ def test_profile_interaction_reduces_depth_layers_but_keeps_endpoints():
 
 def test_settled_profile_reuses_composited_terrain_image():
     azimuths = np.arange(0.0, 360.0, 0.5, dtype=np.float32)
-    angles = np.deg2rad(
-        2.0 + np.sin(np.deg2rad(azimuths * 3.0))
-    ).astype(np.float32)
+    angles = np.deg2rad(2.0 + np.sin(np.deg2rad(azimuths * 3.0))).astype(
+        np.float32
+    )
     profile = HorizonProfile(
         azimuths=azimuths,
         bands=[
@@ -283,9 +291,7 @@ def test_surface_geometry_preserves_peaks_saddles_and_occlusion():
     near = np.asarray([62, 60, 58, 57, 56, 57, 58, 60, 62], dtype=np.float32)
     far = np.asarray([70, 55, 28, 42, 50, 41, 26, 54, 70], dtype=np.float32)
     hidden = np.full(9, 80.0, dtype=np.float32)
-    geometry = _synthetic_surface_geometry(
-        np.vstack((near, far, hidden)), x=x
-    )
+    geometry = _synthetic_surface_geometry(np.vstack((near, far, hidden)), x=x)
 
     actual = _synthetic_geometry_envelope(geometry, x)
     np.testing.assert_allclose(actual, np.minimum(near, far), atol=0.75)
@@ -311,7 +317,9 @@ def test_surface_geometry_splits_nodata_and_reversed_projection():
 
 def test_surface_simplification_has_bounded_projected_error():
     x = np.arange(11, dtype=np.float32)[::-1] * 8.0
-    top = np.asarray([50, 48, 44, 30, 43, 52, 42, 27, 43, 49, 51], dtype=np.float32)
+    top = np.asarray(
+        [50, 48, 44, 30, 43, 52, 42, 27, 43, 49, 51], dtype=np.float32
+    )
     bottom = np.full_like(top, 70.0)
 
     indices, error = _simplify_projected_boundaries(x, top, bottom, 0.75)
@@ -331,7 +339,9 @@ def test_surface_geometry_matches_random_exhaustive_envelopes():
         actual = _synthetic_geometry_envelope(geometry, x)
         expected = np.min(np.where(valid, projected_y, 200.0), axis=0)
         drawable = np.any(valid, axis=0)
-        np.testing.assert_allclose(actual[drawable], expected[drawable], atol=1.0)
+        np.testing.assert_allclose(
+            actual[drawable], expected[drawable], atol=1.0
+        )
         assert geometry.metrics.max_error_px <= 0.75 + 1e-6
 
 
@@ -606,8 +616,8 @@ def test_horizon_profile_roundtrip_preserves_resolved_mask():
         resolved_mask=np.array([True, False, True], dtype=bool),
     )
     try:
-        profile.save(temp_path)
-        loaded = HorizonProfile.load(temp_path)
+        save_profile(profile, temp_path)
+        loaded = load_profile(temp_path)
         assert loaded.resolved_mask.tolist() == [True, False, True]
     finally:
         temp_path.unlink(missing_ok=True)
@@ -632,8 +642,8 @@ def test_horizon_profile_roundtrip_preserves_surface_points():
         observer_lon=1.0,
     )
     try:
-        profile.save(temp_path)
-        loaded = HorizonProfile.load(temp_path)
+        save_profile(profile, temp_path)
+        loaded = load_profile(temp_path)
         band = loaded.bands[0]
         assert np.allclose(band["surface_angles"], [0.1, 0.2])
         pts = loaded.get_band_surface_points("near_0_1")
@@ -650,7 +660,9 @@ def test_horizon_profile_roundtrip_preserves_terrain_mesh():
         "azimuths": np.array([0.0, 1.0], dtype=np.float32),
         "distances": np.array([100.0, 200.0], dtype=np.float32),
         "altitudes": np.array([[1.0, 1.1], [1.3, 1.4]], dtype=np.float32),
-        "elevations": np.array([[100.0, 102.0], [120.0, 122.0]], dtype=np.float32),
+        "elevations": np.array(
+            [[100.0, 102.0], [120.0, 122.0]], dtype=np.float32
+        ),
         "normal_x": np.zeros((2, 2), dtype=np.float32),
         "normal_y": np.zeros((2, 2), dtype=np.float32),
         "normal_z": np.ones((2, 2), dtype=np.float32),
@@ -673,14 +685,17 @@ def test_horizon_profile_roundtrip_preserves_terrain_mesh():
         terrain_mesh=mesh,
     )
     try:
-        profile.save(temp_path)
-        loaded = HorizonProfile.load(temp_path)
+        save_profile(profile, temp_path)
+        loaded = load_profile(temp_path)
         assert loaded.terrain_mesh is not None
         assert loaded.terrain_mesh["version"] == 3
         assert np.allclose(loaded.terrain_mesh["distances"], [100.0, 200.0])
         assert loaded.terrain_mesh["valid"].dtype == bool
         assert loaded.terrain_mesh["visible"].dtype == bool
-        assert loaded.terrain_mesh["visible"].tolist() == [[True, True], [False, True]]
+        assert loaded.terrain_mesh["visible"].tolist() == [
+            [True, True],
+            [False, True],
+        ]
         assert loaded.terrain_mesh["near_patch_altitudes"].shape == (3, 3)
         assert loaded.terrain_mesh["near_patch_valid"].all()
     finally:
@@ -703,8 +718,8 @@ def test_horizon_profile_loads_legacy_terrain_mesh_without_visible():
         terrain_mesh=mesh,
     )
     try:
-        profile.save(temp_path)
-        loaded = HorizonProfile.load(temp_path)
+        save_profile(profile, temp_path)
+        loaded = load_profile(temp_path)
         assert loaded.terrain_mesh is not None
         assert loaded.terrain_mesh["version"] == 1
         assert loaded.terrain_mesh["visible"].dtype == bool
@@ -781,11 +796,13 @@ def test_horizon_overlay_draws_terrain_mesh_offscreen():
 def test_cartesian_near_patch_covers_nadir_without_a_polar_cap_or_hole():
     azimuths = np.asarray([0.0, 90.0, 180.0, 270.0], dtype=np.float32)
     distances = np.asarray([40.0, 100.0], dtype=np.float32)
-    altitudes = np.degrees(
-        np.arctan2(-1.7, distances[:, None])
-    ).astype(np.float32)
+    altitudes = np.degrees(np.arctan2(-1.7, distances[:, None])).astype(
+        np.float32
+    )
     altitudes = np.broadcast_to(altitudes, (2, 4)).copy()
-    patch_axis = np.asarray([-4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0], dtype=np.float32)
+    patch_axis = np.asarray(
+        [-4.0, -2.0, -1.0, 0.0, 1.0, 2.0, 4.0], dtype=np.float32
+    )
     patch_east, patch_north = np.meshgrid(patch_axis, patch_axis)
     patch_distance = np.hypot(patch_east, patch_north)
     patch_altitudes = np.degrees(
@@ -809,7 +826,9 @@ def test_cartesian_near_patch_covers_nadir_without_a_polar_cap_or_hole():
         "near_patch_valid": np.ones_like(patch_altitudes, dtype=bool),
     }
     relief_rgba = np.full((2, 4, 4), (230, 120, 20, 255), dtype=np.uint8)
-    near_rgba = np.full(patch_altitudes.shape + (4,), (24, 48, 72, 255), dtype=np.uint8)
+    near_rgba = np.full(
+        patch_altitudes.shape + (4,), (24, 48, 72, 255), dtype=np.uint8
+    )
     surface_cache = SimpleNamespace(
         near_patch_rgba=near_rgba,
         near_patch_valid=np.ones_like(patch_altitudes, dtype=bool),
@@ -1031,9 +1050,13 @@ def test_terrain_3d_toggle_switches_between_mesh_and_all_distance_silhouettes():
         assert len(overlay.band_colors) == 20
         assert overlay.surface_calls == 0
         assert overlay.ground_calls == 0
+        assert overlay._terrain_surface_image_geometry is None
         far_color = overlay.band_colors[0]
         near_color = overlay.band_colors[-1]
-        assert far_color.blue() - far_color.red() > near_color.blue() - near_color.red()
+        assert (
+            far_color.blue() - far_color.red()
+            > near_color.blue() - near_color.red()
+        )
         assert near_color.green() > near_color.blue()
 
         overlay.band_colors.clear()
@@ -1055,6 +1078,53 @@ def test_terrain_3d_toggle_switches_between_mesh_and_all_distance_silhouettes():
         assert overlay.ground_calls == 0
     finally:
         painter.end()
+
+
+def test_profile_mode_paints_sampled_surface_material():
+    overlay = HorizonOverlay(
+        horizon_profile_path=None, allow_procedural_fallback=False
+    )
+    overlay._profile_surface_samples = lambda _band, azimuths: (
+        np.tile(
+            np.asarray([210, 35, 25, 255], dtype=np.uint8),
+            (len(azimuths), 1),
+        ),
+        np.ones(len(azimuths), dtype=bool),
+    )
+    light_grid = SimpleNamespace(
+        intensity=np.ones(2, dtype=np.float32),
+        solar_exposure=np.ones(2, dtype=np.float32),
+        lunar_exposure=np.zeros(2, dtype=np.float32),
+        factors=SimpleNamespace(),
+    )
+    overlay._terrain_profile_light_grid = lambda *_args, **_kwargs: light_grid
+    overlay._compose_profile_light_color = (
+        lambda color, *_args, **_kwargs: QColor(color)
+    )
+    image = QImage(120, 100, QImage.Format_ARGB32)
+    image.fill(QColor(0, 0, 0))
+    painter = QPainter(image)
+    try:
+        overlay._fill_shaded_strip_downward_numpy(
+            painter,
+            [np.asarray([10.0, 110.0])],
+            [np.asarray([40.0, 40.0])],
+            [np.asarray([179.0, 181.0])],
+            [np.asarray([1.0, 1.0])],
+            QColor(40, 80, 120),
+            100.0,
+            25.0,
+            180.0,
+            SimpleNamespace(band_max=1_000.0),
+            QColor(100, 140, 180),
+        )
+    finally:
+        painter.end()
+
+    painted = image.pixelColor(60, 60)
+    assert painted.red() > 180
+    assert painted.green() < 60
+    assert painted.blue() < 60
 
 
 def test_terrain_light_factor_tracks_solar_azimuth_and_haze():
@@ -1268,7 +1338,10 @@ def test_horizon_overlay_solar_shading_changes_with_sun_az_offscreen():
         painter = QPainter(image)
 
         def project(altitude, azimuth):
-            return ((float(azimuth) - 178.0) * 40.0, 82.0 - float(altitude) * 12.0)
+            return (
+                (float(azimuth) - 178.0) * 40.0,
+                82.0 - float(altitude) * 12.0,
+            )
 
         def project_np(altitude, azimuth):
             azimuth = np.asarray(azimuth, dtype=np.float32)
@@ -1447,9 +1520,12 @@ def test_equatorial_to_galactic_conversion_for_galactic_center():
     ra = np.asarray([266.4051], dtype=np.float32)
     dec = np.asarray([-28.936175], dtype=np.float32)
     l_deg, b_deg = MilkyWayOverlay._equatorial_to_galactic_deg(ra, dec)
-    l = float(l_deg[0] % 360.0)
+    galactic_longitude = float(l_deg[0] % 360.0)
     b = float(b_deg[0])
-    l_err = min(abs(l - 0.0), abs(l - 360.0))
+    l_err = min(
+        abs(galactic_longitude),
+        abs(galactic_longitude - 360.0),
+    )
     assert l_err < 0.2
     assert abs(b) < 0.2
 
@@ -1466,8 +1542,6 @@ def test_galactic_centre_lands_in_southern_sky_on_northern_summer_night():
     )
     assert float(alt_deg[0]) > 0.0
     assert 180.0 <= float(az_deg[0]) <= 260.0
-
-
 
 
 def test_eclipse_lock_uses_real_moon_position_for_overlap_geometry():
@@ -1536,7 +1610,7 @@ def test_eclipse_lock_uses_real_moon_position_for_overlap_geometry():
     image.fill(0)
     painter = QPainter(image)
     try:
-        draw_skyfield_objects_impl(
+        draw_skyfield_objects(
             canvas,
             painter,
             ut_hour=12.0,
