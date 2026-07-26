@@ -9,7 +9,10 @@ from TerraLab.astro.ngc_catalog import (
     iter_ngc_aliases,
     load_ngc_catalog,
 )
-from TerraLab.render.overlays_renderer import draw_skyfield_objects
+from TerraLab.render.overlays_renderer import (
+    draw_skyfield_objects,
+    draw_sun_skyfield,
+)
 from TerraLab.render.sky.milkyway_overlay import MilkyWayOverlay
 from TerraLab.render.stars_renderer import StarsRenderer
 from TerraLab.scene.camera import Camera
@@ -1575,6 +1578,7 @@ def test_eclipse_lock_uses_real_moon_position_for_overlap_geometry():
                 }
             }
             self.last_moon_draw = None
+            self.last_corona_opacity = None
 
         def width(self):
             return 800
@@ -1596,8 +1600,17 @@ def test_eclipse_lock_uses_real_moon_position_for_overlap_geometry():
         def _sun_weather_dim_factor(self):
             return 0.0
 
-        def draw_sun_skyfield(self, *_args, **_kwargs):
-            return None
+        def draw_sun_skyfield(
+            self,
+            _painter,
+            _alt,
+            _az,
+            _radius,
+            _color,
+            corona_opacity,
+            _pixels_per_deg,
+        ):
+            self.last_corona_opacity = float(corona_opacity)
 
         def draw_moon_skyfield(self, _painter, alt, az, *_args, **_kwargs):
             self.last_moon_draw = (float(alt), float(az))
@@ -1625,3 +1638,4 @@ def test_eclipse_lock_uses_real_moon_position_for_overlap_geometry():
     alt_draw, az_draw = canvas.last_moon_draw
     assert abs(alt_draw - 30.2) < 1e-3
     assert abs(az_draw - 100.2) < 1e-3
+    assert canvas.last_corona_opacity == 0.0

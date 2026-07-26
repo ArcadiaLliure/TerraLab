@@ -699,10 +699,22 @@ class AstronomicalWidget(
                 latitude=float(self.scene_controller.latitude),
                 longitude=float(self.scene_controller.longitude),
             )
+            ephemeris_hour_utc = float(self.scene_controller.manual_hour)
+            ephemeris_day_utc = int(self.scene_controller.manual_day)
+            ephemeris_year_utc = int(self.scene_controller.manual_year)
+            if canvas is not None and callable(
+                getattr(canvas, "_get_current_utc_context", None)
+            ):
+                (
+                    ephemeris_hour_utc,
+                    ephemeris_day_utc,
+                    ephemeris_year_utc,
+                    _,
+                ) = canvas._get_current_utc_context()
             self.ephemeris_coordinator.request_snapshot(
-                year_utc=int(self.scene_controller.manual_year),
-                day_of_year_utc=int(self.scene_controller.manual_day),
-                ut_hour=float(self.scene_controller.manual_hour),
+                year_utc=int(ephemeris_year_utc),
+                day_of_year_utc=int(ephemeris_day_utc),
+                ut_hour=float(ephemeris_hour_utc),
             )
 
             if (

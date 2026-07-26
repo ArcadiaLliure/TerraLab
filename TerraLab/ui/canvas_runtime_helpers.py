@@ -698,7 +698,11 @@ def canvas_paintEvent(canvas, event):
                     self._last_skyfield_update = current_time_ms
                     self._sf_cache["ut_hour"] = ut_hour  # Track simulated time
                     # Only trigger heavy Skyfield updates when needed (using UTC day)
-                    self.update_skyfield_cache(ut_hour, day_for_astro)
+                    self.update_skyfield_cache(
+                        ut_hour,
+                        day_for_astro,
+                        year_utc=dt_utc.year,
+                    )
                     self._eclipse_cache["value"] = (
                         self.get_eclipse_dimming_factor(ut_hour, day_for_astro)
                     )

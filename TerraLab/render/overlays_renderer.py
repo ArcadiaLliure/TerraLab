@@ -41,6 +41,40 @@ class OverlaysRenderer:
             callback(ctx, state)
 
 
+def _draw_solar_corona(
+    painter,
+    x: float,
+    y: float,
+    radius: float,
+    corona_opacity: float,
+    sun_alpha_factor: float,
+) -> None:
+    if corona_opacity <= 0.01 or sun_alpha_factor <= 0.04:
+        return
+    painter.save()
+    try:
+        painter.setBrush(Qt.NoBrush)
+        grad = QRadialGradient(x, y, radius * 12.0)
+        c_scale = sun_alpha_factor * sun_alpha_factor
+        grad.setColorAt(
+            0.0, QColor(255, 255, 255, int(255 * corona_opacity * c_scale))
+        )
+        grad.setColorAt(
+            0.1,
+            QColor(200, 220, 255, int(220 * corona_opacity * c_scale)),
+        )
+        grad.setColorAt(
+            0.25,
+            QColor(100, 100, 255, int(100 * corona_opacity * c_scale)),
+        )
+        grad.setColorAt(1.0, QColor(0, 0, 50, 0))
+        painter.setBrush(QBrush(grad))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(QPointF(x, y), radius * 12, radius * 12)
+    finally:
+        painter.restore()
+
+
 def draw_sun_skyfield(
     canvas, painter, alt, az, radius, color, corona_opacity, pixels_per_deg
 ):
@@ -60,33 +94,23 @@ def draw_sun_skyfield(
         y,
         radius,
     )
+    sun_alpha_factor = max(0.0, min(1.0, QColor(color).alphaF()))
+    if sun_alpha_factor <= 0.01:
+        return
+    _draw_solar_corona(
+        painter,
+        float(x),
+        float(y),
+        float(radius),
+        float(corona_opacity),
+        float(sun_alpha_factor),
+    )
     if canvas.scope_mode_enabled():
         painter.save()
         painter.translate(x, y)
         canvas._draw_scope_solar_disc(painter, radius)
         painter.restore()
         return
-
-    sun_alpha_factor = max(0.0, min(1.0, QColor(color).alphaF()))
-    if sun_alpha_factor <= 0.01:
-        return
-    if corona_opacity > 0.01 and sun_alpha_factor > 0.04:
-        painter.setBrush(Qt.NoBrush)
-        grad = QRadialGradient(x, y, radius * 12.0)
-        c_scale = sun_alpha_factor * sun_alpha_factor
-        grad.setColorAt(
-            0.0, QColor(255, 255, 255, int(255 * corona_opacity * c_scale))
-        )
-        grad.setColorAt(
-            0.1, QColor(200, 220, 255, int(220 * corona_opacity * c_scale))
-        )
-        grad.setColorAt(
-            0.25, QColor(100, 100, 255, int(100 * corona_opacity * c_scale))
-        )
-        grad.setColorAt(1.0, QColor(0, 0, 50, 0))
-        painter.setBrush(QBrush(grad))
-        painter.setPen(Qt.NoPen)
-        painter.drawEllipse(QPointF(x, y), radius * 12, radius * 12)
 
     path = canvas.get_refracted_body_path(radius, alt, pixels_per_deg)
     painter.save()

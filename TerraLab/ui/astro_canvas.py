@@ -6,12 +6,16 @@ Rendering responsibilities are composed from focused canvas mixins.
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtGui import QPainter
 from PyQt5.QtWidgets import QWidget
+from TerraLab.astro.ephemeris_coordinator import (
+    snapshot_datetime_utc,
+    snapshot_matches_utc_context,
+)
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
     normalize_light_pollution_mode,
@@ -450,12 +454,17 @@ class AstroCanvas(  # type: ignore[reportIncompatibleMethodOverride]  # PyQt5 st
             self._emit_render_diagnostics(resultat_estrelles)
         return None
 
-    def update_skyfield_cache(self, ut_hour, day_of_year):
+    def update_skyfield_cache(self, ut_hour, day_of_year, year_utc=None):
         """Refresh the render cache from the ephemeris coordinator."""
         widget_pare = getattr(self, "parent_widget", None)
         coordinator_ephemeris = getattr(widget_pare, "ephemeris_coordinator", None)
         if coordinator_ephemeris is None:
             return None
+        requested_year_utc = int(
+            year_utc
+            if year_utc is not None
+            else getattr(widget_pare, "manual_year", 2026)
+        )
 
         def _snapshot_cache_compatible(payload) -> bool:
             if not isinstance(payload, dict):
@@ -478,37 +487,13 @@ class AstroCanvas(  # type: ignore[reportIncompatibleMethodOverride]  # PyQt5 st
                     return False
             return True
 
-        def _snapshot_matches_request_time(payload) -> bool:
-            if not isinstance(payload, dict):
-                return False
-            ts_raw = payload.get("timestamp_utc", None)
-            if not ts_raw:
-                return False
-            try:
-                txt = str(ts_raw).strip()
-                if txt.endswith("Z"):
-                    txt = txt[:-1] + "+00:00"
-                dt_snap = datetime.fromisoformat(txt)
-                if dt_snap.tzinfo is None:
-                    dt_snap = dt_snap.replace(tzinfo=timezone.utc)
-                dt_req = datetime(
-                    int(getattr(widget_pare, "manual_year", 2026)),
-                    1,
-                    1,
-                    tzinfo=timezone.utc,
-                ) + timedelta(days=int(day_of_year), hours=float(ut_hour))
-                delta_s = abs((dt_snap.astimezone(timezone.utc) - dt_req).total_seconds())
-                return bool(delta_s <= 120.0)
-            except Exception:
-                return False
-
         try:
             coordinator_ephemeris.configure_observer(
                 latitude=float(getattr(widget_pare, "latitude", 0.0)),
                 longitude=float(getattr(widget_pare, "longitude", 0.0)),
             )
             coordinator_ephemeris.request_snapshot(
-                year_utc=int(getattr(widget_pare, "manual_year", 2026)),
+                year_utc=requested_year_utc,
                 day_of_year_utc=int(day_of_year),
                 ut_hour=float(ut_hour),
             )
@@ -522,16 +507,37 @@ class AstroCanvas(  # type: ignore[reportIncompatibleMethodOverride]  # PyQt5 st
             if not _snapshot_cache_compatible(snapshot):
                 self._last_skyfield_update = 0
                 return None
-            if not _snapshot_matches_request_time(snapshot):
+            if not snapshot_matches_utc_context(
+                snapshot,
+                year_utc=requested_year_utc,
+                day_of_year_utc=int(day_of_year),
+                ut_hour=float(ut_hour),
+            ):
                 # Keep the previous visual snapshot until the coalesced async
                 # request completes. Never run Skyfield in the GUI paint path.
                 self._last_skyfield_update = 0
                 return None
+            snapshot_time = snapshot_datetime_utc(snapshot)
+            if snapshot_time is None:
+                self._last_skyfield_update = 0
+                return None
+            snapshot_hour = (
+                snapshot_time.hour
+                + snapshot_time.minute / 60.0
+                + snapshot_time.second / 3600.0
+                + snapshot_time.microsecond / 3_600_000_000.0
+            )
+            snapshot_day = (
+                snapshot_time.date()
+                - datetime(snapshot_time.year, 1, 1).date()
+            ).days
             self._sf_cache = {
-                "time": float(ut_hour),
-                "ut_hour": float(ut_hour),
-                "day": int(day_of_year),
-                "year": int(getattr(widget_pare, "manual_year", 2026)),
+                # Cache metadata describes the data, not the newer request
+                # which may still be waiting in the coordinator.
+                "time": float(snapshot_hour),
+                "ut_hour": float(snapshot_hour),
+                "day": int(snapshot_day),
+                "year": int(snapshot_time.year),
                 "lat": float(getattr(widget_pare, "latitude", 0.0)),
                 "lon": float(getattr(widget_pare, "longitude", 0.0)),
                 "data": snapshot,
