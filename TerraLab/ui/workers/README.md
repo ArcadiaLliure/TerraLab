@@ -1,7 +1,7 @@
-# Workers de UI
+# Workers de la UI
 
-Adaptadores `QObject` para carga asíncrona de catálogos y efemérides.
+Adaptadors `QObject` per a la càrrega asíncrona de catàlegs i efemèrides.
 
-Los workers emiten resultados mediante señales y no construyen widgets. NumPy
-y Skyfield son dependencias obligatorias declaradas en `pyproject.toml`; no se
-ocultan errores de instalación con fallbacks incompletos.
+Els workers emeten resultats mitjançant senyals i no construeixen ginys. NumPy
+i Skyfield són dependències obligatòries declarades a `pyproject.toml`; els
+errors d'instal·lació no s'oculten amb alternatives incompletes.

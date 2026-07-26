@@ -1,12 +1,12 @@
 # Recursos de la biblioteca
 
-Implementación del gestor de recursos dividida por operación:
+Implementació del gestor de recursos dividida per operació:
 
-- `registry.py`: catálogo, manifiesto y descriptores.
-- `discovery.py`: inspección y registro de datos locales.
-- `downloads.py`: descargas de productos soportados.
-- `installation.py`: importación y conversión explícitas.
-- `validation.py`: salud, previsualización y retirada segura.
-- `runtime.py`: modelos pequeños y adaptadores diferidos.
+- `registry.py`: catàleg, manifest i descriptors.
+- `discovery.py`: inspecció i registre de dades locals.
+- `downloads.py`: descàrregues de productes admesos.
+- `installation.py`: importació i conversió explícites.
+- `validation.py`: estat, previsualització i retirada segura.
+- `runtime.py`: models petits i adaptadors diferits.
 
-Las fuentes externas se enlazan; sólo los datos administrados se eliminan.
+Les fonts externes s'enllacen; només s'eliminen les dades administrades.

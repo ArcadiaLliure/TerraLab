@@ -1,8 +1,8 @@
 # Render
 
-Renderizadores del cielo y adaptadores de dibujo.
+Renderitzadors del cel i adaptadors de dibuix.
 
-Cada capa tiene una entrada canónica: fondo, estrellas, rejilla, horizonte y
-overlays. Las funciones públicas no mantienen una implementación `_impl`
-paralela. El estado llega mediante `SceneState` y el contexto Qt mediante
+Cada capa té una entrada canònica: fons, estrelles, graella, horitzó i
+overlays. Les funcions públiques no mantenen una implementació `_impl`
+paral·lela. L'estat arriba mitjançant `SceneState` i el context Qt mitjançant
 `render.qt.RenderContext`.

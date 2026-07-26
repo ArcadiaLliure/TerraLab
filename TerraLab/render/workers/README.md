@@ -1,7 +1,7 @@
 # Workers de render
 
-Trabajo de rasterización costoso ejecutado fuera del hilo de interfaz.
+Tasca de rasterització costosa executada fora del fil de la interfície.
 
-`star_render.py` genera estrellas y trazas a partir de parámetros inmutables y
-devuelve imágenes Qt. NumPy es una dependencia obligatoria; no existe una
-implementación degradada silenciosa.
+`star_render.py` genera estrelles i traces a partir de paràmetres immutables i
+retorna imatges Qt. NumPy és una dependència obligatòria; no existeix cap
+implementació degradada silenciosa.

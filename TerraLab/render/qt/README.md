@@ -1,6 +1,6 @@
-# Adaptadores Qt de render
+# Adaptadors Qt de render
 
-Tipos que conectan el núcleo de escena con `QPainter`.
+Tipus que connecten el nucli de l'escena amb `QPainter`.
 
-`context.py` contiene el `RenderContext` canónico. Este paquete puede depender
-de Qt; `TerraLab.scene` no puede depender de él ni de la UI.
+`context.py` conté el `RenderContext` canònic. Aquest paquet pot dependre de Qt;
+`TerraLab.scene` no pot dependre'n ni tampoc de la UI.

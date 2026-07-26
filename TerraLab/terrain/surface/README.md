@@ -1,10 +1,11 @@
-# Superficie
+# Superfície
 
-Muestreo de materiales georreferenciados independiente del DEM.
+Mostreig de materials georeferenciats independent del DEM.
 
-Soporta ortofoto RGB, cobertura RGB y cobertura categórica, además de
-contaminación lumínica. `service.py` prepara cachés alineadas con el perfil o
-la malla; el render recibe arrays inmutables y no realiza E/S de GDAL.
+Admet ortofoto RGB, cobertura RGB i cobertura categòrica, a més de contaminació
+lumínica. `service.py` prepara memòries cau alineades amb el perfil o la malla;
+el render rep matrius immutables i no efectua E/S de GDAL.
 
-Desactivar una superficie limpia tanto la selección semántica como la imagen
-cacheada, evitando tooltips sin representación visible.
+Desactivar una superfície neteja tant la selecció semàntica com la imatge
+emmagatzemada a la memòria cau, cosa que evita indicadors de funció sense
+representació visible.

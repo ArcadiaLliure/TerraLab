@@ -1,11 +1,11 @@
-# Proveedores de elevación
+# Proveïdors d'elevació
 
-API tipada para fuentes ASC, NPY y formatos GDAL.
+API tipada per a fonts ASC, NPY i formats GDAL.
 
-- `common.py`: contratos, metadatos y helpers de fuente.
-- `raster_dataset.py`: acceso GDAL por bloques y caché acotada.
-- `asc_provider.py`: teselas históricas ASC/NPY.
-- `geotiff_provider.py`: proveedores GeoTIFF.
-- `chain.py`: composición y factorías.
+- `common.py`: contractes, metadades i funcions auxiliars de font.
+- `raster_dataset.py`: accés GDAL per blocs i memòria cau acotada.
+- `asc_provider.py`: tessel·les històriques ASC/NPY.
+- `geotiff_provider.py`: proveïdors GeoTIFF.
+- `chain.py`: composició i fàbriques.
 
-Los módulos usan imports explícitos y forman un grafo acíclico.
+Els mòduls utilitzen importacions explícites i formen un graf acíclic.

@@ -1,7 +1,7 @@
-# Persistencia de terreno
+# Persistència del terreny
 
-Serialización versionada de perfiles y mallas.
+Serialització versionada de perfils i malles.
 
-`profile_npz.py` valida el esquema y carga arrays con `allow_pickle=False`.
-Las escrituras se publican de forma atómica para no dejar perfiles parciales
-tras una cancelación o un fallo.
+`profile_npz.py` valida l'esquema i carrega matrius amb `allow_pickle=False`.
+Les escriptures es publiquen de manera atòmica per no deixar perfils parcials
+després d'una cancel·lació o una fallada.

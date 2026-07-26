@@ -1,7 +1,7 @@
-# Capas de cielo
+# Capes del cel
 
-Componentes especializados del cielo que se componen con el render principal.
+Components especialitzats del cel que es componen amb el render principal.
 
-`milkyway_overlay.py` proyecta la textura equirectangular y aplica, si existe,
-el producto derivado de polvo. Las rutas de datos se resuelven al usar la capa,
-no durante la importación del módulo.
+`milkyway_overlay.py` projecta la textura equirectangular i aplica, si existeix,
+el producte derivat de la pols. Les rutes de dades es resolen quan s'utilitza la
+capa, no durant la importació del mòdul.

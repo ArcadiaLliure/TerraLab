@@ -1,7 +1,7 @@
-# Leyendas de cobertura
+# Llegendes de cobertura
 
-Adaptadores de leyendas externas a categorías de TerraLab.
+Adaptadors de llegendes externes a categories de TerraLab.
 
-Cada leyenda conserva código, etiqueta, color y procedencia. `category_info.py`
-ofrece el modelo común y los módulos de producto implementan sus tablas sin
-dependencias de Qt.
+Cada llegenda conserva el codi, l'etiqueta, el color i la procedència.
+`category_info.py` ofereix el model comú i els mòduls de producte implementen
+les seves taules sense dependències de Qt.

@@ -1,7 +1,7 @@
-# Dominio de terreno
+# Domini del terreny
 
-Modelos científicos puros: perfiles, bandas y resultados tipados.
+Models científics purs: perfils, bandes i resultats tipats.
 
-No importa Qt, rasterio, red ni UI. Los objetos de dominio cruzan los límites
-entre providers, raycast, persistencia y render sin transportar handles de
-GDAL ni widgets.
+No importa Qt, Rasterio, xarxa ni UI. Els objectes de domini travessen els
+límits entre proveïdors, raycast, persistència i render sense transportar
+identificadors de GDAL ni ginys.

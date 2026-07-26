@@ -1,7 +1,7 @@
-# Catálogos astronómicos
+# Catàlegs astronòmics
 
-Descubrimiento, carga y caché de catálogos de estrellas.
+Descobriment, càrrega i memòria cau de catàlegs d'estrelles.
 
-`constants.py` es el único propietario de los límites compartidos.
-`star_catalog.py` transforma y fusiona datos; `scope_cache.py` conserva bundles
-`mmap` para el modo telescópico. No se permite `allow_pickle=True`.
+`constants.py` és l'únic propietari dels límits compartits. `star_catalog.py`
+transforma i fusiona dades; `scope_cache.py` conserva paquets `mmap` per al mode
+telescòpic. No es permet `allow_pickle=True`.

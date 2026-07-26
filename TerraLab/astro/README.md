@@ -1,9 +1,9 @@
-# Astronomía
+# Astronomia
 
-Cálculos astronómicos y búsqueda independientes de la composición de la UI.
+Càlculs astronòmics i cerca independents de la composició de la UI.
 
-- `engine.py`: posiciones analíticas del Sol, la Luna y planetas.
-- `ngc_catalog.py`: lectura e identificación del catálogo OpenNGC.
-- `search_engine.py`: índice y navegación hacia estrellas y objetos NGC.
+- `engine.py`: posicions analítiques del Sol, la Lluna i planetes.
+- `ngc_catalog.py`: lectura i identificació del catàleg OpenNGC.
+- `search_engine.py`: índex i navegació cap a estrelles i objectes NGC.
 
-El paquete no controla widgets ni administra la biblioteca de datos.
+El paquet no controla ginys ni administra la biblioteca de dades.

@@ -1,12 +1,12 @@
-# Render puro de terreno
+# Render pur de terreny
 
-Pipeline numérico de geometría proyectada y materiales.
+Pipeline numèric de geometria projectada i materials.
 
-- `config.py` y `sampling.py`: configuración serializable.
-- `overlay_types.py`: valores inmutables.
-- `geometry.py`: simplificación y cobertura.
-- `palette.py` y `materials.py`: color y composición.
-- `lighting.py` y `atmosphere.py`: iluminación y profundidad.
-- `triangle_raster.py`: z-buffer vectorizado.
+- `config.py` i `sampling.py`: configuració serialitzable.
+- `overlay_types.py`: valors immutables.
+- `geometry.py`: simplificació i cobertura.
+- `palette.py` i `materials.py`: color i composició.
+- `lighting.py` i `atmosphere.py`: il·luminació i profunditat.
+- `triangle_raster.py`: z-buffer vectoritzat.
 
-No abre rásteres y no copia namespaces entre módulos.
+No obre ràsters i no copia namespaces entre mòduls.

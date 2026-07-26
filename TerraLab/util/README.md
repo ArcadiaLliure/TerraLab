@@ -1,7 +1,7 @@
-# Utilidades científicas
+# Utilitats científiques
 
-Conversiones reutilizables que no encajan en un servicio de dominio mayor:
-color fotométrico, importación de Gaia y preparación de texturas de cielo.
+Conversions reutilitzables que no encaixen en un servei de domini més ampli:
+color fotomètric, importació de Gaia i preparació de textures del cel.
 
-Las operaciones pesadas se ejecutan sólo al invocarse y deben aceptar progreso
-y cancelación cuando procesen archivos grandes.
+Les operacions pesants només s'executen quan s'invoquen i han d'acceptar
+progrés i cancel·lació quan processin fitxers grans.

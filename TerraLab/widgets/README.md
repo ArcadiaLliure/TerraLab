@@ -1,7 +1,7 @@
-# Widgets especializados
+# Ginys especialitzats
 
-Controles interactivos reutilizables para telescopio, medidas, constelaciones,
-tiempo, matemáticas esféricas y HUD.
+Controls interactius reutilitzables per a telescopi, mesures, constel·lacions,
+temps, matemàtiques esfèriques i HUD.
 
-Estos componentes colaboran con las entradas canónicas de `TerraLab.ui`; no
-mantienen copias del canvas, del widget principal ni de sus workers.
+Aquests components col·laboren amb les entrades canòniques de `TerraLab.ui`; no
+mantenen còpies del llenç, del giny principal ni dels seus workers.

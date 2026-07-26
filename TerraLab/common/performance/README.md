@@ -1,10 +1,10 @@
-# Rendimiento común
+# Rendiment comú
 
-Política de memoria y ejecución para trabajos voluminosos.
+Política de memòria i execució per a tasques voluminoses.
 
-- `budget.py`: límites derivados de la memoria física.
-- `flags.py`: conmutadores de implementación leídos del entorno.
-- `memory.py`: medición portable de memoria.
+- `budget.py`: límits derivats de la memòria física.
+- `flags.py`: commutadors d'implementació llegits de l'entorn.
+- `memory.py`: mesurament portable de memòria.
 
-Los consumidores importan del módulo hoja correspondiente; este paquete no es
-un agregador dinámico de nombres.
+Els consumidors importen del mòdul fulla corresponent; aquest paquet no és un
+agregador dinàmic de noms.

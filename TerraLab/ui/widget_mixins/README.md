@@ -1,7 +1,7 @@
-# Mixins del widget astronómico
+# Mixins del giny astronòmic
 
-Responsabilidades de `AstronomicalWidget` separadas por caso de uso:
-bootstrap, terreno, controles temporales, capas, superficie y modo telescópico.
+Responsabilitats d'`AstronomicalWidget` separades per cas d'ús:
+inicialització, terreny, controls temporals, capes, superfície i mode telescòpic.
 
-Los nombres describen su función; los fragmentos `part_N.py` están prohibidos.
-La comunicación con el horizonte pasa por un único `TerrainCoordinator`.
+Els noms descriuen la seva funció; els fragments `part_N.py` estan prohibits.
+La comunicació amb l'horitzó passa per un únic `TerrainCoordinator`.

@@ -1,7 +1,7 @@
-# Capas auxiliares
+# Capes auxiliars
 
-Capas visuales que no forman parte del núcleo de cielo o terreno.
+Capes visuals que no formen part del nucli del cel ni del terreny.
 
-Actualmente contiene la representación de poblaciones y elementos de paisaje.
-Estas capas reciben datos proyectados y pintan con Qt; no son propietarias de
-DEM, catálogos ni workers.
+Actualment conté la representació de poblacions i elements del paisatge.
+Aquestes capes reben dades projectades i pinten amb Qt; no són propietàries de
+DEM, catàlegs ni workers.

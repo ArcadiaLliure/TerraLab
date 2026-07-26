@@ -1,7 +1,7 @@
-# Meteorología
+# Meteorologia
 
-Modelo, paleta, partículas y controles meteorológicos.
+Model, paleta, partícules i controls meteorològics.
 
-La obtención de datos y la representación mantienen límites explícitos. Los
-servicios externos requieren identificación y condiciones de uso propias; sus
-credenciales y respuestas no se incluyen en el repositorio.
+L'obtenció de dades i la representació mantenen límits explícits. Els serveis
+externs requereixen identificació i condicions d'ús pròpies; les seves
+credencials i respostes no s'inclouen al repositori.

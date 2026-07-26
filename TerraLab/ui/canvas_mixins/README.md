@@ -1,11 +1,11 @@
-# Mixins del lienzo
+# Mixins del llenç
 
-Responsabilidades de `AstroCanvas`:
+Responsabilitats d'`AstroCanvas`:
 
-- proyección y adaptación a renderizadores;
-- Sol, Luna, planetas y eclipses;
-- interacción, picking y herramientas;
-- selección, trazas y orquestación del paint event.
+- projecció i adaptació als renderitzadors;
+- Sol, Lluna, planetes i eclipsis;
+- interacció, picking i eines;
+- selecció, traces i orquestració de l'esdeveniment de pintat.
 
-Cada módulo importa sus dependencias reales. No existe un `sky_runtime` ni una
-ruta de render alternativa silenciosa.
+Cada mòdul importa les seves dependències reals. No existeix cap `sky_runtime`
+ni cap ruta de renderització alternativa silenciosa.

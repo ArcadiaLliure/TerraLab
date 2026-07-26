@@ -1,6 +1,6 @@
-# Malla de terreno
+# Malla de terreny
 
-Construcción y análisis de la geometría muestreada.
+Construcció i anàlisi de la geometria mostrejada.
 
-Contiene campos de elevación, malla polar y cálculo de normales. Opera sobre
-arrays NumPy y objetos de dominio; no abre fuentes de datos ni pinta con Qt.
+Conté camps d'elevació, una malla polar i el càlcul de normals. Opera sobre
+matrius NumPy i objectes de domini; no obre fonts de dades ni pinta amb Qt.

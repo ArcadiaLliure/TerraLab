@@ -1,10 +1,10 @@
 # Escena
 
-Estado matemático y proyección independientes de Qt.
+Estat matemàtic i projecció independents de Qt.
 
-- `camera.py`: orientación, zoom y encuadre.
-- `projection.py`: proyección y desproyección vectorizadas.
-- `scene_state.py`: instantánea inmutable para un frame.
-- `diagnostics.py`: contadores y tiempos del pipeline.
+- `camera.py`: orientació, zoom i enquadrament.
+- `projection.py`: projecció i desprojecció vectoritzades.
+- `scene_state.py`: instantània immutable per a un fotograma.
+- `diagnostics.py`: comptadors i temps del pipeline.
 
-La escena no importa módulos de `TerraLab.ui`.
+L'escena no importa mòduls de `TerraLab.ui`.

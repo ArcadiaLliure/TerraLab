@@ -1,7 +1,7 @@
-# Conversores de datos
+# Convertidors de dades
 
-Conversores explícitos de productos científicos a formatos de runtime.
+Convertidors explícits de productes científics a formats d'execució.
 
-Las dependencias pesadas, como Astropy para FITS, se cargan al invocar la
-conversión y no al importar `TerraLab`. Los resultados deben ser deterministas,
-versionados y seguros de leer sin pickle.
+Les dependències pesants, com Astropy per a FITS, es carreguen quan s'invoca la
+conversió i no quan s'importa `TerraLab`. Els resultats han de ser
+deterministes, versionats i segurs de llegir sense pickle.

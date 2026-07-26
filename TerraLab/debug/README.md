@@ -1,6 +1,6 @@
-# Diagnóstico
+# Diagnòstic
 
-Instrumentación activada de forma explícita para inspeccionar escenas y
-rendimiento. El paquete no debe crear archivos, widgets ni timers al
-importarse. Las métricas estables se emiten mediante los mecanismos comunes de
-eventos y diagnóstico.
+Instrumentació activada de manera explícita per inspeccionar escenes i
+rendiment. El paquet no ha de crear fitxers, ginys ni temporitzadors quan
+s'importa. Les mètriques estables s'emeten mitjançant els mecanismes comuns
+d'esdeveniments i diagnòstic.

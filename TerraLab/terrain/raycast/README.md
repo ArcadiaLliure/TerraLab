@@ -1,7 +1,7 @@
 # Raycast
 
-Construcción del horizonte mediante muestreo radial del DEM.
+Construcció de l'horitzó mitjançant el mostreig radial del DEM.
 
-`baker.py` controla la resolución angular, el muestreo adaptativo, la curvatura
-terrestre y la cancelación. Produce modelos de dominio; no conoce Qt ni la
-apariencia de la superficie.
+`baker.py` controla la resolució angular, el mostreig adaptatiu, la curvatura
+terrestre i la cancel·lació. Produeix models de domini; no coneix Qt ni
+l'aparença de la superfície.

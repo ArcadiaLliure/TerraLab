@@ -1,8 +1,8 @@
-# Controlador de overlay
+# Controlador de superposició
 
-Responsabilidades del `HorizonOverlay` Qt separadas por comportamiento:
-perfil y caché, materiales, iluminación, proyección, rasterización, hit testing
-y fallback visual.
+Responsabilitats del `HorizonOverlay` de Qt separades per comportament:
+perfil i memòria cau, materials, il·luminació, projecció, rasterització, proves
+d'impacte i alternativa visual.
 
-Cada mixin declara sus imports. No se permiten módulos numerados ni copias
-dinámicas de namespaces.
+Cada mixin declara les seves importacions. No es permeten mòduls numerats ni
+còpies dinàmiques d'espais de noms.

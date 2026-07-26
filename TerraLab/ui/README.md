@@ -1,10 +1,10 @@
-# Interfaz de usuario
+# Interfície d'usuari
 
-Composición de la aplicación Qt.
+Composició de l'aplicació Qt.
 
-`AstronomicalWidget` y `AstroCanvas` son las únicas clases canónicas del widget
-principal y el lienzo. Sus responsabilidades se organizan en mixins con nombres
-semánticos. Los workers Qt viven en `ui/workers`; el terreno se solicita
-exclusivamente a través de `TerrainCoordinator`.
+`AstronomicalWidget` i `AstroCanvas` són les úniques classes canòniques del giny
+principal i el llenç. Les seves responsabilitats s'organitzen en mixins amb noms
+semàntics. Els workers de Qt viuen a `ui/workers`; el terreny se sol·licita
+exclusivament a través de `TerrainCoordinator`.
 
-La importación de los módulos no crea un `QApplication`, archivos ni timers.
+La importació dels mòduls no crea un `QApplication`, arxius ni temporitzadors.

@@ -1,7 +1,7 @@
 # Infraestructura DEM
 
-Índices de teselas, carga acotada y muestreo de formatos históricos.
+Índexs de tessel·les, càrrega acotada i mostreig de formats històrics.
 
-`dem_tiles.py` mantiene el índice espacial y la caché residente. La
-infraestructura implementa detalles de almacenamiento para los proveedores,
-pero no decide la representación visual.
+`dem_tiles.py` manté l'índex espacial i la memòria cau resident. La
+infraestructura implementa detalls d'emmagatzematge per als proveïdors, però
+no decideix la representació visual.

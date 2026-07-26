@@ -1,7 +1,7 @@
-# Servicios de terreno
+# Serveis de terreny
 
-Casos de uso que coordinan contratos de dominio y proveedores.
+Casos d'ús que coordinen contractes de domini i proveïdors.
 
-`elevation_query.py` resuelve consultas puntuales con CRS explícito y resultados
-tipados. Los servicios pueden ser usados por la UI o la CLI sin duplicar
-lógica de muestreo.
+`elevation_query.py` resol consultes puntuals amb CRS explícit i resultats
+tipats. La UI o la CLI poden utilitzar els serveis sense duplicar la lògica de
+mostreig.

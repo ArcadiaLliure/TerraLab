@@ -1,11 +1,10 @@
-# Datos
+# Dades
 
-Acceso a recursos científicos, catálogo de capas y persistencia de datos de
-ejecución.
+Accés a recursos científics, catàleg de capes i persistència de dades
+d'execució.
 
-`assets_manager.py` es la fachada estable para instalación y retirada de
-recursos. `layer_manager.py` coordina el estado visible. Los subpaquetes
-`assets`, `catalogs`, `converters` y `copernicus` contienen responsabilidades
-independientes.
+`assets_manager.py` és la façana estable per instal·lar i retirar recursos.
+`layer_manager.py` coordina l'estat visible. Els subpaquets `assets`,
+`catalogs`, `converters` i `copernicus` contenen responsabilitats independents.
 
-Este paquete no depende de `TerraLab.ui`.
+Aquest paquet no depèn de `TerraLab.ui`.
