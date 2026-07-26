@@ -235,6 +235,12 @@ def test_location_change_recalculates_only_in_automatic_mode(monkeypatch):
         widget.recalculate_automatic_light_pollution = lambda: setattr(
             widget, "recalculate_calls", widget.recalculate_calls + 1
         )
+        widget.coverage_sync_calls = 0
+        widget._sync_surface_mode_control = lambda: setattr(
+            widget,
+            "coverage_sync_calls",
+            widget.coverage_sync_calls + 1,
+        )
         return widget
 
     automatic_widget = build_widget(LP_MODE_AUTOMATIC)
@@ -245,6 +251,8 @@ def test_location_change_recalculates_only_in_automatic_mode(monkeypatch):
 
     assert automatic_widget.recalculate_calls == 1
     assert magnitude_widget.recalculate_calls == 0
+    assert automatic_widget.coverage_sync_calls == 1
+    assert magnitude_widget.coverage_sync_calls == 1
 
 
 def test_magnitude_rendering_preserves_full_requested_range():

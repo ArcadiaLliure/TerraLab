@@ -44,6 +44,36 @@ class _Switch:
         self.enabled = bool(enabled)
 
 
+class _CheckBox:
+    def __init__(self, checked):
+        self.checked = bool(checked)
+        self.enabled = True
+        self.tooltip = ""
+        self.text = ""
+        self.style = ""
+
+    def isChecked(self):
+        return self.checked
+
+    def blockSignals(self, _blocked):
+        return None
+
+    def setChecked(self, checked):
+        self.checked = bool(checked)
+
+    def setEnabled(self, enabled):
+        self.enabled = bool(enabled)
+
+    def setToolTip(self, tooltip):
+        self.tooltip = str(tooltip)
+
+    def setText(self, text):
+        self.text = str(text)
+
+    def setStyleSheet(self, style):
+        self.style = str(style)
+
+
 class _Registry:
     def __init__(self, sources, selected_id=None):
         self.sources = list(sources)
@@ -75,14 +105,30 @@ class _Manager:
 
 class _SurfaceControlHarness:
     _usable_surface_mode_sources = AstronomicalWidget._usable_surface_mode_sources
+    _usable_layer_sources = AstronomicalWidget._usable_layer_sources
     _surface_sources_covering_observer = (
         AstronomicalWidget._surface_sources_covering_observer
     )
+    _coverage_message = AstronomicalWidget._coverage_message
+    _reject_out_of_coverage_layer = (
+        AstronomicalWidget._reject_out_of_coverage_layer
+    )
     _surface_coverage_message = AstronomicalWidget._surface_coverage_message
+    _sync_coverage_control = AstronomicalWidget._sync_coverage_control
+    _sync_non_surface_coverage_controls = (
+        AstronomicalWidget._sync_non_surface_coverage_controls
+    )
+    _sync_surface_terrain_3d_control = (
+        AstronomicalWidget._sync_surface_terrain_3d_control
+    )
     _sync_surface_mode_control = AstronomicalWidget._sync_surface_mode_control
     on_surface_mode_changed = AstronomicalWidget.on_surface_mode_changed
     on_surface_visual_style_changed = (
         AstronomicalWidget.on_surface_visual_style_changed
+    )
+    on_topography_toggled = AstronomicalWidget.on_topography_toggled
+    on_light_pollution_toggled = (
+        AstronomicalWidget.on_light_pollution_toggled
     )
 
 
@@ -131,6 +177,34 @@ def test_surface_mode_switch_is_hidden_until_both_modes_are_usable():
     widget._sync_surface_mode_control()
 
     assert widget.surface_mode_selector.visible is False
+
+
+def test_visible_surface_forces_and_disables_terrain_3d():
+    widget = _harness([_source("rgb", LayerType.SURFACE_RGB)], "rgb")
+    persisted = []
+    widget.chk_surface_layer = _CheckBox(True)
+    widget.chk_terrain_3d = _CheckBox(False)
+    widget._persist_visibility_state = (
+        lambda key, checked: persisted.append((key, checked))
+    )
+
+    widget._sync_surface_mode_control()
+
+    assert widget.chk_terrain_3d.checked is True
+    assert widget.chk_terrain_3d.enabled is False
+    assert persisted == [("relleu_tridimensional", True)]
+    assert "requereix relleu tridimensional" in widget.chk_terrain_3d.tooltip
+
+
+def test_hidden_surface_reenables_terrain_3d_choice():
+    widget = _harness([_source("rgb", LayerType.SURFACE_RGB)], "rgb")
+    widget.chk_surface_layer = _CheckBox(False)
+    widget.chk_terrain_3d = _CheckBox(True)
+
+    widget._sync_surface_mode_control()
+
+    assert widget.chk_terrain_3d.checked is True
+    assert widget.chk_terrain_3d.enabled is True
 
 
 def test_surface_mode_switch_reflects_the_selected_categorical_source():
@@ -274,6 +348,142 @@ def test_out_of_coverage_orthophoto_is_rejected_with_explanation(monkeypatch):
     assert messages[0][0] == "Ortofoto fora de cobertura"
     assert "41.21535, 0.80970" in messages[0][1]
     assert "42.57041–42.59400 N" in messages[0][1]
+
+
+def test_out_of_coverage_categorical_is_rejected_with_explanation(
+    monkeypatch,
+):
+    widget = _harness(
+        [
+            _source("ortho", LayerType.ORTHOPHOTO_RGB),
+            _source(
+                "categorical",
+                LayerType.SURFACE_CATEGORICAL,
+                coverage=(0.97737, 42.57041, 1.03486, 42.59400),
+            ),
+        ],
+        "ortho",
+    )
+    widget.layer_manager.data_sources.surface_mode = SurfaceMode.ORTHOPHOTO
+    messages = []
+    monkeypatch.setattr(
+        "TerraLab.ui.widget_mixins.surface_data.QMessageBox.information",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+    widget.latitude = 41.21535
+    widget.longitude = 0.80970
+
+    widget.on_surface_mode_changed(1)
+
+    assert (
+        widget.layer_manager.data_sources.surface_mode
+        is SurfaceMode.ORTHOPHOTO
+    )
+    assert widget.slider_surface_mode.value == 0
+    assert messages[0][0] == "Cobertura fora de l'àrea"
+    assert "41.21535, 0.80970" in messages[0][1]
+
+
+def test_topography_and_light_pollution_reject_out_of_coverage_activation(
+    monkeypatch,
+):
+    widget = _harness(
+        [
+            _source(
+                "dem",
+                LayerType.ELEVATION,
+                coverage=(0.97737, 42.57041, 1.03486, 42.59400),
+            ),
+            _source(
+                "light",
+                LayerType.LIGHT_POLLUTION,
+                coverage=(0.97737, 42.57041, 1.03486, 42.59400),
+            ),
+        ]
+    )
+    widget.latitude = 41.21535
+    widget.longitude = 0.80970
+    messages = []
+    persisted = []
+    config_writes = []
+    widget.chk_enable_village = _CheckBox(True)
+    widget.chk_light_pollution = _CheckBox(True)
+    widget.canvas = SimpleNamespace(update=lambda: None)
+    widget.terrain_coordinator = SimpleNamespace(
+        reload_config=lambda: None,
+        initialize=lambda: None,
+    )
+    widget.light_pollution_mode = "bortle"
+    widget._persist_visibility_state = (
+        lambda key, checked: persisted.append((key, checked))
+    )
+    widget._apply_light_pollution_graphics = lambda: None
+    monkeypatch.setattr(
+        "TerraLab.ui.widget_mixins.layers.QMessageBox.information",
+        lambda _parent, title, message: messages.append((title, message)),
+    )
+    monkeypatch.setattr(
+        "TerraLab.ui.widget_mixins.layers.set_config_value",
+        lambda key, value: config_writes.append((key, value)),
+    )
+    monkeypatch.setattr(
+        "TerraLab.ui.widget_mixins.layers.QTimer.singleShot",
+        lambda *_args: None,
+    )
+
+    widget.on_topography_toggled(True)
+    widget.on_light_pollution_toggled(True)
+
+    assert widget.chk_enable_village.checked is False
+    assert widget.chk_light_pollution.checked is False
+    assert widget.light_pollution_enabled is False
+    assert ("topografia", False) in persisted
+    assert ("contaminacio_luminica", False) in persisted
+    assert ("light_pollution_enabled", False) in config_writes
+    assert [title for title, _message in messages] == [
+        "Topografia fora de cobertura",
+        "Contaminació lumínica fora de cobertura",
+    ]
+
+
+def test_all_location_bound_controls_mark_out_of_area():
+    outside = (0.97737, 42.57041, 1.03486, 42.59400)
+    widget = _harness(
+        [
+            _source("ortho", LayerType.ORTHOPHOTO_RGB),
+            _source(
+                "categorical",
+                LayerType.SURFACE_CATEGORICAL,
+                coverage=outside,
+            ),
+            _source("dem", LayerType.ELEVATION, coverage=outside),
+            _source(
+                "light",
+                LayerType.LIGHT_POLLUTION,
+                coverage=outside,
+            ),
+        ],
+        "ortho",
+    )
+    widget.lbl_surface_mode_rgb = _CheckBox(False)
+    widget.lbl_surface_mode_categorical = _CheckBox(False)
+    widget.chk_enable_village = _CheckBox(True)
+    widget.chk_light_pollution = _CheckBox(True)
+
+    widget._sync_surface_mode_control()
+
+    assert widget.lbl_surface_mode_rgb.text == "Ortofoto"
+    assert (
+        widget.lbl_surface_mode_categorical.text
+        == "Categòric (fora d'àrea)"
+    )
+    assert widget.chk_enable_village.text == "Topografia (fora d'àrea)"
+    assert (
+        widget.chk_light_pollution.text
+        == "Contaminació lumínica (fora d'àrea)"
+    )
+    assert "#9b2f2f" in widget.lbl_surface_mode_categorical.style
+    assert "41.00000, 2.00000" in widget.chk_enable_village.tooltip
 
 
 class _TooltipEvent:

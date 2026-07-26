@@ -1163,6 +1163,7 @@ def build_deferred_controls_ui(widget):
     # Compatibility alias for integrations that still reference the old control.
     self.chk_terrain_shading = self.chk_terrain_3d
     v_earth.addWidget(self.chk_terrain_3d)
+    self._sync_surface_terrain_3d_control()
     h_lay = QHBoxLayout()
     l_lay = QLabel("Nombre\nde capes")
     l_lay.setStyleSheet(

@@ -33,9 +33,10 @@ def _terrain_relief_enabled_for_frame(
     configured_enabled: bool,
     camera_interaction_active: bool,
     *,
+    surface_enabled: bool = False,
     suspend_during_interaction: bool | None = None,
 ) -> bool:
-    """Return the transient relief state without changing user preferences."""
+    """Return relief state while preserving the surface/mesh invariant."""
 
     suspend = (
         TERRAIN_SUSPEND_RELIEF_DURING_INTERACTION
@@ -43,7 +44,11 @@ def _terrain_relief_enabled_for_frame(
         else bool(suspend_during_interaction)
     )
     return bool(
-        configured_enabled and not (camera_interaction_active and suspend)
+        surface_enabled
+        or (
+            configured_enabled
+            and not (camera_interaction_active and suspend)
+        )
     )
 
 
@@ -935,6 +940,9 @@ def canvas_paintEvent(canvas, event):
             use_detailed_topo = self._parent_checkbox_checked(
                 "chk_enable_village", default=True
             )
+        surface_enabled = self._parent_checkbox_checked(
+            "chk_surface_layer", default=True
+        )
         terrain_3d_enabled = True
         if hasattr(self.parent_widget, "chk_terrain_3d"):
             terrain_3d_enabled = self._parent_checkbox_checked(
@@ -1010,12 +1018,11 @@ def canvas_paintEvent(canvas, event):
                 terrain_3d_enabled=_terrain_relief_enabled_for_frame(
                     terrain_3d_enabled,
                     view_interaction_active,
+                    surface_enabled=surface_enabled,
                 ),
                 sky_color_fn=self.sky_color_phys,
                 interaction_active=view_interaction_active,
-                surface_enabled=self._parent_checkbox_checked(
-                    "chk_surface_layer", default=True
-                ),
+                surface_enabled=surface_enabled,
             )
             if hasattr(self, "_dome_count") and self._dome_count > 0:
                 current_time = __import__("time").time()

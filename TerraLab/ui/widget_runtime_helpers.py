@@ -166,6 +166,11 @@ def request_relocation(widget):
 
         widget.latitude = new_lat
         widget.longitude = new_lon
+        sync_coverage = getattr(
+            widget, "_sync_surface_mode_control", None
+        )
+        if callable(sync_coverage):
+            sync_coverage()
 
         # Observer changed: invalidate skyfield/eclipses immediately so next frame
         # cannot reuse ephemerides from previous coordinates.

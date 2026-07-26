@@ -7,7 +7,7 @@ import os
 import sys
 
 from PyQt5.QtCore import QTimer
-from PyQt5.QtWidgets import QToolTip
+from PyQt5.QtWidgets import QMessageBox, QToolTip
 
 from TerraLab.common.utils import getTraduction, get_config_value, set_config_value
 from TerraLab.data.catalogs.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
@@ -190,6 +190,16 @@ class WidgetLayersMixin:
             self.chk_light_pollution.blockSignals(True)
             self.chk_light_pollution.setChecked(checked)
             self.chk_light_pollution.blockSignals(False)
+        reject_outside = getattr(
+            self, "_reject_out_of_coverage_layer", None
+        )
+        if checked and callable(reject_outside) and reject_outside(
+            self.chk_light_pollution,
+            (LayerType.LIGHT_POLLUTION,),
+            title="Contaminació lumínica fora de cobertura",
+            source_label="de contaminació lumínica",
+        ):
+            checked = False
         self.light_pollution_enabled = bool(checked)
         self._persist_visibility_state("contaminacio_luminica", checked)
         set_config_value("light_pollution_enabled", bool(checked))
@@ -244,6 +254,16 @@ class WidgetLayersMixin:
             self.chk_enable_village.blockSignals(True)
             self.chk_enable_village.setChecked(checked)
             self.chk_enable_village.blockSignals(False)
+        reject_outside = getattr(
+            self, "_reject_out_of_coverage_layer", None
+        )
+        if checked and callable(reject_outside) and reject_outside(
+            self.chk_enable_village,
+            (LayerType.ELEVATION,),
+            title="Topografia fora de cobertura",
+            source_label="de topografia",
+        ):
+            checked = False
         self._persist_visibility_state("topografia", checked)
         self.canvas.update()
 
@@ -327,6 +347,29 @@ class WidgetLayersMixin:
             )
         return grouped
 
+    def _usable_layer_sources(self, layer_types):
+        """Return installed, enabled sources for the requested semantic types."""
+        manager = getattr(self, "layer_manager", None)
+        registry = getattr(manager, "data_sources", None)
+        if registry is None:
+            return []
+        accepted = set(layer_types)
+        sources = [
+            source
+            for source in registry.list_sources()
+            if source.layer_type in accepted
+            and bool(source.enabled)
+            and bool(source.available)
+        ]
+        sources.sort(
+            key=lambda source: (
+                -int(source.priority),
+                source.resolution_m or float("inf"),
+                source.id,
+            )
+        )
+        return sources
+
     def _surface_sources_covering_observer(self, sources):
         latitude = float(getattr(self, "latitude", 0.0))
         longitude = float(getattr(self, "longitude", 0.0))
@@ -345,14 +388,10 @@ class WidgetLayersMixin:
                 applicable.append(source)
         return applicable
 
-    def _surface_coverage_message(self, mode, sources):
+    def _coverage_message(self, source_label, sources):
+        """Explain why no installed source covers the observer."""
         latitude = float(getattr(self, "latitude", 0.0))
         longitude = float(getattr(self, "longitude", 0.0))
-        mode_label = (
-            "d'ortofoto"
-            if mode is SurfaceMode.ORTHOPHOTO
-            else "de cobertura del sòl"
-        )
         extents = [
             tuple(source.coverage)
             for source in sources
@@ -360,7 +399,7 @@ class WidgetLayersMixin:
             and len(source.coverage) == 4
         ]
         message = (
-            f"Cap font {mode_label} cobreix la ubicació actual "
+            f"Cap font {source_label} cobreix la ubicació actual "
             f"({latitude:.5f}, {longitude:.5f})."
         )
         if extents:
@@ -375,14 +414,125 @@ class WidgetLayersMixin:
             )
         message += (
             "\n\nMou la ubicació dins d'aquesta extensió o enllaça una "
-            "ortofoto que cobreixi l'observador."
-            if mode is SurfaceMode.ORTHOPHOTO
-            else "\n\nEnllaça una font que cobreixi l'observador."
+            "font que cobreixi l'observador."
         )
         return message
 
+    def _reject_out_of_coverage_layer(
+        self,
+        checkbox,
+        layer_types,
+        *,
+        title,
+        source_label,
+    ):
+        """Undo a layer activation when its installed data is out of bounds."""
+        sources = self._usable_layer_sources(layer_types)
+        if not sources or self._surface_sources_covering_observer(sources):
+            return False
+        checkbox.blockSignals(True)
+        checkbox.setChecked(False)
+        checkbox.blockSignals(False)
+        QMessageBox.information(
+            self,
+            title,
+            self._coverage_message(source_label, sources),
+        )
+        return True
+
+    def _surface_coverage_message(self, mode, sources):
+        mode_label = (
+            "d'ortofoto"
+            if mode is SurfaceMode.ORTHOPHOTO
+            else "de cobertura del sòl"
+        )
+        return self._coverage_message(mode_label, sources)
+
+    def _sync_coverage_control(
+        self,
+        control,
+        *,
+        base_text,
+        sources,
+        source_label,
+        font_size=None,
+        base_style="",
+    ):
+        """Expose local coverage in a checkbox or surface-mode label."""
+        if control is None:
+            return
+        outside = bool(
+            sources and not self._surface_sources_covering_observer(sources)
+        )
+        control.setText(
+            base_text if not outside else f"{base_text} (fora d'àrea)"
+        )
+        control.setToolTip(
+            self._coverage_message(source_label, sources) if outside else ""
+        )
+        style = str(base_style)
+        if font_size:
+            style += f" font-size: {font_size};"
+        if outside:
+            style += " color: #9b2f2f;"
+        control.setStyleSheet(style)
+
+    def _sync_non_surface_coverage_controls(self):
+        """Refresh location coverage for terrain and light-pollution data."""
+        self._sync_coverage_control(
+            getattr(self, "chk_enable_village", None),
+            base_text="Topografia",
+            sources=self._usable_layer_sources((LayerType.ELEVATION,)),
+            source_label="de topografia",
+            base_style="font-style: normal; font-weight: normal;",
+        )
+        self._sync_coverage_control(
+            getattr(self, "chk_light_pollution", None),
+            base_text="Contaminació lumínica",
+            sources=self._usable_layer_sources(
+                (LayerType.LIGHT_POLLUTION,)
+            ),
+            source_label="de contaminació lumínica",
+        )
+
+    def _sync_surface_terrain_3d_control(self):
+        """Require 3-D relief while a raster surface is visible."""
+
+        surface_checkbox = getattr(self, "chk_surface_layer", None)
+        terrain_checkbox = getattr(self, "chk_terrain_3d", None)
+        if surface_checkbox is None or terrain_checkbox is None:
+            return
+
+        surface_enabled = bool(surface_checkbox.isChecked())
+        if surface_enabled and not bool(terrain_checkbox.isChecked()):
+            terrain_checkbox.blockSignals(True)
+            terrain_checkbox.setChecked(True)
+            terrain_checkbox.blockSignals(False)
+            persist = getattr(self, "_persist_visibility_state", None)
+            if callable(persist):
+                persist("relleu_tridimensional", True)
+
+        terrain_checkbox.setEnabled(not surface_enabled)
+        terrain_checkbox.setToolTip(
+            (
+                "La superfície visible requereix relleu tridimensional. "
+                "Desactiva «Mostrar» per poder canviar-lo."
+            )
+            if surface_enabled
+            else (
+                "Activat: superfície tridimensional. "
+                "Desactivat: siluetes per distància."
+            )
+        )
+
     def _sync_surface_mode_control(self):
-        """Align the independent source and visual-style surface switches."""
+        """Align surface controls and enforce their valid combinations."""
+        sync_non_surface = getattr(
+            self, "_sync_non_surface_coverage_controls", None
+        )
+        if callable(sync_non_surface):
+            sync_non_surface()
+        self._sync_surface_terrain_3d_control()
         selector = getattr(self, "surface_mode_selector", None)
         switch = getattr(self, "slider_surface_mode", None)
         style_selector = getattr(
@@ -472,28 +622,20 @@ class WidgetLayersMixin:
                 active_mode, active_sources
             )
         switch.setToolTip(tooltip)
-        ortho_label = getattr(self, "lbl_surface_mode_rgb", None)
-        if ortho_label is not None:
-            ortho_local = bool(
-                self._surface_sources_covering_observer(
-                    grouped[SurfaceMode.ORTHOPHOTO]
-                )
-            )
-            ortho_label.setText(
-                "Ortofoto" if ortho_local else "Ortofoto (fora d'àrea)"
-            )
-            ortho_label.setToolTip(
-                ""
-                if ortho_local
-                else self._surface_coverage_message(
-                    SurfaceMode.ORTHOPHOTO,
-                    grouped[SurfaceMode.ORTHOPHOTO],
-                )
-            )
-            ortho_label.setStyleSheet(
-                "font-size: 9px;"
-                + ("" if ortho_local else " color: #9b2f2f;")
-            )
+        self._sync_coverage_control(
+            getattr(self, "lbl_surface_mode_rgb", None),
+            base_text="Ortofoto",
+            sources=grouped[SurfaceMode.ORTHOPHOTO],
+            source_label="d'ortofoto",
+            font_size="9px",
+        )
+        self._sync_coverage_control(
+            getattr(self, "lbl_surface_mode_categorical", None),
+            base_text="Categòric",
+            sources=grouped[SurfaceMode.LAND_COVER],
+            source_label="de cobertura del sòl",
+            font_size="9px",
+        )
 
     def on_surface_visual_style_changed(self, value):
         """Apply Original or Vibrant without rebuilding source samples."""
