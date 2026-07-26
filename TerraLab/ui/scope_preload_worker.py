@@ -103,6 +103,29 @@ class ScopeFullPreloadWorker(QObject):
     ready = pyqtSignal(object)
     error = pyqtSignal(str)
 
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._shutdown_event = threading.Event()
+        self._process_lock = threading.Lock()
+        self._current_process: subprocess.Popen[str] | None = None
+
+    def request_shutdown(self) -> None:
+        """Thread-safe cancellation of a scope preload and its subprocess."""
+
+        self._shutdown_event.set()
+        with self._process_lock:
+            process = self._current_process
+        if process is None or process.poll() is not None:
+            return
+        try:
+            process.terminate()
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2.0)
+        except OSError:
+            return
+
     def _emit_ready_from_cache(self, done_payload: dict[str, Any]) -> None:
         indices_path = str(done_payload.get("indices_path", "") or "")
         offsets_path = str(done_payload.get("offsets_path", "") or "")
@@ -152,6 +175,8 @@ class ScopeFullPreloadWorker(QObject):
         Retorna:
         - None.
         """
+        if self._shutdown_event.is_set():
+            return
         project_root = Path(__file__).resolve().parents[2]
         cmd = [
             sys.executable,
@@ -185,6 +210,8 @@ class ScopeFullPreloadWorker(QObject):
         except Exception as exc:
             self.error.emit(f"Scope preload spawn failed: {exc}")
             return
+        with self._process_lock:
+            self._current_process = proc
 
         done_payload = None
         last_error = ""
@@ -228,6 +255,16 @@ class ScopeFullPreloadWorker(QObject):
 
         return_code = proc.wait()
         stderr_thread.join(timeout=0.2)
+        with self._process_lock:
+            if self._current_process is proc:
+                self._current_process = None
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+
+        if self._shutdown_event.is_set():
+            return
 
         if return_code != 0:
             if not last_error:
@@ -273,6 +310,8 @@ class ScopeFullPreloadWorker(QObject):
         Retorna:
         - None.
         """
+        if self._shutdown_event.is_set():
+            return
         try:
             ra_arr = np.asarray(ra_all, dtype=np.float32)
             dec_arr = np.asarray(dec_all, dtype=np.float32)
@@ -366,6 +405,8 @@ class ScopeFullPreloadWorker(QObject):
                 mag_all=mag_arr,
                 max_mag=max_mag_opt,
             )
+            if self._shutdown_event.is_set():
+                return
             if sorted_indices is None or offsets is None:
                 raise RuntimeError(
                     "Scope index payload build returned empty result"

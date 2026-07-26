@@ -117,7 +117,7 @@ def astro_canvas_init(obj, parent):
     # Threading for Stars
     self._cached_star_image = None
     self._cached_trail_image = None
-    self._thread = QThread()
+    self._thread = QThread(self)
     self._worker = StarRenderWorker()
     self._worker.moveToThread(self._thread)
     self._worker.result_ready.connect(self._on_star_result)
@@ -125,6 +125,7 @@ def astro_canvas_init(obj, parent):
     self.request_render_signal.connect(self._worker.render)
     self.request_trails_signal.connect(self._worker.render_trails)
     self._thread.start()
+    self._render_thread_shutdown = False
     self.rendering_busy = False
     self.trail_rendering_busy = False
     # Info Label for Selection
@@ -197,6 +198,8 @@ def astro_canvas_init(obj, parent):
 
 def astronomical_widget_init(obj, parent=None, **kwargs):
     self = obj
+    self._closing = False
+    self._lifecycle_timers = set()
     # 1. Initialize properties required by UI/Canvas
     self.asset_manager = AssetManager()
     from TerraLab.data.layer_manager import LayerManager
@@ -204,6 +207,7 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.runtime_layout = dict(getattr(self.asset_manager, "layout", {}))
     self.latitude = float(get_config_value("observer_lat", 41.189795))
     self.longitude = float(get_config_value("observer_lon", 1.210058))
+    self._observer_offset = float(get_config_value("observer_offset", 0.0))
     self.observer_timezone = str(get_config_value("observer_timezone", "") or "").strip()
     # Catalog threshold used in magnitude mode.
     legacy_magnitude_limit = get_config_value("manual_eye_limit_mag", 8.0)
@@ -450,10 +454,16 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self._pending_terrain_depth_km = None
     self._pending_terrain_ray_step_deg = None
     self._last_horizon_progress_text = ""
-    QTimer.singleShot(0, lambda: self._set_scene_load_stage("base_sky"))
-    QTimer.singleShot(200, self._start_async_bootstrap)
-    QTimer.singleShot(0, self._maybe_run_first_time_onboarding)
-    QTimer.singleShot(1500, self._maybe_resume_pending_gaia_download)
+    self._schedule_lifecycle_callback(
+        0, lambda: self._set_scene_load_stage("base_sky")
+    )
+    self._schedule_lifecycle_callback(200, self._start_async_bootstrap)
+    self._schedule_lifecycle_callback(
+        0, self._maybe_run_first_time_onboarding
+    )
+    self._schedule_lifecycle_callback(
+        1500, self._maybe_resume_pending_gaia_download
+    )
 
 
 

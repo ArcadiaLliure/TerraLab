@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QThread, QTimer, Qt
+from PyQt5.QtCore import QThread, Qt
 from PyQt5.QtWidgets import QCheckBox, QDialog, QFrame, QLabel, QVBoxLayout
 
 from TerraLab.common.exception_reporting import log_suppressed_exception
@@ -19,7 +19,6 @@ from TerraLab.ui.widget_bootstrap_helpers import (
     widget_start_async_bootstrap,
     widget_start_scope_full_preload_async,
 )
-from TerraLab.ui.widget_init_helpers import astronomical_widget_init
 from TerraLab.ui.widget_misc_helpers import (
     widget_apply_scope_preloaded_spatial_index,
     widget_maybe_resume_pending_gaia_download,
@@ -30,9 +29,6 @@ from TerraLab.ui.workers.catalog_loader import CatalogLoaderWorker
 
 
 class WidgetBootstrapTerrainMixin:
-    def __init__(self, parent=None, **kwargs):
-        return astronomical_widget_init(self, parent, **kwargs)
-
     def _set_scene_load_stage(self, stage: str):
         valid = {"boot", "base_sky", "stars_ready", "horizon_preview", "scene_ready"}
         if stage not in valid:
@@ -225,7 +221,9 @@ class WidgetBootstrapTerrainMixin:
         if getattr(self, "_deferred_controls_build_scheduled", False):
             return
         self._deferred_controls_build_scheduled = True
-        QTimer.singleShot(60, self._build_deferred_controls_ui)
+        self._schedule_lifecycle_callback(
+            60, self._build_deferred_controls_ui
+        )
 
     def _on_canvas_first_useful_paint(self):
         self._hide_startup_placeholder()
@@ -376,7 +374,7 @@ class WidgetBootstrapTerrainMixin:
         target = self._missing_layer_target(layer_id)
         if target is None:
             return False
-        QTimer.singleShot(
+        self._schedule_lifecycle_callback(
             0,
             lambda target_layer=target: self.open_data_layers_dialog(
                 focus_layer_id=target_layer
@@ -490,7 +488,9 @@ class WidgetBootstrapTerrainMixin:
         if elapsed >= 300.0:
             self._start_catalog_loader_async(reason="defer_hard_timeout")
             return
-        QTimer.singleShot(15000, self._try_start_catalog_loader_deferred)
+        self._schedule_lifecycle_callback(
+            15_000, self._try_start_catalog_loader_deferred
+        )
 
     def _build_horizon_bake_job(self) -> dict:
         from TerraLab.common.utils import get_config_value

@@ -351,7 +351,16 @@ class OverlayInterpolatedMaterialMixin:
             if PERFORMANCE_FLAGS.relief_cached
             else None
         )
-        if isinstance(cached, TerrainResolvedMaterialCache):
+        expected_vertex_shape = np.shape(geometry.vertex_rows)
+        cached_matches_geometry = (
+            isinstance(cached, TerrainResolvedMaterialCache)
+            and np.shape(cached.triangle_materials.valid)
+            == expected_vertex_shape
+            and np.shape(cached.triangle_surface_xy)
+            == expected_vertex_shape + (2,)
+            and np.shape(cached.materials.valid) == np.shape(triangle_id)
+        )
+        if cached_matches_geometry:
             self._last_resolved_material_cache_hit = True
             self._last_material_resolution_s = 0.0
             return cached

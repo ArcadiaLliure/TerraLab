@@ -85,11 +85,12 @@ class StarDataCoordinator(QObject):
     def shutdown(self) -> None:
         """Tanca executors interns del coordinador."""
         self._query_generations.cancel()
-        self._executor.shutdown(wait=False, cancel_futures=True)
-        self._preload_executor.shutdown(wait=False, cancel_futures=True)
-        self._index_executor.shutdown(wait=False, cancel_futures=True)
-        # The active query observes its generation between chunks.  Join it
-        # before closing the mmap so a shutdown cannot race a worker read.
+        # Active tasks are bounded file reads or generation-aware index work.
+        # Join every pool so rebuilding the application cannot inherit threads
+        # from the previous widget instance.
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        self._preload_executor.shutdown(wait=True, cancel_futures=True)
+        self._index_executor.shutdown(wait=True, cancel_futures=True)
         self._query_executor.shutdown(wait=True, cancel_futures=True)
         if self._catalog_store is not None:
             self._catalog_store.close()

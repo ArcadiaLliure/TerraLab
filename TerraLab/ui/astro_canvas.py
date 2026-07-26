@@ -10,25 +10,29 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtGui import QPainter
 from PyQt5.QtWidgets import QWidget
-from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
     normalize_light_pollution_mode,
     resolve_bortle_class,
 )
 from TerraLab.render.qt.context import RenderContext
+from TerraLab.render.stars_renderer import StarsRenderResult
+from TerraLab.scene.render_state import RenderState
 from TerraLab.scene.scene_state import build_star_scene_state
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.ui.canvas_mixins import (
     CanvasEphemerisRenderingMixin,
     CanvasInteractionMixin,
     CanvasProjectionAndRenderingMixin,
     CanvasSelectionAndTrailsMixin,
 )
+from TerraLab.ui.widget_init_helpers import astro_canvas_init
 from TerraLab.widgets.spherical_math import angular_distance
 
 
-class AstroCanvas(
+class AstroCanvas(  # type: ignore[reportIncompatibleMethodOverride]  # PyQt5 stubs name Qt callback parameters a0/a1; mixins use descriptive names.
     CanvasEphemerisRenderingMixin,
     CanvasProjectionAndRenderingMixin,
     CanvasSelectionAndTrailsMixin,
@@ -39,6 +43,29 @@ class AstroCanvas(
 
     request_render_signal = pyqtSignal(dict)
     request_trails_signal = pyqtSignal(dict)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """Initialize the canonical canvas without relying on mixin order."""
+
+        astro_canvas_init(self, parent)
+
+    def shutdown(self, timeout_ms: int = 15_000) -> None:
+        """Cancel render work and join the canvas-owned QThread."""
+
+        if self._render_thread_shutdown:
+            return
+        self._camera_idle_timer.stop()
+        self._scope_move_timer.stop()
+        self._selection_pulse_timer.stop()
+        self._worker.request_shutdown()
+        self._thread.requestInterruption()
+        self._thread.quit()
+        if not self._thread.wait(max(0, int(timeout_ms))):
+            raise RuntimeError(
+                "Star render worker did not stop cooperatively within "
+                f"{int(timeout_ms)} ms"
+            )
+        self._render_thread_shutdown = True
 
     @staticmethod
     def _target_debug_repr(target: object) -> str:
@@ -90,30 +117,39 @@ class AstroCanvas(
         if not self._goto_debug_enabled():
             return
         print(f"[GotoDebug] {str(message)}")
-    def render(self, painter, render_state):
+    def render_scene(
+        self,
+        painter: QPainter,
+        render_state: RenderState,
+    ) -> StarsRenderResult:
         """Pinta un frame usant exclusivament el `RenderState` rebut."""
         render_context = RenderContext(
             painter=painter,
             width=int(self.width()),
             height=int(self.height()),
-            diagnostics=getattr(self, "scene_diagnostics", None),
+            diagnostics=self.scene_diagnostics,
         )
         resultat_estrelles = self.sky_renderer.render(render_context, render_state)
-        try:
-            # Cataleg actiu del frame per a seleccio exacta (pick/goto) en scope/fallback.
-            self._active_catalog_ra = getattr(render_state, "np_ra", None)
-            self._active_catalog_dec = getattr(render_state, "np_dec", None)
-            self._active_catalog_mag = getattr(render_state, "np_mag", None)
-            self._active_catalog_bp_rp = getattr(render_state, "np_bp_rp", None)
-            self._active_catalog_r = getattr(render_state, "np_r", None)
-            self._active_catalog_g = getattr(render_state, "np_g", None)
-            self._active_catalog_b = getattr(render_state, "np_b", None)
-            self._active_catalog_ids = None
-            self.visible_stars = getattr(resultat_estrelles, "visible_indices", [])
-            self.visible_stars_sx = getattr(resultat_estrelles, "visible_sx", [])
-            self.visible_stars_sy = getattr(resultat_estrelles, "visible_sy", [])
-        except Exception:
-            log_suppressed_exception(__name__, "AstroCanvas.render")
+        if not isinstance(resultat_estrelles, StarsRenderResult):
+            raise TypeError(
+                "SkyRenderer.render() must return StarsRenderResult, got "
+                f"{type(resultat_estrelles).__name__}"
+            )
+
+        # Publish a complete selection snapshot only after the renderer result
+        # has satisfied its contract. A bad frame cannot leave a half-updated
+        # catalogue behind.
+        self._active_catalog_ra = render_state.np_ra
+        self._active_catalog_dec = render_state.np_dec
+        self._active_catalog_mag = render_state.np_mag
+        self._active_catalog_bp_rp = render_state.np_bp_rp
+        self._active_catalog_r = render_state.np_r
+        self._active_catalog_g = render_state.np_g
+        self._active_catalog_b = render_state.np_b
+        self._active_catalog_ids = None
+        self.visible_stars = resultat_estrelles.visible_indices
+        self.visible_stars_sx = resultat_estrelles.visible_sx
+        self.visible_stars_sy = resultat_estrelles.visible_sy
         return resultat_estrelles
 
     def _show_object_context_menu(self, event):
@@ -409,7 +445,7 @@ class AstroCanvas(
         )
         if hasattr(self, "scene_diagnostics"):
             self.scene_diagnostics.reset()
-        resultat_estrelles = self.render(painter, render_state)
+        resultat_estrelles = self.render_scene(painter, render_state)
         if hasattr(self, "_emit_render_diagnostics"):
             self._emit_render_diagnostics(resultat_estrelles)
         return None

@@ -330,7 +330,7 @@ def test_resolved_material_cache_reuses_projected_classes_across_time():
         _TerrainGeometryMetrics(spans=1, output_vertices=3),
     )
     covered = triangle_id >= 0
-    raster_key = (id(geometry), 6, 6, 1)
+    raster_key = (geometry.cache_token, 6, 6, 1)
 
     first = overlay._resolve_screen_material(
         asset,
@@ -372,6 +372,81 @@ def test_resolved_material_cache_reuses_projected_classes_across_time():
     assert diagnostics["base_material"]["builds"] == 1
     assert diagnostics["resolved_material"]["hits"] >= 1
     assert diagnostics["resolved_material"]["resident_bytes"] > 0
+
+
+def test_resolved_material_cache_rejects_stale_triangle_geometry():
+    overlay, asset, surface_cache, _rgba, _classes = (
+        _cached_material_fixture("vibrant")
+    )
+    base = overlay._build_terrain_base_material(asset, surface_cache)
+    first_triangles = np.asarray(
+        (((0.0, 0.0), (6.0, 0.0), (0.0, 6.0)),),
+        dtype=np.float64,
+    )
+    first_depth = np.ones((1, 3), dtype=np.float64)
+    _, triangle_id, bary_u, bary_v = _rasterize_terrain_triangles(
+        first_triangles, first_depth, 6, 6, supersample=1
+    )
+    first_geometry = _TerrainTriangleGeometry(
+        first_triangles,
+        first_depth,
+        np.asarray(((0, 0, 1),), dtype=np.int32),
+        np.asarray(((0, 1, 0),), dtype=np.int32),
+        np.zeros((1, 3), dtype=np.uint8),
+        _TerrainGeometryMetrics(spans=1, output_vertices=3),
+    )
+    collided_raster_key = (first_geometry.cache_token, 6, 6, 1)
+    first = overlay._resolve_screen_material(
+        asset,
+        first_geometry,
+        triangle_id,
+        bary_u,
+        bary_v,
+        triangle_id >= 0,
+        base.polar,
+        base.near_patch,
+        raster_key=collided_raster_key,
+        material_key=base.key,
+        render_scale=1.0,
+    )
+
+    second_triangles = np.asarray(
+        (
+            ((0.0, 0.0), (6.0, 0.0), (0.0, 6.0)),
+            ((6.0, 0.0), (6.0, 6.0), (0.0, 6.0)),
+        ),
+        dtype=np.float64,
+    )
+    second_depth = np.ones((2, 3), dtype=np.float64)
+    _, triangle_id, bary_u, bary_v = _rasterize_terrain_triangles(
+        second_triangles, second_depth, 6, 6, supersample=1
+    )
+    second_geometry = _TerrainTriangleGeometry(
+        second_triangles,
+        second_depth,
+        np.asarray(((0, 0, 1), (0, 1, 1)), dtype=np.int32),
+        np.asarray(((0, 1, 0), (1, 1, 0)), dtype=np.int32),
+        np.zeros((2, 3), dtype=np.uint8),
+        _TerrainGeometryMetrics(spans=2, output_vertices=6),
+    )
+    second = overlay._resolve_screen_material(
+        asset,
+        second_geometry,
+        triangle_id,
+        bary_u,
+        bary_v,
+        triangle_id >= 0,
+        base.polar,
+        base.near_patch,
+        raster_key=collided_raster_key,
+        material_key=base.key,
+        render_scale=1.0,
+    )
+
+    assert second is not first
+    assert second.triangle_surface_xy.shape == (2, 3, 2)
+    assert overlay._terrain_resolved_material_builds == 2
+    assert not overlay._last_resolved_material_cache_hit
 
 
 def test_render_cache_layers_invalidate_independently_for_time_and_camera():
@@ -908,7 +983,12 @@ def test_relief_category_hit_uses_greatest_barycentric_vertex():
         metrics=_TerrainGeometryMetrics(spans=1),
     )
     overlay._terrain_surface_image_geometry = geometry
-    overlay._terrain_raster_cache_key = (id(geometry), 1, 1, 1)
+    overlay._terrain_raster_cache_key = (
+        geometry.cache_token,
+        1,
+        1,
+        1,
+    )
     overlay._terrain_raster_cache = (
         np.asarray([[0]], dtype=np.int32),
         np.asarray([[0.20]], dtype=np.float32),
@@ -1051,7 +1131,12 @@ def test_category_hit_ignores_non_categorical_surface_cache():
         metrics=_TerrainGeometryMetrics(spans=1),
     )
     overlay._terrain_surface_image_geometry = geometry
-    overlay._terrain_raster_cache_key = (id(geometry), 1, 1, 1)
+    overlay._terrain_raster_cache_key = (
+        geometry.cache_token,
+        1,
+        1,
+        1,
+    )
     overlay._terrain_raster_cache = (
         np.asarray([[0]], dtype=np.int32),
         np.asarray([[0.4]], dtype=np.float32),
@@ -1121,6 +1206,18 @@ def test_relief_remains_enabled_during_interaction_by_default():
     assert _terrain_relief_enabled_for_frame(True, False) is True
     assert _terrain_relief_enabled_for_frame(True, True) is True
     assert _terrain_relief_enabled_for_frame(False, False) is False
+
+
+def test_visible_surface_always_requires_relief():
+    assert (
+        _terrain_relief_enabled_for_frame(
+            False,
+            True,
+            surface_enabled=True,
+            suspend_during_interaction=True,
+        )
+        is True
+    )
 
 
 def test_legacy_interaction_fallback_is_reactivated_with_one_flag():

@@ -1,7 +1,7 @@
 """Immutable terrain overlay geometry and material value objects."""
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -163,6 +163,14 @@ class _TerrainTriangleGeometry:
     # 0 indexes the polar colour grid; 1 indexes the Cartesian near patch.
     vertex_domain: np.ndarray
     metrics: _TerrainGeometryMetrics
+    # Cache keys can outlive the geometry object through the resolved-material
+    # LRU.  A retained token cannot be recycled like id(self) can.
+    cache_token: object = field(
+        default_factory=object,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     def __post_init__(self) -> None:
         for name in (

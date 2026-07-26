@@ -26,6 +26,10 @@ class _LayerGuideHarness:
     _missing_layer_target = AstronomicalWidget._missing_layer_target
     _guide_missing_layer = AstronomicalWidget._guide_missing_layer
 
+    @staticmethod
+    def _schedule_lifecycle_callback(_delay, callback):
+        callback()
+
 
 class _LayerStatusManager:
     def __init__(self, states):
@@ -42,18 +46,13 @@ def test_data_layers_dialog_uses_dark_theme_for_native_qt_surfaces():
     assert "background-color: #0d1a30" in _DATA_LAYERS_STYLE
 
 
-def test_user_click_on_missing_layer_opens_focused_library(monkeypatch):
+def test_user_click_on_missing_layer_opens_focused_library():
     opened = []
     widget = _LayerGuideHarness()
     widget.layer_manager = _LayerStatusManager(
         {LayerId.SKY_MILKY_WAY: LayerState.MISSING}
     )
     widget.open_data_layers_dialog = lambda **kwargs: opened.append(kwargs)
-    monkeypatch.setattr(
-        "TerraLab.ui.widget_mixins.bootstrap_terrain.QTimer.singleShot",
-        lambda _delay, callback: callback(),
-    )
-
     guided = widget._guide_missing_layer(True, LayerId.SKY_MILKY_WAY)
 
     assert guided is True

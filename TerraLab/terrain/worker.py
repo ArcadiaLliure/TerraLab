@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QObject, QMetaObject, Qt, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QObject, QMetaObject, QThread, Qt, pyqtSignal, pyqtSlot
 
 from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import (
@@ -44,11 +44,23 @@ class HorizonWorker(QObject):
     progress_message = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     bortle_estimate_ready = pyqtSignal(int, float, float, int)
+    bare_elevation_ready = pyqtSignal(float, float, object)
     effective_sources_changed = pyqtSignal(object)
+    shutdown_finished = pyqtSignal()
 
-    def __init__(self, tiles_dir=None, parent=None):
+    def __init__(
+        self,
+        tiles_dir=None,
+        parent=None,
+        *,
+        quit_thread_on_shutdown: bool = False,
+    ):
         super().__init__(parent)
         self.tiles_dir = tiles_dir
+        self._quit_thread_on_shutdown = bool(quit_thread_on_shutdown)
+        self._shutdown_event = threading.Event()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_complete = False
         self.is_initialized = False
         self.provider = None
         self.baker = None
@@ -169,7 +181,11 @@ class HorizonWorker(QObject):
     def _surface_request_cancelled(self, generation: int) -> bool:
         with self._surface_generation_lock:
             current = self._surface_request_generation
-        return self._surface_cancel_event.is_set() or int(generation) != current
+        return (
+            self._shutdown_event.is_set()
+            or self._surface_cancel_event.is_set()
+            or int(generation) != current
+        )
 
     def _prepare_surface_samples(
         self,
@@ -301,6 +317,8 @@ class HorizonWorker(QObject):
 
     @pyqtSlot(object)
     def request_surface_refresh(self, profile=None):
+        if self._shutdown_event.is_set():
+            return
         generation = None
         target = profile
         visible_radius_m = None
@@ -454,9 +472,24 @@ class HorizonWorker(QObject):
             self._store_progress(None)
             self.progress_message.emit("")
 
-    def shutdown(self) -> None:
+    def request_shutdown(self) -> None:
+        """Thread-safe cancellation entry point used before queued cleanup."""
+
+        self._shutdown_event.set()
         self.cancel_surface_sampling()
         self.abort_current_job()
+
+    @pyqtSlot()
+    def shutdown(self) -> None:
+        """Close worker-owned resources in the worker thread, exactly once."""
+
+        self.request_shutdown()
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                self.shutdown_finished.emit()
+                return
+            self._shutdown_complete = True
+
         for resource_name in ("_surface_service", "light_sampler", "provider"):
             resource = getattr(self, resource_name, None)
             if resource is not None and hasattr(resource, "close"):
@@ -465,6 +498,10 @@ class HorizonWorker(QObject):
                 except Exception:
                     log_suppressed_exception(__name__, "HorizonWorker.shutdown")
             setattr(self, resource_name, None)
+
+        self.shutdown_finished.emit()
+        if self._quit_thread_on_shutdown:
+            QThread.currentThread().quit()
 
     @staticmethod
     def _paths_equivalent(path_a: object, path_b: object) -> bool:
@@ -778,6 +815,17 @@ class HorizonWorker(QObject):
             print(f"[HorizonWorker] get_bare_elevation error: {exc}")
             return None
 
+    @pyqtSlot(float, float)
+    def request_bare_elevation(self, lat: float, lon: float) -> None:
+        """Resolve one elevation query in the worker thread."""
+
+        if self._shutdown_event.is_set():
+            return
+        latitude = float(lat)
+        longitude = float(lon)
+        value = self.get_bare_elevation(latitude, longitude)
+        self.bare_elevation_ready.emit(latitude, longitude, value)
+
     def _estimate_light_pollution_isolated(
         self, lat: float, lon: float
     ) -> tuple[float, int]:
@@ -907,6 +955,8 @@ class HorizonWorker(QObject):
         Retorna:
         - None.
         """
+        if self._shutdown_event.is_set():
+            return
         latitude_deg = 0.0
         longitude_deg = 0.0
         try:
@@ -951,7 +1001,7 @@ class HorizonWorker(QObject):
         )
 
     def abort_current_job(self) -> None:
-        """Executa el metode abort_current_job de la classe HorizonWorker.
+        """Thread-safe cancellation of the worker-owned bake subprocess.
 
         Par?metres:
         - Cap.
@@ -1194,6 +1244,8 @@ class HorizonWorker(QObject):
         Retorna:
         - None.
         """
+        if self._shutdown_event.is_set():
+            return
         try:
             if not isinstance(job, dict):
                 raise TypeError("Horizon bake job must be a dict")
@@ -1359,6 +1411,8 @@ class HorizonWorker(QObject):
                     f"Horizon bake subprocess failed with exit code {return_code}"
                 )
         except Exception as exc:
+            if self._shutdown_event.is_set():
+                return
             print(f"[HorizonWorker] CRITICAL ERROR during bake: {exc}")
             import traceback
 

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
@@ -27,8 +29,10 @@ from TerraLab.common.exception_reporting import log_suppressed_exception
 
 def _compute_trail_segments_chunk(args):
     """
-    Worker function for ProcessPoolExecutor to parallelize star trail math.
-    Bypasses GIL to process coordinate chunks in parallel.
+    Worker function for parallel star-trail math.
+
+    NumPy releases the GIL for the expensive vector operations, so threads
+    avoid creating child processes that could outlive the Qt canvas.
     """
     (
         ra,
@@ -45,6 +49,7 @@ def _compute_trail_segments_chunk(args):
         y_center_val,
         cam_az_rad,
         jump_threshold,
+        cancel_event,
     ) = args
 
     import numpy as np
@@ -89,6 +94,8 @@ def _compute_trail_segments_chunk(args):
     # 3. Segments
     results = []
     for i in range(len(ra)):
+        if cancel_event.is_set():
+            return []
         row_inv = invalid[i]
         if np.all(row_inv):
             continue
@@ -149,8 +156,19 @@ class StarRenderWorker(QObject):
     result_ready = pyqtSignal(QImage, list)  # image, visible_stars_list
     trails_ready = pyqtSignal(QImage)  # trail image
 
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._shutdown_event = threading.Event()
+
+    def request_shutdown(self) -> None:
+        """Thread-safe cancellation requested by the owning canvas."""
+
+        self._shutdown_event.set()
+
     @pyqtSlot(dict)
     def render(self, params):
+        if self._shutdown_event.is_set():
+            return
         # params: dict with all data needed
         try:
             width = params["width"]
@@ -379,6 +397,9 @@ class StarRenderWorker(QObject):
             # Loop
             count = len(sx)
             for i in range(count):
+                if i % 1024 == 0 and self._shutdown_event.is_set():
+                    painter.end()
+                    return
                 x, y = sx[i], sy[i]
                 mag = f_mag[i]
                 alpha_f = eff_alpha[i]
@@ -571,6 +592,8 @@ class StarRenderWorker(QObject):
     @pyqtSlot(dict)
     def render_trails(self, params):
         """Render star trails to a QImage in background thread."""
+        if self._shutdown_event.is_set():
+            return
         try:
             width = params["width"]
             height = params["height"]
@@ -715,9 +738,9 @@ class StarRenderWorker(QObject):
 
             jump_threshold = min(width, height) * 0.5
 
-            # Use Multiprocessing to bypass GIL for coordinate math and segment detection
+            # NumPy-heavy chunks run in threads, keeping canvas shutdown free
+            # from child-process lifecycle races.
             import os
-            from concurrent.futures import ProcessPoolExecutor
 
             n_stars = len(f_ra)
             n_workers = min(4, os.cpu_count() or 4)
@@ -742,17 +765,24 @@ class StarRenderWorker(QObject):
                         y_center_val,
                         cam_az_rad,
                         jump_threshold,
+                        self._shutdown_event,
                     )
                 )
 
             # Execute tasks in parallel
-            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+            with ThreadPoolExecutor(
+                max_workers=n_workers,
+                thread_name_prefix="star-trails",
+            ) as executor:
                 all_results = list(
                     executor.map(_compute_trail_segments_chunk, tasks)
                 )
 
             # Draw aggregated results onto the pixel buffer
             for chunk_res in all_results:
+                if self._shutdown_event.is_set():
+                    painter.end()
+                    return
                 for (r, g, b), star_segments in chunk_res:
                     color = QColor(r, g, b, 120)
                     painter.setPen(QPen(color, 1.0))

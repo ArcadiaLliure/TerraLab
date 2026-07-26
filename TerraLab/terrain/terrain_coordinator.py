@@ -5,11 +5,11 @@ Orquestra HorizonWorker i exposa snapshots sense dependencia de UI.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
-from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
+from PyQt5.QtCore import QObject, QThread, pyqtSignal
 
-from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.terrain.worker import HorizonWorker
 
 
@@ -21,6 +21,7 @@ class TerrainCoordinator(QObject):
     horizon_progress = pyqtSignal(object)
     horizon_error = pyqtSignal(str)
     bortle_estimate_ready = pyqtSignal(int, float, float, int)
+    bare_elevation_ready = pyqtSignal(float, float, object)
 
     # Calling a QObject method directly does not honour its thread affinity.
     # These private signals are therefore the only entry points used for work
@@ -31,69 +32,98 @@ class TerrainCoordinator(QObject):
     _reload_requested = pyqtSignal()
     _observer_offset_requested = pyqtSignal(float)
     _bortle_requested = pyqtSignal(float, float, int)
+    _bare_elevation_requested = pyqtSignal(float, float)
+    _shutdown_cleanup_requested = pyqtSignal()
 
     def __init__(self, tiles_dir: str | None = None, parent: QObject | None = None) -> None:
         super().__init__(parent)
+        self._current_profile: Any = None
+        self._surface_request_generation = 0
+        self._pending_surface_request: dict[str, Any] | None = None
+        self._observer_offset = 0.0
+        self._progress_text = ""
+        self._elevation_cache: dict[tuple[float, float], float | None] = {}
+        self._pending_elevation_queries: set[tuple[float, float]] = set()
+        self._shutdown_started = False
+        self._shutdown_complete = False
+
         self._thread = QThread(self)
-        self._worker = HorizonWorker(tiles_dir=tiles_dir)
+        self._worker = HorizonWorker(
+            tiles_dir=tiles_dir,
+            quit_thread_on_shutdown=True,
+        )
         self._worker.moveToThread(self._thread)
 
-        self._initialize_requested.connect(
-            self._worker.initialize, type=Qt.QueuedConnection
-        )
-        self._bake_requested.connect(
-            self._worker.request_bake, type=Qt.QueuedConnection
-        )
+        # AutoConnection becomes queued because the receiver has worker-thread
+        # affinity. Keeping one-argument ``connect`` calls also matches PyQt's
+        # published type stubs.
+        self._initialize_requested.connect(self._worker.initialize)
+        self._bake_requested.connect(self._worker.request_bake)
         self._surface_refresh_requested.connect(
-            self._worker.request_surface_refresh, type=Qt.QueuedConnection
+            self._worker.request_surface_refresh
         )
-        self._reload_requested.connect(
-            self._worker.reload_config, type=Qt.QueuedConnection
-        )
+        self._reload_requested.connect(self._worker.reload_config)
         self._observer_offset_requested.connect(
-            self._worker.set_observer_offset, type=Qt.QueuedConnection
+            self._worker.set_observer_offset
         )
         self._bortle_requested.connect(
-            self._worker.request_bortle_estimate, type=Qt.QueuedConnection
+            self._worker.request_bortle_estimate
         )
+        self._bare_elevation_requested.connect(
+            self._worker.request_bare_elevation
+        )
+        self._shutdown_cleanup_requested.connect(self._worker.shutdown)
 
         self._worker.profile_ready.connect(self._on_profile_ready)
         self._worker.preview_ready.connect(self._on_preview_ready)
         self._worker.progress_state.connect(self.horizon_progress)
+        self._worker.progress_message.connect(self._on_progress_message)
         self._worker.error_occurred.connect(self.horizon_error)
         self._worker.bortle_estimate_ready.connect(self.bortle_estimate_ready)
+        self._worker.bare_elevation_ready.connect(
+            self._on_bare_elevation_ready
+        )
 
         self._thread.start()
 
-        self._current_profile: Any = None
-        self._surface_request_generation = 0
-        self._pending_surface_request: dict[str, Any] | None = None
+    def shutdown(self, timeout_ms: int = 15_000) -> None:
+        """Cooperatively stop work, close resources, and join the Qt thread."""
 
-    def shutdown(self) -> None:
-        """Atura el worker de terreny i allibera recursos."""
-        try:
-            self._worker.cancel_surface_sampling()
-            self._worker.abort_current_job()
-        except Exception:
-            log_suppressed_exception(__name__, "TerrainCoordinator.shutdown")
-        try:
+        if self._shutdown_complete:
+            return
+        if not self._shutdown_started:
+            self._shutdown_started = True
+            # ``request_shutdown`` is an explicitly synchronized cancellation
+            # interface: it only sets Events and controls the lock-protected
+            # subprocess. Resource cleanup itself remains queued.
+            self._worker.request_shutdown()
             self._thread.requestInterruption()
-            self._thread.quit()
-            if not self._thread.wait(1500):
-                self._thread.terminate()
-                self._thread.wait(1500)
-        except Exception:
-            log_suppressed_exception(__name__, "TerrainCoordinator.shutdown")
-        # No worker code can still be using these resources after the thread
-        # has stopped, so final cleanup is safe even though its event loop is
-        # no longer available for a queued invocation.
-        try:
-            self._worker.shutdown()
-        except Exception:
-            log_suppressed_exception(__name__, "TerrainCoordinator.shutdown")
+            self._shutdown_cleanup_requested.emit()
+
+        deadline = time.monotonic() + max(0, int(timeout_ms)) / 1000.0
+        next_diagnostic = time.monotonic() + 1.0
+        while self._thread.isRunning():
+            remaining_ms = int(max(0.0, deadline - time.monotonic()) * 1000)
+            if remaining_ms <= 0:
+                raise RuntimeError(
+                    "Terrain worker did not stop cooperatively within "
+                    f"{int(timeout_ms)} ms; progress={self._progress_text!r}"
+                )
+            self._thread.wait(min(250, remaining_ms))
+            now = time.monotonic()
+            if self._thread.isRunning() and now >= next_diagnostic:
+                print(
+                    "[TerrainCoordinator] Waiting for cooperative shutdown: "
+                    f"progress={self._progress_text!r}, "
+                    f"remaining_ms={remaining_ms}"
+                )
+                next_diagnostic = now + 1.0
+        self._shutdown_complete = True
 
     @property
-    def thread(self) -> QThread:
+    def worker_thread(self) -> QThread:
+        """Return the dedicated terrain thread for diagnostics and tests."""
+
         return self._thread
 
     def initialize(self) -> None:
@@ -112,21 +142,28 @@ class TerrainCoordinator(QObject):
     def set_observer_offset(self, offset: float) -> None:
         """Queue an observer-height update on the terrain thread."""
 
-        self._observer_offset_requested.emit(float(offset))
+        self._observer_offset = float(offset)
+        self._observer_offset_requested.emit(self._observer_offset)
 
     @property
     def observer_offset(self) -> float:
-        return float(getattr(self._worker, "observer_offset", 0.0))
+        return self._observer_offset
 
     def get_progress_text(self) -> str:
-        """Return the worker's lock-protected progress snapshot."""
+        """Return the latest progress snapshot published to the coordinator."""
 
-        return self._worker.get_progress_text()
+        return self._progress_text
 
     def get_bare_elevation(self, lat: float, lon: float) -> float | None:
-        """Read the initialized provider through the canonical terrain owner."""
+        """Return a cached elevation and queue any missing lookup."""
 
-        return self._worker.get_bare_elevation(float(lat), float(lon))
+        key = (float(lat), float(lon))
+        if key not in self._elevation_cache:
+            if key not in self._pending_elevation_queries:
+                self._pending_elevation_queries.add(key)
+                self._bare_elevation_requested.emit(*key)
+            return None
+        return self._elevation_cache[key]
 
     def request_bortle_estimate(
         self, lat: float, lon: float, request_id: int = 0
@@ -210,3 +247,26 @@ class TerrainCoordinator(QObject):
 
     def _on_preview_ready(self, payload: object) -> None:
         self.horizon_preview_ready.emit(payload)
+
+    def _on_progress_message(self, message: str) -> None:
+        self._progress_text = str(message)
+
+    def _on_bare_elevation_ready(
+        self,
+        lat: float,
+        lon: float,
+        elevation: object,
+    ) -> None:
+        key = (float(lat), float(lon))
+        if elevation is None:
+            value = None
+        elif isinstance(elevation, (int, float)):
+            value = float(elevation)
+        else:
+            raise TypeError(
+                "TerrainWorker returned a non-numeric bare elevation: "
+                f"{type(elevation).__name__}"
+            )
+        self._pending_elevation_queries.discard(key)
+        self._elevation_cache[key] = value
+        self.bare_elevation_ready.emit(key[0], key[1], value)

@@ -14,15 +14,11 @@ from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.scene.projection import unproject_universal_stereo_point
 from TerraLab.terrain.data_sources import SurfaceMode
 from TerraLab.ui.canvas_runtime_helpers import canvas_update_skyfield_cache
-from TerraLab.ui.widget_init_helpers import astro_canvas_init
 from TerraLab.widgets.measurement_tools import TOOL_NONE
 from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
 
 
 class CanvasInteractionMixin:
-    def __init__(self, parent):
-        return astro_canvas_init(self, parent)
-
     def _parent_checkbox_checked(self, attr_name: str, default: bool = False) -> bool:
         widget = getattr(self.parent_widget, attr_name, None)
         if widget is None:

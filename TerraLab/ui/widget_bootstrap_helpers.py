@@ -6,7 +6,7 @@ import os
 import time
 
 import numpy as np
-from PyQt5.QtCore import QThread, QTimer
+from PyQt5.QtCore import QThread
 
 from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.deprecation_registry import emit_deprecation_warning
@@ -36,7 +36,7 @@ def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
         return
     if stage == 0:
         widget.build_search_index()
-        QTimer.singleShot(
+        widget._schedule_lifecycle_callback(
             0,
             lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
                 w, t, 1
@@ -45,7 +45,7 @@ def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
         return
     if stage == 1:
         widget._apply_scope_preloaded_spatial_index()
-        QTimer.singleShot(
+        widget._schedule_lifecycle_callback(
             0,
             lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
                 w, t, 2
@@ -54,7 +54,7 @@ def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
         return
     if stage == 2:
         widget._ensure_scope_catalog_loaded()
-        QTimer.singleShot(
+        widget._schedule_lifecycle_callback(
             0,
             lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
                 w, t, 3
@@ -64,7 +64,7 @@ def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
     if stage == 3:
         if widget.canvas.scope_mode_enabled():
             widget._ensure_scope_spatial_index_warmup()
-        QTimer.singleShot(
+        widget._schedule_lifecycle_callback(
             0,
             lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
                 w, t, 4
@@ -298,13 +298,15 @@ def widget_start_async_bootstrap(widget):
             "[AstroWidget] Star catalog loading deferred until horizon ready."
         )
         self._catalog_defer_t0 = time.perf_counter()
-        QTimer.singleShot(15000, self._try_start_catalog_loader_deferred)
+        self._schedule_lifecycle_callback(
+            15_000, self._try_start_catalog_loader_deferred
+        )
     # --- Canonical terrain coordinator bootstrap ---
     terrain_coordinator = self.terrain_coordinator
     saved_offset = float(get_config_value("observer_offset", 0.0))
     terrain_coordinator.set_observer_offset(saved_offset)
     try:
-        terrain_coordinator.thread.setPriority(QThread.LowPriority)
+        terrain_coordinator.worker_thread.setPriority(QThread.LowPriority)
     except Exception:
         log_suppressed_exception(__name__, "widget_start_async_bootstrap")
 
@@ -314,14 +316,14 @@ def widget_start_async_bootstrap(widget):
         )
         self._begin_horizon_bake()
 
-    QTimer.singleShot(
+    self._schedule_lifecycle_callback(
         300,
         terrain_coordinator.initialize,
     )
-    QTimer.singleShot(
+    self._schedule_lifecycle_callback(
         550, lambda w=self: _queue_initial_automatic_light_pollution(w)
     )
-    QTimer.singleShot(900, trigger_bake)
+    self._schedule_lifecycle_callback(900, trigger_bake)
 
 
 def widget_on_catalog_ready(
@@ -495,7 +497,7 @@ def widget_on_catalog_ready(
     # Run heavy post-ready work in small queued steps to keep UI responsive.
     next_token = int(getattr(self, "_catalog_ready_pipeline_token", 0)) + 1
     self._catalog_ready_pipeline_token = next_token
-    QTimer.singleShot(
+    self._schedule_lifecycle_callback(
         0,
         lambda w=self, t=next_token: _run_catalog_ready_pipeline_stage(
             w, t, 0
@@ -1215,8 +1217,12 @@ def widget_on_scope_extension_ready(
         self._cleanup_scope_catalog_loader()
         if bool(getattr(self, "_scope_preload_pending_activation", False)):
             if not self.canvas.scope_mode_enabled():
-                QTimer.singleShot(0, self.activate_scope_mode)
+                self._schedule_lifecycle_callback(
+                    0, self.activate_scope_mode
+                )
             else:
                 self._scope_preload_pending_activation = False
         if self.canvas.scope_mode_enabled():
-            QTimer.singleShot(0, self._ensure_scope_spatial_index_warmup)
+            self._schedule_lifecycle_callback(
+                0, self._ensure_scope_spatial_index_warmup
+            )

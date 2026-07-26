@@ -91,7 +91,8 @@ class OverlayCategoryHitTestMixin:
                 self._terrain_raster_cache is None
                 or not isinstance(self._terrain_raster_cache_key, tuple)
                 or len(self._terrain_raster_cache_key) < 4
-                or self._terrain_raster_cache_key[0] != id(geometry)
+                or self._terrain_raster_cache_key[0]
+                is not geometry.cache_token
             ):
                 return None
             render_width = int(self._terrain_raster_cache_key[1])

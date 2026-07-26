@@ -112,7 +112,7 @@ class CanvasSelection:
         c = self._canvas
         pw = getattr(c, "parent_widget", None)
 
-        # 1) Cataleg actiu del frame actual (injectat per AstroCanvas.render).
+        # 1) Cataleg actiu del frame actual (injectat per render_scene).
         active_ra_catalog = getattr(c, "_active_catalog_ra", None)
         active_dec_catalog = getattr(c, "_active_catalog_dec", None)
         active_mag_catalog = getattr(c, "_active_catalog_mag", None)

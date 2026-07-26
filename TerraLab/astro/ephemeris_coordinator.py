@@ -43,6 +43,7 @@ class EphemerisCoordinator(QObject):
         self._last_request_key: tuple[int, int, int, int, int] | None = None
         self._last_submit_mono: float = 0.0
         self._min_submit_interval_s: float = 0.20
+        self._shutdown = False
 
         self._ts = None
         self._eph = None
@@ -57,7 +58,10 @@ class EphemerisCoordinator(QObject):
 
     def shutdown(self) -> None:
         """Atura el pool intern del coordinador."""
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        with self._request_lock:
+            self._shutdown = True
+            self._pending_request = None
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
     def configure_observer(self, latitude: float, longitude: float) -> None:
         """Actualitza coordenades de l'observador per futurs calculs."""
@@ -82,6 +86,8 @@ class EphemerisCoordinator(QObject):
         )
         now_mono = float(time.monotonic())
         with self._request_lock:
+            if self._shutdown:
+                return
             # Ignore exact duplicate requests arriving too fast.
             if (
                 self._last_request_key == request_key
@@ -134,7 +140,10 @@ class EphemerisCoordinator(QObject):
             self.ephemeris_error.emit(f"Error calculant efemerides: {exc}")
         finally:
             with self._request_lock:
-                if self._pending_request is not None:
+                if self._shutdown:
+                    self._pending_request = None
+                    self._request_inflight = False
+                elif self._pending_request is not None:
                     next_request = self._pending_request
                     self._pending_request = None
                     self._request_inflight = True

@@ -1,4 +1,6 @@
 from pathlib import Path
+import subprocess
+import sys
 import threading
 import time
 from types import SimpleNamespace
@@ -204,7 +206,168 @@ def test_terrain_coordinator_shutdown_never_leaves_worker_thread_running():
     coordinator.shutdown()
     coordinator.shutdown()
 
-    assert coordinator.thread.isRunning() is False
+    assert coordinator.worker_thread.isRunning() is False
+
+
+def test_terrain_coordinator_shutdown_does_not_use_qthread_terminate():
+    import inspect
+
+    source = inspect.getsource(TerrainCoordinator.shutdown)
+
+    assert ".terminate(" not in source
+
+
+def test_terrain_coordinator_closes_during_bake_and_reaps_subprocess(
+    monkeypatch,
+):
+    app = QCoreApplication.instance() or QCoreApplication([])
+    entered = threading.Event()
+    process_holder = []
+
+    def blocking_bake(worker, _job):
+        process = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"]
+        )
+        process_holder.append(process)
+        with worker._process_lock:
+            worker._current_process = process
+            worker._current_job_id = "shutdown-test"
+        entered.set()
+        try:
+            process.wait()
+        finally:
+            with worker._process_lock:
+                worker._current_process = None
+                worker._current_job_id = None
+
+    monkeypatch.setattr(HorizonWorker, "request_bake", blocking_bake)
+    coordinator = TerrainCoordinator()
+    try:
+        coordinator.request_bake({"job_id": "shutdown-test"})
+        deadline = time.monotonic() + 5.0
+        while not entered.is_set() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+        assert entered.is_set()
+
+        coordinator.shutdown()
+
+        assert not coordinator.worker_thread.isRunning()
+        assert process_holder[0].poll() is not None
+    finally:
+        for process in process_holder:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+        coordinator.shutdown()
+
+
+def test_terrain_coordinator_closes_during_surface_sampling(monkeypatch):
+    app = QCoreApplication.instance() or QCoreApplication([])
+    entered = threading.Event()
+    exited = threading.Event()
+
+    def blocking_surface_refresh(worker, payload):
+        generation = int(payload["generation"])
+        entered.set()
+        while not worker._surface_request_cancelled(generation):
+            time.sleep(0.005)
+        exited.set()
+
+    monkeypatch.setattr(
+        HorizonWorker,
+        "request_surface_refresh",
+        blocking_surface_refresh,
+    )
+    coordinator = TerrainCoordinator()
+    try:
+        coordinator.request_surface_refresh(object())
+        deadline = time.monotonic() + 2.0
+        while not entered.is_set() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+        assert entered.is_set()
+
+        coordinator.shutdown()
+
+        assert exited.is_set()
+        assert not coordinator.worker_thread.isRunning()
+    finally:
+        coordinator.shutdown()
+
+
+def test_terrain_coordinator_closes_geotiff_resource_after_cancelled_read(
+    monkeypatch,
+):
+    app = QCoreApplication.instance() or QCoreApplication([])
+    entered = threading.Event()
+
+    class FakeGeoTiffService:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    service = FakeGeoTiffService()
+
+    def blocking_geotiff_read(worker, payload):
+        worker._surface_service = service
+        generation = int(payload["generation"])
+        entered.set()
+        while not worker._surface_request_cancelled(generation):
+            time.sleep(0.005)
+
+    monkeypatch.setattr(
+        HorizonWorker,
+        "request_surface_refresh",
+        blocking_geotiff_read,
+    )
+    coordinator = TerrainCoordinator()
+    try:
+        coordinator.request_surface_refresh(object())
+        deadline = time.monotonic() + 2.0
+        while not entered.is_set() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+        assert entered.is_set()
+
+        coordinator.shutdown()
+
+        assert service.closed is True
+        assert not coordinator.worker_thread.isRunning()
+    finally:
+        coordinator.shutdown()
+
+
+def test_bare_elevation_query_runs_in_worker_thread(monkeypatch):
+    app = QCoreApplication.instance() or QCoreApplication([])
+    execution_threads = []
+    ready = threading.Event()
+
+    def elevation(worker, _lat, _lon):
+        execution_threads.append(threading.get_ident())
+        return 123.5
+
+    monkeypatch.setattr(HorizonWorker, "get_bare_elevation", elevation)
+    coordinator = TerrainCoordinator()
+    coordinator.bare_elevation_ready.connect(
+        lambda *_args: ready.set()
+    )
+    try:
+        gui_thread = threading.get_ident()
+        assert coordinator.get_bare_elevation(41.4, 2.1) is None
+        deadline = time.monotonic() + 2.0
+        while not ready.is_set() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+
+        assert ready.is_set()
+        assert coordinator.get_bare_elevation(41.4, 2.1) == 123.5
+        assert execution_threads == [execution_threads[0]]
+        assert execution_threads[0] != gui_thread
+    finally:
+        coordinator.shutdown()
 
 
 def test_terrain_coordinator_never_runs_surface_refresh_on_gui_thread(monkeypatch):
@@ -286,6 +449,7 @@ def test_terrain_coordinator_runs_pending_surface_refresh_when_profile_arrives(
 
 
 def test_terrain_coordinator_can_cancel_pending_surface_refresh(monkeypatch):
+    _app = QCoreApplication.instance() or QCoreApplication([])
     received = []
 
     monkeypatch.setattr(

@@ -139,19 +139,16 @@ python tools/dev/code_inventory.py
 
 Las pruebas de arquitectura se encuentran en
 [`tests/architecture`](tests/architecture).
-El chequeo de Pyright es incremental: la deuda dinámica existente está
-registrada en
-[`refactor_pyright_baseline.json`](docs/architecture/refactor_pyright_baseline.json)
-y cualquier aumento hace fallar el comando.
+El chequeo de Pyright es incremental y cualquier aumento respecto al baseline
+vigente hace fallar el comando.
 
 ## Documentación
 
 - [Paquete Python](TerraLab/README.md)
-- [Subsistema de terreno](TerraLab/terrain/Readme.md)
+- [Subsistema de terreno](TerraLab/terrain/README.md)
 - [Pipeline de superficie categórica](docs/categorical-surface-pipeline.md)
 - [Roadmap](docs/roadmap.md)
 - [Changelog](CHANGELOG.md)
-- [Informe de refactorización](docs/architecture/refactor_final_report.md)
 
 ## Fuentes y atribución de datos
 

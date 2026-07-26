@@ -9,6 +9,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 from PyQt5.QtCore import QTimer, pyqtSignal
@@ -19,7 +20,6 @@ from TerraLab.common.custom_widget_base import CustomWidgetBase
 from TerraLab.common.performance.flags import PERFORMANCE_FLAGS
 from TerraLab.data.star_data_coordinator import StarDataCoordinator
 from TerraLab.light_pollution.modes import (
-    LP_MODE_AUTOMATIC,
     normalize_light_pollution_mode,
     resolve_bortle_class,
 )
@@ -33,6 +33,13 @@ from TerraLab.ui.widget_mixins import (
     WidgetLayersMixin,
     WidgetSurfaceDataMixin,
 )
+from TerraLab.ui.widget_init_helpers import astronomical_widget_init
+
+GAIA_CATALOG_NOT_CONFIGURED = "catalog_not_configured"
+GAIA_CATALOG_UNAVAILABLE = "catalog_unavailable"
+GAIA_MANIFEST_MISSING = "manifest_missing"
+GAIA_MANIFEST_INVALID = "manifest_invalid"
+GAIA_CATALOG_AVAILABLE = "catalog_available"
 
 
 class AstronomicalWidget(
@@ -48,36 +55,39 @@ class AstronomicalWidget(
     request_render_signal = pyqtSignal()
     request_trails_signal = pyqtSignal()
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(self, parent=None, **kwargs):
+        # The canonical class owns initialization. Mixins contribute behavior
+        # only, so construction cannot change when their MRO order changes.
+        astronomical_widget_init(self, parent, **kwargs)
 
         # Coordinators own the canonical scene, terrain and ephemeris state.
         self.scene_controller = SceneController(
-            latitude=float(getattr(self, "latitude", 0.0)),
-            longitude=float(getattr(self, "longitude", 0.0)),
-            altitude_m=float(getattr(self, "_observer_offset", 0.0)),
-            manual_year=int(getattr(self, "manual_year", 2026)),
-            manual_day=int(getattr(self, "manual_day", 0)),
-            manual_hour=float(getattr(self, "manual_hour", 12.0)),
-            use_real_time=bool(getattr(self, "use_real_time", True)),
-            azimuth_offset=float(getattr(getattr(self, "canvas", None), "azimuth_offset", 0.0)),
-            elevation_angle=float(getattr(getattr(self, "canvas", None), "elevation_angle", 40.0)),
-            zoom_level=float(getattr(getattr(self, "canvas", None), "zoom_level", 1.0)),
-            vertical_offset_ratio=float(getattr(getattr(self, "canvas", None), "vertical_offset_ratio", 0.3)),
+            latitude=float(self.latitude),
+            longitude=float(self.longitude),
+            altitude_m=float(self._observer_offset),
+            manual_year=int(self.manual_year),
+            manual_day=int(self.manual_day),
+            manual_hour=float(self.manual_hour),
+            use_real_time=bool(self.use_real_time),
+            azimuth_offset=float(self.canvas.azimuth_offset),
+            elevation_angle=float(self.canvas.elevation_angle),
+            zoom_level=float(self.canvas.zoom_level),
+            vertical_offset_ratio=float(self.canvas.vertical_offset_ratio),
             light_pollution_mode=normalize_light_pollution_mode(
-                getattr(self, "light_pollution_mode", LP_MODE_AUTOMATIC)
+                self.light_pollution_mode
             ),
         )
 
         self.star_data_coordinator = None
         self._last_scope_tile_request = ""
+        self.gaia_catalog_status = GAIA_CATALOG_NOT_CONFIGURED
         self._gaia_manifest_path = self._resolve_gaia_manifest_path()
         self._gaia_manifest_last_mtime = 0.0
         self._gaia_general_tile_loaded_mtime = 0.0
         self._try_attach_star_data_coordinator(force_general_reload=True)
 
         self.terrain_coordinator = TerrainCoordinator(
-            tiles_dir=str(getattr(self, "runtime_layout", {}).get("data_elevation", "") or "")
+            tiles_dir=str(self.runtime_layout.get("data_elevation", "") or "")
         )
         self.terrain_coordinator.horizon_ready.connect(
             self._on_terrain_coordinator_ready
@@ -105,6 +115,29 @@ class AstronomicalWidget(
             self._poll_incremental_gaia_updates
         )
         self._gaia_attach_timer.start()
+
+    def _schedule_lifecycle_callback(
+        self,
+        delay_ms: int,
+        callback: Callable[[], None],
+    ) -> QTimer | None:
+        """Schedule a callback that is cancelled when this widget closes."""
+
+        if self._closing:
+            return None
+        timer = QTimer(self)
+        timer.setSingleShot(True)
+        self._lifecycle_timers.add(timer)
+
+        def invoke() -> None:
+            self._lifecycle_timers.discard(timer)
+            timer.deleteLater()
+            if not self._closing:
+                callback()
+
+        timer.timeout.connect(invoke)
+        timer.start(max(0, int(delay_ms)))
+        return timer
 
     def _on_terrain_coordinator_progress(self, state) -> None:
         """Show surface-raster progress without treating it as a DEM bake."""
@@ -191,7 +224,7 @@ class AstronomicalWidget(
                 from TerraLab.terrain.render.palette import generate_layer_defs
 
                 layer_defs = generate_layer_defs(band_defs)
-            except Exception as exc:
+            except (TypeError, ValueError) as exc:
                 print(
                     "[AstroWidget] Warning: Could not generate surface "
                     f"layer_defs: {exc}"
@@ -214,13 +247,33 @@ class AstronomicalWidget(
         canvas._last_skyfield_update = 0
         canvas.update()
 
-    def _resolve_gaia_manifest_path(self) -> Path:
-        """Resol la ruta esperada del `tile_manifest.json` Gaia runtime."""
-        runtime_layout = getattr(self, "runtime_layout", {}) or {}
-        gaia_dir = Path(str(runtime_layout.get("data_gaia", "") or "")).expanduser()
-        if str(gaia_dir).strip():
-            return gaia_dir / "tile_manifest.json"
-        return Path("tile_manifest.json")
+    def _resolve_gaia_manifest_path(self) -> Path | None:
+        """Resolve Gaia only from the configured data library, never the CWD."""
+
+        runtime_layout = self.runtime_layout
+        configured = str(runtime_layout.get("data_gaia", "") or "").strip()
+        if not configured:
+            self.gaia_catalog_status = GAIA_CATALOG_NOT_CONFIGURED
+            return None
+
+        gaia_dir = Path(configured).expanduser()
+        if not gaia_dir.is_absolute():
+            library_root = Path(
+                str(runtime_layout.get("root", "") or "")
+            ).expanduser()
+            if not library_root.is_absolute():
+                self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
+                return None
+            gaia_dir = library_root / gaia_dir
+
+        manifest_path = gaia_dir / "tile_manifest.json"
+        if not gaia_dir.is_dir():
+            self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
+        elif not manifest_path.is_file():
+            self.gaia_catalog_status = GAIA_MANIFEST_MISSING
+        else:
+            self.gaia_catalog_status = GAIA_CATALOG_AVAILABLE
+        return manifest_path
 
     def _connect_star_data_coordinator_signals(self) -> None:
         """Connecta senyals del coordinador de teseles amb el widget."""
@@ -247,28 +300,59 @@ class AstronomicalWidget(
     ) -> None:
         """Inicialitza o refresca coordinador Gaia quan hi ha manifest disponible."""
         manifest_path = self._gaia_manifest_path
-        self._ensure_partial_manifest_from_general_tile()
-        if not manifest_path.is_file():
+        if manifest_path is None:
+            self.gaia_catalog_status = GAIA_CATALOG_NOT_CONFIGURED
             return
+        self._ensure_partial_manifest_from_general_tile()
         try:
             manifest_mtime = float(manifest_path.stat().st_mtime)
-        except Exception:
-            manifest_mtime = 0.0
+        except FileNotFoundError:
+            self.gaia_catalog_status = GAIA_MANIFEST_MISSING
+            return
+        except PermissionError as exc:
+            self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
+            self._on_star_data_error(f"Gaia manifest permission error: {exc}")
+            return
+        except OSError as exc:
+            self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
+            self._on_star_data_error(f"Gaia manifest unavailable: {exc}")
+            return
 
         manifest_changed = (
             manifest_mtime > float(self._gaia_manifest_last_mtime) + 1e-6
         )
         if self.star_data_coordinator is not None and manifest_changed:
-            try:
-                self.star_data_coordinator.shutdown()
-            except Exception:
-                log_suppressed_exception(__name__, "AstronomicalWidget._try_attach_star_data_coordinator")
+            self.star_data_coordinator.shutdown()
             self.star_data_coordinator = None
 
         if self.star_data_coordinator is None:
-            self.star_data_coordinator = StarDataCoordinator(manifest_path)
+            try:
+                coordinator = StarDataCoordinator(manifest_path)
+            except FileNotFoundError:
+                self.gaia_catalog_status = GAIA_MANIFEST_MISSING
+                return
+            except PermissionError as exc:
+                self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
+                self._on_star_data_error(
+                    f"Gaia manifest permission error: {exc}"
+                )
+                return
+            except json.JSONDecodeError as exc:
+                self.gaia_catalog_status = GAIA_MANIFEST_INVALID
+                self._on_star_data_error(f"Gaia manifest is invalid JSON: {exc}")
+                return
+            except (TypeError, ValueError) as exc:
+                self.gaia_catalog_status = GAIA_MANIFEST_INVALID
+                self._on_star_data_error(f"Gaia manifest is invalid: {exc}")
+                return
+            except OSError as exc:
+                self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
+                self._on_star_data_error(f"Gaia catalog unavailable: {exc}")
+                return
+            self.star_data_coordinator = coordinator
             self._connect_star_data_coordinator_signals()
             force_general_reload = True
+        self.gaia_catalog_status = GAIA_CATALOG_AVAILABLE
         if (
             force_general_reload
             or manifest_changed
@@ -279,6 +363,8 @@ class AstronomicalWidget(
     def _ensure_partial_manifest_from_general_tile(self) -> None:
         """Crea manifest parcial minim quan existeix `tile_all` pero no manifest."""
         manifest_path = self._gaia_manifest_path
+        if manifest_path is None:
+            return
         if manifest_path.is_file():
             return
         tile_all_path = manifest_path.parent / "tile_all.npz"
@@ -292,7 +378,7 @@ class AstronomicalWidget(
                     row_count = int(len(tile_data["RA"]))
                 else:
                     row_count = 0
-        except Exception:
+        except (OSError, ValueError):
             return
         if row_count <= 0:
             return
@@ -314,7 +400,11 @@ class AstronomicalWidget(
             manifest_path.parent.mkdir(parents=True, exist_ok=True)
             with manifest_path.open("w", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2, ensure_ascii=True)
-        except Exception:
+        except (OSError, TypeError, ValueError) as exc:
+            self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
+            self._on_star_data_error(
+                f"Could not create the partial Gaia manifest: {exc}"
+            )
             return
 
     def _poll_incremental_gaia_updates(self) -> None:
@@ -324,17 +414,11 @@ class AstronomicalWidget(
 
     def _gaia_state_paths(self) -> list[Path]:
         """Retorna rutes candidates de fitxer d'estat Gaia (nou + legacy)."""
-        runtime_layout = getattr(self, "runtime_layout", {}) or {}
-        try:
-            root_dir = Path(runtime_layout.get("root", Path.home())).resolve()
-        except Exception:
-            root_dir = Path.home()
-        try:
-            gaia_dir = Path(
-                str(runtime_layout.get("data_gaia", "") or "")
-            ).expanduser()
-        except Exception:
-            gaia_dir = Path()
+        runtime_layout = self.runtime_layout
+        root_dir = Path(runtime_layout.get("root", Path.home())).resolve()
+        gaia_dir = Path(
+            str(runtime_layout.get("data_gaia", "") or "")
+        ).expanduser()
         return [
             root_dir / "logs" / "gaia_tiles_state.json",
             gaia_dir / "gaia_tiles_state.json",
@@ -352,7 +436,18 @@ class AstronomicalWidget(
             if isinstance(payload, dict):
                 payload["_state_path"] = str(candidate_path)
                 return payload
-        except Exception:
+        except FileNotFoundError:
+            return None
+        except PermissionError as exc:
+            self._on_star_data_error(
+                f"Gaia state file permission error: {exc}"
+            )
+            return None
+        except json.JSONDecodeError as exc:
+            self._on_star_data_error(f"Gaia state file is invalid JSON: {exc}")
+            return None
+        except OSError as exc:
+            self._on_star_data_error(f"Gaia state file unavailable: {exc}")
             return None
         return None
 
@@ -395,7 +490,7 @@ class AstronomicalWidget(
             return
         try:
             tile_mtime = float(tile_path.stat().st_mtime)
-        except Exception:
+        except (FileNotFoundError, PermissionError, OSError):
             return
         if tile_mtime <= float(self._gaia_general_tile_loaded_mtime) + 1e-6:
             return
@@ -434,27 +529,79 @@ class AstronomicalWidget(
                 return True
         return super()._ensure_asset_before_enable(checkbox, checked, asset_id)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event):  # type: ignore[reportIncompatibleMethodOverride]  # PyQt5 stub calls this parameter a0.
         """Release application coordinators before closing the widget."""
+        self._closing = True
+        for timer in tuple(self._lifecycle_timers):
+            timer.stop()
+            timer.deleteLater()
+        self._lifecycle_timers.clear()
+        for timer in (
+            self._gaia_attach_timer,
+            self.timer,
+            self.anim_timer,
+            self.bake_debounce_timer,
+            self.terrain_depth_debounce_timer,
+            self.terrain_ray_precision_debounce_timer,
+            self._gaia_extension_watch_timer,
+            self._gaia_extension_status_hide_timer,
+        ):
+            if timer is not None:
+                timer.stop()
+
+        cleanup_errors: list[RuntimeError] = []
+        scope_preload_worker = getattr(self, "_scope_preload_worker", None)
+        if scope_preload_worker is not None:
+            request_shutdown = getattr(
+                scope_preload_worker,
+                "request_shutdown",
+                None,
+            )
+            if callable(request_shutdown):
+                request_shutdown()
+
+        for thread_name in (
+            "_skyfield_thread",
+            "_catalog_thread",
+            "_scope_catalog_thread",
+            "_scope_index_thread",
+            "_scope_preload_thread",
+        ):
+            thread = getattr(self, thread_name, None)
+            if thread is None or not thread.isRunning():
+                continue
+            thread.requestInterruption()
+            thread.quit()
+            if not thread.wait(15_000):
+                cleanup_errors.append(
+                    RuntimeError(
+                        f"{thread_name} did not stop cooperatively"
+                    )
+                )
+
         try:
-            if self._gaia_attach_timer is not None:
-                self._gaia_attach_timer.stop()
-        except Exception:
-            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
-        try:
-            if self.star_data_coordinator is not None:
+            self.canvas.shutdown()
+        except RuntimeError as exc:
+            cleanup_errors.append(exc)
+        if self.star_data_coordinator is not None:
+            try:
                 self.star_data_coordinator.shutdown()
-        except Exception:
-            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
+            except RuntimeError as exc:
+                cleanup_errors.append(exc)
         try:
             self.terrain_coordinator.shutdown()
-        except Exception:
-            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
+        except RuntimeError as exc:
+            cleanup_errors.append(exc)
         try:
             self.ephemeris_coordinator.shutdown()
-        except Exception:
-            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
-        return super().closeEvent(event)
+        except RuntimeError as exc:
+            cleanup_errors.append(exc)
+        result = super().closeEvent(event)
+        if cleanup_errors:
+            raise RuntimeError(
+                "One or more TerraLab coordinators failed to shut down"
+            ) from cleanup_errors[0]
+        return result
 
     def update_loop(self):
         """Advance time, coordinators and rendering exactly once per frame."""

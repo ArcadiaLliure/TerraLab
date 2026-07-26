@@ -92,7 +92,7 @@ class OverlayTrianglePaintMixin:
         self._terrain_frame_cache_misses += 1
         raster_started = time.perf_counter()
         raster_key = (
-            id(geometry),
+            geometry.cache_token,
             render_width,
             render_height,
             supersample,
