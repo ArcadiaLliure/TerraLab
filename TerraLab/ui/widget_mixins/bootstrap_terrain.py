@@ -230,15 +230,6 @@ class WidgetBootstrapTerrainMixin:
         self._start_async_bootstrap()
         self._schedule_deferred_controls_build()
 
-    def _maybe_run_first_time_onboarding(self):
-        if bool(get_config_value("ui_onboarding_done", False)):
-            return
-        dlg = WelcomeOnboardingDialog(self.asset_manager, self, mandatory=True)
-        if dlg.exec_() == QDialog.Accepted:
-            set_config_value("ui_onboarding_done", True)
-            self._sync_runtime_asset_config(updated_asset_id=None)
-            self._validate_checked_assets_startup()
-
     def _gaia_tap_state_path(self) -> Path:
         try:
             root = Path(self.runtime_layout.get("root", Path.home())).resolve()

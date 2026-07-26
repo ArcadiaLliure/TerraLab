@@ -1,0 +1,199 @@
+<!doctype html><html lang="ca"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TerraLab · Primer Viatge</title>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<style>
+:root{--void:#02040a;--gold:#d8b26a;--cyan:#4fd8c4;--violet:#9184e0;--text:#f3f5fa;--dim:#aab1c2;--chrome:56px}
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:var(--void);color:var(--text);font-family:"Segoe UI",Arial,sans-serif}
+.scene{position:absolute;top:0;right:0;bottom:var(--chrome);left:0;display:flex;flex-direction:column;opacity:0;pointer-events:none;transition:opacity .9s}
+.scene.active{opacity:1;pointer-events:auto}.visual{position:relative;flex:1;min-height:0;overflow:hidden}canvas{position:absolute;top:0;right:0;bottom:0;left:0;width:100%;height:100%}
+.copy{flex:none;text-align:center;padding:18px 30px 20px;background:#03050a;border-top:1px solid #ffffff16}.copy h2{font:500 clamp(1.25rem,2.4vw,1.9rem) "Segoe UI",Arial,sans-serif;margin:0 0 7px}
+.copy p{max-width:860px;margin:auto;color:var(--dim);line-height:1.5;font-size:clamp(.84rem,1.1vw,.98rem)}.eyebrow{font:500 .68rem Consolas,"Cascadia Mono",monospace;letter-spacing:.22em;color:var(--gold);margin-bottom:8px}
+.logo{font:700 clamp(2.8rem,8vw,5.8rem) "Segoe UI",Arial,sans-serif;letter-spacing:.12em}.tag{color:var(--dim);margin-top:8px}
+button{font:inherit}#start,#finish,#restart{margin-top:18px;padding:12px 28px;border:1px solid #d8b26a99;background:transparent;color:var(--gold);cursor:pointer;text-transform:uppercase;letter-spacing:.1em;font:500 .76rem Consolas,"Cascadia Mono",monospace}
+#finish{background:var(--gold);color:var(--void)}#skip{position:fixed;top:18px;right:22px;z-index:9;border:0;background:none;color:var(--dim);font:500 .66rem Consolas,"Cascadia Mono",monospace;text-transform:uppercase;opacity:.8;cursor:pointer}#skip.visible{opacity:.8}
+#chrome{position:fixed;left:0;right:0;bottom:0;height:var(--chrome);background:#050811;border-top:1px solid #ffffff18;display:flex;align-items:center;justify-content:center;opacity:0;z-index:8}#chrome.visible{opacity:1}
+#nav{display:flex;align-items:center;gap:10px}.nav{width:29px;height:29px;border-radius:50%;border:1px solid #ffffff35;background:none;color:white;cursor:pointer}#progress{display:flex;gap:4px;max-width:72vw;overflow:hidden}.dot{border:0;background:none;color:var(--dim);padding:3px;font:400 .56rem Consolas,"Cascadia Mono",monospace;cursor:pointer}.dot.current{color:var(--gold)}
+#audio{position:absolute;right:18px;display:flex;align-items:center;gap:8px}#mute{width:30px;height:30px;border-radius:50%;border:1px solid #ffffff35;background:none;color:white}#vol{width:70px;accent-color:var(--gold)}
+.label{position:absolute;top:6%;padding:7px 11px;border:1px solid #ffffff28;background:#02040acc;font:500 .64rem Consolas,"Cascadia Mono",monospace}.left{left:7%}.right{right:7%}.divider{position:absolute;left:50%;top:0;bottom:0;width:1px;background:#ffffff22}
+.tooltip{position:absolute;left:55%;top:55%;background:#f5f2e9;color:#302b25;padding:10px 12px;border-radius:3px;font-size:.72rem;opacity:0;animation:tip 2.4s 1.5s forwards}@keyframes tip{to{opacity:1;transform:translateY(-8px)}}
+.libraries{position:absolute;top:8%;right:10%;bottom:8%;left:10%;display:grid;grid-template-columns:1fr 1fr;gap:18px}.lib{border:1px solid #315783;background:#0d1a30dd;padding:16px;display:grid;gap:9px}.lib b{color:#ffe680;font:500 .72rem Consolas,"Cascadia Mono",monospace}.lib span{border:1px solid #29466f;background:#132542;padding:10px;color:#b9cae5;font-size:.7rem;opacity:.25;animation:asset .4s forwards}.lib span:nth-child(2){animation-delay:.4s}.lib span:nth-child(3){animation-delay:.8s}.lib span:nth-child(4){animation-delay:1.2s}.lib span:nth-child(5){animation-delay:1.6s}@keyframes asset{to{opacity:1}}
+.end{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
+@media(max-width:760px){#audio{display:none}.dot{font-size:.48rem;padding:2px}.libraries{top:4%;right:4%;bottom:4%;left:4%;gap:8px}}
+
+.libraries.single{grid-template-columns:minmax(320px,680px);justify-content:center}
+.scope-ui{position:absolute;top:5%;right:7%;bottom:5%;left:7%}.scope-ring{position:absolute;left:46%;top:48%;width:min(38vw,360px);aspect-ratio:1;border:1px solid rgba(255,255,255,.72);border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 35px rgba(145,132,224,.24)}
+.scope-cross:before,.scope-cross:after{content:"";position:absolute;background:rgba(255,255,255,.28)}.scope-cross:before{left:46%;top:16%;bottom:20%;width:1px}.scope-cross:after{top:48%;left:25%;right:33%;height:1px}
+.scope-settings{position:absolute;right:3%;top:10%;width:220px;display:grid;gap:7px}.scope-settings span{padding:8px 10px;border:1px solid rgba(255,255,255,.13);background:rgba(3,8,20,.76);font:500 .64rem Consolas,"Cascadia Mono",monospace;color:var(--dim)}
+.measure-ui{position:absolute;top:7%;right:9%;bottom:7%;left:9%}.measure-ui>div{position:absolute;border:1px solid var(--gold);box-shadow:0 0 18px rgba(216,178,106,.2)}.m-line{left:8%;top:24%;width:28%;height:1px}.m-square{left:58%;top:15%;width:110px;height:110px}.m-rect{left:15%;top:60%;width:210px;height:88px}.m-circle{left:66%;top:57%;width:125px;height:125px;border-radius:50%}.ml{position:absolute;color:var(--cyan);font:500 .64rem Consolas,"Cascadia Mono",monospace}.l1{left:19%;top:18%}.l2{left:59%;top:10%}.l3{left:20%;top:54%}.l4{left:69%;top:51%}
+.const-hint{position:absolute;right:5%;top:6%;border:1px solid rgba(255,255,255,.14);padding:8px 12px;background:rgba(2,4,10,.72);font:500 .64rem Consolas,"Cascadia Mono",monospace;color:var(--gold)}
+</style></head><body><div id="stage"><section class="scene active" id="scene-0" data-kind="intro"><div class="visual"><canvas id="c0"></canvas></div><div class="copy"><div class="eyebrow">PRIMER VIATGE</div><div class="logo">TERRALAB</div><div class="tag">Primer la Terra. Després, el cel.</div><button id="start">Comença</button></div></section><section class="scene" id="scene-1" data-kind="terrain2d"><div class="visual"><canvas id="c1"></canvas></div><div class="copy"><div class="eyebrow">01 · TERRENY 2D</div><h2>Llegeix el relleu com una successió de perfils.</h2><p>Les muntanyes apareixen com siluetes ordenades per distància, sense volum tridimensional.</p></div></section><section class="scene" id="scene-2" data-kind="terrain3d"><div class="visual"><canvas id="c2"></canvas></div><div class="copy"><div class="eyebrow">02 · TERRENY 3D</div><h2>El perfil es desplega i adquireix profunditat.</h2><p>Valls, carenes, pendents i ombres emergeixen davant de l’observador.</p></div></section><section class="scene" id="scene-3" data-kind="categorical_compare"><div class="visual"><canvas id="c3"></canvas><div class="label left">CATEGÒRIC</div><div class="label right">VIBRANT</div><div class="divider"></div><div class="tooltip"><b>Bosc de fulla ampla</b><br>Classe 82 · S2GLC Europe 2017</div></div><div class="copy"><div class="eyebrow">03 · SUPERFÍCIE CATEGÒRICA</div><h2>Compara la lectura original i el mode vibrant.</h2><p>Les mateixes classes segueixen la perspectiva del terreny: categòric a l’esquerra i vibrant a la dreta.</p></div></section><section class="scene" id="scene-4" data-kind="ortho"><div class="visual"><canvas id="c4"></canvas></div><div class="copy"><div class="eyebrow">04 · ORTOFOTO</div><h2>La imatge real del territori sobre el relleu.</h2><p>L’ortofoto s’adapta a la geometria i conserva la profunditat del paisatge.</p></div></section><section class="scene" id="scene-5" data-kind="range"><div class="visual"><canvas id="c5"></canvas><div class="label left">1 KM</div><div class="label right">327 KM</div><div class="divider"></div></div><div class="copy"><div class="eyebrow">05 · ABAST DE L’HORITZÓ</div><h2>D’un quilòmetre a centenars de quilòmetres.</h2><p>Augmenta la profunditat i observa com apareixen serralades cada vegada més llunyanes.</p></div></section><section class="scene" id="scene-6" data-kind="rays"><div class="visual"><canvas id="c6"></canvas><div class="label left">RAJOS · 5°</div><div class="label right">RAJOS · 0,12°</div><div class="divider"></div></div><div class="copy"><div class="eyebrow">06 · PRECISIÓ DELS RAJOS</div><h2>Més rajos, més fidelitat.</h2><p>Compara una lectura angular de 5° amb una de 0,12° i observa com apareixen els detalls.</p></div></section><section class="scene" id="scene-7" data-kind="layers_earth"><div class="visual"><canvas id="c7"></canvas><div class="libraries single"><div class="lib"><b>TERRA</b><span>Terreny / DEM</span><span>Ortofoto</span><span>Superfície categòrica</span><span>Contaminació lumínica</span></div></div></div><div class="copy"><div class="eyebrow">07 · GESTOR DE CAPES DE LA TERRA</div><h2>Tria les fonts que construeixen el paisatge.</h2><p>Activa, enllaça, prepara o prioritza DEM, ortofotos, cobertures categòriques i contaminació lumínica.</p></div></section><section class="scene" id="scene-8" data-kind="location"><div class="visual"><canvas id="c8"></canvas></div><div class="copy"><div class="eyebrow">08 · CANVI D’UBICACIÓ</div><h2>Canvia de coordenades i el món es reconstrueix.</h2><p>Relleu, horitzó, cel, contaminació lumínica i efemèrides s’adapten al nou observador.</p></div></section><section class="scene" id="scene-9" data-kind="milkyway"><div class="visual"><canvas id="c9"></canvas></div><div class="copy"><div class="eyebrow">09 · VIA LÀCTIA I ESTRELLES</div><h2>El firmament es construeix progressivament.</h2><p>Primer apareixen les estrelles brillants; després Gaia i la Via Làctia completen el cel.</p></div></section><section class="scene" id="scene-10" data-kind="magnitude"><div class="visual"><canvas id="c10"></canvas></div><div class="copy"><div class="eyebrow">10 · MAGNITUD MANUAL</div><h2>Decideix quantes estrelles vols veure.</h2><p>Mou el límit de magnitud i passa d’un cel visual a un catàleg profund.</p></div></section><section class="scene" id="scene-11" data-kind="bortle"><div class="visual"><canvas id="c11"></canvas></div><div class="copy"><div class="eyebrow">11 · BORTLE MANUAL</div><h2>Del cel pristí al centre d’una ciutat.</h2><p>La resplendor artificial esborra les estrelles febles i redueix la Via Làctia.</p></div></section><section class="scene" id="scene-12" data-kind="stars"><div class="visual"><canvas id="c12"></canvas></div><div class="copy"><div class="eyebrow">12 · ESTRELLES</div><h2>Configura forma, color i brillantor.</h2><p>Ajusta la mida aparent, les puntes de difracció i la representació cromàtica.</p></div></section><section class="scene" id="scene-13" data-kind="planck"><div class="visual"><canvas id="c13"></canvas></div><div class="copy"><div class="eyebrow">13 · POLS DE PLANCK</div><h2>Revela l’estructura invisible de la galàxia.</h2><p>Filaments, núvols i regions fosques emergeixen sobre el fons estel·lar.</p></div></section><section class="scene" id="scene-14" data-kind="ephemeris"><div class="visual"><canvas id="c14"></canvas></div><div class="copy"><div class="eyebrow">14 · EFEMÈRIDES</div><h2>Els astres es mouen amb el temps.</h2><p>Segueix el Sol, la Lluna i els planetes; contempla fases, conjuncions i eclipsis.</p></div></section><section class="scene" id="scene-15" data-kind="sunmoon"><div class="visual"><canvas id="c15"></canvas></div><div class="copy"><div class="eyebrow">15 · SOL I LLUNA</div><h2>Del dia a la nit i fins a l’eclipsi.</h2><p>El Sol i la Lluna recorren el cel, es troben i culminen en una corona solar.</p></div></section><section class="scene" id="scene-16" data-kind="trails"><div class="visual"><canvas id="c16"></canvas></div><div class="copy"><div class="eyebrow">16 · CIRCUMPOLAR</div><h2>Hores de cel en una sola imatge.</h2><p>Les estrelles tracen arcs al voltant del pol mentre el paisatge roman immòbil.</p></div></section><section class="scene" id="scene-17" data-kind="ngc"><div class="visual"><canvas id="c17"></canvas></div><div class="copy"><div class="eyebrow">17 · CATÀLEG NGC</div><h2>El cel profund dins del seu context.</h2><p>Galàxies, nebuloses i cúmuls apareixen sobre el cel real.</p></div></section><section class="scene" id="scene-18" data-kind="telescope"><div class="visual"><canvas id="c18"></canvas><div class="scope-ui"><div class="scope-ring"></div><div class="scope-cross"></div><div class="scope-settings"><span>FOCAL · 250 mm</span><span>OBERTURA · 80 mm</span><span>OCULAR · 20 mm</span><span>ISO · 800</span><span>EXPOSICIÓ · 2 s</span><span>APS-C · 3:2</span></div></div></div><div class="copy"><div class="eyebrow">18 · MIRA TELESCÒPICA</div><h2>Simula l’enquadrament i la llum d’una observació.</h2><p>Canvia focal, obertura, ocular, sensor, ISO i exposició; centra objectes per nom o coordenades RA i Dec.</p></div></section><section class="scene" id="scene-19" data-kind="measure"><div class="visual"><canvas id="c19"></canvas><div class="measure-ui"><div class="m-line"></div><div class="m-square"></div><div class="m-rect"></div><div class="m-circle"></div><span class="ml l1">12,4°</span><span class="ml l2">8,0° × 8,0°</span><span class="ml l3">14,2° × 6,8°</span><span class="ml l4">r = 5,5°</span></div></div><div class="copy"><div class="eyebrow">19 · MESURA ANGULAR I ÀREES</div><h2>Mesura directament sobre la volta celeste.</h2><p>Utilitza el regle per calcular distàncies angulars o delimita àrees amb quadrat, rectangle i cercle.</p></div></section><section class="scene" id="scene-20" data-kind="constellations"><div class="visual"><canvas id="c20"></canvas><div class="const-hint">MODE DIBUIX · CONSTEL·LACIÓ NOVA</div></div><div class="copy"><div class="eyebrow">20 · CONSTRUCTOR DE CONSTEL·LACIONS</div><h2>Dibuixa les teves pròpies figures al cel.</h2><p>Connecta estrelles, crea grups, mostra o amaga les línies, reanomena constel·lacions i elimina-les quan vulguis.</p></div></section><section class="scene" id="scene-21" data-kind="layers_sky"><div class="visual"><canvas id="c21"></canvas><div class="libraries single"><div class="lib"><b>CEL</b><span>Estrelles · Gaia DR3</span><span>Via Làctia</span><span>Pols Planck</span><span>Catàleg NGC</span></div></div></div><div class="copy"><div class="eyebrow">21 · GESTOR DE CAPES DEL CEL</div><h2>Prepara els recursos astronòmics.</h2><p>Gestiona Gaia, Via Làctia, pols de Planck i catàleg NGC des d’una única biblioteca.</p></div></section><section class="scene" id="scene-22" data-kind="final"><div class="visual"><canvas id="c22"></canvas></div><div class="copy"><div class="eyebrow">TERRALAB</div><h2>El teu primer escenari està a punt.</h2><p>TerraLab carregarà la teva ubicació actual i el moment present perquè puguis començar a explorar immediatament.</p><div class="end"><button id="finish">Comença a explorar TerraLab</button><button id="restart">Repeteix el viatge</button></div></div></section></div><button id="skip">Salta la introducció →</button><div id="chrome"><div id="nav"><button class="nav" id="prev">‹</button><button class="nav" id="pause">❚❚</button><div id="progress"><button class="dot" data-i="0">00</button><button class="dot" data-i="1">01</button><button class="dot" data-i="2">02</button><button class="dot" data-i="3">03</button><button class="dot" data-i="4">04</button><button class="dot" data-i="5">05</button><button class="dot" data-i="6">06</button><button class="dot" data-i="7">07</button><button class="dot" data-i="8">08</button><button class="dot" data-i="9">09</button><button class="dot" data-i="10">10</button><button class="dot" data-i="11">11</button><button class="dot" data-i="12">12</button><button class="dot" data-i="13">13</button><button class="dot" data-i="14">14</button><button class="dot" data-i="15">15</button><button class="dot" data-i="16">16</button><button class="dot" data-i="17">17</button><button class="dot" data-i="18">18</button><button class="dot" data-i="19">19</button><button class="dot" data-i="20">20</button><button class="dot" data-i="21">21</button><button class="dot" data-i="22">22</button></div><button class="nav" id="next">›</button></div><div id="audio"><button id="mute">♪</button><input id="vol" type="range" min="0" max="1" step=".01" value=".48"></div></div><audio id="bgm" src="audio/fading-away.mp3" loop preload="auto"></audio><script>
+const N=23,D=[0,...Array(21).fill(6800),0];let cur=0,timer,paused=false,raf={},startTime=0,elapsed=0;
+const bgm=document.querySelector('#bgm'),vol=document.querySelector('#vol'),mute=document.querySelector('#mute'),chrome=document.querySelector('#chrome'),skip=document.querySelector('#skip'),pause=document.querySelector('#pause');
+let bridge=null;new QWebChannel(qt.webChannelTransport,channel=>{bridge=channel.objects.onboardingBridge});
+function resize(){document.querySelectorAll('canvas').forEach(c=>{let r=c.parentElement.getBoundingClientRect();c.width=r.width|0;c.height=r.height|0})}addEventListener('resize',resize);resize();
+function stop(){Object.values(raf).forEach(cancelAnimationFrame);raf={}}function go(i){i=Math.max(0,Math.min(N-1,i));stop();clearTimeout(timer);document.querySelectorAll('.scene').forEach((s,j)=>s.classList.toggle('active',j===i));document.querySelectorAll('.dot').forEach((d,j)=>d.classList.toggle('current',j===i));cur=i;elapsed=0;startTime=performance.now();draw(i);if(D[i]&&!paused)timer=setTimeout(()=>go(i+1),D[i])}
+function toggle(){paused=!paused;pause.textContent=paused?'▶':'❚❚';if(paused){clearTimeout(timer);elapsed+=performance.now()-startTime}else if(D[cur]){startTime=performance.now();timer=setTimeout(()=>go(cur+1),Math.max(300,D[cur]-elapsed))}}
+pause.onclick=toggle;prev.onclick=()=>go(cur-1);next.onclick=()=>go(cur+1);document.querySelectorAll('.dot').forEach(d=>d.onclick=()=>go(+d.dataset.i));
+let fade;function fadeIn(){bgm.volume=0;bgm.play().catch(()=>{});clearInterval(fade);let target=+vol.value;fade=setInterval(()=>{bgm.volume=Math.min(target,bgm.volume+.025);if(bgm.volume>=target)clearInterval(fade)},90)}function fadeOut(cb){clearInterval(fade);if(bgm.paused){bgm.volume=0;cb&&cb();return}fade=setInterval(()=>{bgm.volume=Math.max(0,bgm.volume-.035);if(bgm.volume<=0){clearInterval(fade);cb&&cb()}},90)}
+function notifyPython(attempt=0){if(bridge&&typeof bridge.finish==='function'){bridge.finish();return}if(attempt<40)setTimeout(()=>notifyPython(attempt+1),50)}
+function finishOnboarding(){stop();clearTimeout(timer);fadeOut(()=>{bgm.pause();notifyPython()})}
+start.onclick=()=>{chrome.classList.add('visible');skip.classList.add('visible');fadeIn();go(1)};skip.onclick=finishOnboarding;restart.onclick=()=>go(1);finish.onclick=finishOnboarding;mute.onclick=()=>{bgm.muted=!bgm.muted;mute.textContent=bgm.muted?'×':'♪'};vol.oninput=()=>bgm.volume=+vol.value;
+addEventListener('keydown',event=>{if(event.key==='Escape')finishOnboarding()});
+window.terralabShutdown=()=>{stop();clearTimeout(timer);clearInterval(fade);bgm.pause()};
+function stars(n,w,h){return Array.from({length:n},()=>({x:Math.random()*w,y:Math.random()*h,r:.3+Math.random()*1.4,m:Math.random(),p:Math.random()*6.28,c:Math.random()}))}
+function sky(x,w,h,a='#123f70',b='#69b8ee'){let g=x.createLinearGradient(0,0,0,h);g.addColorStop(0,a);g.addColorStop(1,b);x.fillStyle=g;x.fillRect(0,0,w,h)}function prof(n,b,a,s){return Array.from({length:n},(_,i)=>b+Math.sin(i*.08+s)*a*.45+Math.sin(i*.023+s*2)*a*.5+Math.sin(i*.29)*a*.12)}function path(x,w,h,p,o=0){x.beginPath();x.moveTo(0,h);p.forEach((y,i)=>x.lineTo(i/(p.length-1)*w,y+o));x.lineTo(w,h);x.closePath()}function drawStars(x,S,t,lim=1,al=1){S.forEach(s=>{if(s.m<=lim){x.globalAlpha=al*(.5+.5*Math.abs(Math.sin(t*.002+s.p)));x.fillStyle=s.c<.25?'#cfe0ff':s.c>.8?'#ffd9a8':'#fff';x.beginPath();x.arc(s.x,s.y,s.r*(1.2-s.m*.4),0,6.28);x.fill()}});x.globalAlpha=1}
+function draw(i){let c=document.querySelector('#c'+i),x=c.getContext('2d'),w=c.width,h=c.height,t=0,kind=document.querySelector('#scene-'+i).dataset.kind,S=stars(kind==='ngc'||kind==='milkyway'?2300:550,w,h*.8),p1=prof(300,h*.62,h*.16,.5),p2=prof(300,h*.69,h*.12,1.4),p3=prof(300,h*.75,h*.09,2.2);
+(function loop(){if(!paused)t++;x.clearRect(0,0,w,h);
+if(kind==='intro'||kind==='final'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);drawStars(x,S,t,1,.7);x.strokeStyle='#d8b26a88';x.beginPath();x.arc(w/2,h/2,22+9*Math.sin(t*.025),0,6.28);x.stroke()}
+if(kind==='terrain2d'){sky(x,w,h);[p1,p2,p3].forEach((p,k)=>{path(x,w,h,p,k*8);x.fillStyle=['#17251d','#24372a','#344b39'][k];x.fill()})}
+if(kind==='terrain3d'){
+  sky(x,w,h);
+  const layers=14;
+  for(let k=0;k<layers;k++){
+    const depth=k/(layers-1);
+    const prof3=prof(320,h*(.50+depth*.30),h*(.15-depth*.055),.45+k*.19);
+    const off=Math.sin(t*.004+k*.6)*2.5;
+    path(x,w,h,prof3,off);
+    const g=x.createLinearGradient(0,h*.42,w,h);
+    const c0=Math.round(22+depth*48), c1=Math.round(42+depth*70), c2=Math.round(31+depth*52);
+    g.addColorStop(0,`rgb(${c0},${c1},${c2})`);
+    g.addColorStop(.55,`rgb(${c0+18},${c1+18},${c2+14})`);
+    g.addColorStop(1,`rgb(${Math.max(10,c0-6)},${Math.max(18,c1-10)},${Math.max(12,c2-6)})`);
+    x.fillStyle=g;x.fill();
+    x.strokeStyle=`rgba(190,225,180,${.04+depth*.045})`;x.lineWidth=1;x.stroke();
+  }
+  const vx=w/2, vy=h*.94;
+  for(let n=0;n<34;n++){
+    const sx=(n/33)*w;
+    x.strokeStyle='rgba(220,245,210,.075)';
+    x.beginPath();x.moveTo(vx,vy);x.lineTo(sx,h*.46+Math.sin(n*.43)*20);x.stroke();
+  }
+  const shade=x.createLinearGradient(0,0,w,0);
+  shade.addColorStop(0,'rgba(0,0,0,.34)');shade.addColorStop(.45,'rgba(255,255,220,.10)');
+  shade.addColorStop(.75,'rgba(0,0,0,.18)');shade.addColorStop(1,'rgba(0,0,0,.38)');
+  x.fillStyle=shade;x.fillRect(0,0,w,h);
+}
+if(kind==='categorical_compare'){sky(x,w,h);const base=prof(420,h*.58,h*.17,.52);const paint=(x0,x1,v)=>{x.save();x.rect(x0,0,x1-x0,h);x.clip();path(x,w,h,base);x.fillStyle=v?'#b9dc43':'#8f8a13';x.fill();x.save();path(x,w,h,base);x.clip();const C=v?['#b9dc43','#12aa67','#4fd6aa','#f8efd5','#4eb3ff','#f4c53b','#8f6a35']:['#8f8a13','#176b28','#4d7f3b','#aaa79b','#3569a7','#b58a2f','#6b4a23'];for(let b=0;b<16;b++){const yy=h*.42+b*22+Math.sin(b*.8)*14;x.fillStyle=C[1+(b*3)%(C.length-1)];x.beginPath();x.moveTo(x0-30,yy);for(let q=0;q<=9;q++){const xx=x0+(x1-x0)*q/9,p=q/9-.5;x.lineTo(xx,yy+Math.sin(q*1.7+b)*14+p*38)}for(let q=9;q>=0;q--){const xx=x0+(x1-x0)*q/9,p=q/9-.5;x.lineTo(xx,yy+34+Math.sin(q*1.2+b*.7)*12+p*44)}x.closePath();x.fill()}x.strokeStyle=v?'#41bfff':'#275ca8';x.lineWidth=14;x.beginPath();x.moveTo(x0+(x1-x0)*.38,h*.67);x.bezierCurveTo(x0+(x1-x0)*.48,h*.69,x0+(x1-x0)*.59,h*.72,x0+(x1-x0)*.72,h*.76);x.stroke();x.restore();const sh=x.createLinearGradient(x0,h*.35,x1,h);sh.addColorStop(0,'rgba(0,0,0,.28)');sh.addColorStop(.45,'rgba(255,255,220,.10)');sh.addColorStop(1,'rgba(0,0,0,.30)');x.fillStyle=sh;x.fillRect(x0,0,x1-x0,h);x.restore()};paint(0,w/2,false);paint(w/2,w,true)}
+if(kind==='ortho'){sky(x,w,h);path(x,w,h,p1);let g=x.createLinearGradient(0,h*.4,w,h);['#5d533b','#2f4b2d','#95896b','#3e5b34','#c6b695'].forEach((c,k)=>g.addColorStop(k/4,c));x.fillStyle=g;x.fill();for(let n=0;n<180;n++){x.globalAlpha=.18;x.fillStyle=n%3?'#294729':'#c0aa80';x.fillRect((n*43)%w,h*.48+((n*67)%(h*.46)),8+n%19,3+n%5)}x.globalAlpha=1}
+if(kind==='range'){sky(x,w,h);x.save();x.rect(0,0,w/2,h);x.clip();path(x,w,h,prof(80,h*.72,h*.08,.8));x.fillStyle='#345c3e';x.fill();x.restore();x.save();x.rect(w/2,0,w/2,h);x.clip();[p1,p2,p3].forEach((p,k)=>{path(x,w,h,p,k*14);x.fillStyle=['#203828','#31513a','#466948'][k];x.fill()});x.restore()}
+if(kind==='rays'){
+  sky(x,w,h);
+  const raw=prof(620,h*.60,h*.17,.55);
+  const coarse=[];
+  for(let k=0;k<31;k++) coarse.push(raw[Math.round(k*(raw.length-1)/30)]);
+  const fine=raw;
+  // left coarse reconstruction
+  x.save();x.rect(0,0,w/2,h);x.clip();
+  path(x,w,h,coarse);x.fillStyle='#31583b';x.fill();
+  x.strokeStyle='#d8b26a';x.lineWidth=3;path(x,w,h,coarse);x.stroke();
+  for(let k=0;k<coarse.length;k++){
+    const xx=k/(coarse.length-1)*(w/2), yy=coarse[k];
+    x.fillStyle='#ffd88a';x.beginPath();x.arc(xx,yy,3.4,0,6.28);x.fill();
+  }
+  for(let q=-68;q<=68;q+=5){
+    x.strokeStyle='rgba(216,178,106,.55)';x.beginPath();x.moveTo(w*.25,h*.90);
+    x.lineTo(w*.25+Math.sin(q*.01745)*w*.34,h*.32+Math.cos(q*.01745)*h*.12);x.stroke();
+  }
+  x.restore();
+  // right fine reconstruction
+  x.save();x.rect(w/2,0,w/2,h);x.clip();
+  const shifted=fine.map((yy,idx)=>yy);
+  x.save();x.translate(w/2,0);path(x,w/2,h,shifted);x.fillStyle='#31583b';x.fill();
+  x.strokeStyle='#4fd8c4';x.lineWidth=2;path(x,w/2,h,shifted);x.stroke();x.restore();
+  for(let q=-68;q<=68;q+=1.2){
+    x.strokeStyle='rgba(79,216,196,.22)';x.beginPath();x.moveTo(w*.75,h*.90);
+    x.lineTo(w*.75+Math.sin(q*.01745)*w*.34,h*.32+Math.cos(q*.01745)*h*.12);x.stroke();
+  }
+  x.restore();
+  x.fillStyle='rgba(2,4,10,.76)';x.fillRect(w*.06,h*.78,w*.38,34);x.fillRect(w*.56,h*.78,w*.38,34);
+  x.font='11px Consolas';x.textAlign='center';
+  x.fillStyle='#ffd88a';x.fillText('31 MOSTRES · PERFIL ANGULÓS',w*.25,h*.80+21);
+  x.fillStyle='#7ff3df';x.fillText('MÉS DE 1.100 MOSTRES · PERFIL FI',w*.75,h*.80+21);
+}
+if(kind==='layers_earth'||kind==='layers_sky'){x.fillStyle='#081326';x.fillRect(0,0,w,h)}
+if(kind==='milkyway'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);let q=Math.min(1,t/210);drawStars(x,S,t,q,.9);let g=x.createLinearGradient(0,0,w,h);g.addColorStop(.25,'#0000');g.addColorStop(.55,'rgba(220,225,235,'+(.32*q)+')');g.addColorStop(.78,'#0000');x.save();x.translate(w/2,h/2);x.rotate(-.35);x.fillStyle=g;x.fillRect(-w,-h*.15,w*2,h*.3);x.restore();path(x,w,h,p1);x.fillStyle='#020704';x.fill()}
+if(kind==='magnitude'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);let q=(Math.sin(t*.012)+1)/2;drawStars(x,S,t,.06+q*.94,.95);x.fillStyle='#d8b26a';x.font='12px Consolas';x.fillText('MAG '+(-2+q*10).toFixed(1),w*.47,h*.1);path(x,w,h,p1);x.fillStyle='#020704';x.fill()}
+if(kind==='bortle'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);let q=(Math.sin(t*.009)+1)/2;drawStars(x,S,t,1-q*.94,1);let g=x.createLinearGradient(0,h,0,h*.25);g.addColorStop(0,'rgba(225,170,90,'+(.1+q*.55)+')');g.addColorStop(1,'#0000');x.fillStyle=g;x.fillRect(0,h*.2,w,h*.8);path(x,w,h,p1);x.fillStyle='#020604';x.fill()}
+if(kind==='stars'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);let z=.8+(Math.sin(t*.014)+1)*.6,sp=(Math.sin(t*.009)+1)/2;S.slice(0,240).forEach(s=>{x.fillStyle=s.c<.3?'#b8d4ff':s.c>.75?'#ffd3a0':'#fff';x.beginPath();x.arc(s.x,s.y,s.r*z*2.1,0,6.28);x.fill();if(sp>.5&&s.r>1.1){x.strokeStyle='#ffffff66';x.beginPath();x.moveTo(s.x-8*sp,s.y);x.lineTo(s.x+8*sp,s.y);x.moveTo(s.x,s.y-8*sp);x.lineTo(s.x,s.y+8*sp);x.stroke()}})}
+if(kind==='planck'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);drawStars(x,S,t,1,.55);for(let k=0;k<18;k++){let xx=(k*113)%w,yy=h*.15+((k*79)%(h*.65)),r=70+k%5*28,g=x.createRadialGradient(xx,yy,0,xx,yy,r);g.addColorStop(0,'rgba('+(105+k*5)+','+(75+k*3)+','+(130+k*4)+',.24)');g.addColorStop(1,'#0000');x.fillStyle=g;x.beginPath();x.arc(xx,yy,r,0,6.28);x.fill()}}
+if(kind==='ephemeris'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);drawStars(x,S,t,1,.45);let cx=w/2,cy=h/2;x.fillStyle='#d8b26a';x.shadowBlur=25;x.shadowColor='#d8b26a';x.beginPath();x.arc(cx,cy,24,0,6.28);x.fill();x.shadowBlur=0;['Mercuri','Venus','Lluna','Mart'].forEach((n,k)=>{let a=t*.008*(1+k*.15)+k*1.5,r=70+k*48,xx=cx+Math.cos(a)*r,yy=cy+Math.sin(a)*r*.45;x.strokeStyle='#ffffff15';x.beginPath();x.ellipse(cx,cy,r,r*.45,0,0,6.28);x.stroke();x.fillStyle=k===2?'#d6dae5':['#b9a995','#e0b373','#d16d51'][k];x.beginPath();x.arc(xx,yy,5+k,0,6.28);x.fill()});let q=(Math.sin(t*.006)+1)/2;x.fillStyle='rgba(2,4,10,'+(q*.75)+')';x.beginPath();x.arc(cx-30+q*60,cy,24,0,6.28);x.fill()}
+if(kind==='trails'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);let cx=w*.5,cy=h*.48;S.forEach(s=>{let dx=s.x-cx,dy=s.y-cy,r=Math.hypot(dx,dy),a=Math.atan2(dy,dx),l=.35+.65*Math.min(1,t/180);x.strokeStyle=s.c<.3?'#b8d4ffaa':s.c>.75?'#ffd3a0aa':'#ffffffaa';x.beginPath();x.arc(cx,cy,r,a,a+l);x.stroke()});path(x,w,h,p1);x.fillStyle='#020604';x.fill()}
+if(kind==='ngc'){
+  x.fillStyle='#02040a';x.fillRect(0,0,w,h);drawStars(x,S,t,1,.8);
+  let seed=9173;
+  const rnd=()=>{seed=(seed*1664525+1013904223)>>>0;return seed/4294967296};
+  const clusters=[
+    {cx:w*.22,cy:h*.30,rx:w*.20,ry:h*.22,n:22},
+    {cx:w*.57,cy:h*.22,rx:w*.28,ry:h*.18,n:18},
+    {cx:w*.78,cy:h*.48,rx:w*.18,ry:h*.23,n:19}
+  ];
+  let id=224;
+  clusters.forEach((cl,ci)=>{
+    for(let j=0;j<cl.n;j++){
+      const ang=rnd()*Math.PI*2,rad=Math.pow(rnd(),.58);
+      const xx=cl.cx+Math.cos(ang)*cl.rx*rad, yy=cl.cy+Math.sin(ang)*cl.ry*rad;
+      const type=Math.floor(rnd()*4), size=3+rnd()*5;
+      x.strokeStyle=['#77b8f0','#d6a7ff','#8de0c8','#ffd08a'][type];
+      x.lineWidth=1;
+      if(type===0){x.beginPath();x.arc(xx,yy,size,0,6.28);x.stroke()}
+      if(type===1){x.strokeRect(xx-size,yy-size*.65,size*2,size*1.3)}
+      if(type===2){x.beginPath();x.ellipse(xx,yy,size*1.3,size*.55,ang,0,6.28);x.stroke()}
+      if(type===3){x.beginPath();x.moveTo(xx-size,yy);x.lineTo(xx+size,yy);x.moveTo(xx,yy-size);x.lineTo(xx,yy+size);x.stroke()}
+      if(rnd()>.28){
+        x.fillStyle='#b9dcff';x.font=`${8+Math.floor(rnd()*3)}px Consolas`;
+        const dx=rnd()>.5?7:-42,dy=(rnd()-.5)*16;
+        x.fillText('NGC '+(id+Math.floor(rnd()*7600)),xx+dx,yy+dy);
+      }
+      id+=37;
+    }
+  });
+  path(x,w,h,p1);x.fillStyle='#020604';x.fill();
+}
+if(kind==='location'){let q=(t%240)/240,n=q>.5;sky(x,w,h,n?'#030610':'#154d86',n?'#10162a':'#66b5ef');let sh=Math.sin(q*6.28)*85;[p1,p2,p3].forEach((p,k)=>{path(x,w,h,p,sh*(k+1)*.1+k*12);x.fillStyle=n?['#08120d','#0d1d14','#14291b'][k]:['#1d3425','#31543a','#486b4a'][k];x.fill()});if(n)drawStars(x,S,t,1,.65);x.fillStyle='#4fd8c4';x.font='11px Consolas';x.fillText((41.21+Math.sin(t*.01)*1.7).toFixed(4)+'° N',22,h*.12);x.fillText((.806+Math.cos(t*.01)*2.1).toFixed(4)+'° E',22,h*.12+18)}
+if(kind==='telescope'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);drawStars(x,S,t,1,.82);const cx=w*.46,cy=h*.48,z=1.2+.3*Math.sin(t*.008);x.save();x.beginPath();x.arc(cx,cy,Math.min(w,h)*.25,0,6.28);x.clip();S.slice(0,180).forEach(s=>{x.fillStyle=s.c<.3?'#b8d4ff':s.c>.75?'#ffd3a0':'#fff';x.beginPath();x.arc(cx+(s.x-w/2)*z,cy+(s.y-h*.35)*z,s.r*2.2,0,6.28);x.fill()});x.restore();x.strokeStyle='rgba(255,255,255,.55)';x.beginPath();x.arc(cx,cy,Math.min(w,h)*.25,0,6.28);x.stroke()}
+if(kind==='measure'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);drawStars(x,S,t,1,.82)}
+if(kind==='constellations'){x.fillStyle='#02040a';x.fillRect(0,0,w,h);drawStars(x,S,t,1,.78);const P=[[.20,.62],[.28,.40],[.39,.48],[.50,.30],[.62,.43],[.73,.25],[.81,.51],[.67,.65],[.51,.59],[.36,.71]],u=Math.min(P.length-1,Math.floor(t/28));x.strokeStyle='#79b9ff';x.lineWidth=1.5;x.beginPath();P.forEach((p,k)=>{const xx=p[0]*w,yy=p[1]*h;if(k===0)x.moveTo(xx,yy);else if(k<=u)x.lineTo(xx,yy)});x.stroke();P.forEach((p,k)=>{const xx=p[0]*w,yy=p[1]*h;x.fillStyle=k<=u?'#fff':'rgba(255,255,255,.30)';x.beginPath();x.arc(xx,yy,k<=u?3.5:2,0,6.28);x.fill()});if(u===P.length-1){x.fillStyle='#d8b26a';x.font='12px Consolas';x.fillText('CONSTEL·LACIÓ NOVA',w*.43,h*.82)}}
+if(kind==='sunmoon'){
+  const cycle=(t%520)/520;
+  const eclipseStart=.58, eclipseEnd=.86;
+  const inEclipse=cycle>=eclipseStart&&cycle<=eclipseEnd;
+  const day=cycle<.72;
+  sky(x,w,h,day?'#154d86':'#030611',day?'#68b8f0':'#11172c');
+  if(!day)drawStars(x,S,t,1,.65);
+  // Sun path
+  const sx=w*(.12+cycle*.72), sy=h*.72-Math.sin(Math.min(1,cycle/.9)*Math.PI)*h*.52;
+  // Moon approaches the Sun during eclipse window
+  let mx=w*(.86-cycle*.62), my=h*.66-Math.sin(Math.min(1,(cycle+.10)/.95)*Math.PI)*h*.46;
+  if(inEclipse){
+    const e=(cycle-eclipseStart)/(eclipseEnd-eclipseStart);
+    const sep=Math.abs(e-.5)*2;
+    mx=sx+(e-.5)*76;
+    my=sy-4+Math.sin(e*Math.PI)*4;
+    // dim sky
+    x.fillStyle=`rgba(2,4,10,${.72*(1-sep)})`;x.fillRect(0,0,w,h);
+    // corona behind lunar disc
+    const corona=x.createRadialGradient(sx,sy,12,sx,sy,72);
+    corona.addColorStop(0,'rgba(255,255,255,.95)');
+    corona.addColorStop(.16,'rgba(210,220,255,.55)');
+    corona.addColorStop(.42,'rgba(125,135,255,.22)');
+    corona.addColorStop(1,'rgba(0,0,0,0)');
+    x.fillStyle=corona;x.beginPath();x.arc(sx,sy,72,0,6.28);x.fill();
+  }
+  // Sun
+  x.fillStyle='#fff4c7';x.shadowBlur=30;x.shadowColor='#fff0a0';
+  x.beginPath();x.arc(sx,sy,15,0,6.28);x.fill();x.shadowBlur=0;
+  // Moon
+  x.fillStyle=inEclipse?'#020207':'#d7dbe7';
+  x.beginPath();x.arc(mx,my,14,0,6.28);x.fill();
+  if(!inEclipse){
+    x.fillStyle=day?'#154d86':'#030611';
+    x.beginPath();x.arc(mx+6,my-2,14,0,6.28);x.fill();
+  }
+  if(inEclipse&&Math.abs((cycle-eclipseStart)/(eclipseEnd-eclipseStart)-.5)<.12){
+    x.strokeStyle='rgba(255,255,255,.85)';x.lineWidth=1.5;
+    for(let r=20;r<=52;r+=10){x.beginPath();x.arc(sx,sy,r,0,6.28);x.stroke()}
+  }
+  path(x,w,h,p1);x.fillStyle=day&&!inEclipse?'#31563a':'#030704';x.fill();
+}
+raf[i]=requestAnimationFrame(loop)})()}draw(0);
+</script></body></html>

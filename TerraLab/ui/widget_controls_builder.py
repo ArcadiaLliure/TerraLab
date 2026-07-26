@@ -543,7 +543,7 @@ def build_deferred_controls_ui(widget):
     )
     self.txt_search.returnPressed.connect(self.on_search_triggered)
     v_ext.addWidget(self.txt_search)
-    self.btn_quick_welcome = QPushButton("Benvinguda / Guia rapida")
+    self.btn_quick_welcome = QPushButton("Assistent de dades i capes")
     self.btn_quick_welcome.setStyleSheet(
         "font-size: 10px; font-weight: normal;"
     )

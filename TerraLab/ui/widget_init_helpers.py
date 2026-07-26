@@ -459,9 +459,6 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     )
     self._schedule_lifecycle_callback(200, self._start_async_bootstrap)
     self._schedule_lifecycle_callback(
-        0, self._maybe_run_first_time_onboarding
-    )
-    self._schedule_lifecycle_callback(
         1500, self._maybe_resume_pending_gaia_download
     )
 

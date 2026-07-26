@@ -108,6 +108,8 @@ TerraLab = [
     "data/translations.json",
     "data/stars/*.json",
     "terrain/land_cover/legends/*.txt",
+    "ui/onboarding/assets/*.html",
+    "ui/onboarding/assets/audio/*.mp3",
 ]
 
 [project.urls]
