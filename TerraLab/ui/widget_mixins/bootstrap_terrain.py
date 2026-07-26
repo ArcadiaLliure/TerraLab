@@ -187,17 +187,23 @@ class WidgetBootstrapTerrainMixin:
         self._startup_placeholder = QFrame(self)
         self._startup_placeholder.setObjectName("startupPlaceholder")
         self._startup_placeholder.setStyleSheet(
-            "QFrame#startupPlaceholder { background-color: #000000; }"
+            "QFrame#startupPlaceholder { background-color: #02040a; }"
         )
         layout = QVBoxLayout(self._startup_placeholder)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.addStretch(1)
-        title = QLabel("TerraLab", self._startup_placeholder)
+        title = QLabel("TERRALAB", self._startup_placeholder)
         title.setAlignment(Qt.AlignCenter)
-        title.setStyleSheet("color: #eef4ff; font-size: 28px; font-weight: bold; background: transparent;")
-        subtitle = QLabel("Initializing sky...", self._startup_placeholder)
+        title.setStyleSheet(
+            "color: #f3f5fa; font-size: 30px; font-weight: 600; "
+            'font-family: "Segoe UI"; background: transparent;'
+        )
+        subtitle = QLabel("Preparant el cel…", self._startup_placeholder)
         subtitle.setAlignment(Qt.AlignCenter)
-        subtitle.setStyleSheet("color: #8ea3c2; font-size: 14px; background: transparent;")
+        subtitle.setStyleSheet(
+            "color: #d8b26a; font-size: 10px; "
+            'font-family: "Consolas"; background: transparent;'
+        )
         layout.addWidget(title)
         layout.addWidget(subtitle)
         layout.addStretch(2)

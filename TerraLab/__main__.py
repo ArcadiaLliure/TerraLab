@@ -39,9 +39,11 @@ def run() -> int:
     # Qt WebEngine s'ha d'importar després de configurar els contextos OpenGL.
     from TerraLab.ui.application_window import TerraLabMainWindow
     from TerraLab.ui.data_library_dialog import ensure_data_library_for_gui
+    from TerraLab.ui.design_system import apply_onboarding_theme
     from TerraLab.ui.onboarding import FirstRunManager
     from TerraLab.ui.onboarding.onboarding_window import OnboardingWindow
 
+    apply_onboarding_theme(app)
     windows: dict[str, object] = {}
     crash_handle = None
 

@@ -512,7 +512,89 @@ class WidgetSurfaceDataMixin:
     def run_smoke_scenes(self):
         return widget_run_smoke_scenes(self)
 
+    def _refresh_drawer_geometry(self):
+        shell = getattr(self, "viewport_shell", None)
+        if shell is not None and shell.layout() is not None:
+            shell.layout().invalidate()
+            shell.layout().activate()
+            shell.updateGeometry()
+        canvas = getattr(self, "canvas", None)
+        if canvas is not None:
+            canvas.updateGeometry()
+            canvas.update()
+        content_layout = getattr(self, "content_layout", None)
+        if content_layout is not None:
+            content_layout.invalidate()
+            content_layout.activate()
+
+    def _sync_drawer_buttons(self, active_key=None):
+        for key, button in getattr(self, "drawer_buttons", {}).items():
+            button.blockSignals(True)
+            button.setChecked(key == active_key)
+            button.blockSignals(False)
+
+    def set_control_drawer(self, key, *, toggle=False):
+        pages = getattr(self, "drawer_pages", {})
+        drawer = getattr(self, "control_drawer", None)
+        stack = getattr(self, "drawer_stack", None)
+        if key not in pages or drawer is None or stack is None:
+            return
+
+        current_key = getattr(self, "_current_drawer_key", None)
+        if toggle and drawer.isVisible() and current_key == key:
+            self.close_control_drawer()
+            return
+
+        stack.setCurrentWidget(pages[key])
+        titles = {
+            "location": "Ubicació",
+            "sky": "Cel",
+            "earth": "Terra",
+            "tools": "Eines",
+        }
+        title = getattr(self, "lbl_drawer_title", None)
+        if title is not None:
+            title.setText(titles[key])
+        self._current_drawer_key = key
+        self._last_drawer_key = key
+        drawer.show()
+        self._sync_drawer_buttons(key)
+
+        tools_button = getattr(self, "btn_tools_panel", None)
+        if tools_button is not None:
+            tools_button.blockSignals(True)
+            tools_button.setChecked(key == "tools")
+            tools_button.blockSignals(False)
+
+        self._refresh_drawer_geometry()
+        QTimer.singleShot(0, self._refresh_drawer_geometry)
+
+    def close_control_drawer(self):
+        drawer = getattr(self, "control_drawer", None)
+        if drawer is None:
+            return
+        drawer.hide()
+        self._current_drawer_key = None
+        self._sync_drawer_buttons()
+
+        tools_button = getattr(self, "btn_tools_panel", None)
+        if tools_button is not None:
+            tools_button.blockSignals(True)
+            tools_button.setChecked(False)
+            tools_button.blockSignals(False)
+
+        self._refresh_drawer_geometry()
+        QTimer.singleShot(0, self._refresh_drawer_geometry)
+
     def toggle_controls(self):
+        if hasattr(self, "control_drawer"):
+            if self.control_drawer.isVisible():
+                self.close_control_drawer()
+            else:
+                self.set_control_drawer(
+                    getattr(self, "_last_drawer_key", "sky") or "sky"
+                )
+            return
         if not hasattr(self, "panels_widget"):
             return
         # Current state based on panel visibility
@@ -561,6 +643,7 @@ class WidgetSurfaceDataMixin:
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._position_startup_placeholder()
+        self._position_loading_label()
         self._position_gaia_extension_status_label()
         # Defer position update to ensure layout geometry is final
         QTimer.singleShot(0, self._update_button_pos)

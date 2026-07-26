@@ -28,6 +28,7 @@ from TerraLab.data.catalogs.star_catalog import (
     _load_star_npz_arrays,
     _select_base_star_catalog_entry,
 )
+from TerraLab.ui.design_system import CALENDAR_STYLESHEET
 from TerraLab.widgets.telescope_runtime import update_telescope_hud
 from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeInputs
 
@@ -403,17 +404,7 @@ def open_calendar(widget):
     dlg = QDialog(widget)
     dlg.setWindowTitle("Data")
     dlg.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
-    dlg.setStyleSheet(
-        """
-        QDialog { background: #222; border: 1px solid #555; border-radius: 4px; }
-        QCalendarWidget QWidget { alternate-background-color: #333; color: white; }
-        QCalendarWidget QToolButton { color: white; icon-size: 20px; }
-        QCalendarWidget QMenu { background-color: #333; color: white; }
-        QCalendarWidget QSpinBox { color: white; background: #444; selection-background-color: #666; }
-        QCalendarWidget QAbstractItemView:enabled { color: white; background: #222; selection-background-color: #0078d7; selection-color: white; }
-        QCalendarWidget QAbstractItemView:disabled { color: #555; }
-        """
-    )
+    dlg.setStyleSheet(CALENDAR_STYLESHEET)
 
     layout = QVBoxLayout(dlg)
     layout.setContentsMargins(0, 0, 0, 0)

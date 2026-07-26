@@ -140,20 +140,59 @@ def astro_canvas_init(obj, parent):
     self.btn_human_eye.setToolTip("Zoom Natural (17mm)")
     self.btn_human_eye.setStyleSheet("""
         QPushButton {
-            background-color: rgba(0, 0, 0, 100);
-            color: white;
-            border: 1px solid rgba(255, 255, 255, 100);
+            background-color: rgba(5, 8, 17, 210);
+            color: #d8b26a;
+            border: 1px solid #3b4559;
             border-radius: 12px;
             font-size: 11px;
             font-weight: bold;
         }
         QPushButton:hover {
-            background-color: rgba(255, 255, 255, 50);
+            background-color: #151b28;
+            border-color: #d8b26a;
         }
     """)
     self.btn_human_eye.clicked.connect(self.reset_zoom_human)
     self.btn_human_eye.hide()
-    self.lbl_info.setStyleSheet("color: lime; font-size: 10px; background: rgba(0,0,0,100);")
+    self.hud_visible = True
+    self.btn_hud_toggle = QPushButton("\U0001F441  HUD", self)
+    self.btn_hud_toggle.setObjectName("hudToggleButton")
+    self.btn_hud_toggle.setAccessibleName("Mostrar o amagar informació HUD")
+    self.btn_hud_toggle.setToolTip("Mostrar o amagar la informació del visor")
+    self.btn_hud_toggle.setCheckable(True)
+    self.btn_hud_toggle.setChecked(True)
+    self.btn_hud_toggle.setFixedSize(78, 26)
+    self.btn_hud_toggle.setCursor(Qt.PointingHandCursor)
+    self.btn_hud_toggle.setStyleSheet(
+        """
+        QPushButton {
+            background-color: rgba(5, 8, 17, 220);
+            color: #aab1c2;
+            border: 1px solid #3b4559;
+            border-radius: 13px;
+            padding: 2px 8px;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        QPushButton:hover {
+            background-color: #151b28;
+            color: #f1cd88;
+            border-color: #d8b26a;
+        }
+        QPushButton:checked {
+            background-color: #211c14;
+            color: #f1cd88;
+            border-color: #d8b26a;
+        }
+        """
+    )
+    self.btn_hud_toggle.toggled.connect(self.set_hud_visible)
+    self.btn_hud_toggle.show()
+    self.lbl_info.setStyleSheet(
+        "color: #4fd8c4; font-size: 10px; "
+        "background: rgba(2,4,10,210); border: 1px solid #252c3b; "
+        "border-radius: 4px; padding: 3px 6px;"
+    )
     self.lbl_info.move(10, 50)
     self.lbl_info.hide()
     # Skyfield Cache

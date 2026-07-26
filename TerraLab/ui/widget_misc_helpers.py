@@ -22,6 +22,10 @@ from TerraLab.common.utils import (
     get_config_value,
     set_config_value,
 )
+from TerraLab.ui.design_system import (
+    COLLAPSE_BUTTON_STYLESHEET,
+    CONTROL_PANEL_STYLESHEET,
+)
 from TerraLab.ui.onboarding_dialogs import AssetOnboardingDialog
 from TerraLab.ui.workers.catalog_loader import CatalogLoaderWorker
 
@@ -438,54 +442,11 @@ def widget_on_scope_spatial_index_ready(
 
 def widget_update_custom_theme(widget):
     self = widget
-    t = self.current_theme
-    # Extract colors or defaults
-    bg = t.get(
-        "content_bg", t.get("widget_background", "rgba(20, 20, 30, 220)")
-    )
-    txt = t.get("title_text_color", t.get("text_primary", "white"))
-    border = t.get("widget_border_color", "#555")
-    # Ensure bg has alpha if needed, or just use as is
-    self.panel_style = f"""
-        #controlFrame {{
-            background-color: {bg};
-            color: {txt};
-            border: 1px solid {border};
-            border-radius: 8px;
-        }}
-        #controlFrame QLineEdit {{ background: rgba(0,0,0,50); color: {txt}; border: 1px solid {border}; border-radius: 4px; padding: 2px; }}
-        #controlFrame QLineEdit:focus {{ border: 2px solid {txt}; }}
-        #controlFrame QPushButton {{ background: rgba(255,255,255,20); border: 1px solid {border}; border-radius: 3px; color: {txt}; font-weight: bold; }}
-        #controlFrame QPushButton:hover {{ background: rgba(255,255,255,50); }}
-        #controlFrame QPushButton:checked {{ background: rgba(100,200,255,100); color: white; }}
-        #controlFrame QLabel {{ color: {txt}; }}
-        #controlFrame QCheckBox {{ color: {txt}; }}
-        #controlFrame QSlider::handle:horizontal {{ background: {border}; border: 1px solid {txt}; width: 10px; margin: -2px 0; border-radius: 5px; }}
-        #controlFrame QSlider::groove:horizontal {{ border: 1px solid #999; height: 4px; background: rgba(255,255,255,50); margin: 2px 0; }}
-    """
+    self.panel_style = CONTROL_PANEL_STYLESHEET
     if hasattr(self, "frame_controls"):
         self.frame_controls.setStyleSheet(self.panel_style)
     if hasattr(self, "btn_collapse"):
-        # Tab Style
-        self.btn_collapse.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: {bg};
-                color: {txt};
-                border: 1px solid {border};
-                border-bottom: 2px solid {bg};
-                font-size: 16px;
-                font-weight: bold;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                border-bottom-left-radius: 0px;
-                border-bottom-right-radius: 0px;
-                margin-bottom: -1px;
-                padding-bottom: 2px;
-            }}
-            QPushButton:hover {{ background-color: {bg}; border: 1px solid rgba(255,255,255,200); }}
-        """
-        )
+        self.btn_collapse.setStyleSheet(COLLAPSE_BUTTON_STYLESHEET)
 
 
 def widget_set_scope_coord_inputs(widget, ra_deg: float, dec_deg: float):

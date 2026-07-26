@@ -254,6 +254,7 @@ class WidgetHorizonScopeMixin:
                 min(max(required_w, 360), max(360, self.width() - 20)),
                 required_h,
             )
+            self._position_loading_label()
             if self.lbl_loading.isHidden():
                 self.lbl_loading.show()
                 self.lbl_loading.raise_()
@@ -279,7 +280,21 @@ class WidgetHorizonScopeMixin:
         width = min(max(320, fm.horizontalAdvance(text) + 30), max(320, self.width() - 20))
         height = max(32, fm.height() + 12)
         lbl.resize(width, height)
-        lbl.move(max(10, self.width() - width - 10), 10)
+        toolbar = getattr(self, "quick_toolbar", None)
+        toolbar_height = toolbar.height() if toolbar is not None else 0
+        lbl.move(
+            max(10, self.width() - width - 10),
+            toolbar_height + 88,
+        )
+
+    def _position_loading_label(self):
+        lbl = getattr(self, "lbl_loading", None)
+        if lbl is None:
+            return
+        toolbar = getattr(self, "quick_toolbar", None)
+        toolbar_height = toolbar.height() if toolbar is not None else 0
+        x_pos = min(370, max(10, self.width() - lbl.width() - 10))
+        lbl.move(x_pos, toolbar_height + 48)
 
     def _set_gaia_extension_status_label(self, message: str, *, keep_seconds: float = 0.0):
         lbl = getattr(self, "lbl_gaia_extension_status", None)
@@ -520,14 +535,15 @@ class WidgetHorizonScopeMixin:
         # Loading indicator stays available from the first visible frame.
         self.lbl_loading = QLabel(getTraduction("Astro.LoadingTopography", "? Carregant topografia..."), self)
         self.lbl_loading.setStyleSheet(
-            "color: yellow; font-weight: bold; background-color: rgba(0,0,0,100); "
-            "padding: 5px; border-radius: 4px;"
+            "color: #f1cd88; font-weight: 600; "
+            "background-color: rgba(2,4,10,220); "
+            "border: 1px solid #3b4559; padding: 5px; border-radius: 5px;"
         )
         self.lbl_loading.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.lbl_loading.setWordWrap(False)
         self.lbl_loading.hide()
-        self.lbl_loading.move(10, 50)
         self.lbl_loading.resize(420, 32)
+        self._position_loading_label()
         self.lbl_gaia_extension_status = QLabel("", self)
         self.lbl_gaia_extension_status.setStyleSheet(
             "color: #ffe680; font-weight: bold; background-color: rgba(0,0,0,140); "
@@ -549,27 +565,73 @@ class WidgetHorizonScopeMixin:
         return widget_update_custom_theme(self)
 
     def toggle_scope_panel(self, checked):
+        if hasattr(self, "sky_mode_stack") and hasattr(
+            self, "sky_base_page"
+        ):
+            if checked:
+                if hasattr(self, "btn_tools_panel"):
+                    self.btn_tools_panel.blockSignals(True)
+                    self.btn_tools_panel.setChecked(False)
+                    self.btn_tools_panel.blockSignals(False)
+                self.set_control_drawer("sky")
+                self._sync_scope_coord_inputs_from_canvas()
+                self.scope_panel.show()
+                self.sky_mode_stack.setCurrentWidget(self.scope_panel)
+            else:
+                self.sky_base_page.show()
+                self.sky_mode_stack.setCurrentWidget(self.sky_base_page)
+            QTimer.singleShot(0, self._refresh_drawer_geometry)
+            return
         if checked:
-            if hasattr(self, 'btn_tools_panel'):
+            if hasattr(self, "btn_tools_panel"):
                 self.btn_tools_panel.blockSignals(True)
                 self.btn_tools_panel.setChecked(False)
                 self.btn_tools_panel.blockSignals(False)
-            if hasattr(self, 'tools_panel'):
+            if hasattr(self, "control_tabs") and hasattr(self, "sky_tab"):
+                self.control_tabs.setCurrentWidget(self.sky_tab)
+            elif hasattr(self, "tools_panel"):
                 self.tools_panel.hide()
             self._sync_scope_coord_inputs_from_canvas()
-        if hasattr(self, 'scope_panel'):
+        if hasattr(self, "scope_panel"):
             self.scope_panel.setVisible(checked)
         QTimer.singleShot(0, self._update_button_pos)
 
     def toggle_tools_panel(self, checked):
+        if hasattr(self, "drawer_stack"):
+            if checked:
+                if hasattr(self, "btn_scope_panel"):
+                    self.btn_scope_panel.setChecked(False)
+                self.set_control_drawer("tools")
+            elif (
+                getattr(self, "_current_drawer_key", None) == "tools"
+                and self.control_drawer.isVisible()
+            ):
+                self.set_control_drawer("sky")
+            QTimer.singleShot(0, self._refresh_drawer_geometry)
+            return
+        if hasattr(self, "control_tabs") and hasattr(self, "tools_tab"):
+            if checked:
+                if hasattr(self, "btn_scope_panel"):
+                    self.btn_scope_panel.blockSignals(True)
+                    self.btn_scope_panel.setChecked(False)
+                    self.btn_scope_panel.blockSignals(False)
+                if hasattr(self, "scope_panel"):
+                    self.scope_panel.hide()
+                if hasattr(self, "tools_panel"):
+                    self.tools_panel.show()
+                self.control_tabs.setCurrentWidget(self.tools_tab)
+            elif self.control_tabs.currentWidget() is self.tools_tab:
+                self.control_tabs.setCurrentWidget(self.sky_tab)
+            QTimer.singleShot(0, self._update_button_pos)
+            return
         if checked:
-            if hasattr(self, 'btn_scope_panel'):
+            if hasattr(self, "btn_scope_panel"):
                 self.btn_scope_panel.blockSignals(True)
                 self.btn_scope_panel.setChecked(False)
                 self.btn_scope_panel.blockSignals(False)
-            if hasattr(self, 'scope_panel'):
+            if hasattr(self, "scope_panel"):
                 self.scope_panel.hide()
-        if hasattr(self, 'tools_panel'):
+        if hasattr(self, "tools_panel"):
             self.tools_panel.setVisible(checked)
         QTimer.singleShot(0, self._update_button_pos)
 

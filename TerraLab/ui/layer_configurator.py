@@ -101,12 +101,14 @@ class _LayerRow(QFrame):
         self.product_details = QLabel()
         self.product_details.setWordWrap(True)
         self.product_details.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.product_details.setStyleSheet("color: #aebed8; font-size: 10px;")
+        self.product_details.setStyleSheet(
+            "color: #aab1c2; font-size: 10px;"
+        )
         root.addWidget(self.product_details)
 
         self.resources = QLabel()
         self.resources.setWordWrap(True)
-        self.resources.setStyleSheet("color: #c8d8f3; font-size: 10px;")
+        self.resources.setStyleSheet("color: #70798d; font-size: 10px;")
         root.addWidget(self.resources)
 
         if layer_id is LayerId.SKY_SOLAR_SYSTEM:
@@ -205,7 +207,7 @@ class _LayerRow(QFrame):
         self.stop_attention()
         self.setStyleSheet(
             "QFrame#assetRow {"
-            " background-color: #182f50; border: 2px solid #ffe45e;"
+            " background-color: #151b28; border: 2px solid #f1cd88;"
             " border-radius: 8px; }"
         )
         effect = QGraphicsDropShadowEffect(self)
@@ -497,7 +499,8 @@ class _SurfaceGroupRow(QFrame):
         )
         recommendation.setWordWrap(True)
         recommendation.setStyleSheet(
-            "color: #ffe680; background: #142947; border: 1px solid #3d679d; "
+            "color: #f1cd88; background: #151b28; "
+            "border: 1px solid #6d6250; "
             "border-radius: 5px; padding: 6px;"
         )
         root.addWidget(recommendation)
@@ -636,7 +639,9 @@ class LayerConfiguratorWidget(QWidget):
         library_row.addWidget(QLabel("Dades:"))
         self.library_path = QLabel(str(manager.library.root))
         self.library_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        self.library_path.setStyleSheet("color: #e8f0ff; font-weight: 600;")
+        self.library_path.setStyleSheet(
+            "color: #f3f5fa; font-weight: 600;"
+        )
         library_row.addWidget(self.library_path, 1)
         change = QPushButton("Canviar…")
         change.clicked.connect(self._change_library)

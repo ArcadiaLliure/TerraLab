@@ -26,6 +26,7 @@ from PyQt5.QtWidgets import (
 )
 
 from .utils import get_config_value
+from TerraLab.common.design_tokens import onboarding_widget_theme
 from TerraLab.common.exception_reporting import log_suppressed_exception
 
 
@@ -287,47 +288,10 @@ class WindowStateService:
 # Classe base de widget personalitzat
 # =============================================================================
 
-# Tema per defecte aplicat quan no hi ha cap tema desat.
-_DEFAULT_THEME_COLORS = {
-    "error_color": "#c8553d",
-    "control_bg": "#948465",
-    "secondary": "#634311",
-    "surface": "#f1dfbe",
-}
-
-
 def _build_default_theme() -> dict:
-    """
-    Construeix el diccionari de tema per defecte a partir dels colors base.
+    """Construeix el tema Qt equivalent al Primer viatge."""
 
-    Centralitza la definició del tema inicial perquè sigui fàcil de canviar
-    sense tocar __init__.
-    """
-    c = _DEFAULT_THEME_COLORS
-    error = c["error_color"]
-    ctrl = c["control_bg"]
-    sec = c["secondary"]
-    surf = c["surface"]
-    return {
-        "widget_background_gradient": [surf, ctrl],
-        "widget_background": surf,
-        "widget_border_color": sec,
-        "widget_border_radius": 10,
-        "title_bar_gradient": ["#a3a85e", "#a3a85e"],
-        "title_bar_bg": "#a3a85e",
-        "title_text_color": "#000000",
-        "control_button_bg": ctrl,
-        "control_button_border": sec,
-        "control_button_hover": sec,
-        "control_button_pressed": sec,
-        "control_button_text_color": get_contrast_color(ctrl),
-        "close_button_bg": error,
-        "close_button_border": darken_color(error, 0.15),
-        "close_button_hover": lighten_color(error, 0.15),
-        "close_button_pressed": darken_color(error, 0.15),
-        "close_button_text_color": get_contrast_color(error),
-        "content_bg": surf,
-    }
+    return onboarding_widget_theme()
 
 
 class CustomWidgetBase(QWidget):

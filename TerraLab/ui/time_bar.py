@@ -14,6 +14,7 @@ from PyQt5.QtGui import (
     QImage,
     QLinearGradient,
     QPainter,
+    QPainterPath,
     QPen,
 )
 from PyQt5.QtWidgets import (
@@ -36,7 +37,7 @@ class RusticTimeBar(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(30)
+        self.setFixedHeight(34)
         self.current_hour = 12.0
         self.setCursor(Qt.PointingHandCursor)
         self.hours_text = [0, 6, 12, 18, 24]
@@ -91,9 +92,20 @@ class RusticTimeBar(QWidget):
             return
 
         img = QImage(rect.size(), QImage.Format_ARGB32_Premultiplied)
-        img.fill(QColor(0, 0, 0, 0))
+        img.fill(QColor(2, 4, 10))
         p = QPainter(img)
         try:
+            p.setRenderHint(QPainter.Antialiasing)
+            clip = QPainterPath()
+            clip.addRoundedRect(
+                0.5,
+                0.5,
+                max(0.0, rect.width() - 1.0),
+                max(0.0, rect.height() - 1.0),
+                5.0,
+                5.0,
+            )
+            p.setClipPath(clip)
             # 1. Background Gradient (Sampled every 15 mins)
             grad = QLinearGradient(0, 0, rect.width(), 0)
 
@@ -111,8 +123,9 @@ class RusticTimeBar(QWidget):
             p.fillRect(rect, grad)
 
             # 2. Ticks & Labels (static with cache key)
-            p.setPen(QColor(255, 255, 255, 150))
+            p.setPen(QColor(170, 177, 194, 150))
             font = p.font()
+            font.setFamily("Consolas")
             font.setPointSize(8)
             p.setFont(font)
             for h in self.hours_text:
@@ -123,8 +136,16 @@ class RusticTimeBar(QWidget):
                     p.drawText(int(x) + 2, rect.height() - 2, f"{h}h")
 
             # 3. Border
-            p.setPen(QPen(QColor(100, 100, 100), 1))
-            p.drawRect(0, 0, rect.width() - 1, rect.height() - 1)
+            p.setClipping(False)
+            p.setPen(QPen(QColor(59, 69, 89), 1))
+            p.drawRoundedRect(
+                0,
+                0,
+                rect.width() - 1,
+                rect.height() - 1,
+                5,
+                5,
+            )
         finally:
             p.end()
 
@@ -169,12 +190,12 @@ class RusticTimeBar(QWidget):
             return QColor(r, g, b)
 
         # Colors matches AstroCanvas logic but flattened
-        k_night = c(10, 10, 25)
-        k_astro = c(20, 25, 45)
-        k_naut = c(50, 40, 70)  # More purple
+        k_night = c(2, 4, 10)
+        k_astro = c(8, 12, 22)
+        k_naut = c(33, 29, 52)
         c(80, 50, 30)  # Brownish dark
-        k_gold = c(255, 120, 40)  # Orange
-        k_day = c(50, 150, 255)  # Blue
+        k_gold = c(179, 116, 63)
+        k_day = c(53, 118, 151)
 
         if alt < -18:
             return k_night
@@ -214,14 +235,14 @@ class RusticTimeBar(QWidget):
         pos_x = (self.current_hour / 24.0) * rect.width()
 
         # Rustic Indicator Line
-        painter.setPen(QPen(QColor(255, 255, 200), 2))
+        painter.setPen(QPen(QColor(241, 205, 136), 2))
         painter.drawLine(int(pos_x), 0, int(pos_x), rect.height())
 
         # Label for specific time
         time_str = (
             f"{int(self.current_hour):02}:{int((self.current_hour%1)*60):02}"
         )
-        painter.setPen(Qt.white)
+        painter.setPen(QColor(243, 245, 250))
         # Check bounds to keep text inside
         text_x = pos_x + 5
         if text_x + 30 > rect.width():

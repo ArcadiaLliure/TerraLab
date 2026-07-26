@@ -44,6 +44,28 @@ class CanvasInteractionMixin:
             self.zoom_level = target_zoom
             self.update()
 
+    def set_hud_visible(self, visible):
+        """Mostra o amaga només la caixa informativa del visor."""
+
+        self.hud_visible = bool(visible)
+        if hasattr(self, "btn_human_eye"):
+            self.btn_human_eye.setVisible(bool(visible))
+        if hasattr(self, "btn_hud_toggle"):
+            self.btn_hud_toggle.setText(
+                "\U0001F441  HUD" if visible else "\u25cb  HUD"
+            )
+        self.update()
+
+    def _position_hud_toggle(self):
+        if not hasattr(self, "btn_hud_toggle"):
+            return
+        margin = 12
+        self.btn_hud_toggle.move(
+            max(margin, self.width() - self.btn_hud_toggle.width() - margin),
+            margin,
+        )
+        self.btn_hud_toggle.raise_()
+
     def update_skyfield_cache(self, ut_hour, day_of_year):
         return canvas_update_skyfield_cache(self, ut_hour, day_of_year)
 
@@ -78,6 +100,7 @@ class CanvasInteractionMixin:
     def resizeEvent(self, event):
         self._bg_cache_key = None
         self.weather.resize(self.width(), self.height())
+        self._position_hud_toggle()
         super().resizeEvent(event)
 
     def scope_mode_enabled(self) -> bool:
@@ -208,9 +231,9 @@ class CanvasInteractionMixin:
         editor.setFocus(Qt.MouseFocusReason)
         editor.setStyleSheet(
             "QLineEdit {"
-            "background: rgba(10, 14, 28, 230);"
-            "color: #f5faff;"
-            "border: 1px solid rgba(140, 205, 255, 220);"
+            "background: rgba(8, 12, 22, 240);"
+            "color: #f3f5fa;"
+            "border: 1px solid #d8b26a;"
             "border-radius: 5px;"
             "padding: 2px 6px;"
             "}"

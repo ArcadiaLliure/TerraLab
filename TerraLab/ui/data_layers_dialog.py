@@ -30,6 +30,7 @@ from PyQt5.QtWidgets import (
 from TerraLab.common.utils import getTraduction
 from TerraLab.data.assets_manager import AssetManager
 from TerraLab.data.layer_manager import LayerId, LayerManager
+from TerraLab.ui.design_system import scoped_dialog_override
 from TerraLab.ui.layer_configurator import LayerConfiguratorWidget
 from TerraLab.terrain.data_sources import (
     DataSourceRegistry,
@@ -233,6 +234,7 @@ QDialog#dataLayersDialog QToolTip {
     padding: 4px;
 }
 """
+_DATA_LAYERS_STYLE += scoped_dialog_override("dataLayersDialog")
 
 
 class _InspectionSignals(QObject):

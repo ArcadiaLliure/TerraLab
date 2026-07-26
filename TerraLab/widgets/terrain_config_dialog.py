@@ -4,7 +4,8 @@
 
 import os
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import QUrl, Qt, pyqtSignal
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
     QComboBox,
     QCheckBox,
@@ -22,6 +23,7 @@ from PyQt5.QtWidgets import (
 from TerraLab.common.utils import getTraduction
 from TerraLab.config import ConfigManager
 from TerraLab.terrain.visibility_range import resolve_visibility_range
+from TerraLab.ui.design_system import DIALOG_STYLESHEET
 
 # Presets de qualitat de l'horitzó: (clau de traducció, nombre de capes)
 QUALITY_PRESETS = [
@@ -46,6 +48,8 @@ class TerrainConfigDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setObjectName("terrainConfigDialog")
+        self.setStyleSheet(DIALOG_STYLESHEET)
         self.setWindowTitle(
             getTraduction(
                 "Terrain.ConfigTitle", "Configuració de Mapes Topogràfics"
@@ -64,6 +68,7 @@ class TerrainConfigDialog(QDialog):
                 "Terrain.ConfigTitle", "Configuració de Mapes Topogràfics"
             )
         )
+        lbl_title.setObjectName("dialogTitle")
         font = lbl_title.font()
         font.setPointSize(12)
         font.setBold(True)
@@ -93,7 +98,7 @@ class TerrainConfigDialog(QDialog):
         )
         btn_icgc.setCursor(Qt.PointingHandCursor)
         btn_icgc.setStyleSheet(
-            "text-align: left; color: #4facfe; text-decoration: underline; "
+            "text-align: left; color: #4fd8c4; text-decoration: underline; "
             "background: transparent; border: none;"
         )
         btn_icgc.clicked.connect(self._open_icgc_link)
@@ -108,7 +113,7 @@ class TerrainConfigDialog(QDialog):
         )
         btn_copernicus.setCursor(Qt.PointingHandCursor)
         btn_copernicus.setStyleSheet(
-            "text-align: left; color: #4facfe; text-decoration: underline; "
+            "text-align: left; color: #4fd8c4; text-decoration: underline; "
             "background: transparent; border: none;"
         )
         btn_copernicus.setToolTip(
@@ -129,7 +134,7 @@ class TerrainConfigDialog(QDialog):
                 "(p. ex. USGS, IGN, OS, BKG…).",
             )
         )
-        lbl_world.setStyleSheet("color: #aaa; font-style: italic;")
+        lbl_world.setStyleSheet("color: #aab1c2; font-style: italic;")
         lbl_world.setWordWrap(True)
         layout.addWidget(lbl_world)
 
@@ -141,14 +146,15 @@ class TerrainConfigDialog(QDialog):
                 "la cobertura necessària depèn de l'abast resolt.",
             )
         )
-        lbl_rec.setStyleSheet("color: #aaa; font-style: italic;")
+        lbl_rec.setStyleSheet("color: #aab1c2; font-style: italic;")
         lbl_rec.setWordWrap(True)
         layout.addWidget(lbl_rec)
 
         # ── Ruta actual ──────────────────────────────────────────────────────
         self.lbl_path = QLabel("")
         self.lbl_path.setStyleSheet(
-            "background: #222; padding: 8px; border-radius: 4px; color: #ddd;"
+            "background: #080c16; padding: 8px; border-radius: 5px; "
+            "border: 1px solid #252c3b; color: #aab1c2;"
         )
         self.lbl_path.setWordWrap(True)
         self._update_path_label()
@@ -168,7 +174,8 @@ class TerrainConfigDialog(QDialog):
         lp_layout = QHBoxLayout()
         self.lbl_lp_path = QLabel("")
         self.lbl_lp_path.setStyleSheet(
-            "background: #222; padding: 8px; border-radius: 4px; color: #ddd;"
+            "background: #080c16; padding: 8px; border-radius: 5px; "
+            "border: 1px solid #252c3b; color: #aab1c2;"
         )
         self.lbl_lp_path.setWordWrap(True)
         self._update_lp_path_label()
@@ -219,7 +226,9 @@ class TerrainConfigDialog(QDialog):
                 "📝 El canvi s'aplica al proper càlcul de l'horitzó (\"Regenerar\").",
             )
         )
-        lbl_quality_note.setStyleSheet("color: #888; font-size: 11px;")
+        lbl_quality_note.setStyleSheet(
+            "color: #aab1c2; font-size: 11px;"
+        )
         layout.addWidget(lbl_quality_note)
 
         range_settings = self.config.get_terrain_range_settings()
@@ -262,17 +271,19 @@ class TerrainConfigDialog(QDialog):
             getTraduction("Terrain.SelectFolder", "Seleccionar Carpeta DEM...")
         )
         btn_select.clicked.connect(self._select_folder)
+        btn_select.setObjectName("primaryButton")
         btn_select.setStyleSheet(
             """
             QPushButton {
-                background-color: #4facfe;
-                color: white;
+                background-color: #d8b26a;
+                color: #02040a;
+                border: 1px solid #f1cd88;
                 padding: 8px 16px;
-                border-radius: 4px;
-                font-weight: bold;
+                border-radius: 5px;
+                font-weight: 600;
             }
             QPushButton:hover {
-                background-color: #00f2fe;
+                background-color: #f1cd88;
             }
         """
         )
@@ -294,6 +305,32 @@ class TerrainConfigDialog(QDialog):
             self.lbl_path.setText(tpl.format(path=curr))
 
     # ── Mètodes privats ──────────────────────────────────────────────────────
+
+    def _open_icgc_link(self):
+        QDesktopServices.openUrl(
+            QUrl(
+                "https://www.icgc.cat/ca/Geoinformacio-i-mapes/"
+                "Dades-i-productes/Elevacions/Elevacions-territorial/"
+                "Models-delevacions"
+            )
+        )
+
+    def _open_copernicus_link(self):
+        QDesktopServices.openUrl(
+            QUrl(
+                "https://dataspace.copernicus.eu/explore-data/"
+                "data-collections/copernicus-contributing-missions/"
+                "collections-description/COP-DEM"
+            )
+        )
+
+    def _on_quality_changed(self, index):
+        layer_count = self.combo_quality.itemData(index)
+        if layer_count is None:
+            return
+        layer_count = int(layer_count)
+        self.config.set_horizon_quality(layer_count)
+        self.quality_changed.emit(layer_count)
 
     def _update_path_label(self):
         curr = self.config.get_raster_path()

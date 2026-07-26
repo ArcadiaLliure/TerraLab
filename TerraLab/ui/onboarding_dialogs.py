@@ -53,6 +53,7 @@ from TerraLab.common.utils import (
     set_config_value,
 )
 from TerraLab.data.assets_manager import AssetManager
+from TerraLab.ui.design_system import DIALOG_STYLESHEET
 
 _ASTRO_DIALOG_STYLE = """
 QDialog {
@@ -133,6 +134,7 @@ QProgressBar::chunk {
     border-radius: 6px;
 }
 """
+_ASTRO_DIALOG_STYLE += DIALOG_STYLESHEET
 
 
 _GAIA_BACKGROUND_PROCESSES = []

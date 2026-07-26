@@ -66,6 +66,7 @@ from TerraLab.data.copernicus import (
     estimate_selection,
     format_bytes_dual,
 )
+from TerraLab.ui.design_system import scoped_dialog_override
 
 
 _DIALOG_STYLE = """
@@ -122,6 +123,7 @@ QDialog#copernicusOrthophotoDialog QPushButton:disabled {
     color: #6f819d;
 }
 """
+_DIALOG_STYLE += scoped_dialog_override("copernicusOrthophotoDialog")
 
 
 def build_map_html() -> str:

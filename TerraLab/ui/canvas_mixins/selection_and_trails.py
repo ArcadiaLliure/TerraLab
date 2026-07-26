@@ -256,17 +256,17 @@ class CanvasSelectionAndTrailsMixin:
         menu = QMenu(self)
         menu.setStyleSheet(
             "QMenu {"
-            " background-color: rgba(18, 20, 24, 235);"
-            " color: #f2f5ff;"
-            " border: 1px solid rgba(210, 220, 240, 120);"
+            " background-color: rgba(8, 12, 22, 245);"
+            " color: #f3f5fa;"
+            " border: 1px solid #3b4559;"
             "}"
             "QMenu::item {"
             " padding: 6px 14px;"
-            " color: #f2f5ff;"
+            " color: #f3f5fa;"
             "}"
             "QMenu::item:selected {"
-            " background-color: rgba(92, 138, 255, 180);"
-            " color: #ffffff;"
+            " background-color: #211c14;"
+            " color: #f1cd88;"
             "}"
         )
         act_goto = menu.addAction(getTraduction("Astro.ContextGoto", "Goto"))

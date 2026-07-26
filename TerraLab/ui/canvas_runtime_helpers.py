@@ -6,7 +6,7 @@ import math
 from datetime import datetime, timedelta, timezone
 
 import numpy as np
-from PyQt5.QtCore import QPointF, QTimer, Qt
+from PyQt5.QtCore import QPointF, QRectF, QTimer, Qt
 from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath
 from skyfield.api import wgs84
 
@@ -1054,7 +1054,6 @@ def canvas_paintEvent(canvas, event):
         # Selected-star marker (hidden in scope mode by design).
         self._draw_selected_target_marker(painter, ut_hour, day_of_year_utc)
         # 7. HUD information
-        painter.setPen(QColor(255, 255, 255, 200))
         lbl_stars = getTraduction("Astro.Stars", "STARS")
         if self.scope_mode_enabled() and self._scope_motion_active():
             stars_count = self._visible_star_count_raw()
@@ -1064,11 +1063,7 @@ def canvas_paintEvent(canvas, event):
                 if self.scope_mode_enabled()
                 else self._visible_star_count_raw()
             )
-        painter.drawText(20, 30, f"{lbl_stars}: {stars_count}")
         mw_line = self._milkyway_overlay_status_line()
-        painter.setFont(QFont("Arial", 9))
-        painter.drawText(20, 45, mw_line)
-        # Direction HUD
         az = self.azimuth_offset % 360
         dirs_keys = [
             "North",
@@ -1087,21 +1082,9 @@ def canvas_paintEvent(canvas, event):
             idx = 0
         direction_str = dirs[idx]
         lbl_looking = getTraduction("Astro.Looking", "LOOKING")
-        painter.setFont(QFont("Arial", 14, QFont.Bold))
-        painter.drawText(20, 68, f"{lbl_looking}: {direction_str}")
-        # Lat Indicator
         lat = self.parent_widget.latitude
         hemi = "N" if lat >= 0 else "S"
-        painter.setFont(QFont("Arial", 10))
-        painter.drawText(20, 88, f"LAT: {abs(lat):.2f}° {hemi}")
-        # Altitude Indicator
         alt = self.elevation_angle
-        lbl_alt = "ALT"
-        painter.drawText(20, 108, f"{lbl_alt}: {alt:.1f}°")
-        # Focal Length Indicator & Human Eye Button
-        # Base FOV = 100 deg (Zoom 1.0)
-        # 35mm equiv focal length: f = 36 / (2 * tan(fov_horiz/2))
-        # fov_horiz_rad = radians(100 / zoom)
         fov_rad = math.radians(93.9 / self.zoom_level)
         focal_length = 1.0
         if (93.9 / self.zoom_level) < 179.0:
@@ -1122,14 +1105,64 @@ def canvas_paintEvent(canvas, event):
             )
         else:
             display_focal = max(1, int(round(focal_length)))
-        painter.drawText(20, 128, f"FOC: {display_focal} mm")
-        # Position the eye button dynamically next to FOC text
-        # Assuming text width ~ 100px?
-        if hasattr(self, "btn_human_eye"):
-            # Move button only if needed
-            self.btn_human_eye.move(140, 105)
-            if not self.btn_human_eye.isVisible():
+
+        hud_visible = bool(getattr(self, "hud_visible", True))
+        if hasattr(self, "_position_hud_toggle"):
+            self._position_hud_toggle()
+        if hasattr(self, "btn_hud_toggle"):
+            self.btn_hud_toggle.setToolTip(
+                f"{lbl_looking}: {direction_str}\n"
+                f"LAT: {abs(lat):.2f}° {hemi}\n"
+                f"ALT: {alt:.1f}°\n"
+                f"FOC: {display_focal} mm\n"
+                f"{lbl_stars}: {stars_count}\n{mw_line}"
+            )
+            self.btn_hud_toggle.show()
+
+        if hud_visible:
+            hud_box = QRectF(10.0, 10.0, 350.0, 78.0)
+            painter.save()
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(QColor(216, 178, 106, 90))
+            painter.setBrush(QColor(2, 4, 10, 210))
+            painter.drawRoundedRect(hud_box, 8.0, 8.0)
+
+            painter.setPen(QColor(243, 245, 250, 235))
+            painter.setFont(QFont("Segoe UI", 10, QFont.Bold))
+            painter.drawText(
+                QRectF(20.0, 17.0, 278.0, 19.0),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                f"{direction_str} · ALT {alt:.1f}° · "
+                f"LAT {abs(lat):.2f}° {hemi}",
+            )
+            painter.setPen(QColor(170, 177, 194, 230))
+            painter.setFont(QFont("Segoe UI", 9))
+            painter.drawText(
+                QRectF(20.0, 37.0, 320.0, 17.0),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                f"{lbl_stars} {stars_count}  ·  FOC {display_focal} mm",
+            )
+            painter.setFont(QFont("Consolas", 8))
+            compact_mw = painter.fontMetrics().elidedText(
+                mw_line,
+                Qt.ElideRight,
+                320,
+            )
+            painter.drawText(
+                QRectF(20.0, 55.0, 320.0, 17.0),
+                Qt.AlignLeft | Qt.AlignVCenter,
+                compact_mw,
+            )
+            painter.restore()
+            if hasattr(self, "btn_human_eye"):
+                self.btn_human_eye.move(307, 15)
                 self.btn_human_eye.show()
+                self.btn_human_eye.raise_()
+        elif hasattr(self, "btn_human_eye"):
+            self.btn_human_eye.hide()
+
+        if hasattr(self, "lbl_info"):
+            self.lbl_info.move(10, 98 if hud_visible else 12)
         # 8. User overlays above terrain
         self.measurement_controller.draw(
             painter,
