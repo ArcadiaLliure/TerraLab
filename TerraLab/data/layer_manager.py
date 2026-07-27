@@ -29,7 +29,12 @@ class _StableStringEnum(str, Enum):
 
 class LayerId(_StableStringEnum):
     EARTH_TERRAIN = "earth.terrain"
-    EARTH_SURFACE = "earth.surface"
+    EARTH_ORTHOPHOTO = "earth.orthophoto"
+    EARTH_SURFACE_CATEGORICAL = "earth.surface.categorical"
+    EARTH_SURFACE_RGB = "earth.surface.rgb"
+    # Compatibility name used by older integrations; the semantic product is
+    # the recommended categorical S2GLC layer.
+    EARTH_SURFACE = "earth.surface.categorical"
     EARTH_LIGHT_POLLUTION = "earth.light_pollution"
     SKY_STARS = "sky.stars"
     SKY_NGC = "sky.ngc"
@@ -50,6 +55,10 @@ class LayerState(_StableStringEnum):
     MISSING = "missing"
     INVALID = "invalid"
     PLANNED = "planned"
+    DOWNLOADING = "downloading"
+    PAUSED = "paused"
+    EXTRACTING = "extracting"
+    ERROR = "error"
 
 
 # Descriptive alias retained for callers that use the longer name.
@@ -168,14 +177,35 @@ _DESCRIPTORS = (
         True,
     ),
     LayerDescriptor(
-        LayerId.EARTH_SURFACE,
+        LayerId.EARTH_ORTHOPHOTO,
         LayerGroup.EARTH,
-        "Tipus de sòl",
-        "surface_categorical",
-        "Rasters locals RGB o categòrics; el WMS CLC+ encara és pendent.",
+        "Ortofoto",
+        "orthophoto",
+        "Copernicus HR Image Mosaic 2018 True Colour (10 m) o "
+        "raster RGB/RGBA georeferenciat aportat per l'usuari.",
         "Paleta sintètica",
         True,
-        False,
+        True,
+    ),
+    LayerDescriptor(
+        LayerId.EARTH_SURFACE_CATEGORICAL,
+        LayerGroup.EARTH,
+        "Cobertura del sòl — categòrica",
+        "surface_categorical",
+        "S2GLC Europa 2017 d'una banda amb codis semàntics. Recomanada per al sistema procedural.",
+        "Paleta sintètica",
+        True,
+        True,
+    ),
+    LayerDescriptor(
+        LayerId.EARTH_SURFACE_RGB,
+        LayerGroup.EARTH,
+        "Cobertura del sòl — RGB",
+        "surface_rgb",
+        "S2GLC Europa 2017 de tres bandes per a representació visual immediata.",
+        "Paleta sintètica",
+        True,
+        True,
     ),
     LayerDescriptor(
         LayerId.EARTH_LIGHT_POLLUTION,
@@ -198,14 +228,18 @@ _LEGACY_VISIBILITY_KEYS = {
     LayerId.SKY_SOLAR_SYSTEM: "sistema_solar",
     LayerId.SKY_WEATHER: "clima",
     LayerId.EARTH_TERRAIN: "topografia",
-    LayerId.EARTH_SURFACE: "superficie",
+    LayerId.EARTH_ORTHOPHOTO: "superficie",
+    LayerId.EARTH_SURFACE_CATEGORICAL: "superficie",
+    LayerId.EARTH_SURFACE_RGB: "superficie",
     LayerId.EARTH_LIGHT_POLLUTION: "contaminacio_luminica",
 }
 
 
 _GEO_ROLE = {
     LayerId.EARTH_TERRAIN: LayerRole.ELEVATION,
-    LayerId.EARTH_SURFACE: LayerRole.SURFACE,
+    LayerId.EARTH_ORTHOPHOTO: LayerRole.ORTHOPHOTO,
+    LayerId.EARTH_SURFACE_CATEGORICAL: LayerRole.LAND_COVER,
+    LayerId.EARTH_SURFACE_RGB: LayerRole.LAND_COVER,
     LayerId.EARTH_LIGHT_POLLUTION: LayerRole.LIGHT_POLLUTION,
 }
 
@@ -225,17 +259,34 @@ class LayerManager:
         self._migrate_visibility_once()
 
     def _migrate_visibility_once(self) -> None:
-        marker = "ui.visibility.layer_ids_v1_migrated"
+        marker = "ui.visibility.layer_ids_v2_migrated"
         if bool(get_config_value(marker, False)):
             return
         for descriptor in _DESCRIPTORS:
             legacy = _LEGACY_VISIBILITY_KEYS[descriptor.id]
             value = bool(
                 get_config_value(
-                    f"ui.visibility.{legacy}", descriptor.default_visible
+                    f"ui.visibility.{legacy}",
+                    get_config_value(
+                        "ui.visibility.earth.surface",
+                        descriptor.default_visible,
+                    )
+                    if descriptor.id
+                    in {
+                        LayerId.EARTH_ORTHOPHOTO,
+                        LayerId.EARTH_SURFACE_CATEGORICAL,
+                        LayerId.EARTH_SURFACE_RGB,
+                    }
+                    else descriptor.default_visible,
                 )
             )
             set_config_value(f"ui.visibility.{descriptor.id.value}", value)
+            if descriptor.id in {
+                LayerId.EARTH_ORTHOPHOTO,
+                LayerId.EARTH_SURFACE_CATEGORICAL,
+                LayerId.EARTH_SURFACE_RGB,
+            }:
+                set_config_value("ui.visibility.earth.surface", value)
         set_config_value(marker, True)
 
     def list_layers(
@@ -251,6 +302,17 @@ class LayerManager:
 
     def is_visible(self, layer_id: LayerId | str) -> bool:
         descriptor = self.descriptor(layer_id)
+        if descriptor.id in {
+            LayerId.EARTH_ORTHOPHOTO,
+            LayerId.EARTH_SURFACE_CATEGORICAL,
+            LayerId.EARTH_SURFACE_RGB,
+        }:
+            return bool(
+                get_config_value(
+                    "ui.visibility.earth.surface",
+                    descriptor.default_visible,
+                )
+            )
         return bool(
             get_config_value(
                 f"ui.visibility.{descriptor.id.value}",
@@ -262,6 +324,12 @@ class LayerManager:
         descriptor = self.descriptor(layer_id)
         checked = bool(visible)
         set_config_value(f"ui.visibility.{descriptor.id.value}", checked)
+        if descriptor.id in {
+            LayerId.EARTH_ORTHOPHOTO,
+            LayerId.EARTH_SURFACE_CATEGORICAL,
+            LayerId.EARTH_SURFACE_RGB,
+        }:
+            set_config_value("ui.visibility.earth.surface", checked)
         # Temporary alias for renderers and older preferences.
         set_config_value(
             f"ui.visibility.{_LEGACY_VISIBILITY_KEYS[descriptor.id]}", checked
@@ -301,13 +369,21 @@ class LayerManager:
             LayerState.MISSING: "Sense dades",
             LayerState.INVALID: "Font no vàlida",
             LayerState.PLANNED: "Pendent",
+            LayerState.DOWNLOADING: "Descarregant",
+            LayerState.PAUSED: "Pausada",
+            LayerState.EXTRACTING: "Extraient",
+            LayerState.ERROR: "Error",
         }[state]
 
     def _geospatial_status(self, descriptor: LayerDescriptor) -> LayerStatus:
         role = _GEO_ROLE[descriptor.id]
         layer_types: Iterable[LayerType]
-        if role is LayerRole.SURFACE:
-            layer_types = (LayerType.SURFACE_RGB, LayerType.SURFACE_CATEGORICAL)
+        if descriptor.id is LayerId.EARTH_ORTHOPHOTO:
+            layer_types = (LayerType.ORTHOPHOTO_RGB,)
+        elif descriptor.id is LayerId.EARTH_SURFACE_CATEGORICAL:
+            layer_types = (LayerType.LAND_COVER_CATEGORICAL,)
+        elif descriptor.id is LayerId.EARTH_SURFACE_RGB:
+            layer_types = (LayerType.LAND_COVER_RGB,)
         else:
             layer_types = (LayerType(role.value),)
         sources = [
@@ -323,7 +399,19 @@ class LayerManager:
                 path=source.path,
                 ready=bool(source.available and source.enabled),
                 managed=bool(source.metadata.get("managed", False)),
-                details=source.attribution or source.format,
+                details=" · ".join(
+                    part
+                    for part in (
+                        (
+                            f"Resolució detectada: {source.resolution_m:g} m"
+                            if source.resolution_m is not None
+                            else "Resolució detectada: desconeguda"
+                        ),
+                        source.crs or "CRS desconegut",
+                        source.format,
+                    )
+                    if part
+                ),
             )
             for source in sorted(sources, key=lambda item: (-item.priority, item.display_name))
         )
@@ -334,7 +422,44 @@ class LayerManager:
             effective = next(
                 (source for source in usable if source.id == selected.source_id), None
             )
-        if effective is None and usable:
+        if role is LayerRole.LAND_COVER and selected.mode is SelectionMode.AUTOMATIC:
+            all_surface = [
+                source
+                for kind in (
+                    LayerType.LAND_COVER_CATEGORICAL,
+                    LayerType.LAND_COVER_RGB,
+                )
+                for source in self.data_sources.list_sources(kind)
+                if source.available and source.enabled
+            ]
+            all_surface.sort(
+                key=lambda source: (
+                    0
+                    if source.layer_type is LayerType.LAND_COVER_CATEGORICAL
+                    else 1,
+                    -source.priority,
+                    source.resolution_m or float("inf"),
+                    source.id,
+                )
+            )
+            active_id = all_surface[0].id if all_surface else None
+            effective = next(
+                (source for source in usable if source.id == active_id), None
+            )
+        if (
+            effective is None
+            and usable
+            and not (
+                role is LayerRole.LAND_COVER
+                and (
+                    selected.mode is SelectionMode.AUTOMATIC
+                    or (
+                        selected.mode is SelectionMode.MANUAL
+                        and selected.source_id
+                    )
+                )
+            )
+        ):
             effective = sorted(
                 usable,
                 key=lambda item: (-item.priority, item.resolution_m or float("inf"), item.id),
@@ -342,12 +467,38 @@ class LayerManager:
         if effective is not None:
             state = LayerState.READY
             message = f"Font efectiva: {effective.display_name}"
+        elif usable:
+            state = LayerState.READY
+            message = "Instal·lada i preparada; no és la cobertura activa."
         elif any(source.health_status is SourceHealthStatus.INVALID for source in sources):
             state = LayerState.INVALID
             message = f"Cap font vàlida; fallback: {descriptor.fallback}."
-        elif descriptor.id is LayerId.EARTH_SURFACE:
-            state = LayerState.PLANNED
-            message = "WMS CLC+ pendent; s'utilitza la paleta sintètica."
+        elif descriptor.id in {
+            LayerId.EARTH_ORTHOPHOTO,
+            LayerId.EARTH_SURFACE_CATEGORICAL,
+            LayerId.EARTH_SURFACE_RGB,
+        }:
+            asset = self.assets.asset_status(descriptor.asset_id)
+            install_state = str(asset.get("install_state", "") or "")
+            state = {
+                "downloading": LayerState.DOWNLOADING,
+                "partial": LayerState.PARTIAL,
+                "paused": LayerState.PAUSED,
+                "extracting": LayerState.EXTRACTING,
+                "registering": LayerState.EXTRACTING,
+                "error": LayerState.ERROR,
+            }.get(install_state, LayerState.MISSING)
+            partial = int(asset.get("partial_bytes", 0) or 0)
+            expected = int(asset.get("expected_bytes", 0) or 0)
+            if partial:
+                message = (
+                    f"Descàrrega parcial: {partial / 1024**3:.2f} / "
+                    f"{expected / 1024**3:.2f} GiB. Es pot reprendre."
+                )
+            elif state is LayerState.ERROR:
+                message = str(asset.get("install_error", "") or "Error d'instal·lació")
+            else:
+                message = f"No configurada; fallback: {descriptor.fallback}."
         else:
             state = LayerState.PARTIAL
             message = f"Sense font principal; fallback: {descriptor.fallback}."
@@ -463,13 +614,6 @@ class LayerManager:
         descriptor = self.descriptor(layer_id)
         if descriptor.id in _GEO_ROLE:
             asset_id = descriptor.asset_id
-            if descriptor.id is LayerId.EARTH_SURFACE:
-                suffix = Path(path).suffix.lower()
-                asset_id = (
-                    "surface_rgb"
-                    if suffix in {".png", ".jpg", ".jpeg", ".webp"}
-                    else "surface_categorical"
-                )
             return self.assets.register_external_source(
                 asset_id,
                 path,
@@ -490,4 +634,24 @@ class LayerManager:
             paths,
             options=dict(options),
         )
+
+    def removal_preview(
+        self,
+        layer_id: LayerId | str,
+        *,
+        include_size: bool = False,
+    ):
+        """Return the managed files and external links removable for a layer."""
+
+        descriptor = self.descriptor(layer_id)
+        return self.assets.removal_preview(
+            descriptor.asset_id,
+            include_size=include_size,
+        )
+
+    def remove_data(self, layer_id: LayerId | str):
+        """Remove a layer's library data while preserving bundled resources."""
+
+        descriptor = self.descriptor(layer_id)
+        return self.assets.remove_asset_data(descriptor.asset_id)
 

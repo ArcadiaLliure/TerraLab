@@ -5,7 +5,6 @@ Aquest mòdul no depèn de UI. Escriu teseles i manifest al disc.
 
 from __future__ import annotations
 
-import argparse
 import csv
 import errno
 import json
@@ -18,13 +17,10 @@ from pathlib import Path
 from typing import Callable
 
 import numpy as np
+import requests
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.data.tile_manifest import build_tile_identifier
-
-try:
-    import requests
-except Exception:  # pragma: no cover
-    requests = None
 
 
 TAP_BASE_URL = "https://gea.esac.esa.int/tap-server/tap"
@@ -95,11 +91,6 @@ class GaiaTileDownloader:
 
         self.manifest_path = self.output_dir / "tile_manifest.json"
         self._state = self._load_state()
-
-        if requests is None:
-            raise RuntimeError(
-                "Falta dependencia requests. Instal·leu-la amb 'pip install requests'."
-            )
 
     def download(self, *, resume: bool = True) -> dict[str, object]:
         """Executa descarrega general + profunda i escriu manifest final."""
@@ -580,7 +571,7 @@ class GaiaTileDownloader:
             try:
                 self._progress_callback(pct, msg)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "GaiaTileDownloader._emit_progress")
 
     def _set_state_progress(self, percent: float, message: str) -> None:
         """Actualitza metadades de progrés dins l'estat resumible."""
@@ -612,7 +603,7 @@ class GaiaTileDownloader:
                     return default_state
                 return merged
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "GaiaTileDownloader._load_state")
 
         return default_state
 
@@ -849,7 +840,7 @@ def _write_tile_npz(path: Path, arrays: dict[str, np.ndarray]) -> None:
                     if tmp_path.exists():
                         tmp_path.unlink()
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "_write_tile_npz")
                 raise
             time.sleep(min(0.50, 0.02 * float(attempt)))
 
@@ -880,7 +871,7 @@ def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
                     if tmp_path.exists():
                         tmp_path.unlink()
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "_write_json_atomic")
                 raise
             time.sleep(min(0.50, 0.02 * float(attempt)))
 
@@ -891,122 +882,3 @@ def _frange(start: float, stop: float, step: float):
     while value < float(stop) - 1e-9:
         yield round(value, 6)
         value += float(step)
-
-
-def _default_output_dir() -> Path:
-    """Retorna directori runtime Gaia per defecte."""
-    from TerraLab.common.data_library import DataLibrary
-
-    layout = DataLibrary.current(require_configured=True).layout(create=True)
-    return Path(layout["data_gaia"]).resolve()
-
-
-def main() -> int:
-    """CLI del descarregador Gaia per teseles."""
-    parser = argparse.ArgumentParser(
-        description="Download Gaia catalog using 5x5 degree tiles"
-    )
-    parser.add_argument(
-        "--output-dir",
-        default="",
-        help=(
-            "Destination folder for tile files. If omitted, configure the "
-            "TerraLab data library or set TERRALAB_DATA_ROOT."
-        ),
-    )
-    parser.add_argument(
-        "--mag-limit",
-        type=float,
-        default=0.0,
-        help="Maximum Gaia G magnitude (<= 0 means no upper limit)",
-    )
-    parser.add_argument(
-        "--visible-mag-limit",
-        type=float,
-        default=DEFAULT_VISIBLE_MAG_LIMIT,
-        help="Magnitude split for general tile",
-    )
-    parser.add_argument(
-        "--tile-size-deg",
-        type=float,
-        default=5.0,
-        help="Tile angular size in degrees",
-    )
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=120.0,
-        help="HTTP timeout in seconds",
-    )
-    parser.add_argument(
-        "--maxrec",
-        type=int,
-        default=-1,
-        help="TAP MAXREC parameter",
-    )
-    parser.add_argument(
-        "--max-concurrent-requests",
-        type=int,
-        default=2,
-        help="Maximum concurrent TAP requests",
-    )
-    parser.add_argument(
-        "--request-retries",
-        type=int,
-        default=3,
-        help="Retries per TAP request",
-    )
-    parser.add_argument(
-        "--retry-backoff-s",
-        type=float,
-        default=1.5,
-        help="Base exponential backoff in seconds",
-    )
-    parser.add_argument(
-        "--state-file",
-        default="",
-        help="Optional state file override",
-    )
-    parser.add_argument(
-        "--no-resume",
-        action="store_true",
-        help="Do not resume previous state",
-    )
-    args = parser.parse_args()
-
-    state_file = (
-        Path(args.state_file).expanduser().resolve()
-        if str(args.state_file).strip()
-        else None
-    )
-
-    try:
-        output_dir = (
-            Path(args.output_dir).expanduser().resolve()
-            if str(args.output_dir).strip()
-            else _default_output_dir()
-        )
-    except Exception as exc:
-        parser.error(str(exc))
-
-    config = GaiaTileDownloaderConfig(
-        output_dir=output_dir,
-        mag_limit=float(args.mag_limit),
-        visible_mag_limit=float(args.visible_mag_limit),
-        tile_size_deg=float(args.tile_size_deg),
-        timeout_s=float(args.timeout),
-        maxrec=int(args.maxrec),
-        state_file=state_file,
-        max_concurrent_requests=int(args.max_concurrent_requests),
-        request_retries=int(args.request_retries),
-        retry_backoff_s=float(args.retry_backoff_s),
-    )
-
-    downloader = GaiaTileDownloader(config)
-    summary = downloader.download(resume=(not bool(args.no_resume)))
-    print(json.dumps(summary, indent=2, ensure_ascii=True))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

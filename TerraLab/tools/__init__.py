@@ -1,1 +1,0 @@
-"""Utilitats offline de TerraLab."""

@@ -1,117 +1,175 @@
-# 🌌 TerraLab: Anàlisi Topogràfica i Astrofísica
+# TerraLab
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+TerraLab es una aplicación científica de escritorio que combina un cielo
+astronómico interactivo con terreno real, cobertura del suelo y estimaciones
+de contaminación lumínica. El observador se sitúa en coordenadas geográficas
+concretas; desde ahí la aplicación calcula el horizonte visible a partir de un
+modelo digital de elevaciones y compone el resultado con catálogos y
+efemérides astronómicas.
 
-**TerraLab** és un motor d'anàlisi i visualització avançada que uneix la **topografia terrestre** amb el **renderitzat astronòmic de precisió**. A diferència dels planetaris convencionals, TerraLab calcula l'**horitzó real** basat en Models Digitals de Terreny (DEM) i estima la **visibilitat estel·lar dinàmica** mitjançant dades satel·litàries de contaminació lluminosa (DVNL).
+> Estado del proyecto: desarrollo activo. Las interfaces de datos y los
+> formatos de caché pueden evolucionar antes de la primera versión estable.
 
----
+## Funciones principales
 
-## 🚀 Què fa TerraLab?
+- Horizonte de 360 grados y relieve proyectado a partir de DEM.
+- Superficie independiente de la geometría: ortofoto RGB o cobertura del
+  suelo categórica.
+- Cielo con Gaia, objetos de cielo profundo, planetas, Sol, Luna y satélites.
+- Modos visual y telescópico con magnitud límite configurable.
+- Estimación automática de contaminación lumínica mediante rásteres DVNL/SQM.
+- Descarga o enlace de recursos científicos desde una biblioteca elegida por
+  el usuario.
+- Procesamiento por lotes, cachés acotadas por bytes y cancelación cooperativa
+  para conjuntos de datos grandes.
 
-TerraLab no només dibuixa estrelles; calcula **què pots veure realment** des d'un punt exacte de la Terra, considerant:
+## Requisitos
 
-1. **Muntanyes i Accidents Geogràfics**: Genera un perfil d'horitzó de 360° mitjançant raycasting sobre malles topogràfiques (ICGC/Copernicus).
-2. **Contaminació Lluminosa Automàtica**: Escaneja dades satel·litàries *Day/Night Visible Lights* per assignar una classe de **Bortle** i un límit de magnitud estel·lar real.
-3. **Mecànica Celesta de Alta Precisió**: Integra el catàleg **Gaia** (estrelles) i efemèrides **DE421** per posicionar els astres amb precisió sub-arcosegon.
+- Python 3.10, 3.11, 3.12 o 3.13.
+- Un entorno de escritorio compatible con Qt 5.
+- Espacio adicional para DEM, Gaia, ortofotos y productos derivados. Estos
+  datos no forman parte del paquete Python.
 
----
+Las dependencias de ejecución están declaradas únicamente en
+[`pyproject.toml`](pyproject.toml).
 
-## 🛠️ Com Funciona (Arquitectura i Matemàtiques)
+## Instalación para desarrollo
 
-### 1. El Motor d'Horitzó (Raycasting)
-
-El `HorizonBaker` projecta milers de rajos des de la posició de l'observador cap a l'horitzó.
-
-* **Decisió de Disseny**: Faig servir bandes de profunditat (*Depth Bands*) per evitar l'aliasing i permetre un gradient atmosfèric realista entre muntanyes properes i llunyanes.
-* **Matemàtiques**: Cada raig aplica una correcció de **curvatura terrestre** ($h_{corr} = \frac{d^2}{2R_{earth}}$) per tal que les muntanyes a més de 100 km s'enfonsin correctament sota l'horitzó segons la distància.
-
-### 2. El Model de Visibilitat (DVNL → SQM → Bortle)
-
-He implementat un pipeline que converteix la radiancia satel·litària en qualitat de cel detectable per l'ull humà.
-
-* **Convolució**: Faig servir un **Nucli de Convolució Gaussià** ($\sigma=1.5 km$) per fer la mitjana de la llum que arriba al **zenit**, simulant la resposta d'un sensor SQM (*Sky Quality Meter*).
-* **La Fórmula**:
-    $$SQM = 22.0 - 2.4 \cdot \log_{10}(Radiancia_{DVNL} + 0.001)$$
-    Aquest model empíric permet que les zones industrials assoleixin un **Bortle 9**, mentre que els cims del Pirineu arribin a **Bortle 1** ($SQM \approx 21.9$).
-
-### 3. Diagrama de Flux de Dades
-
-```mermaid
-graph TD
-    A[Coordenades Lat/Lon] --> B(HorizonWorker)
-    B --> C{Bake Engine}
-    C -->|Raycasting| D[MDT / GeoTIFF]
-    C -->|Sampling| E[DVNL Light Pollution]
-    D --> F[Perfil d'Horitzó .npz]
-    E --> G[Bortle Class / Mag Limit]
-    F & G --> H[AstroCanvas Render]
-    I[Skyfield / Gaia] --> H
-    H --> J[Pantalla de l'Usuari]
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
 ```
 
----
+En Linux o macOS, la activación equivalente es:
 
-## 📦 Instal·lació
+```bash
+source .venv/bin/activate
+```
 
-1. **Clonar i instal·lar dependències**:
+## Ejecución
 
-    ```bash
-    pip install -r requirements.txt
-    ```
+```bash
+python -m TerraLab
+```
 
-2. **Dades Crítiques**:
-    Assegura't de col·locar els fitxers binaris a `TerraLab/data/`:
-    * `stars/gaia_stars.json` (Catàleg estel·lar)
-    * `stars/de421.bsp` (Efemèrides JPL)
-    * `light_pollution/C_DVNL 2022.tif` (Mapa de llums nocturnes)
+La instalación también registra el comando:
 
-3. **Executar**:
+```bash
+terralab
+```
 
-    ```bash
-    python -m TerraLab
-    ```
+En el primer arranque, el asistente permite elegir una biblioteca de datos y
+configurar los recursos disponibles. También se puede fijar la raíz antes de
+arrancar:
 
----
+```powershell
+$env:TERRALAB_DATA_ROOT = "D:\TerraLabData"
+python -m TerraLab
+```
 
-## 🏛️ Atribucions i Autoria
+## Biblioteca de datos
 
-**Desenvolupador Principal:** Manel González Pérez.
+TerraLab separa el código de los datos científicos. La biblioteca contiene el
+catálogo tipado de fuentes, descargas reanudables, datos administrados y
+cachés derivadas:
 
-**Dades i Fonts:**
+```text
+<biblioteca>/
+├── config/data_sources.json
+├── data/earth/elevation/
+├── data/earth/surface/
+├── data/earth/light-pollution/
+├── data/gaia/
+├── data/sky/
+├── downloads/
+├── cache/
+└── logs/
+```
 
-* **Topografia**: ICGC (Institut Cartogràfic i Geològic de Catalunya) i Copernicus (ESA).
-* **Estrelles**: Missió Gaia de l'ESA (European Space Agency).
-* **Efemèrides**: NASA/JPL (Jet Propulsion Laboratory).
-* **Contaminació Lluminosa**: Earth Observation Group (Payne Institute for Public Policy).
-* **Clima**: *Copernicus Atmosphere Monitoring Service (CAMS) i MET Norway WeatherAPI.
+Los archivos enlazados desde fuera de la biblioteca siguen siendo propiedad
+del usuario. Las operaciones de borrado distinguen entre datos administrados y
+fuentes externas.
 
-**APIs externes utilitzades actualment:**
+## Arquitectura
 
-- **Copernicus Atmosphere Monitoring Service (CAMS)** via **Copernicus Climate Data Store (CDS / ECMWF)**.
-  - Finalitat: mètriques atmosfèriques per al mode telescòpic (AOD i pressió superficial).
-  - Accés: `cdsapi` amb credencials d'usuari.
-  - Documentació: https://cds.climate.copernicus.eu/how-to-api
-  - Llicència i termes: https://cds.climate.copernicus.eu/licences/licence-to-use-copernicus-products
-  - Avís d'atribució utilitzat pel projecte:
-    - `Generated using Copernicus Atmosphere Monitoring Service information [Year]`
-  - Nota: l'ús està subjecte als termes del CDS i a les condicions del compte.
+```text
+TerraLab/
+├── astro/              cálculos y búsqueda astronómica
+├── common/             configuración, caché, cancelación y utilidades
+├── data/               biblioteca, recursos y catálogos
+├── scene/              estado y proyección independientes de Qt
+├── render/             renderizadores del cielo y adaptadores Qt
+├── terrain/            dominio, proveedores, raycast, superficie y render
+├── ui/                 composición de widgets, diálogos y workers
+├── widgets/            controles interactivos reutilizables
+└── cli/                comandos no gráficos
+```
 
-- **MET Norway WeatherAPI** (`api.met.no`).
-  - Finalitat: integració de previsió meteorològica al mòdul de clima.
-  - Documentació del producte: https://api.met.no/weatherapi/locationforecast/2.0/documentation
-  - Termes del servei: https://docs.api.met.no/doc/TermsOfService.html
-  - Base de llicència i atribució (CC BY 4.0): https://api.met.no/.License
-  - Avís d'atribució utilitzat pel projecte:
-    - `Weather data from MET Norway`
-  - Nota: les peticions han d'incloure un `User-Agent` vàlid i complir els termes de MET Norway.
+Los límites relevantes se verifican automáticamente: el dominio de terreno no
+depende de Qt, los módulos de datos no dependen de la UI, el grafo interno no
+tiene ciclos y existe una única propiedad del worker de horizonte. Las
+decisiones se documentan en
+[`docs/architecture/decisions`](docs/architecture/decisions).
 
----
+## Herramientas de línea de comandos
 
-## ⚖️ Decisions Tècniques i Filosofia
+Tras instalar el proyecto están disponibles:
 
-* **Python + PyQt5**: Triat per la rapidesa d'iteració i la potència de `numpy` per al càlcul vectorial del cel.
-* **Consciència de CRS**: El motor és conscient que els mapes satel·litàries no estan en graus, sinó en projeccions mètriques (**EPSG:8857**), assegurant una precisió total en les coordenades geogràfiques.
-* **Focal de l'Ull Humà**: He calibrat la projecció perquè un zoom d'1.0 correspongui a la visió humana real, basant la focal equivalent en un sensor de 36mm (*Full Frame*).
+- `terralab-query-elevation`
+- `terralab-gaia`
+- `terralab-dvnl-preprocess`
+- `terralab-dvnl-convolve`
+- `terralab-predict-sqm`
+- `terralab-calibrate-sqm`
 
----
-*Creat amb ❤️ per a la comunitat astronòmica.*
+Las herramientas de desarrollo e inventario viven en [`tools`](tools) y los
+benchmarks reproducibles en [`benchmarks`](benchmarks).
+
+## Calidad
+
+```bash
+python -m ruff check TerraLab scripts tests benchmarks tools/dev
+python -m pytest
+python tools/dev/check_pyright_baseline.py
+python -m vulture TerraLab scripts --min-confidence 70
+python tools/dev/code_inventory.py
+```
+
+Las pruebas de arquitectura se encuentran en
+[`tests/architecture`](tests/architecture).
+El chequeo de Pyright es incremental y cualquier aumento respecto al baseline
+vigente hace fallar el comando.
+
+## Documentación
+
+- [Paquete Python](TerraLab/README.md)
+- [Subsistema de terreno](TerraLab/terrain/README.md)
+- [Pipeline de superficie categórica](docs/categorical-surface-pipeline.md)
+- [Roadmap](docs/roadmap.md)
+- [Changelog](CHANGELOG.md)
+
+## Fuentes y atribución de datos
+
+TerraLab puede trabajar con datos de Gaia/ESA, efemérides JPL, OpenNGC,
+EU-DEM y Copernicus, S2GLC, productos de luces nocturnas y servicios de MET
+Norway o CAMS. Cada recurso conserva su procedencia, atribución y nota de
+licencia en el manifiesto de la biblioteca. La licencia MIT de este repositorio
+no sustituye las condiciones de los conjuntos de datos incorporados por el
+usuario.
+
+## Contribución
+
+Antes de proponer un cambio:
+
+1. Mantén las dependencias en `pyproject.toml`.
+2. No añadas binarios científicos ni cachés generadas al repositorio.
+3. Respeta las fronteras verificadas en `tests/architecture`.
+4. Añade pruebas de regresión para cambios funcionales.
+5. Actualiza el README del paquete afectado y el changelog.
+
+## Licencia
+
+El código de TerraLab se distribuye bajo la licencia
+[MIT](LICENSE). Los datos científicos mantienen sus licencias originales.

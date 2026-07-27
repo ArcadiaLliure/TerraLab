@@ -1,10 +1,46 @@
-"""Initialization helpers extracted from sky_widget_impl."""
+"""Initialization helpers for the astronomical widget."""
 
 from __future__ import annotations
 
+import os
+import time
+from datetime import datetime
+from pathlib import Path
+
+import numpy as np
+from PyQt5.QtCore import QPointF, QThread, QTimer, Qt
+from PyQt5.QtWidgets import QLabel, QWidget
+
+from TerraLab.astro.search_engine import AstroSearchEngine
+from TerraLab.common.app_paths import constellations_path
+from TerraLab.common.custom_widget_base import CustomWidgetBase
+from TerraLab.common.utils import (
+    get_base_dir,
+    get_config_value,
+    set_config_value,
+)
+from TerraLab.data.assets_manager import AssetManager
+from TerraLab.data.catalogs.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
+from TerraLab.debug.diagnostics import Diagnostics
+from TerraLab.layers.village import VillageOverlay
+from TerraLab.light_pollution.modes import normalize_light_pollution_mode
+from TerraLab.render.sky_renderer import SkyRenderer
+from TerraLab.render.workers.star_render import StarRenderWorker
+from TerraLab.scene.camera import Camera
+from TerraLab.terrain.overlay import HorizonOverlay
+from TerraLab.ui.canvas_input_handler import CanvasInputHandler
+from TerraLab.ui.canvas_selection import CanvasSelection
+from TerraLab.widgets.constellation_drawing import (
+    ConstellationDrawingController,
+)
+from TerraLab.widgets.measurement_tools import MeasurementController
+from TerraLab.widgets.scope_ui_manager import ScopeUIManager
+from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
+from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeEngine
+from TerraLab.weather.system import WeatherSystem
+
+
 def astro_canvas_init(obj, parent):
-    from TerraLab.ui import sky_widget_impl as _impl
-    globals().update(_impl.__dict__)
     self = obj
     QWidget.__init__(self, parent)
     self.parent_widget = parent
@@ -81,7 +117,7 @@ def astro_canvas_init(obj, parent):
     # Threading for Stars
     self._cached_star_image = None
     self._cached_trail_image = None
-    self._thread = QThread()
+    self._thread = QThread(self)
     self._worker = StarRenderWorker()
     self._worker.moveToThread(self._thread)
     self._worker.result_ready.connect(self._on_star_result)
@@ -89,6 +125,7 @@ def astro_canvas_init(obj, parent):
     self.request_render_signal.connect(self._worker.render)
     self.request_trails_signal.connect(self._worker.render_trails)
     self._thread.start()
+    self._render_thread_shutdown = False
     self.rendering_busy = False
     self.trail_rendering_busy = False
     # Info Label for Selection
@@ -103,20 +140,59 @@ def astro_canvas_init(obj, parent):
     self.btn_human_eye.setToolTip("Zoom Natural (17mm)")
     self.btn_human_eye.setStyleSheet("""
         QPushButton {
-            background-color: rgba(0, 0, 0, 100);
-            color: white;
-            border: 1px solid rgba(255, 255, 255, 100);
+            background-color: rgba(5, 8, 17, 210);
+            color: #d8b26a;
+            border: 1px solid #3b4559;
             border-radius: 12px;
             font-size: 11px;
             font-weight: bold;
         }
         QPushButton:hover {
-            background-color: rgba(255, 255, 255, 50);
+            background-color: #151b28;
+            border-color: #d8b26a;
         }
     """)
     self.btn_human_eye.clicked.connect(self.reset_zoom_human)
     self.btn_human_eye.hide()
-    self.lbl_info.setStyleSheet("color: lime; font-size: 10px; background: rgba(0,0,0,100);")
+    self.hud_visible = True
+    self.btn_hud_toggle = QPushButton("\U0001F441  HUD", self)
+    self.btn_hud_toggle.setObjectName("hudToggleButton")
+    self.btn_hud_toggle.setAccessibleName("Mostrar o amagar informació HUD")
+    self.btn_hud_toggle.setToolTip("Mostrar o amagar la informació del visor")
+    self.btn_hud_toggle.setCheckable(True)
+    self.btn_hud_toggle.setChecked(True)
+    self.btn_hud_toggle.setFixedSize(78, 26)
+    self.btn_hud_toggle.setCursor(Qt.PointingHandCursor)
+    self.btn_hud_toggle.setStyleSheet(
+        """
+        QPushButton {
+            background-color: rgba(5, 8, 17, 220);
+            color: #aab1c2;
+            border: 1px solid #3b4559;
+            border-radius: 13px;
+            padding: 2px 8px;
+            font-size: 10px;
+            font-weight: 600;
+        }
+        QPushButton:hover {
+            background-color: #151b28;
+            color: #f1cd88;
+            border-color: #d8b26a;
+        }
+        QPushButton:checked {
+            background-color: #211c14;
+            color: #f1cd88;
+            border-color: #d8b26a;
+        }
+        """
+    )
+    self.btn_hud_toggle.toggled.connect(self.set_hud_visible)
+    self.btn_hud_toggle.show()
+    self.lbl_info.setStyleSheet(
+        "color: #4fd8c4; font-size: 10px; "
+        "background: rgba(2,4,10,210); border: 1px solid #252c3b; "
+        "border-radius: 4px; padding: 3px 6px;"
+    )
     self.lbl_info.move(10, 50)
     self.lbl_info.hide()
     # Skyfield Cache
@@ -160,9 +236,9 @@ def astro_canvas_init(obj, parent):
     self._selection_pulse_timer.timeout.connect(self._selection_pulse_tick)
 
 def astronomical_widget_init(obj, parent=None, **kwargs):
-    from TerraLab.ui import sky_widget_impl as _impl
-    globals().update(_impl.__dict__)
     self = obj
+    self._closing = False
+    self._lifecycle_timers = set()
     # 1. Initialize properties required by UI/Canvas
     self.asset_manager = AssetManager()
     from TerraLab.data.layer_manager import LayerManager
@@ -170,6 +246,7 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.runtime_layout = dict(getattr(self.asset_manager, "layout", {}))
     self.latitude = float(get_config_value("observer_lat", 41.189795))
     self.longitude = float(get_config_value("observer_lon", 1.210058))
+    self._observer_offset = float(get_config_value("observer_offset", 0.0))
     self.observer_timezone = str(get_config_value("observer_timezone", "") or "").strip()
     # Catalog threshold used in magnitude mode.
     legacy_magnitude_limit = get_config_value("manual_eye_limit_mag", 8.0)
@@ -259,6 +336,7 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.celestial_objects = []
     self.use_real_time = True
     self.manual_hour = 12.0
+    self._dragging_time = False
     self.pure_colors = False
     # Light Pollution state
     configured_lp_mode = get_config_value("light_pollution_mode", None)
@@ -405,13 +483,23 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.terrain_depth_debounce_timer.setSingleShot(True)
     self.terrain_depth_debounce_timer.setInterval(2000)
     self.terrain_depth_debounce_timer.timeout.connect(self._apply_pending_terrain_depth)
+    self.terrain_ray_precision_debounce_timer = QTimer(self)
+    self.terrain_ray_precision_debounce_timer.setSingleShot(True)
+    self.terrain_ray_precision_debounce_timer.setInterval(2000)
+    self.terrain_ray_precision_debounce_timer.timeout.connect(
+        self._apply_pending_terrain_ray_precision
+    )
     self._full_horizon_profile = None
     self._pending_terrain_depth_km = None
+    self._pending_terrain_ray_step_deg = None
     self._last_horizon_progress_text = ""
-    QTimer.singleShot(0, lambda: self._set_scene_load_stage("base_sky"))
-    QTimer.singleShot(200, self._start_async_bootstrap)
-    QTimer.singleShot(0, self._maybe_run_first_time_onboarding)
-    QTimer.singleShot(1500, self._maybe_resume_pending_gaia_download)
+    self._schedule_lifecycle_callback(
+        0, lambda: self._set_scene_load_stage("base_sky")
+    )
+    self._schedule_lifecycle_callback(200, self._start_async_bootstrap)
+    self._schedule_lifecycle_callback(
+        1500, self._maybe_resume_pending_gaia_download
+    )
 
 
 

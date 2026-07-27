@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Tuple
 
 import numpy as np
+from TerraLab.common.exception_reporting import log_suppressed_exception
 
 try:
     import hpgeom as hpg
@@ -138,13 +139,13 @@ class CatalegEstelarHEALPix:
             if mm is not None:
                 mm.close()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "CatalegEstelarHEALPix.close")
         self._closed = True
 
     def __enter__(self):
         return self
 
-    def __exit__(self, exc_type, exc, tb):
+    def __exit__(self, _exc_type, exc, _tb):
         self.close()
         return False
 
@@ -152,7 +153,7 @@ class CatalegEstelarHEALPix:
         try:
             self.close()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "CatalegEstelarHEALPix.__del__")
 
     def _validate_index(self) -> None:
         """Validate index shape and monotonic properties."""

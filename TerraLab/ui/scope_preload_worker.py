@@ -13,9 +13,10 @@ from typing import Any
 import numpy as np
 from PyQt5.QtCore import QObject, pyqtSignal, pyqtSlot
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 from TerraLab.render.stars_renderer import build_scope_spatial_index_payload
-from TerraLab.widgets.sky_legacy_components import (
+from TerraLab.data.catalogs.star_catalog import (
     STAR_CATALOG_NAKED_EYE_MAX_MAG,
 )
 
@@ -43,7 +44,7 @@ def _resolve_no_gaia_path(stars_dir: str | None) -> str:
             str(runtime_data_dir_for("gaia") / "no_gaia_stars.json")
         )
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_resolve_no_gaia_path")
     candidates.append(
         str(
             Path(__file__).resolve().parents[1]
@@ -85,7 +86,7 @@ def _load_cached_meta(path: Path) -> dict[str, Any]:
         if isinstance(payload, dict):
             return payload
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_load_cached_meta")
     return {}
 
 
@@ -101,6 +102,29 @@ class ScopeFullPreloadWorker(QObject):
     progress = pyqtSignal(object)
     ready = pyqtSignal(object)
     error = pyqtSignal(str)
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._shutdown_event = threading.Event()
+        self._process_lock = threading.Lock()
+        self._current_process: subprocess.Popen[str] | None = None
+
+    def request_shutdown(self) -> None:
+        """Thread-safe cancellation of a scope preload and its subprocess."""
+
+        self._shutdown_event.set()
+        with self._process_lock:
+            process = self._current_process
+        if process is None or process.poll() is not None:
+            return
+        try:
+            process.terminate()
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2.0)
+        except OSError:
+            return
 
     def _emit_ready_from_cache(self, done_payload: dict[str, Any]) -> None:
         indices_path = str(done_payload.get("indices_path", "") or "")
@@ -151,11 +175,13 @@ class ScopeFullPreloadWorker(QObject):
         Retorna:
         - None.
         """
+        if self._shutdown_event.is_set():
+            return
         project_root = Path(__file__).resolve().parents[2]
         cmd = [
             sys.executable,
             "-m",
-            "TerraLab.tools.scope_preload_cache",
+            "TerraLab.data.catalogs.scope_preload_cache",
             "--runtime-npz",
             str(runtime_npz_path or ""),
             "--stars-dir",
@@ -184,6 +210,8 @@ class ScopeFullPreloadWorker(QObject):
         except Exception as exc:
             self.error.emit(f"Scope preload spawn failed: {exc}")
             return
+        with self._process_lock:
+            self._current_process = proc
 
         done_payload = None
         last_error = ""
@@ -197,7 +225,7 @@ class ScopeFullPreloadWorker(QObject):
                     if text:
                         print(f"[ScopePreload] {text}")
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "ScopeFullPreloadWorker.run._drain_stderr")
 
         stderr_thread = threading.Thread(
             target=_drain_stderr, args=(proc.stderr,), daemon=True
@@ -227,6 +255,16 @@ class ScopeFullPreloadWorker(QObject):
 
         return_code = proc.wait()
         stderr_thread.join(timeout=0.2)
+        with self._process_lock:
+            if self._current_process is proc:
+                self._current_process = None
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
+
+        if self._shutdown_event.is_set():
+            return
 
         if return_code != 0:
             if not last_error:
@@ -272,6 +310,8 @@ class ScopeFullPreloadWorker(QObject):
         Retorna:
         - None.
         """
+        if self._shutdown_event.is_set():
+            return
         try:
             ra_arr = np.asarray(ra_all, dtype=np.float32)
             dec_arr = np.asarray(dec_all, dtype=np.float32)
@@ -365,6 +405,8 @@ class ScopeFullPreloadWorker(QObject):
                 mag_all=mag_arr,
                 max_mag=max_mag_opt,
             )
+            if self._shutdown_event.is_set():
+                return
             if sorted_indices is None or offsets is None:
                 raise RuntimeError(
                     "Scope index payload build returned empty result"

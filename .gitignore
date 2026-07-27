@@ -49,6 +49,9 @@ coverage.xml
 *.py.cover
 .hypothesis/
 .pytest_cache/
+.pytest_tmp/
+.pytest_local_tmp/
+tmp_scope_test/
 cover/
 
 # Translations
@@ -215,3 +218,16 @@ tools/TerraLab/data/terrain_cache/*.txt
 TerraLab/data/stars/*.npy
 /TerraLab/data/terrain_cache
 /TerraLab/data/config.json
+/TerraLab/data/temporal/
+
+# Local archives, backups, and generated diagnostics
+*.7z
+*.BKP
+*.CACA
+test_err*.txt
+test_output*.txt
+/TerraLab/clean_peaks.txt
+/TerraLab/dome_out.txt
+/TerraLab/output_bake.txt
+/TerraLab/tools/classes_methods_report.xlsx
+/TerraLab/tools/resumen_cognitivo_clases_metodos.xlsx

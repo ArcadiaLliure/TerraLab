@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -12,17 +11,13 @@ from typing import Dict, Iterable, List
 
 import numpy as np
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 
 try:
     import zstandard as zstd
 except Exception:  # pragma: no cover
     zstd = None
-
-try:
-    from astropy.table import Table
-except Exception:  # pragma: no cover
-    Table = None
 
 try:
     import pandas as pd
@@ -109,7 +104,7 @@ def _source_log(message: str) -> None:
             fh.write(line + "\n")
     except Exception:
         # Never break dataset loading because of telemetry logging.
-        pass
+        log_suppressed_exception(__name__, "_source_log")
 
 
 def _read_runtime_meta(meta_path: Path) -> Dict[str, object]:
@@ -121,7 +116,7 @@ def _read_runtime_meta(meta_path: Path) -> Dict[str, object]:
         if isinstance(data, dict):
             return data
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_read_runtime_meta")
     return {}
 
 
@@ -145,7 +140,7 @@ def _build_meta_payload(
         try:
             payload["source_signature"] = _path_signature(Path(source_path))
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_build_meta_payload")
     for k, v in extra.items():
         if v is not None:
             payload[str(k)] = v
@@ -259,7 +254,7 @@ def _remove_file_if_exists(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_remove_file_if_exists")
 
 
 def _to_float_array(
@@ -509,13 +504,19 @@ def _read_split_npy(stars_dir: Path) -> Dict[str, np.ndarray] | None:
     if sid_path.exists():
         try:
             raw["source_id"] = np.load(sid_path, allow_pickle=False)
-        except Exception:
-            raw["source_id"] = np.load(sid_path, allow_pickle=True)
+        except (OSError, ValueError):
+            # Old object-array IDs are optional and deliberately not unpickled.
+            pass
 
     return raw
 
 
 def _read_ecsv_columns(path: Path) -> Dict[str, np.ndarray]:
+    try:
+        from astropy.table import Table
+    except ImportError:  # pragma: no cover - optional dependency
+        Table = None
+
     if Table is not None:
         table = Table.read(path, format="ascii.ecsv")
         out: Dict[str, np.ndarray] = {}

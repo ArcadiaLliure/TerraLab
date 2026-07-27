@@ -14,6 +14,7 @@ from typing import Callable, Dict, Iterable, Iterator, List, Optional
 
 import numpy as np
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.data.stars_dataset import (
     OPTIONAL_COLS,
     REQUIRED_COLS,
@@ -69,7 +70,7 @@ def _progress(
     try:
         callback(float(percent), str(message))
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_progress")
 
 
 def _normalized_field_map(headers: Iterable[str]) -> Dict[str, str]:
@@ -155,7 +156,7 @@ def _iter_csv_normalized_chunks(
             return
         except Exception:
             # Fallback to stdlib parser for maximum compatibility / low-memory behavior.
-            pass
+            log_suppressed_exception(__name__, "_iter_csv_normalized_chunks")
 
     with path.open("r", encoding="utf-8-sig", newline="") as fh:
         reader = csv.DictReader(fh)
@@ -484,13 +485,13 @@ def build_gaia_catalog_from_tables(
         try:
             npz_path.unlink(missing_ok=True)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "build_gaia_catalog_from_tables")
 
     if not bool(write_npy):
         try:
             npy_path.unlink(missing_ok=True)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "build_gaia_catalog_from_tables")
 
     zst_source: Optional[Path] = None
     if npz_path.exists():
@@ -508,13 +509,13 @@ def build_gaia_catalog_from_tables(
         try:
             zst_path.unlink(missing_ok=True)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "build_gaia_catalog_from_tables")
 
     if (not bool(write_npy)) and staged_npy_path.exists():
         try:
             staged_npy_path.unlink(missing_ok=True)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "build_gaia_catalog_from_tables")
 
     if bool(write_npz):
         if bool(write_npy):

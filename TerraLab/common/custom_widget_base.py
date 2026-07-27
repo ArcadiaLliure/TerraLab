@@ -14,25 +14,26 @@ el tema actiu.
 """
 
 from PyQt5.QtCore import QEvent, QPoint, Qt, pyqtSignal
-from PyQt5.QtGui import QFont, QIcon
 from PyQt5.QtWidgets import (
     QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QSizeGrip,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from .utils import get_config_value
+from TerraLab.common.design_tokens import onboarding_widget_theme
+from TerraLab.common.exception_reporting import log_suppressed_exception
 
 
 # =============================================================================
 # Utilitats de color i contrast
 # =============================================================================
+
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
     """Converteix un color en format '#RRGGBB' a una tupla (r, g, b)."""
@@ -54,9 +55,9 @@ def lighten_color(color: str, factor: float = 0.1) -> str:
     """
     red, green, blue = _hex_to_rgb(color)
     return _rgb_to_hex(
-        min(255, int(red   + (255 - red)   * factor)),
+        min(255, int(red + (255 - red) * factor)),
         min(255, int(green + (255 - green) * factor)),
-        min(255, int(blue  + (255 - blue)  * factor)),
+        min(255, int(blue + (255 - blue) * factor)),
     )
 
 
@@ -68,9 +69,9 @@ def darken_color(color: str, factor: float = 0.1) -> str:
     """
     red, green, blue = _hex_to_rgb(color)
     return _rgb_to_hex(
-        max(0, int(red   * (1 - factor))),
+        max(0, int(red * (1 - factor))),
         max(0, int(green * (1 - factor))),
-        max(0, int(blue  * (1 - factor))),
+        max(0, int(blue * (1 - factor))),
     )
 
 
@@ -89,6 +90,7 @@ def get_contrast_color(color: str) -> str:
 # Servei de tema i refresc de widgets
 # =============================================================================
 
+
 class ThemeLifecycleService:
     """Servei de suport per a operacions de tema i refresc de widgets."""
 
@@ -102,7 +104,9 @@ class ThemeLifecycleService:
                 continue
 
     @staticmethod
-    def refresh_widget(widget_instance, deep: bool = True, reapply_theme: bool = True):
+    def refresh_widget(
+        widget_instance, deep: bool = True, reapply_theme: bool = True
+    ):
         """
         Refresca la interfície d'un widget.
 
@@ -115,14 +119,14 @@ class ThemeLifecycleService:
             try:
                 widget_instance.apply_styles()
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "ThemeLifecycleService.refresh_widget")
 
         retranslate = getattr(widget_instance, "retranslate_ui", None)
         if callable(retranslate):
             try:
                 retranslate(deep=deep)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "ThemeLifecycleService.refresh_widget")
 
         if deep:
             try:
@@ -133,24 +137,27 @@ class ThemeLifecycleService:
                         child.setParent(None)
                 widget_instance.setup_content()
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "ThemeLifecycleService.refresh_widget")
 
         try:
             widget_instance.updateGeometry()
             widget_instance.repaint()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "ThemeLifecycleService.refresh_widget")
 
 
 # =============================================================================
 # Servei d'interacció de finestra
 # =============================================================================
 
+
 class WindowInteractionService:
     """Servei de suport per al càlcul de vores i cursor de redimensionament."""
 
     @staticmethod
-    def check_resize_area(widget_instance, position, resize_margin: int) -> int:
+    def check_resize_area(
+        widget_instance, position, resize_margin: int
+    ) -> int:
         """
         Calcula quines vores toca el cursor i retorna una màscara de bits.
 
@@ -158,10 +165,14 @@ class WindowInteractionService:
         """
         resize_edges = 0
         w, h = widget_instance.width(), widget_instance.height()
-        if position.x() < resize_margin:          resize_edges |= 1
-        if position.x() > w - resize_margin:      resize_edges |= 4
-        if position.y() < resize_margin:          resize_edges |= 2
-        if position.y() > h - resize_margin:      resize_edges |= 8
+        if position.x() < resize_margin:
+            resize_edges |= 1
+        if position.x() > w - resize_margin:
+            resize_edges |= 4
+        if position.y() < resize_margin:
+            resize_edges |= 2
+        if position.y() > h - resize_margin:
+            resize_edges |= 8
         return resize_edges
 
     @staticmethod
@@ -184,6 +195,7 @@ class WindowInteractionService:
 # =============================================================================
 # Servei d'estat i persistència de finestra
 # =============================================================================
+
 
 class WindowStateService:
     """
@@ -226,7 +238,8 @@ class WindowStateService:
         app = QApplication.instance()
         screen = (
             app.screenAt(widget_instance.frameGeometry().center())
-            if app and hasattr(app, "screenAt") else None
+            if app and hasattr(app, "screenAt")
+            else None
         ) or QApplication.primaryScreen()
 
         target = (
@@ -249,13 +262,13 @@ class WindowStateService:
     def get_state(widget_instance) -> dict:
         """Serialitza la geometria i l'estat visual del widget."""
         return {
-            "title":        widget_instance.title,
-            "x":            widget_instance.x(),
-            "y":            widget_instance.y(),
-            "width":        widget_instance.width(),
-            "height":       widget_instance.height(),
+            "title": widget_instance.title,
+            "x": widget_instance.x(),
+            "y": widget_instance.y(),
+            "width": widget_instance.width(),
+            "height": widget_instance.height(),
             "is_maximized": widget_instance.is_maximized,
-            "visible":      widget_instance.isVisible(),
+            "visible": widget_instance.isVisible(),
         }
 
     @staticmethod
@@ -275,47 +288,10 @@ class WindowStateService:
 # Classe base de widget personalitzat
 # =============================================================================
 
-# Tema per defecte aplicat quan no hi ha cap tema desat.
-_DEFAULT_THEME_COLORS = {
-    "error_color":    "#c8553d",
-    "control_bg":     "#948465",
-    "secondary":      "#634311",
-    "surface":        "#f1dfbe",
-}
-
-
 def _build_default_theme() -> dict:
-    """
-    Construeix el diccionari de tema per defecte a partir dels colors base.
+    """Construeix el tema Qt equivalent al Primer viatge."""
 
-    Centralitza la definició del tema inicial perquè sigui fàcil de canviar
-    sense tocar __init__.
-    """
-    c = _DEFAULT_THEME_COLORS
-    error  = c["error_color"]
-    ctrl   = c["control_bg"]
-    sec    = c["secondary"]
-    surf   = c["surface"]
-    return {
-        "widget_background_gradient": [surf, ctrl],
-        "widget_background":          surf,
-        "widget_border_color":        sec,
-        "widget_border_radius":       10,
-        "title_bar_gradient":         ["#a3a85e", "#a3a85e"],
-        "title_bar_bg":               "#a3a85e",
-        "title_text_color":           "#000000",
-        "control_button_bg":          ctrl,
-        "control_button_border":      sec,
-        "control_button_hover":       sec,
-        "control_button_pressed":     sec,
-        "control_button_text_color":  get_contrast_color(ctrl),
-        "close_button_bg":            error,
-        "close_button_border":        darken_color(error, 0.15),
-        "close_button_hover":         lighten_color(error, 0.15),
-        "close_button_pressed":       darken_color(error, 0.15),
-        "close_button_text_color":    get_contrast_color(error),
-        "content_bg":                 surf,
-    }
+    return onboarding_widget_theme()
 
 
 class CustomWidgetBase(QWidget):
@@ -328,8 +304,8 @@ class CustomWidgetBase(QWidget):
 
     widget_minimized = pyqtSignal(object)
     widget_maximized = pyqtSignal(object)
-    widget_restored  = pyqtSignal(object)
-    widget_closed    = pyqtSignal(object)
+    widget_restored = pyqtSignal(object)
+    widget_closed = pyqtSignal(object)
 
     _instances = []
     _RESIZE_MARGIN = 8
@@ -362,17 +338,17 @@ class CustomWidgetBase(QWidget):
         self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.setMouseTracking(True)
 
-        self.title        = title
+        self.title = title
         self.is_frameless = frameless
         self.is_maximized = False
-        self.old_pos      = QPoint()
+        self.old_pos = QPoint()
         self.old_geometry = None
 
-        self._resizing        = False
+        self._resizing = False
         self._resize_drag_pos = QPoint()
-        self._resize_edges    = 0
+        self._resize_edges = 0
 
-        self.default_size     = (400, 300)
+        self.default_size = (400, 300)
         self.default_position = (100, 100)
         self.resize(*self.default_size)
         self.move(*self.default_position)
@@ -385,7 +361,9 @@ class CustomWidgetBase(QWidget):
             frameless: Si és True, activa FramelessWindowHint i WindowStaysOnTopHint.
         """
         if frameless:
-            self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
+            self.setWindowFlags(
+                Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
+            )
         self.setAttribute(Qt.WA_TranslucentBackground, False)
 
     def _load_saved_theme(self):
@@ -400,11 +378,12 @@ class CustomWidgetBase(QWidget):
             if not saved_theme:
                 return
             from theme.theme_service import ThemeManager
+
             theme_dict = ThemeManager().get_theme(saved_theme)
             if theme_dict:
                 self.set_theme(theme_dict)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "CustomWidgetBase._load_saved_theme")
 
     # -------------------------------------------------------------------------
     # Construcció d'interfície
@@ -444,16 +423,25 @@ class CustomWidgetBase(QWidget):
         layout.addWidget(self.title_label)
         layout.addStretch()
 
-        self.minimize_btn = self._make_control_button("−", self.minimize_widget)
-        self.restore_btn  = self._make_control_button("□", self.restore_widget)
-        self.maximize_btn = self._make_control_button("□", self.maximize_widget)
+        self.minimize_btn = self._make_control_button(
+            "−", self.minimize_widget
+        )
+        self.restore_btn = self._make_control_button("□", self.restore_widget)
+        self.maximize_btn = self._make_control_button(
+            "□", self.maximize_widget
+        )
 
         self.close_btn = QPushButton("×")
         self.close_btn.setObjectName("closeButton")
         self.close_btn.setFixedSize(20, 20)
         self.close_btn.clicked.connect(self.close_widget)
 
-        for btn in (self.minimize_btn, self.restore_btn, self.maximize_btn, self.close_btn):
+        for btn in (
+            self.minimize_btn,
+            self.restore_btn,
+            self.maximize_btn,
+            self.close_btn,
+        ):
             layout.addWidget(btn)
 
     def _make_control_button(self, label: str, callback) -> QPushButton:
@@ -531,7 +519,7 @@ class CustomWidgetBase(QWidget):
         else:
             bg = f"background-color: {theme.get('widget_background', '#ffffff')};"
 
-        border_color  = theme.get("widget_border_color", "#cccccc")
+        border_color = theme.get("widget_border_color", "#cccccc")
         border_radius = theme.get("widget_border_radius", 8)
         return (
             f"CustomWidgetBase {{ {bg} border: 2px solid {border_color}; "
@@ -545,11 +533,13 @@ class CustomWidgetBase(QWidget):
         Retorna:
             String amb les regles CSS per a #titleBar i #titleLabel.
         """
-        theme  = self.current_theme
-        bg     = theme.get("title_bar_bg", theme.get("control_button_bg", "#e0e0e0"))
+        theme = self.current_theme
+        bg = theme.get(
+            "title_bar_bg", theme.get("control_button_bg", "#e0e0e0")
+        )
         border = theme.get("widget_border_color", "#cccccc")
         radius = theme.get("widget_border_radius", 8)
-        color  = theme.get("title_text_color", "#333333")
+        color = theme.get("title_text_color", "#333333")
         return (
             f"#titleBar {{ background-color: {bg}; border-bottom: 1px solid {border}; "
             f"border-top-left-radius: {radius}px; border-top-right-radius: {radius}px; }}\n"
@@ -563,11 +553,11 @@ class CustomWidgetBase(QWidget):
         Retorna:
             String amb les regles CSS per a #controlButton i els seus estats.
         """
-        theme   = self.current_theme
-        bg      = theme.get("control_button_bg", "#d0d0d0")
-        border  = theme.get("control_button_border", bg)
-        color   = theme.get("control_button_text_color", get_contrast_color(bg))
-        hover   = theme.get("control_button_hover", border)
+        theme = self.current_theme
+        bg = theme.get("control_button_bg", "#d0d0d0")
+        border = theme.get("control_button_border", bg)
+        color = theme.get("control_button_text_color", get_contrast_color(bg))
+        hover = theme.get("control_button_hover", border)
         pressed = theme.get("control_button_pressed", darken_color(hover, 0.1))
         return (
             f"#controlButton {{ background-color: {bg}; border: 1px solid {border}; "
@@ -583,11 +573,11 @@ class CustomWidgetBase(QWidget):
         Retorna:
             String amb les regles CSS per a #closeButton i els seus estats.
         """
-        theme   = self.current_theme
-        bg      = theme.get("close_button_bg", "#ff6b6b")
-        border  = theme.get("close_button_border", darken_color(bg, 0.15))
-        color   = theme.get("close_button_text_color", get_contrast_color(bg))
-        hover   = theme.get("close_button_hover", lighten_color(bg, 0.15))
+        theme = self.current_theme
+        bg = theme.get("close_button_bg", "#ff6b6b")
+        border = theme.get("close_button_border", darken_color(bg, 0.15))
+        color = theme.get("close_button_text_color", get_contrast_color(bg))
+        hover = theme.get("close_button_hover", lighten_color(bg, 0.15))
         pressed = theme.get("close_button_pressed", darken_color(bg, 0.15))
         return (
             f"#closeButton {{ background-color: {bg}; border: 1px solid {border}; "
@@ -603,8 +593,8 @@ class CustomWidgetBase(QWidget):
         Retorna:
             String amb les regles CSS per a #contentFrame.
         """
-        theme  = self.current_theme
-        bg     = theme.get("content_bg", theme.get("widget_background", "#ffffff"))
+        theme = self.current_theme
+        bg = theme.get("content_bg", theme.get("widget_background", "#ffffff"))
         radius = theme.get("widget_border_radius", 8)
         return (
             f"#contentFrame {{ background-color: {bg}; "
@@ -654,51 +644,73 @@ class CustomWidgetBase(QWidget):
         Retorna:
             Diccionari parcial en format intern, llest per a _resolve_theme_defaults.
         """
-        colors    = theme_dict.get("colors", {})
+        colors = theme_dict.get("colors", {})
         gradients = theme_dict.get("gradients", {})
-        effects   = theme_dict.get("effects", {})
+        effects = theme_dict.get("effects", {})
 
-        primary   = colors.get("primary")
+        primary = colors.get("primary")
         secondary = colors.get("secondary", primary)
-        accent    = colors.get("accent", secondary)
-        error     = colors.get("error", accent)
+        accent = colors.get("accent", secondary)
+        error = colors.get("error", accent)
 
         ctrl_bg = primary or self.current_theme.get("control_button_bg")
 
         title_bg = (
             gradients["title_bar"][0]
             if gradients.get("title_bar")
-            else colors.get("title_bar_bg", colors.get("primary", self.current_theme.get("title_bar_bg")))
+            else colors.get(
+                "title_bar_bg",
+                colors.get("primary", self.current_theme.get("title_bar_bg")),
+            )
         )
-        close_bg = error or self.current_theme.get("close_button_bg", "#ff6b6b")
+        close_bg = error or self.current_theme.get(
+            "close_button_bg", "#ff6b6b"
+        )
 
         return {
             # Widget
             "widget_background_gradient": gradients.get("widget_background"),
-            "widget_background":          colors.get("background", colors.get("surface", self.current_theme.get("widget_background"))),
-            "widget_border_color":        colors.get("secondary", self.current_theme.get("widget_border_color")),
-            "widget_border_radius":       effects.get("border_radius", self.current_theme.get("widget_border_radius", 8)),
+            "widget_background": colors.get(
+                "background",
+                colors.get(
+                    "surface", self.current_theme.get("widget_background")
+                ),
+            ),
+            "widget_border_color": colors.get(
+                "secondary", self.current_theme.get("widget_border_color")
+            ),
+            "widget_border_radius": effects.get(
+                "border_radius",
+                self.current_theme.get("widget_border_radius", 8),
+            ),
             # Barra de títol
-            "title_bar_gradient":         gradients.get("title_bar"),
-            "title_bar_bg":               title_bg,
-            "title_text_color":           colors.get("text_primary", self.current_theme.get("title_text_color")),
+            "title_bar_gradient": gradients.get("title_bar"),
+            "title_bar_bg": title_bg,
+            "title_text_color": colors.get(
+                "text_primary", self.current_theme.get("title_text_color")
+            ),
             # Botons de control
-            "control_button_bg":          ctrl_bg,
-            "control_button_border":      secondary or ctrl_bg,
-            "control_button_hover":       accent or secondary or ctrl_bg,
-            "control_button_pressed":     darken_color(accent or secondary or ctrl_bg, 0.1),
-            "control_button_text_color":  get_contrast_color(ctrl_bg),
+            "control_button_bg": ctrl_bg,
+            "control_button_border": secondary or ctrl_bg,
+            "control_button_hover": accent or secondary or ctrl_bg,
+            "control_button_pressed": darken_color(
+                accent or secondary or ctrl_bg, 0.1
+            ),
+            "control_button_text_color": get_contrast_color(ctrl_bg),
             # Botó de tancament
-            "close_button_bg":            close_bg,
-            "close_button_border":        darken_color(close_bg, 0.15),
-            "close_button_hover":         lighten_color(close_bg, 0.15),
-            "close_button_pressed":       darken_color(close_bg, 0.15),
-            "close_button_text_color":    get_contrast_color(close_bg),
+            "close_button_bg": close_bg,
+            "close_button_border": darken_color(close_bg, 0.15),
+            "close_button_hover": lighten_color(close_bg, 0.15),
+            "close_button_pressed": darken_color(close_bg, 0.15),
+            "close_button_text_color": get_contrast_color(close_bg),
             # Contingut
-            "content_bg":                 colors.get("surface", colors.get("background", self.current_theme.get("content_bg"))),
+            "content_bg": colors.get(
+                "surface",
+                colors.get("background", self.current_theme.get("content_bg")),
+            ),
             # Aliases semàntics
-            "accent":    accent,
-            "primary":   primary,
+            "accent": accent,
+            "primary": primary,
             "secondary": secondary,
         }
 
@@ -716,37 +728,59 @@ class CustomWidgetBase(QWidget):
         Retorna:
             Diccionari complet amb totes les claus necessàries resoltes.
         """
+
         def get(key, fallback=None):
             """Retorna el valor de 'partial' si existeix i no és None."""
             val = partial.get(key)
-            return val if val is not None else (fallback() if callable(fallback) else fallback)
+            return (
+                val
+                if val is not None
+                else (fallback() if callable(fallback) else fallback)
+            )
 
-        ctrl_bg     = get("control_button_bg", "#d0d0d0")
+        ctrl_bg = get("control_button_bg", "#d0d0d0")
         ctrl_border = get("control_button_border", ctrl_bg)
-        ctrl_hover  = get("control_button_hover", ctrl_border)
-        close_bg    = get("close_button_bg", ctrl_hover)
-        content_bg  = get("content_bg", get("widget_background", "#ffffff"))
-        title_bg    = get("title_bar_bg", ctrl_bg)
+        ctrl_hover = get("control_button_hover", ctrl_border)
+        close_bg = get("close_button_bg", ctrl_hover)
+        content_bg = get("content_bg", get("widget_background", "#ffffff"))
+        title_bg = get("title_bar_bg", ctrl_bg)
 
         return {
-            "widget_background_gradient": get("widget_background_gradient", [content_bg, ctrl_bg]),
-            "widget_background":          get("widget_background", content_bg),
-            "widget_border_color":        get("widget_border_color", ctrl_border),
-            "widget_border_radius":       get("widget_border_radius", 8),
-            "title_bar_gradient":         get("title_bar_gradient"),
-            "title_bar_bg":               title_bg,
-            "title_text_color":           get("title_text_color", lambda: get_contrast_color(title_bg)),
-            "control_button_bg":          ctrl_bg,
-            "control_button_border":      ctrl_border,
-            "control_button_hover":       ctrl_hover,
-            "control_button_pressed":     get("control_button_pressed", lambda: darken_color(ctrl_hover, 0.1)),
-            "control_button_text_color":  get("control_button_text_color", lambda: get_contrast_color(ctrl_bg)),
-            "close_button_bg":            close_bg,
-            "close_button_border":        get("close_button_border", lambda: darken_color(close_bg, 0.15)),
-            "close_button_hover":         get("close_button_hover", lambda: lighten_color(close_bg, 0.15)),
-            "close_button_pressed":       get("close_button_pressed", lambda: darken_color(close_bg, 0.15)),
-            "close_button_text_color":    get("close_button_text_color", lambda: get_contrast_color(close_bg)),
-            "content_bg":                 content_bg,
+            "widget_background_gradient": get(
+                "widget_background_gradient", [content_bg, ctrl_bg]
+            ),
+            "widget_background": get("widget_background", content_bg),
+            "widget_border_color": get("widget_border_color", ctrl_border),
+            "widget_border_radius": get("widget_border_radius", 8),
+            "title_bar_gradient": get("title_bar_gradient"),
+            "title_bar_bg": title_bg,
+            "title_text_color": get(
+                "title_text_color", lambda: get_contrast_color(title_bg)
+            ),
+            "control_button_bg": ctrl_bg,
+            "control_button_border": ctrl_border,
+            "control_button_hover": ctrl_hover,
+            "control_button_pressed": get(
+                "control_button_pressed", lambda: darken_color(ctrl_hover, 0.1)
+            ),
+            "control_button_text_color": get(
+                "control_button_text_color",
+                lambda: get_contrast_color(ctrl_bg),
+            ),
+            "close_button_bg": close_bg,
+            "close_button_border": get(
+                "close_button_border", lambda: darken_color(close_bg, 0.15)
+            ),
+            "close_button_hover": get(
+                "close_button_hover", lambda: lighten_color(close_bg, 0.15)
+            ),
+            "close_button_pressed": get(
+                "close_button_pressed", lambda: darken_color(close_bg, 0.15)
+            ),
+            "close_button_text_color": get(
+                "close_button_text_color", lambda: get_contrast_color(close_bg)
+            ),
+            "content_bg": content_bg,
         }
 
     def _apply_font_settings(self, theme_dict: dict):
@@ -773,7 +807,7 @@ class CustomWidgetBase(QWidget):
         event_type = event.type()
 
         if event_type in (QEvent.MouseMove, QEvent.HoverMove):
-            pos   = self.mapFromGlobal(obj.mapToGlobal(event.pos()))
+            pos = self.mapFromGlobal(obj.mapToGlobal(event.pos()))
             edges = self._check_resize_area(pos)
             if edges:
                 self._update_cursor(edges)
@@ -781,12 +815,15 @@ class CustomWidgetBase(QWidget):
                 self.setCursor(Qt.ArrowCursor)
             return False
 
-        if event_type == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-            pos   = self.mapFromGlobal(obj.mapToGlobal(event.pos()))
+        if (
+            event_type == QEvent.MouseButtonPress
+            and event.button() == Qt.LeftButton
+        ):
+            pos = self.mapFromGlobal(obj.mapToGlobal(event.pos()))
             edges = self._check_resize_area(pos)
             if edges:
-                self._resizing        = True
-                self._resize_edges    = edges
+                self._resizing = True
+                self._resize_edges = edges
                 self._resize_drag_pos = event.globalPos()
                 return True
 
@@ -798,12 +835,14 @@ class CustomWidgetBase(QWidget):
             return
         edges = self._check_resize_area(event.pos())
         if edges and not self.isMaximized():
-            self._resizing        = True
-            self._resize_edges    = edges
+            self._resizing = True
+            self._resize_edges = edges
             self._resize_drag_pos = event.globalPos()
-        elif hasattr(self, "title_bar") and self.title_bar.geometry().contains(event.pos()):
+        elif hasattr(self, "title_bar") and self.title_bar.geometry().contains(
+            event.pos()
+        ):
             self._resizing = False
-            self.old_pos   = event.globalPos()
+            self.old_pos = event.globalPos()
 
     def mouseMoveEvent(self, event):
         """Gestiona el moviment del ratolí: actualitza cursor, redimensiona o mou."""
@@ -832,12 +871,16 @@ class CustomWidgetBase(QWidget):
             global_pos: Posició global actual del cursor.
         """
         delta = global_pos - self._resize_drag_pos
-        geo   = self.geometry()
+        geo = self.geometry()
 
-        if self._resize_edges & 1: geo.setLeft(geo.left()     + delta.x())
-        if self._resize_edges & 2: geo.setTop(geo.top()       + delta.y())
-        if self._resize_edges & 4: geo.setRight(geo.right()   + delta.x())
-        if self._resize_edges & 8: geo.setBottom(geo.bottom() + delta.y())
+        if self._resize_edges & 1:
+            geo.setLeft(geo.left() + delta.x())
+        if self._resize_edges & 2:
+            geo.setTop(geo.top() + delta.y())
+        if self._resize_edges & 4:
+            geo.setRight(geo.right() + delta.x())
+        if self._resize_edges & 8:
+            geo.setBottom(geo.bottom() + delta.y())
 
         # Mides mínimes
         if geo.width() < 100:
@@ -854,8 +897,8 @@ class CustomWidgetBase(QWidget):
 
     def mouseReleaseEvent(self, event):
         """Reseteja els estats d'arrossegament i redimensionament."""
-        self.old_pos       = QPoint()
-        self._resizing     = False
+        self.old_pos = QPoint()
+        self._resizing = False
         self._resize_edges = 0
         if not self.isMaximized():
             self._update_cursor(0)

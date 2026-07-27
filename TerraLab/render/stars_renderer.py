@@ -1,4 +1,4 @@
-﻿"""Photometric stellar renderer with pixel bucketing and PSF."""
+"""Photometric stellar renderer with pixel bucketing and PSF."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ try:
 except Exception:  # pragma: no cover
     np = None
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
     normalize_light_pollution_mode,
@@ -38,19 +39,7 @@ from TerraLab.util.math2d import clamp
 from TerraLab.widgets.telescope_runtime import update_star_rendering_params
 
 
-def get_scope_solar_pattern(*, canvas=None, impl=None):
-    if callable(impl):
-        return impl()
-    return get_scope_solar_pattern_impl(canvas)
-
-
-def draw_scope_solar_disc(painter, radius, *, canvas=None, impl=None):
-    if callable(impl):
-        return impl(painter, radius)
-    return draw_scope_solar_disc_impl(canvas, painter, radius)
-
-
-def get_scope_solar_pattern_impl(canvas):
+def get_scope_solar_pattern(canvas):
     if canvas is None:
         return {"grains": [], "spots": []}
 
@@ -110,7 +99,7 @@ def get_scope_solar_pattern_impl(canvas):
     return canvas._scope_solar_pattern
 
 
-def draw_scope_solar_disc_impl(canvas, painter, radius):
+def draw_scope_solar_disc(canvas, painter, radius):
     if canvas is None:
         return
     rr = max(2.0, float(radius))
@@ -127,7 +116,7 @@ def draw_scope_solar_disc_impl(canvas, painter, radius):
     painter.setBrush(QBrush(base_grad))
     painter.drawEllipse(QPointF(0, 0), rr, rr)
 
-    pattern = get_scope_solar_pattern_impl(canvas)
+    pattern = get_scope_solar_pattern(canvas)
     for ang, rad_n, radius_n, a in pattern["grains"]:
         rad = rr * rad_n
         gx = math.cos(ang) * rad
@@ -178,7 +167,7 @@ def draw_scope_solar_disc_impl(canvas, painter, radius):
     painter.restore()
 
 
-def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
+def draw_analytic_trails(canvas, painter, start_hour, end_hour):
     pw = canvas.parent_widget
     is_moving = canvas._camera_interaction_active(
         include_time_drag=True, include_animation=True
@@ -194,7 +183,7 @@ def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
         elif diff > 12.0:
             diff -= 24.0
         if diff > 0.001:
-            draw_analytic_trails_numpy_impl(
+            draw_analytic_trails_numpy(
                 canvas,
                 painter,
                 start_hour,
@@ -273,7 +262,7 @@ def draw_analytic_trails_impl(canvas, painter, start_hour, end_hour):
             canvas._cached_trail_image = None
 
 
-def draw_analytic_trails_numpy_impl(
+def draw_analytic_trails_numpy(
     canvas, painter, start_hour, end_hour, diff, n_steps, limit, is_moving
 ):
     pw = canvas.parent_widget
@@ -763,16 +752,20 @@ class StarsRenderer:
         can_sync = bool(allow_sync_build)
         if can_sync:
             try:
-                if int(len(ra_all)) > 1_500_000: can_sync = False
-            except: can_sync = False
+                if int(len(ra_all)) > 1_500_000:
+                    can_sync = False
+            except Exception:
+                can_sync = False
 
         if not can_sync:
-            if self._scope_index_pending_key == key: return None, None
+            if self._scope_index_pending_key == key:
+                return None, None
             self._scope_index_pending_key = key
             return None, None
 
         self._reset_scope_spatial_index()
-        if self._scope_index_pending_key == key: self._scope_index_pending_key = None
+        if self._scope_index_pending_key == key:
+            self._scope_index_pending_key = None
 
         sorted_indices, offsets = build_scope_spatial_index_payload(
             ra_all,
@@ -978,7 +971,7 @@ class StarsRenderer:
             try:
                 self._ensure_scope_spatial_index(ra_all, dec_all)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "StarsRenderer.prime_catalog_indices")
         if (
             dec_all is not None
             and mag_all is not None
@@ -987,7 +980,7 @@ class StarsRenderer:
             try:
                 self._ensure_mag_index(ra_all, dec_all, mag_all)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "StarsRenderer.prime_catalog_indices")
 
     def _cached_altaz(
         self, ra_all, dec_all, catalog_idx, state, interaction_active: bool
@@ -1080,7 +1073,6 @@ class StarsRenderer:
     # Photometry / limits
     # -----------------------------
     def _limiting_magnitude(self, state) -> float:
-        cam = state.camera
         scope_enabled = bool(getattr(state, "scope_enabled", False))
         extras = (
             getattr(state, "extras", {})
@@ -1131,7 +1123,7 @@ class StarsRenderer:
                 try:
                     cap = min(cap, float(dataset_cap) + 0.15)
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "StarsRenderer._limiting_magnitude")
             cap = max(8.0, cap)
         else:
             cap = 13.5
@@ -1304,7 +1296,9 @@ class StarsRenderer:
             if pixmap is None or pixmap.isNull():
                 pixmap = QPixmap.fromImage(sprite)
                 self._pixmap_cache[cache_key] = pixmap
-            source = QRectF(0.0, 0.0, float(pixmap.width()), float(pixmap.height()))
+            source = QRectF(
+                0.0, 0.0, float(pixmap.width()), float(pixmap.height())
+            )
             half_width = float(pixmap.width()) * 0.5
             half_height = float(pixmap.height()) * 0.5
             for start in range(0, indices.size, 4096):
@@ -1312,8 +1306,10 @@ class StarsRenderer:
                 fragments = [
                     QPainter.PixmapFragment.create(
                         QPointF(
-                            float(int(sx_i[index] - rounded_center)) + half_width,
-                            float(int(sy_i[index] - rounded_center)) + half_height,
+                            float(int(sx_i[index] - rounded_center))
+                            + half_width,
+                            float(int(sy_i[index] - rounded_center))
+                            + half_height,
                         ),
                         source,
                     )
@@ -1324,7 +1320,7 @@ class StarsRenderer:
             return
         except Exception:
             # Compatibility fallback for unusual Qt paint engines.
-            pass
+            log_suppressed_exception(__name__, "StarsRenderer._draw_sprite_batch")
         for index in indices:
             painter.drawImage(
                 int(sx_i[index] - rounded_center),
@@ -1378,7 +1374,7 @@ class StarsRenderer:
                 try:
                     pre_limit = min(pre_limit, float(dataset_cap) + 0.25)
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "StarsRenderer.render")
         if bool(extras.get("scope_force_naked_eye_until_fix", False)):
             pre_limit = min(
                 pre_limit,
@@ -1409,7 +1405,7 @@ class StarsRenderer:
         scope_tile_count = 0
         scope_tile_candidates = 0
         try:
-            scope_sync_index_build_max_rows = int(
+            int(
                 max(
                     50_000,
                     int(
@@ -1418,7 +1414,7 @@ class StarsRenderer:
                 )
             )
         except Exception:
-            scope_sync_index_build_max_rows = 750_000
+            log_suppressed_exception(__name__, "StarsRenderer.render")
         scope_allow_sync_index_build = bool(
             extras.get("scope_allow_sync_index_build", False)
         )
@@ -1671,7 +1667,7 @@ class StarsRenderer:
                     az_deg = np.asarray(az_deg[window_mask], dtype=np.float32)
                     bp_rp = bp_rp[window_mask] if bp_rp is not None else None
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "StarsRenderer.render")
 
         inside_scope = None
         if scope_enabled and callable(getattr(state, "scope_mask_fn", None)):
@@ -2041,7 +2037,7 @@ class StarsRenderer:
         try:
             painter.setCompositionMode(QPainter.CompositionMode_SourceOver)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "StarsRenderer.render")
         painter.setPen(Qt.NoPen)
 
         # Weak stars: tiny soft disks (avoid square 1px point look).

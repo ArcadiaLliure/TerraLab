@@ -1,60 +1,75 @@
 ﻿"""Façana nova d'`AstroCanvas` orientada a `RenderState`.
 
-Manté compatibilitat temporal amb mètodes legacy marcats com a `deprecated`.
+Rendering responsibilities are composed from focused canvas mixins.
 """
 
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
-from TerraLab.common.deprecation_registry import (
-    emit_deprecation_warning,
-    register_deprecated_method,
+from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtGui import QPainter
+from PyQt5.QtWidgets import QWidget
+from TerraLab.astro.ephemeris_coordinator import (
+    snapshot_datetime_utc,
+    snapshot_matches_utc_context,
 )
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
     normalize_light_pollution_mode,
     resolve_bortle_class,
 )
-from TerraLab.scene.render_context import RenderContext
+from TerraLab.render.qt.context import RenderContext
+from TerraLab.render.stars_renderer import StarsRenderResult
+from TerraLab.scene.render_state import RenderState
 from TerraLab.scene.scene_state import build_star_scene_state
-from TerraLab.ui.sky_widget_impl import AstroCanvas as LegacyAstroCanvas
+from TerraLab.common.exception_reporting import log_suppressed_exception
+from TerraLab.ui.canvas_mixins import (
+    CanvasEphemerisRenderingMixin,
+    CanvasInteractionMixin,
+    CanvasProjectionAndRenderingMixin,
+    CanvasSelectionAndTrailsMixin,
+)
+from TerraLab.ui.widget_init_helpers import astro_canvas_init
 from TerraLab.widgets.spherical_math import angular_distance
 
 
-register_deprecated_method(
-    entry_id="TerraLab.ui.sky_widget_impl.AstroCanvas._build_star_scene_state",
-    module_path="TerraLab.ui.sky_widget_impl",
-    class_name="AstroCanvas",
-    method_name="_build_star_scene_state",
-    replacement="TerraLab.scene.scene_controller.SceneController.build_render_state",
-    phase_introduced=11,
-    notes="Construcció d'estat per frame traslladada a SceneController",
-)
-register_deprecated_method(
-    entry_id="TerraLab.ui.sky_widget_impl.AstroCanvas.draw_stars_numpy",
-    module_path="TerraLab.ui.sky_widget_impl",
-    class_name="AstroCanvas",
-    method_name="draw_stars_numpy",
-    replacement="TerraLab.ui.astro_canvas.AstroCanvas.render",
-    phase_introduced=11,
-    notes="Render central via RenderState",
-)
-register_deprecated_method(
-    entry_id="TerraLab.ui.sky_widget_impl.AstroCanvas.update_skyfield_cache",
-    module_path="TerraLab.ui.sky_widget_impl",
-    class_name="AstroCanvas",
-    method_name="update_skyfield_cache",
-    replacement="TerraLab.astro.ephemeris_coordinator.EphemerisCoordinator.request_snapshot",
-    phase_introduced=10,
-    notes="Efemèrides fora del paint loop",
-)
-
-
-class AstroCanvas(LegacyAstroCanvas):
+class AstroCanvas(  # type: ignore[reportIncompatibleMethodOverride]  # PyQt5 stubs name Qt callback parameters a0/a1; mixins use descriptive names.
+    CanvasEphemerisRenderingMixin,
+    CanvasProjectionAndRenderingMixin,
+    CanvasSelectionAndTrailsMixin,
+    CanvasInteractionMixin,
+    QWidget,
+):
     """Canvas reduït: renderitza a partir d'un `RenderState` immutable."""
+
+    request_render_signal = pyqtSignal(dict)
+    request_trails_signal = pyqtSignal(dict)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """Initialize the canonical canvas without relying on mixin order."""
+
+        astro_canvas_init(self, parent)
+
+    def shutdown(self, timeout_ms: int = 15_000) -> None:
+        """Cancel render work and join the canvas-owned QThread."""
+
+        if self._render_thread_shutdown:
+            return
+        self._camera_idle_timer.stop()
+        self._scope_move_timer.stop()
+        self._selection_pulse_timer.stop()
+        self._worker.request_shutdown()
+        self._thread.requestInterruption()
+        self._thread.quit()
+        if not self._thread.wait(max(0, int(timeout_ms))):
+            raise RuntimeError(
+                "Star render worker did not stop cooperatively within "
+                f"{int(timeout_ms)} ms"
+            )
+        self._render_thread_shutdown = True
 
     @staticmethod
     def _target_debug_repr(target: object) -> str:
@@ -106,34 +121,43 @@ class AstroCanvas(LegacyAstroCanvas):
         if not self._goto_debug_enabled():
             return
         print(f"[GotoDebug] {str(message)}")
-    def render(self, painter, render_state):
+    def render_scene(
+        self,
+        painter: QPainter,
+        render_state: RenderState,
+    ) -> StarsRenderResult:
         """Pinta un frame usant exclusivament el `RenderState` rebut."""
         render_context = RenderContext(
             painter=painter,
             width=int(self.width()),
             height=int(self.height()),
-            diagnostics=getattr(self, "scene_diagnostics", None),
+            diagnostics=self.scene_diagnostics,
         )
         resultat_estrelles = self.sky_renderer.render(render_context, render_state)
-        try:
-            # Cataleg actiu del frame per a seleccio exacta (pick/goto) en scope/fallback.
-            self._active_catalog_ra = getattr(render_state, "np_ra", None)
-            self._active_catalog_dec = getattr(render_state, "np_dec", None)
-            self._active_catalog_mag = getattr(render_state, "np_mag", None)
-            self._active_catalog_bp_rp = getattr(render_state, "np_bp_rp", None)
-            self._active_catalog_r = getattr(render_state, "np_r", None)
-            self._active_catalog_g = getattr(render_state, "np_g", None)
-            self._active_catalog_b = getattr(render_state, "np_b", None)
-            self._active_catalog_ids = None
-            self.visible_stars = getattr(resultat_estrelles, "visible_indices", [])
-            self.visible_stars_sx = getattr(resultat_estrelles, "visible_sx", [])
-            self.visible_stars_sy = getattr(resultat_estrelles, "visible_sy", [])
-        except Exception:
-            pass
+        if not isinstance(resultat_estrelles, StarsRenderResult):
+            raise TypeError(
+                "SkyRenderer.render() must return StarsRenderResult, got "
+                f"{type(resultat_estrelles).__name__}"
+            )
+
+        # Publish a complete selection snapshot only after the renderer result
+        # has satisfied its contract. A bad frame cannot leave a half-updated
+        # catalogue behind.
+        self._active_catalog_ra = render_state.np_ra
+        self._active_catalog_dec = render_state.np_dec
+        self._active_catalog_mag = render_state.np_mag
+        self._active_catalog_bp_rp = render_state.np_bp_rp
+        self._active_catalog_r = render_state.np_r
+        self._active_catalog_g = render_state.np_g
+        self._active_catalog_b = render_state.np_b
+        self._active_catalog_ids = None
+        self.visible_stars = resultat_estrelles.visible_indices
+        self.visible_stars_sx = resultat_estrelles.visible_sx
+        self.visible_stars_sy = resultat_estrelles.visible_sy
         return resultat_estrelles
 
     def _show_object_context_menu(self, event):
-        """Traca seleccio contextual abans de delegar al flux legacy."""
+        """Trace the contextual pick before opening the canonical menu."""
         try:
             click_sky = self.unproject_stereo(float(event.x()), float(event.y()))
             target = self._pick_target_at(float(event.x()), float(event.y()))
@@ -223,24 +247,10 @@ class AstroCanvas(LegacyAstroCanvas):
         eff_lat,
         day_of_year,
     ):
-        """DEPRECATED: useu `SceneController.build_render_state()`."""
-        emit_deprecation_warning(
-            "TerraLab.ui.sky_widget_impl.AstroCanvas._build_star_scene_state",
-            "TerraLab.scene.scene_controller.SceneController.build_render_state",
-        )
+        """Build the star snapshot through the owning scene controller."""
         widget_pare = getattr(self, "parent_widget", None)
         scene_controller = getattr(widget_pare, "scene_controller", None)
-        if scene_controller is None:
-            return super()._build_star_scene_state(
-                hour,
-                sun_alt,
-                sun_az,
-                mag_limit,
-                eff_lat,
-                day_of_year,
-            )
-
-        estat_legacy = build_star_scene_state(
+        base_state = build_star_scene_state(
             self,
             hour,
             sun_alt,
@@ -249,7 +259,10 @@ class AstroCanvas(LegacyAstroCanvas):
             eff_lat,
             day_of_year,
         )
-        dades_estrelles = self._collect_star_payload(widget_pare, estat_legacy)
+        if scene_controller is None:
+            return base_state
+
+        dades_estrelles = self._collect_star_payload(widget_pare, base_state)
         capes_actives = self._collect_enabled_layers(widget_pare)
 
         scene_controller.latitude = float(
@@ -283,7 +296,7 @@ class AstroCanvas(LegacyAstroCanvas):
         if mag_limit_render is None:
             try:
                 mag_limit_render = float(
-                    getattr(estat_legacy, "magnitude_limit", scene_controller.mag_limit)
+                    getattr(base_state, "magnitude_limit", scene_controller.mag_limit)
                 )
             except Exception:
                 mag_limit_render = float(scene_controller.mag_limit)
@@ -311,7 +324,7 @@ class AstroCanvas(LegacyAstroCanvas):
             )
         )
         scene_controller.naked_eye_cap = float(
-            getattr(estat_legacy, "naked_eye_cap", scene_controller.naked_eye_cap)
+            getattr(base_state, "naked_eye_cap", scene_controller.naked_eye_cap)
         )
         scene_controller.pure_colors = bool(
             getattr(widget_pare, "pure_colors", scene_controller.pure_colors)
@@ -378,7 +391,7 @@ class AstroCanvas(LegacyAstroCanvas):
             except Exception:
                 perfil_terreny = None
         if perfil_terreny is None:
-            perfil_terreny = getattr(estat_legacy, "horizon_profile", None)
+            perfil_terreny = getattr(base_state, "horizon_profile", None)
 
         coordinator_ephemeris = getattr(widget_pare, "ephemeris_coordinator", None)
         snapshot_ephemeris = None
@@ -409,7 +422,7 @@ class AstroCanvas(LegacyAstroCanvas):
             sun_alt=float(sun_alt),
             sun_az=float(sun_az),
             layers_enabled=capes_actives,
-            extras=dict(getattr(estat_legacy, "extras", {}) or {}),
+            extras=dict(getattr(base_state, "extras", {}) or {}),
             ut_hour_utc=hora_utc_frame,
             day_of_year_utc=dia_utc_frame,
             year_utc=any_utc_frame,
@@ -425,47 +438,33 @@ class AstroCanvas(LegacyAstroCanvas):
         eff_lat=None,
         day_of_year=None,
     ):
-        """DEPRECATED: useu `AstroCanvas.render(render_state)`."""
-        emit_deprecation_warning(
-            "TerraLab.ui.sky_widget_impl.AstroCanvas.draw_stars_numpy",
-            "TerraLab.ui.astro_canvas.AstroCanvas.render",
+        """Render stars from the canonical immutable frame state."""
+        render_state = self._build_star_scene_state(
+            hour=hour,
+            sun_alt=sun_alt,
+            sun_az=sun_az,
+            mag_limit=mag_limit,
+            eff_lat=eff_lat,
+            day_of_year=day_of_year,
         )
-        try:
-            render_state = self._build_star_scene_state(
-                hour=hour,
-                sun_alt=sun_alt,
-                sun_az=sun_az,
-                mag_limit=mag_limit,
-                eff_lat=eff_lat,
-                day_of_year=day_of_year,
-            )
-            if hasattr(self, "scene_diagnostics"):
-                self.scene_diagnostics.reset()
-            resultat_estrelles = self.render(painter, render_state)
-            if hasattr(self, "_emit_render_diagnostics"):
-                self._emit_render_diagnostics(resultat_estrelles)
-            return None
-        except Exception:
-            return super().draw_stars_numpy(
-                painter,
-                hour,
-                sun_alt,
-                sun_az,
-                mag_limit=mag_limit,
-                eff_lat=eff_lat,
-                day_of_year=day_of_year,
-            )
+        if hasattr(self, "scene_diagnostics"):
+            self.scene_diagnostics.reset()
+        resultat_estrelles = self.render_scene(painter, render_state)
+        if hasattr(self, "_emit_render_diagnostics"):
+            self._emit_render_diagnostics(resultat_estrelles)
+        return None
 
-    def update_skyfield_cache(self, ut_hour, day_of_year):
-        """DEPRECATED: useu `EphemerisCoordinator.request_snapshot()`."""
-        emit_deprecation_warning(
-            "TerraLab.ui.sky_widget_impl.AstroCanvas.update_skyfield_cache",
-            "TerraLab.astro.ephemeris_coordinator.EphemerisCoordinator.request_snapshot",
-        )
+    def update_skyfield_cache(self, ut_hour, day_of_year, year_utc=None):
+        """Refresh the render cache from the ephemeris coordinator."""
         widget_pare = getattr(self, "parent_widget", None)
         coordinator_ephemeris = getattr(widget_pare, "ephemeris_coordinator", None)
         if coordinator_ephemeris is None:
-            return super().update_skyfield_cache(ut_hour, day_of_year)
+            return None
+        requested_year_utc = int(
+            year_utc
+            if year_utc is not None
+            else getattr(widget_pare, "manual_year", 2026)
+        )
 
         def _snapshot_cache_compatible(payload) -> bool:
             if not isinstance(payload, dict):
@@ -488,65 +487,65 @@ class AstroCanvas(LegacyAstroCanvas):
                     return False
             return True
 
-        def _snapshot_matches_request_time(payload) -> bool:
-            if not isinstance(payload, dict):
-                return False
-            ts_raw = payload.get("timestamp_utc", None)
-            if not ts_raw:
-                return False
-            try:
-                txt = str(ts_raw).strip()
-                if txt.endswith("Z"):
-                    txt = txt[:-1] + "+00:00"
-                dt_snap = datetime.fromisoformat(txt)
-                if dt_snap.tzinfo is None:
-                    dt_snap = dt_snap.replace(tzinfo=timezone.utc)
-                dt_req = datetime(
-                    int(getattr(widget_pare, "manual_year", 2026)),
-                    1,
-                    1,
-                    tzinfo=timezone.utc,
-                ) + timedelta(days=int(day_of_year), hours=float(ut_hour))
-                delta_s = abs((dt_snap.astimezone(timezone.utc) - dt_req).total_seconds())
-                return bool(delta_s <= 120.0)
-            except Exception:
-                return False
-
         try:
             coordinator_ephemeris.configure_observer(
                 latitude=float(getattr(widget_pare, "latitude", 0.0)),
                 longitude=float(getattr(widget_pare, "longitude", 0.0)),
             )
             coordinator_ephemeris.request_snapshot(
-                year_utc=int(getattr(widget_pare, "manual_year", 2026)),
+                year_utc=requested_year_utc,
                 day_of_year_utc=int(day_of_year),
                 ut_hour=float(ut_hour),
             )
             snapshot = coordinator_ephemeris.get_snapshot() or {}
             if not isinstance(snapshot, dict):
-                return super().update_skyfield_cache(ut_hour, day_of_year)
+                self._last_skyfield_update = 0
+                return None
             if "sun" not in snapshot or "moon" not in snapshot:
-                return super().update_skyfield_cache(ut_hour, day_of_year)
+                self._last_skyfield_update = 0
+                return None
             if not _snapshot_cache_compatible(snapshot):
-                # Ephemeris snapshot schema may be lighter than renderer cache schema.
-                # Fall back to legacy full cache build to keep render layers aligned.
-                return super().update_skyfield_cache(ut_hour, day_of_year)
-            if not _snapshot_matches_request_time(snapshot):
-                # The async coordinator can return an older snapshot while a new one
-                # is still being computed. Never render stale eclipse geometry.
-                return super().update_skyfield_cache(ut_hour, day_of_year)
+                self._last_skyfield_update = 0
+                return None
+            if not snapshot_matches_utc_context(
+                snapshot,
+                year_utc=requested_year_utc,
+                day_of_year_utc=int(day_of_year),
+                ut_hour=float(ut_hour),
+            ):
+                # Keep the previous visual snapshot until the coalesced async
+                # request completes. Never run Skyfield in the GUI paint path.
+                self._last_skyfield_update = 0
+                return None
+            snapshot_time = snapshot_datetime_utc(snapshot)
+            if snapshot_time is None:
+                self._last_skyfield_update = 0
+                return None
+            snapshot_hour = (
+                snapshot_time.hour
+                + snapshot_time.minute / 60.0
+                + snapshot_time.second / 3600.0
+                + snapshot_time.microsecond / 3_600_000_000.0
+            )
+            snapshot_day = (
+                snapshot_time.date()
+                - datetime(snapshot_time.year, 1, 1).date()
+            ).days
             self._sf_cache = {
-                "time": float(ut_hour),
-                "ut_hour": float(ut_hour),
-                "day": int(day_of_year),
-                "year": int(getattr(widget_pare, "manual_year", 2026)),
+                # Cache metadata describes the data, not the newer request
+                # which may still be waiting in the coordinator.
+                "time": float(snapshot_hour),
+                "ut_hour": float(snapshot_hour),
+                "day": int(snapshot_day),
+                "year": int(snapshot_time.year),
                 "lat": float(getattr(widget_pare, "latitude", 0.0)),
                 "lon": float(getattr(widget_pare, "longitude", 0.0)),
                 "data": snapshot,
             }
             return snapshot
         except Exception:
-            return super().update_skyfield_cache(ut_hour, day_of_year)
+            self._last_skyfield_update = 0
+            return None
 
     def _collect_enabled_layers(self, widget_pare: Any) -> set[str]:
         """Deriva el conjunt de capes visibles des de l'estat actual de la UI."""
@@ -569,7 +568,7 @@ class AstroCanvas(LegacyAstroCanvas):
             capes_actives.add("weather")
         return capes_actives
 
-    def _collect_star_payload(self, widget_pare: Any, estat_legacy: Any) -> dict[str, Any]:
+    def _collect_star_payload(self, widget_pare: Any, base_state: Any) -> dict[str, Any]:
         """Munta el payload d'estrelles per a `SceneController`."""
         coordinator_estrelles = getattr(widget_pare, "star_data_coordinator", None)
         if coordinator_estrelles is not None and callable(
@@ -582,7 +581,7 @@ class AstroCanvas(LegacyAstroCanvas):
                 ) > 0:
                     return dict(dataset_actiu)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AstroCanvas._collect_star_payload")
 
         teseles_carregades = set()
         if coordinator_estrelles is not None and callable(
@@ -594,14 +593,14 @@ class AstroCanvas(LegacyAstroCanvas):
                 teseles_carregades = set()
 
         return {
-            "ra": getattr(estat_legacy, "ra", None),
-            "dec": getattr(estat_legacy, "dec", None),
-            "mag": getattr(estat_legacy, "mag", None),
-            "bp_rp": getattr(estat_legacy, "bp_rp", None),
-            "r": getattr(estat_legacy, "color_r", None),
-            "g": getattr(estat_legacy, "color_g", None),
-            "b": getattr(estat_legacy, "color_b", None),
-            "scope_mask_fn": getattr(estat_legacy, "scope_mask_fn", None),
+            "ra": getattr(base_state, "ra", None),
+            "dec": getattr(base_state, "dec", None),
+            "mag": getattr(base_state, "mag", None),
+            "bp_rp": getattr(base_state, "bp_rp", None),
+            "r": getattr(base_state, "color_r", None),
+            "g": getattr(base_state, "color_g", None),
+            "b": getattr(base_state, "color_b", None),
+            "scope_mask_fn": getattr(base_state, "scope_mask_fn", None),
             "loaded_tile_ids": frozenset(teseles_carregades),
         }
 

@@ -27,6 +27,7 @@ if __package__ in (None, ""):
     if str(_repo_root) not in sys.path:
         sys.path.insert(0, str(_repo_root))
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 
 try:
@@ -66,7 +67,7 @@ def _emit_progress(
     try:
         callback(pct, str(message))
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_emit_progress")
 
 
 def _default_input_catalog_path() -> Path:

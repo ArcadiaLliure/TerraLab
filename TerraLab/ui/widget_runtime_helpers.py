@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from PyQt5.QtCore import QDate, QPointF, Qt
 from PyQt5.QtWidgets import QApplication, QCalendarWidget, QDialog, QVBoxLayout
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 from TerraLab.common.utils import (
     get_config_value,
@@ -19,7 +20,7 @@ from TerraLab.light_pollution.modes import (
     is_automatic_mode,
     resolve_bortle_class,
 )
-from TerraLab.widgets.sky_legacy_components import (
+from TerraLab.data.catalogs.star_catalog import (
     STAR_CATALOG_NAKED_EYE_MAX_MAG,
     _bp_rp_to_rgb_arrays,
     _build_celestial_objects_from_arrays,
@@ -27,6 +28,7 @@ from TerraLab.widgets.sky_legacy_components import (
     _load_star_npz_arrays,
     _select_base_star_catalog_entry,
 )
+from TerraLab.ui.design_system import CALENDAR_STYLESHEET
 from TerraLab.widgets.telescope_runtime import update_telescope_hud
 from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeInputs
 
@@ -64,7 +66,7 @@ def recompute_visual_magnitude_model(
         try:
             focal_mm = float(widget.scope_focal_spin.value())
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "recompute_visual_magnitude_model")
     aperture_mm_effective = widget._effective_scope_aperture_mm(focal_mm)
     instrument_profile = str(
         getattr(widget, "scope_instrument_profile", "telescope")
@@ -126,7 +128,7 @@ def recompute_visual_magnitude_model(
             if current_sensor:
                 sensor_profile = str(current_sensor)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "recompute_visual_magnitude_model")
 
     inputs = VisualMagnitudeInputs(
         aperture_mm=aperture_mm_effective,
@@ -165,6 +167,11 @@ def request_relocation(widget):
 
         widget.latitude = new_lat
         widget.longitude = new_lon
+        sync_coverage = getattr(
+            widget, "_sync_surface_mode_control", None
+        )
+        if callable(sync_coverage):
+            sync_coverage()
 
         # Observer changed: invalidate skyfield/eclipses immediately so next frame
         # cannot reuse ephemerides from previous coordinates.
@@ -192,7 +199,7 @@ def request_relocation(widget):
                 widget.observer_timezone = str(tz_name)
                 set_config_value("observer_timezone", widget.observer_timezone)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "request_relocation")
 
         if hasattr(widget, "weather"):
             widget.weather.set_location(widget.latitude, widget.longitude)
@@ -204,6 +211,8 @@ def request_relocation(widget):
         widget.bake_debounce_timer.start(1500)
 
         if hasattr(widget, "lbl_loading"):
+            from TerraLab.terrain.ray_precision import ray_count
+
             widget.on_horizon_progress_state(
                 {
                     "job_id": getattr(widget, "_active_horizon_job_id", "")
@@ -211,7 +220,9 @@ def request_relocation(widget):
                     "phase": "prepare",
                     "percent": 0.0,
                     "current": 0,
-                    "total": int(round(360.0 / 0.5)),
+                    "total": ray_count(
+                        get_config_value("horizon_ray_step_deg", 0.5)
+                    ),
                 }
             )
 
@@ -219,17 +230,16 @@ def request_relocation(widget):
             widget.latitude, widget.longitude, widget.manual_day
         )
 
-        if hasattr(widget, "horizon_worker"):
-            bare = widget.horizon_worker.get_bare_elevation(
-                widget.latitude, widget.longitude
-            )
-            widget._last_dem_elevation = bare
-            widget.update_altitude_label()
+        bare = widget.terrain_coordinator.get_bare_elevation(
+            widget.latitude, widget.longitude
+        )
+        widget._last_dem_elevation = bare
+        widget.update_altitude_label()
         if is_automatic_mode(getattr(widget, "light_pollution_mode", None)):
             try:
                 widget.recalculate_automatic_light_pollution()
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "request_relocation")
 
         if hasattr(widget.canvas, "hint_overlay"):
             dem_m = getattr(widget, "_last_dem_elevation", None)
@@ -374,7 +384,7 @@ def widget_update_loop(widget):
             try:
                 widget._ensure_scope_catalog_loaded(force_now=False)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "widget_update_loop")
 
     if run_climate_tick:
         widget._refresh_climate_status_indicator()
@@ -386,7 +396,7 @@ def widget_update_loop(widget):
 
             widget_refresh_gaia_download_feedback(widget)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "widget_update_loop")
     widget.canvas.update()
 
 
@@ -394,17 +404,7 @@ def open_calendar(widget):
     dlg = QDialog(widget)
     dlg.setWindowTitle("Data")
     dlg.setWindowFlags(Qt.Popup | Qt.FramelessWindowHint)
-    dlg.setStyleSheet(
-        """
-        QDialog { background: #222; border: 1px solid #555; border-radius: 4px; }
-        QCalendarWidget QWidget { alternate-background-color: #333; color: white; }
-        QCalendarWidget QToolButton { color: white; icon-size: 20px; }
-        QCalendarWidget QMenu { background-color: #333; color: white; }
-        QCalendarWidget QSpinBox { color: white; background: #444; selection-background-color: #666; }
-        QCalendarWidget QAbstractItemView:enabled { color: white; background: #222; selection-background-color: #0078d7; selection-color: white; }
-        QCalendarWidget QAbstractItemView:disabled { color: #555; }
-        """
-    )
+    dlg.setStyleSheet(CALENDAR_STYLESHEET)
 
     layout = QVBoxLayout(dlg)
     layout.setContentsMargins(0, 0, 0, 0)

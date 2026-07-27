@@ -2,8 +2,9 @@ import os
 import shutil
 import tempfile
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import get_config_value
 from TerraLab.light_pollution.modes import mode_uses_bortle
 from TerraLab.widgets.physical_math import (
@@ -154,7 +155,7 @@ def _download_copernicus_cams_snapshot(
             except Exception:
                 continue
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_download_copernicus_cams_snapshot")
     shutil.rmtree(workdir, ignore_errors=True)
     return None
 
@@ -164,16 +165,16 @@ def _first_scalar_value(raw):
     try:
         data = raw[:]
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_first_scalar_value")
     try:
         if hasattr(data, "filled"):
             data = data.filled(float("nan"))
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_first_scalar_value")
     try:
         return float(data.flat[0])
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_first_scalar_value")
     try:
         return float(data[0])
     except Exception:
@@ -219,7 +220,7 @@ def _extract_aod_pressure_from_netcdf(path):
                 extracted_member = zf.extract(nc_members[0], path=extract_dir)
                 nc_path = extracted_member
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_extract_aod_pressure_from_netcdf")
 
     try:
         # Try netCDF4 first if available.
@@ -291,7 +292,7 @@ def _extract_aod_pressure_from_netcdf(path):
                     else:
                         os.remove(file_path)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "_extract_aod_pressure_from_netcdf")
 
     if pressure_hpa is not None and pressure_hpa > 2000.0:
         pressure_hpa = pressure_hpa / 100.0
@@ -306,7 +307,7 @@ def fetch_copernicus_aod_pressure(
     lat, lon, now_utc, api_key=None, api_url=None
 ):
     if not isinstance(now_utc, datetime):
-        now_utc = datetime.utcnow()
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     elif now_utc.tzinfo is not None:
         now_utc = now_utc.replace(tzinfo=None)
     snapshot_path = _download_copernicus_cams_snapshot(
@@ -321,7 +322,7 @@ def fetch_copernicus_aod_pressure(
             parent_dir = os.path.dirname(snapshot_path)
             shutil.rmtree(parent_dir, ignore_errors=True)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "fetch_copernicus_aod_pressure")
 
 
 def _cache_entry_is_fresh(entry, now_utc, ttl_seconds=CDS_CACHE_TTL_SECONDS):
@@ -442,7 +443,7 @@ def update_telescope_hud(state, allow_remote_fetch=True):
     copernicus_api_url = str(state.get("copernicus_api_url", "") or "").strip()
     now_utc = state.get("now_utc")
     if not isinstance(now_utc, datetime):
-        now_utc = datetime.utcnow()
+        now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
     elif now_utc.tzinfo is not None:
         now_utc = now_utc.replace(tzinfo=None)
 

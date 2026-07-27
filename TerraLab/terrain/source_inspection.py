@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.terrain.crs import (
     CRS_GEOGRAPHIC,
     DEFAULT_TRANSFORM_SERVICE,
@@ -164,7 +165,7 @@ def inspect_data_source(
             try:
                 provider.close()
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "inspect_data_source")
 
 
 def inspect_registered_source(source: DataSource) -> SourceInspection:

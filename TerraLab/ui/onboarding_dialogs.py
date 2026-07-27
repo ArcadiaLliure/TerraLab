@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
+import shutil
 import sys
 import threading
 from pathlib import Path
@@ -44,12 +46,14 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import (
     getTraduction,
     get_config_value,
     set_config_value,
 )
 from TerraLab.data.assets_manager import AssetManager
+from TerraLab.ui.design_system import DIALOG_STYLESHEET
 
 _ASTRO_DIALOG_STYLE = """
 QDialog {
@@ -130,32 +134,52 @@ QProgressBar::chunk {
     border-radius: 6px;
 }
 """
+_ASTRO_DIALOG_STYLE += DIALOG_STYLESHEET
 
 
 _GAIA_BACKGROUND_PROCESSES = []
+_GAIA_BACKGROUND_DOWNLOADS: dict[tuple[str, str], QProcess] = {}
+_BACKGROUND_ASSET_JOBS = {}
 
 
-def _keep_gaia_process_alive(proc: QProcess) -> None:
+def _background_job_key(manager: AssetManager, asset_id: str) -> tuple[str, str]:
+    try:
+        root = str(Path(manager.library.root).expanduser().resolve())
+    except Exception:
+        root = str(getattr(getattr(manager, "library", None), "root", ""))
+    return os.path.normcase(root), str(asset_id)
+
+
+def _keep_gaia_process_alive(
+    proc: QProcess, key: tuple[str, str] | None = None
+) -> None:
     if proc is None:
         return
     if proc in _GAIA_BACKGROUND_PROCESSES:
+        if key is not None:
+            _GAIA_BACKGROUND_DOWNLOADS[key] = proc
         return
     _GAIA_BACKGROUND_PROCESSES.append(proc)
+    if key is not None:
+        _GAIA_BACKGROUND_DOWNLOADS[key] = proc
 
     def _cleanup(*_args):
         try:
             _GAIA_BACKGROUND_PROCESSES.remove(proc)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_keep_gaia_process_alive._cleanup")
+        for stored_key, stored_proc in tuple(_GAIA_BACKGROUND_DOWNLOADS.items()):
+            if stored_proc is proc:
+                _GAIA_BACKGROUND_DOWNLOADS.pop(stored_key, None)
         try:
             proc.deleteLater()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_keep_gaia_process_alive._cleanup")
 
     try:
         proc.finished.connect(_cleanup)
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_keep_gaia_process_alive")
 
 
 class _AssetJobWorker(QObject):
@@ -210,10 +234,158 @@ class _AssetJobWorker(QObject):
                     self.files,
                     progress_callback=_cb,
                     options=self.options,
+                    cancelled=self._cancel_event.is_set,
                 )
             self.completed.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class _CopernicusNodataProbeWorker(QObject):
+    """Run the advisory sea/NoData sample without blocking Qt's UI thread."""
+
+    completed = pyqtSignal(object, str, bool)
+
+    def __init__(self, request: object) -> None:
+        super().__init__()
+        self.request = request
+        self._cancel_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    @pyqtSlot()
+    def run(self) -> None:
+        if self._cancel_event.is_set():
+            self.completed.emit(None, "", True)
+            return
+        try:
+            from TerraLab.data.copernicus import (
+                ArcGISImageServerClient,
+            )
+
+            # This is an advisory 128 × 128 request.  Keep its timeout well
+            # below the fragment-download timeout while still allowing a slow
+            # public service to answer.
+            client = ArcGISImageServerClient(
+                timeout=(8.0, 30.0),
+                max_retries=1,
+            )
+            result = client.estimate_nodata_fraction(
+                self.request,
+                sample_size=128,
+                cancelled=self._cancel_event.is_set,
+            )
+        except Exception as exc:
+            self.completed.emit(
+                None,
+                "" if self._cancel_event.is_set() else str(exc),
+                self._cancel_event.is_set(),
+            )
+            return
+        self.completed.emit(result, "", self._cancel_event.is_set())
+
+
+class _AssetBackgroundJob(QObject):
+    """Application-owned asset task whose UI can be detached and restored."""
+
+    progress = pyqtSignal(float, str)
+    completed = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(
+        self,
+        manager: AssetManager,
+        mode: str,
+        asset_id: str,
+        files: Optional[Iterable[str]] = None,
+        options: Optional[dict] = None,
+    ) -> None:
+        super().__init__()
+        self.manager = manager
+        self.mode = str(mode)
+        self.asset_id = str(asset_id)
+        self.key = _background_job_key(manager, asset_id)
+        self.percent = 0.0
+        self.message = "Preparant tasca en segon pla..."
+        self.running = True
+        self.thread = QThread()
+        self.worker = _AssetJobWorker(
+            manager,
+            mode=self.mode,
+            asset_id=self.asset_id,
+            files=files,
+            options=options,
+        )
+        self.worker.moveToThread(self.thread)
+        self.thread.started.connect(self.worker.run)
+        self.worker.progress.connect(self._on_progress)
+        self.worker.completed.connect(self._on_completed)
+        self.worker.failed.connect(self._on_failed)
+        self.worker.completed.connect(self.thread.quit)
+        self.worker.failed.connect(self.thread.quit)
+        self.thread.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+        self.thread.finished.connect(self._on_thread_finished)
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def cancel(self) -> None:
+        self.worker.cancel()
+
+    def _on_progress(self, percent: float, message: str) -> None:
+        self.percent = float(percent)
+        self.message = str(message)
+        self.progress.emit(self.percent, self.message)
+
+    def _on_completed(self, result: object) -> None:
+        self.running = False
+        self.percent = 100.0
+        self.message = "Dades preparades correctament."
+        self.completed.emit(result)
+
+    def _on_failed(self, error_message: str) -> None:
+        self.running = False
+        self.message = str(error_message)
+        self.failed.emit(self.message)
+
+    def _on_thread_finished(self) -> None:
+        if _BACKGROUND_ASSET_JOBS.get(self.key) is self:
+            _BACKGROUND_ASSET_JOBS.pop(self.key, None)
+
+
+def _active_asset_job(
+    manager: AssetManager, asset_id: str
+) -> Optional[_AssetBackgroundJob]:
+    job = _BACKGROUND_ASSET_JOBS.get(_background_job_key(manager, asset_id))
+    return job if job is not None and bool(job.running) else None
+
+
+def _start_asset_job(
+    manager: AssetManager,
+    mode: str,
+    asset_id: str,
+    files: Optional[Iterable[str]] = None,
+    options: Optional[dict] = None,
+    *,
+    start_immediately: bool = True,
+) -> _AssetBackgroundJob:
+    key = _background_job_key(manager, asset_id)
+    current = _BACKGROUND_ASSET_JOBS.get(key)
+    if current is not None and bool(current.running):
+        return current
+    job = _AssetBackgroundJob(
+        manager,
+        mode=mode,
+        asset_id=asset_id,
+        files=files,
+        options=options,
+    )
+    _BACKGROUND_ASSET_JOBS[key] = job
+    if start_immediately:
+        job.start()
+    return job
 
 
 class AssetOnboardingDialog(QDialog):
@@ -227,6 +399,13 @@ class AssetOnboardingDialog(QDialog):
         self._completed = False
         self._thread = None
         self._worker = None
+        self._job: Optional[_AssetBackgroundJob] = None
+        self._job_detached = False
+        self._copernicus_probe_thread: Optional[QThread] = None
+        self._copernicus_probe_worker: Optional[
+            _CopernicusNodataProbeWorker
+        ] = None
+        self._copernicus_probe_context: Optional[tuple[object, object]] = None
         self._gaia_tap_process: Optional[QProcess] = None
         self._gaia_tap_out_buffer = ""
         self._gaia_tap_log_path: Optional[Path] = None
@@ -294,10 +473,41 @@ class AssetOnboardingDialog(QDialog):
                 "Opcional (avancat): pots executar-ho manualment amb:\n"
                 "python tools/download_gaia_tiles.py --mag-limit 0 --tile-size-deg 10"
             )
+        elif self.asset_id == "orthophoto":
+            try:
+                copernicus_log_path = (
+                    Path(self.manager.layout["logs"])
+                    / "copernicus_orthophoto_last.log"
+                )
+                extra_help = (
+                    "\n\nLog persistent de la descàrrega:\n"
+                    f"{copernicus_log_path}"
+                )
+            except Exception:
+                extra_help = (
+                    "\n\nLog persistent de la descàrrega:\n"
+                    "<biblioteca>/logs/copernicus_orthophoto_last.log"
+                )
+        product_help = ""
+        if self.spec.provider and self.spec.nominal_resolution_m:
+            product_help = (
+                f"Proveïdor:\n{self.spec.provider}\n\n"
+                f"Tipus semàntic: {self.spec.semantic_type}\n"
+                f"Resolució nominal: {self.spec.nominal_resolution_m:g} m\n"
+                f"CRS nominal: {self.spec.nominal_crs}\n"
+                f"Extensió: {self.spec.geographic_extent}\n\n"
+            )
+        conditions_help = (
+            f"Condicions:\n{self.spec.license_note}\n\n"
+            if self.spec.license_note
+            else ""
+        )
         details.setText(
             f"Font oficial:\n{self.spec.source_url}\n\n"
+            f"{product_help}"
             f"Formats admesos:\n{self.spec.accepted_formats}\n\n"
             f"Credits:\n{self.spec.credits}\n\n"
+            f"{conditions_help}"
             "Per defecte pots enllaçar dades pròpies a la seva ubicació original. "
             "Si tries preparar/copiar, els datasets i derivats es guarden a la biblioteca seleccionada.\n"
             f"Biblioteca activa: {self.manager.library.root}"
@@ -334,6 +544,23 @@ class AssetOnboardingDialog(QDialog):
         self.milkyway_block.setVisible(self.asset_id == "milkyway_texture")
         root.addWidget(self.milkyway_block)
 
+        self.s2glc_block = QWidget()
+        s2glc_layout = QVBoxLayout(self.s2glc_block)
+        s2glc_layout.setContentsMargins(0, 0, 0, 0)
+        self.chk_remove_archive = QCheckBox(
+            "Eliminar el ZIP després de validar i instal·lar el GeoTIFF"
+        )
+        self.chk_remove_archive.setChecked(False)
+        self.chk_remove_archive.setToolTip(
+            "Allibera espai només després que el GeoTIFF final s'hagi obert "
+            "i registrat correctament. No elimina el GeoTIFF."
+        )
+        s2glc_layout.addWidget(self.chk_remove_archive)
+        self.s2glc_block.setVisible(
+            self.asset_id in {"surface_rgb", "surface_categorical"}
+        )
+        root.addWidget(self.s2glc_block)
+
         actions = QHBoxLayout()
         self.btn_open_source = QPushButton(
             getTraduction("Onboarding.OpenSource", "Obrir font oficial")
@@ -347,6 +574,15 @@ class AssetOnboardingDialog(QDialog):
             )
         )
         self.btn_auto_download.setEnabled(self._supports_auto_download())
+        partial = self.manager.partial_download(self.asset_id)
+        resumable_orthophoto = bool(
+            self.asset_id == "orthophoto"
+            and self.manager.asset_status("orthophoto").get(
+                "resumable", False
+            )
+        )
+        if (partial is not None and partial.resumable) or resumable_orthophoto:
+            self.btn_auto_download.setText("Reprendre descàrrega")
         self.btn_auto_download.clicked.connect(self._auto_download)
         actions.addWidget(self.btn_auto_download)
 
@@ -379,7 +615,21 @@ class AssetOnboardingDialog(QDialog):
 
         footer = QHBoxLayout()
         footer.addStretch(1)
+        self.btn_background = QPushButton("Continuar en segon pla")
+        self.btn_background.setToolTip(
+            "Tanca aquesta finestra i manté la descàrrega activa. "
+            "En tornar-la a obrir es recuperarà el progrés actual."
+        )
+        self.btn_background.setVisible(False)
+        self.btn_background.clicked.connect(self._continue_in_background)
+        footer.addWidget(self.btn_background)
         self.btn_cancel = QPushButton("Cancel·lar tasca")
+        if self.asset_id in {
+            "orthophoto",
+            "surface_rgb",
+            "surface_categorical",
+        }:
+            self.btn_cancel.setText("Pausar descàrrega")
         self.btn_cancel.setVisible(False)
         self.btn_cancel.clicked.connect(self._cancel_job)
         footer.addWidget(self.btn_cancel)
@@ -399,10 +649,101 @@ class AssetOnboardingDialog(QDialog):
             self.btn_attach.setEnabled(False)
             self.btn_attach_folder.setEnabled(False)
 
+        self._restore_active_download()
+
     def _supports_auto_download(self) -> bool:
-        if self.asset_id == "gaia_catalog":
+        if self.asset_id in {"gaia_catalog", "orthophoto"}:
             return True
         return bool(self.spec.auto_download_url)
+
+    def _set_running_controls(self, *, allow_background: bool) -> None:
+        self.btn_open_source.setEnabled(False)
+        self.btn_attach.setEnabled(False)
+        self.btn_attach_folder.setEnabled(False)
+        self.btn_auto_download.setEnabled(False)
+        self.btn_close.setEnabled(False)
+        self.btn_cancel.setVisible(True)
+        self.btn_cancel.setEnabled(True)
+        self.btn_background.setVisible(bool(allow_background))
+        self.btn_background.setEnabled(bool(allow_background))
+
+    def _bind_asset_job(self, job: _AssetBackgroundJob) -> None:
+        self._job = job
+        self._thread = job.thread
+        self._worker = job.worker
+        job.progress.connect(self._on_progress)
+        job.completed.connect(self._on_completed)
+        job.failed.connect(self._on_failed)
+
+    def _disconnect_asset_job(self) -> None:
+        job = self._job
+        if job is None:
+            return
+        for signal, callback in (
+            (job.progress, self._on_progress),
+            (job.completed, self._on_completed),
+            (job.failed, self._on_failed),
+        ):
+            try:
+                signal.disconnect(callback)
+            except (TypeError, RuntimeError):
+                pass
+        self._job = None
+        self._thread = None
+        self._worker = None
+
+    def _restore_active_download(self) -> None:
+        """Reconnect a reopened dialog to the application-owned task."""
+
+        job = _active_asset_job(self.manager, self.asset_id)
+        if job is not None:
+            self._bind_asset_job(job)
+            self._set_running_controls(allow_background=job.mode == "download")
+            self._on_progress(job.percent, job.message)
+            return
+        if self.asset_id != "gaia_catalog":
+            return
+        key = _background_job_key(self.manager, self.asset_id)
+        process = _GAIA_BACKGROUND_DOWNLOADS.get(key)
+        if process is None or process.state() == QProcess.NotRunning:
+            _GAIA_BACKGROUND_DOWNLOADS.pop(key, None)
+            return
+        self._gaia_tap_process = process
+        self._gaia_process_detached = False
+        self._gaia_tap_log_path = self._resolve_gaia_tap_log_path()
+        self._gaia_tap_state_path = self._resolve_gaia_tap_state_path()
+        process.readyReadStandardOutput.connect(self._on_gaia_tap_output)
+        process.finished.connect(self._on_gaia_tap_finished)
+        process.errorOccurred.connect(self._on_gaia_tap_error)
+        self._set_running_controls(allow_background=True)
+        self.txt_process_log.setVisible(True)
+        state = self._load_gaia_tap_state()
+        percent = self._state_progress_percent(state)
+        if isinstance(state, dict):
+            self.lbl_status.setText(
+                self._gaia_state_status_text(state, percent)
+            )
+        else:
+            self.lbl_status.setText("Descarregant Gaia en segon pla...")
+        if percent > 0.0:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(max(0, min(100, int(round(percent)))))
+        else:
+            self.progress.setRange(0, 0)
+
+    def _continue_in_background(self) -> None:
+        """Detach the progress window without stopping the active download."""
+
+        process = self._gaia_tap_process
+        if process is not None and process.state() != QProcess.NotRunning:
+            self._detach_gaia_tap_process_for_background()
+        elif self._job is not None and bool(self._job.running):
+            self._disconnect_asset_job()
+        else:
+            return
+        self._job_detached = True
+        self._stop_gaia_state_watch_timer()
+        QDialog.reject(self)
 
     @property
     def completed(self) -> bool:
@@ -471,6 +812,423 @@ class AssetOnboardingDialog(QDialog):
                 options=self._collect_options(),
             )
 
+    @staticmethod
+    def _copernicus_estimate_value(
+        estimate: object,
+        name: str,
+        default: int = 0,
+    ) -> int:
+        value = (
+            estimate.get(name, default)
+            if isinstance(estimate, dict)
+            else getattr(estimate, name, default)
+        )
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return max(0, int(default))
+
+    def _confirm_copernicus_download(
+        self,
+        request: object,
+        estimate: object,
+        *,
+        nodata_fraction: float | None = None,
+        nodata_probe_error: str = "",
+    ) -> bool:
+        """Check disk space and confirm the selected download size."""
+
+        from TerraLab.data import copernicus as copernicus_core
+
+        format_bytes_dual = copernicus_core.format_bytes_dual
+        bbox = getattr(request, "bbox_wgs84", None)
+        coverage = copernicus_core.SERVICE_COVERAGE_WGS84
+        bbox_values = (
+            float(getattr(bbox, "west")),
+            float(getattr(bbox, "south")),
+            float(getattr(bbox, "east")),
+            float(getattr(bbox, "north")),
+        )
+        if all(
+            hasattr(coverage, field)
+            for field in ("west", "south", "east", "north")
+        ):
+            coverage_values = (
+                float(getattr(coverage, "west")),
+                float(getattr(coverage, "south")),
+                float(getattr(coverage, "east")),
+                float(getattr(coverage, "north")),
+            )
+        else:
+            coverage_values = tuple(
+                float(value) for value in coverage
+            )
+        west, south, east, north = bbox_values
+        cov_west, cov_south, cov_east, cov_north = coverage_values
+        intersects_coverage = not (
+            east <= cov_west
+            or west >= cov_east
+            or north <= cov_south
+            or south >= cov_north
+        )
+        if not intersects_coverage:
+            QMessageBox.critical(
+                self,
+                "Fora de la cobertura Copernicus",
+                "El rectangle no intersecta la cobertura publicada del "
+                "servei. Selecciona una àrea d'Europa.",
+            )
+            return False
+        partially_outside = not (
+            west >= cov_west
+            and south >= cov_south
+            and east <= cov_east
+            and north <= cov_north
+        )
+
+        width_px = self._copernicus_estimate_value(
+            estimate, "width_px"
+        )
+        height_px = self._copernicus_estimate_value(
+            estimate, "height_px"
+        )
+        pixel_count = self._copernicus_estimate_value(
+            estimate, "pixel_count"
+        )
+        raw_u16 = self._copernicus_estimate_value(
+            estimate, "raw_u16_bytes"
+        )
+        raw_u8 = self._copernicus_estimate_value(
+            estimate, "raw_u8_bytes"
+        )
+        compressed = self._copernicus_estimate_value(
+            estimate,
+            "compressed_estimate_max_bytes",
+            self._copernicus_estimate_value(
+                estimate, "compressed_estimate_bytes"
+            ),
+        )
+        fragment_count = self._copernicus_estimate_value(
+            estimate, "fragment_count"
+        )
+        if (
+            width_px <= 0
+            or height_px <= 0
+            or pixel_count <= 0
+            or raw_u8 <= 0
+            or raw_u16 <= 0
+            or fragment_count <= 0
+        ):
+            QMessageBox.critical(
+                self,
+                "Selecció Copernicus no vàlida",
+                "No s'han pogut verificar les dimensions i els fragments "
+                "de la selecció. No s'iniciarà la descàrrega.",
+            )
+            return False
+
+        request_payload = (
+            request.to_dict()
+            if hasattr(request, "to_dict")
+            and callable(request.to_dict)
+            else {}
+        )
+        pixel_type = str(
+            request_payload.get(
+                "pixel_type",
+                getattr(request, "pixel_type", "U8"),
+            )
+            or "U8"
+        ).upper()
+        output_format = str(
+            request_payload.get(
+                "output_format",
+                request_payload.get(
+                    "format",
+                    getattr(request, "output_format", "GeoTIFF"),
+                ),
+            )
+            or "GeoTIFF"
+        )
+        selected_raw = raw_u16 if pixel_type == "U16" else raw_u8
+        estimated_output = compressed or selected_raw
+        # ArcGIS clips native U16 samples when TIFF/U8 is requested, so the
+        # robust pipeline transports U16 fragments even for a visual U8
+        # output.  Account for that intermediate data, the final mosaic and
+        # its overview pyramid instead of assuming two U8 copies.
+        try:
+            required_free = int(
+                copernicus_core.CopernicusOrthophotoManager
+                .required_working_space(
+                    estimate,
+                    pending_fragment_bytes=raw_u16,
+                )
+            )
+        except Exception:
+            final_with_overviews = int(
+                math.ceil(estimated_output * 1.34)
+            )
+            subtotal = raw_u16 + final_with_overviews
+            margin = max(
+                256_000_000,
+                int(math.ceil(subtotal * 0.15)),
+            )
+            required_free = subtotal + margin
+        try:
+            free_bytes = int(shutil.disk_usage(self.manager.library.root).free)
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "No s'ha pogut comprovar el disc",
+                str(exc),
+            )
+            return False
+        if free_bytes < required_free:
+            QMessageBox.critical(
+                self,
+                "Espai insuficient",
+                "La selecció necessita aproximadament "
+                f"{format_bytes_dual(required_free)} lliures, incloent "
+                "fragments, mosaic final i marge de seguretat.\n\n"
+                f"Espai disponible: {format_bytes_dual(free_bytes)}.",
+            )
+            return False
+
+        size_gb = estimated_output / 1_000_000_000.0
+        if size_gb < 1.0:
+            severity = "Descàrrega de mida normal."
+        elif size_gb < 10.0:
+            severity = "Advertiment lleu: la descàrrega supera 1 GB."
+        elif size_gb < 50.0:
+            severity = "Advertiment important: la descàrrega supera 10 GB."
+        elif size_gb <= 100.0:
+            severity = (
+                "Confirmació reforçada: la descàrrega supera 50 GB."
+            )
+        else:
+            severity = (
+                "La descàrrega supera 100 GB. Es recomana reduir l'àrea "
+                "o utilitzar una resolució menor."
+            )
+        spatial_warnings = []
+        if partially_outside:
+            spatial_warnings.append(
+                "Una part del rectangle queda fora de la cobertura "
+                "publicada i pot produir NoData."
+            )
+        if nodata_fraction is not None and nodata_fraction > 0.50:
+            spatial_warnings.append(
+                "La mostra 128 × 128 estima aproximadament "
+                f"{nodata_fraction * 100.0:.1f}% de mar o NoData."
+            )
+        if nodata_probe_error:
+            spatial_warnings.append(
+                "No s'ha pogut completar la mostra orientativa de mar o "
+                "NoData. La descàrrega validarà igualment cada fragment."
+            )
+        warning_text = (
+            "\n".join(spatial_warnings) + "\n\n"
+            if spatial_warnings
+            else ""
+        )
+        transport_line = (
+            "Transport dels fragments: RGB U16 natiu"
+            + (
+                " (conversió U8 global local)\n"
+                if pixel_type == "U8"
+                else "\n"
+            )
+        )
+
+        answer = QMessageBox.question(
+            self,
+            "Confirmar descàrrega Copernicus",
+            f"{severity}\n\n{warning_text}"
+            f"Raster: {width_px:,} × {height_px:,} píxels\n"
+            f"Píxels totals: {pixel_count:,}\n"
+            f"RGB U16 sense compressió: {format_bytes_dual(raw_u16)}\n"
+            f"RGB U8 sense compressió: {format_bytes_dual(raw_u8)}\n"
+            "Mida comprimida estimada: "
+            f"{format_bytes_dual(estimated_output)}\n"
+            f"{transport_line}"
+            f"Fragments: {fragment_count}\n"
+            f"Format: {output_format} · {pixel_type}\n"
+            "Espai temporal recomanat: "
+            f"{format_bytes_dual(required_free)}\n"
+            f"Espai disponible: {format_bytes_dual(free_bytes)}\n\n"
+            "La mida comprimida és una estimació orientativa.\n"
+            "Vols iniciar la descàrrega?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No if size_gb >= 10.0 else QMessageBox.Yes,
+        )
+        if answer != QMessageBox.Yes:
+            return False
+        if size_gb < 50.0:
+            return True
+        reinforced = QMessageBox.question(
+            self,
+            "Confirmació reforçada",
+            "Aquesta tasca pot ocupar molt espai i trigar força temps. "
+            "Els fragments vàlids es conservaran si la pauses.\n\n"
+            "Confirma una segona vegada que vols continuar.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        return reinforced == QMessageBox.Yes
+
+    def _restore_controls_after_copernicus_probe(self) -> None:
+        self.btn_open_source.setEnabled(True)
+        self.btn_attach.setEnabled(True)
+        self.btn_attach_folder.setEnabled(True)
+        self.btn_auto_download.setEnabled(self._supports_auto_download())
+        self.btn_close.setEnabled(True)
+        self.btn_cancel.setText(
+            "Pausar descàrrega"
+            if self.asset_id
+            in {"orthophoto", "surface_rgb", "surface_categorical"}
+            else "Cancel·lar tasca"
+        )
+        self.btn_cancel.setVisible(False)
+        self.btn_background.setVisible(False)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+
+    def _launch_copernicus_download(self, request: object) -> None:
+        request_payload = request.to_dict()
+        try:
+            resolution_m = float(
+                request_payload.get(
+                    "resolution_m",
+                    getattr(request, "resolution_m", 10.0),
+                )
+            )
+        except (TypeError, ValueError):
+            resolution_m = 10.0
+        self._start_job(
+            mode="download",
+            files=[],
+            options={
+                "copernicus_request": request_payload,
+                "display_name": (
+                    "Copernicus HRIM 2018 True Colour · "
+                    f"{resolution_m:g} m"
+                ),
+            },
+        )
+
+    def _on_copernicus_probe_completed(
+        self,
+        result: object,
+        error_message: str,
+        cancelled: bool,
+    ) -> None:
+        context = self._copernicus_probe_context
+        self._copernicus_probe_context = None
+        self._restore_controls_after_copernicus_probe()
+        if context is None:
+            return
+        request, estimate = context
+        if bool(cancelled):
+            self.lbl_status.setText("Comprovació Copernicus cancel·lada.")
+            return
+        nodata_fraction = None
+        if result is not None:
+            try:
+                nodata_fraction = float(
+                    getattr(result, "fraction", result)
+                )
+            except (TypeError, ValueError):
+                nodata_fraction = None
+        self.lbl_status.setText(
+            "Comprovació espacial completada."
+            if not error_message
+            else "La mostra NoData no està disponible; es continuarà validant."
+        )
+        if self._confirm_copernicus_download(
+            request,
+            estimate,
+            nodata_fraction=nodata_fraction,
+            nodata_probe_error=str(error_message or ""),
+        ):
+            self._launch_copernicus_download(request)
+
+    def _on_copernicus_probe_thread_finished(self) -> None:
+        self._copernicus_probe_worker = None
+        self._copernicus_probe_thread = None
+
+    def _start_copernicus_preflight(
+        self,
+        request: object,
+        estimate: object,
+    ) -> None:
+        thread = self._copernicus_probe_thread
+        if thread is not None and thread.isRunning():
+            return
+        thread = QThread(self)
+        worker = _CopernicusNodataProbeWorker(request)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.completed.connect(self._on_copernicus_probe_completed)
+        worker.completed.connect(thread.quit)
+        thread.finished.connect(worker.deleteLater)
+        thread.finished.connect(self._on_copernicus_probe_thread_finished)
+        thread.finished.connect(thread.deleteLater)
+        self._copernicus_probe_thread = thread
+        self._copernicus_probe_worker = worker
+        self._copernicus_probe_context = (request, estimate)
+        self._set_running_controls(allow_background=False)
+        self.btn_cancel.setText("Cancel·lar comprovació")
+        self.progress.setRange(0, 0)
+        self.lbl_status.setText(
+            "Comprovant cobertura real de mar i NoData en segon pla…"
+        )
+        thread.start()
+
+    def _auto_download_copernicus_orthophoto(self) -> None:
+        from TerraLab.data.copernicus import (
+            DownloadRequest,
+            estimate_selection,
+        )
+        from TerraLab.ui.copernicus_orthophoto_dialog import (
+            CopernicusOrthophotoSelectionDialog,
+        )
+
+        initial_request = None
+        try:
+            previous = self.manager.library.asset_state(
+                "orthophoto"
+            ).get("copernicus_request")
+            if isinstance(previous, dict):
+                initial_request = DownloadRequest.from_dict(previous)
+        except Exception:
+            initial_request = None
+        dialog = CopernicusOrthophotoSelectionDialog(
+            self,
+            initial_request=initial_request,
+        )
+        if dialog.exec_() != QDialog.Accepted:
+            return
+        request = dialog.download_request
+        if request is None:
+            QMessageBox.warning(
+                self,
+                "Selecció necessària",
+                "Dibuixa una àrea vàlida abans de descarregar.",
+            )
+            return
+        estimate = getattr(dialog, "_estimate", None)
+        if estimate is None:
+            try:
+                estimate = estimate_selection(request)
+            except Exception as exc:
+                QMessageBox.critical(
+                    self,
+                    "No s'ha pogut estimar la selecció",
+                    str(exc),
+                )
+                return
+        self._start_copernicus_preflight(request, estimate)
+
     def _auto_download(self):
         if self.asset_id == "gaia_catalog":
             state = self._load_gaia_tap_state()
@@ -496,8 +1254,36 @@ class AssetOnboardingDialog(QDialog):
                     return
             self._start_gaia_tap_process(resume=False)
             return
+        if self.asset_id == "orthophoto":
+            self._auto_download_copernicus_orthophoto()
+            return
         if not self.spec.auto_download_url:
             return
+        if self.asset_id in {"surface_rgb", "surface_categorical"}:
+            partial = self.manager.partial_download(self.asset_id)
+            resume_line = ""
+            if partial is not None and partial.resumable:
+                resume_line = (
+                    "\n\nEs reprendrà el fitxer parcial existent "
+                    f"({partial.downloaded_bytes / 1024**3:.2f} GiB)."
+                )
+            expected = self.spec.expected_download_bytes
+            extracted = self.spec.expected_extracted_bytes
+            answer = QMessageBox.question(
+                self,
+                "Descàrrega S2GLC europea",
+                f"Es descarregarà el ZIP oficial de {self.spec.title}.\n\n"
+                f"ZIP: {expected / 1024**3:.2f} GiB\n"
+                f"GeoTIFF extret: {extracted / 1024**3:.2f} GiB\n"
+                "TerraLab comprovarà l'espai per als dos fitxers i un marge, "
+                "validarà el ZIP i no activarà la capa fins que el GeoTIFF "
+                "s'hagi obert correctament."
+                f"{resume_line}\n\nVols continuar?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
         if self.asset_id == "elevation_dem":
             answer = QMessageBox.question(
                 self,
@@ -537,7 +1323,7 @@ class AssetOnboardingDialog(QDialog):
                         self.manager.layout.get("gaia_mag_limit_default", 0.0)
                     )
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "AssetOnboardingDialog._start_gaia_tap_process")
                 mag_dialog = QInputDialog(self)
                 mag_dialog.setWindowTitle("Gaia TAP")
                 mag_dialog.setLabelText("Magnitud maxima G (0 = sense limit):")
@@ -579,7 +1365,7 @@ class AssetOnboardingDialog(QDialog):
             if log_path.exists():
                 log_path.unlink()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._start_gaia_tap_process")
 
         process = QProcess(self)
         process.setWorkingDirectory(str(project_root))
@@ -645,13 +1431,7 @@ class AssetOnboardingDialog(QDialog):
         process.finished.connect(self._on_gaia_tap_finished)
         process.errorOccurred.connect(self._on_gaia_tap_error)
 
-        self.btn_open_source.setEnabled(False)
-        self.btn_attach.setEnabled(False)
-        self.btn_attach_folder.setEnabled(False)
-        self.btn_auto_download.setEnabled(False)
-        self.btn_close.setEnabled(False)
-        self.btn_cancel.setVisible(True)
-        self.btn_cancel.setEnabled(True)
+        self._set_running_controls(allow_background=True)
         if resume:
             resume_state = self._load_gaia_tap_state()
             resume_pct = self._state_progress_percent(resume_state)
@@ -697,6 +1477,7 @@ class AssetOnboardingDialog(QDialog):
             self.btn_auto_download.setEnabled(self._supports_auto_download())
             self.btn_close.setEnabled(True)
             self.btn_cancel.setVisible(False)
+            self.btn_background.setVisible(False)
             QMessageBox.critical(
                 self, "TerraLab", f"{err_txt}\n\n{self._gaia_tap_log_hint()}"
             )
@@ -784,7 +1565,7 @@ class AssetOnboardingDialog(QDialog):
             if "progress_percent" in state:
                 return float(max(0.0, min(100.0, float(state.get("progress_percent", 0.0) or 0.0))))
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._state_progress_percent")
         deep_tiles = state.get("deep_tiles")
         if not isinstance(deep_tiles, dict):
             return 0.0
@@ -846,14 +1627,11 @@ class AssetOnboardingDialog(QDialog):
         try:
             timer.stop()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._stop_gaia_state_watch_timer")
 
     def _poll_gaia_state_feedback(self) -> None:
         """Actualitza progrés del diàleg des de fitxer d'estat Gaia."""
         if self.asset_id != "gaia_catalog":
-            return
-        if self._gaia_tap_process is not None:
-            # Quan el procés llançat per aquest diàleg està viu, el progrés ja arriba per stdout.
             return
         state = self._load_gaia_tap_state()
         if not self._gaia_state_is_pending(state):
@@ -886,13 +1664,13 @@ class AssetOnboardingDialog(QDialog):
                 self.manager.layout.get("gaia_max_concurrent_requests")
             )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._gaia_max_parallel_requests")
         try:
             raw_candidates.append(
                 get_config_value("gaia_max_concurrent_requests", 2)
             )
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._gaia_max_parallel_requests")
         raw_candidates.append(2)
 
         for raw_value in raw_candidates:
@@ -914,22 +1692,29 @@ class AssetOnboardingDialog(QDialog):
         proc = self._gaia_tap_process
         if proc is None:
             return
+        for key, stored_proc in tuple(_GAIA_BACKGROUND_DOWNLOADS.items()):
+            if stored_proc is proc:
+                _GAIA_BACKGROUND_DOWNLOADS.pop(key, None)
+        try:
+            _GAIA_BACKGROUND_PROCESSES.remove(proc)
+        except ValueError:
+            pass
         try:
             proc.readyReadStandardOutput.disconnect(self._on_gaia_tap_output)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._cleanup_gaia_tap_process")
         try:
             proc.finished.disconnect(self._on_gaia_tap_finished)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._cleanup_gaia_tap_process")
         try:
             proc.errorOccurred.disconnect(self._on_gaia_tap_error)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._cleanup_gaia_tap_process")
         try:
             proc.deleteLater()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._cleanup_gaia_tap_process")
         self._gaia_tap_process = None
         self._gaia_tap_out_buffer = ""
 
@@ -940,22 +1725,24 @@ class AssetOnboardingDialog(QDialog):
         try:
             proc.readyReadStandardOutput.disconnect(self._on_gaia_tap_output)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._detach_gaia_tap_process_for_background")
         try:
             proc.finished.disconnect(self._on_gaia_tap_finished)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._detach_gaia_tap_process_for_background")
         try:
             proc.errorOccurred.disconnect(self._on_gaia_tap_error)
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._detach_gaia_tap_process_for_background")
         try:
             app = QApplication.instance()
             if app is not None:
                 proc.setParent(app)
         except Exception:
-            pass
-        _keep_gaia_process_alive(proc)
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._detach_gaia_tap_process_for_background")
+        _keep_gaia_process_alive(
+            proc, _background_job_key(self.manager, self.asset_id)
+        )
         self._gaia_tap_process = None
         self._gaia_tap_out_buffer = ""
         self._gaia_process_detached = True
@@ -1047,7 +1834,7 @@ class AssetOnboardingDialog(QDialog):
                 with self._gaia_tap_log_path.open("a", encoding="utf-8") as handle:
                     handle.write(text + "\n")
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "AssetOnboardingDialog._append_gaia_tap_log_line")
         self.txt_process_log.append(text)
         self.lbl_status.setText(text)
 
@@ -1059,7 +1846,7 @@ class AssetOnboardingDialog(QDialog):
                     self.progress.setRange(0, 100)
                 self.progress.setValue(pct)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AssetOnboardingDialog._append_gaia_tap_log_line")
 
         m2 = re.search(
             r"\[gaia-tap\]\s+download\s+([0-9]+(?:\.[0-9]+)?)%", text
@@ -1070,7 +1857,7 @@ class AssetOnboardingDialog(QDialog):
                 self.progress.setRange(0, 100)
                 self.progress.setValue(pct2)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AssetOnboardingDialog._append_gaia_tap_log_line")
 
         m3 = re.search(
             r"\[gaia-progress\]\s+([0-9]+(?:\.[0-9]+)?)%\s*(.*)$",
@@ -1091,7 +1878,7 @@ class AssetOnboardingDialog(QDialog):
                     )
                     self.lbl_status.setText(f"{status} ({pct3}%)")
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AssetOnboardingDialog._append_gaia_tap_log_line")
 
         if "[gaia-ui]" in text:
             self._maybe_close_after_visible_ready()
@@ -1123,6 +1910,7 @@ class AssetOnboardingDialog(QDialog):
         state = self._load_gaia_tap_state()
         self._cleanup_gaia_tap_process()
         self.btn_cancel.setVisible(False)
+        self.btn_background.setVisible(False)
 
         self.progress.setRange(0, 100)
         ok = (
@@ -1180,10 +1968,11 @@ class AssetOnboardingDialog(QDialog):
             try:
                 err_txt = str(proc.errorString() or err_txt)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AssetOnboardingDialog._on_gaia_tap_error")
         log_hint = self._gaia_tap_log_hint()
         self._cleanup_gaia_tap_process()
         self.btn_cancel.setVisible(False)
+        self.btn_background.setVisible(False)
         self.progress.setRange(0, 100)
         self.btn_open_source.setEnabled(True)
         self.btn_attach.setEnabled(True)
@@ -1198,45 +1987,51 @@ class AssetOnboardingDialog(QDialog):
             return {
                 "remove_stars": bool(self.chk_remove_stars.isChecked()),
             }
+        if self.asset_id in {"surface_rgb", "surface_categorical"}:
+            return {
+                "remove_archive": bool(self.chk_remove_archive.isChecked()),
+                "display_name": self.spec.title,
+            }
         return {}
 
     def _start_job(
         self, mode: str, files: Iterable[str], options: Optional[dict] = None
     ):
-        self.btn_open_source.setEnabled(False)
-        self.btn_attach.setEnabled(False)
-        self.btn_attach_folder.setEnabled(False)
-        self.btn_auto_download.setEnabled(False)
-        self.btn_close.setEnabled(False)
+        self._set_running_controls(allow_background=str(mode) == "download")
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.lbl_status.setText("Preparant tasca en segon pla...")
 
-        thread = QThread(self)
-        worker = _AssetJobWorker(
+        job = _start_asset_job(
             self.manager,
             mode=mode,
             asset_id=self.asset_id,
             files=files,
             options=options,
+            start_immediately=False,
         )
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.progress.connect(self._on_progress)
-        worker.completed.connect(self._on_completed)
-        worker.failed.connect(self._on_failed)
-        worker.completed.connect(thread.quit)
-        worker.failed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(thread.deleteLater)
-        self._thread = thread
-        self._worker = worker
-        thread.start()
+        self._bind_asset_job(job)
+        if not job.thread.isRunning():
+            job.start()
 
     def _cancel_job(self) -> None:
+        probe_thread = getattr(self, "_copernicus_probe_thread", None)
+        probe_worker = getattr(self, "_copernicus_probe_worker", None)
+        if (
+            probe_thread is not None
+            and probe_thread.isRunning()
+            and probe_worker is not None
+        ):
+            probe_worker.cancel()
+            self.btn_cancel.setEnabled(False)
+            self.lbl_status.setText(
+                "Cancel·lant la comprovació Copernicus…"
+            )
+            return
         process = getattr(self, "_gaia_tap_process", None)
         if process is not None and process.state() != QProcess.NotRunning:
             self.btn_cancel.setEnabled(False)
+            self.btn_background.setEnabled(False)
             self.lbl_status.setText(
                 "Cancel·lant Gaia… El progrés i les descàrregues parcials es conservaran."
             )
@@ -1248,11 +2043,16 @@ class AssetOnboardingDialog(QDialog):
 
             QTimer.singleShot(3000, force_stop)
             return
+        job = getattr(self, "_job", None)
         worker = getattr(self, "_worker", None)
-        if worker is None:
+        if job is None and worker is None:
             return
-        worker.cancel()
+        if job is not None:
+            job.cancel()
+        else:
+            worker.cancel()
         self.btn_cancel.setEnabled(False)
+        self.btn_background.setEnabled(False)
         self.lbl_status.setText(
             "Cancel·lant… La descàrrega parcial es conservarà per reprendre-la."
         )
@@ -1269,10 +2069,12 @@ class AssetOnboardingDialog(QDialog):
         self.lbl_status.setText(str(message))
 
     def _on_completed(self, result: object):
+        self._disconnect_asset_job()
         self.progress.setRange(0, 100)
         self.progress.setValue(100)
         self._completed = True
         self.btn_cancel.setVisible(False)
+        self.btn_background.setVisible(False)
         self.lbl_status.setText("Dades preparades correctament.")
         self.btn_close.setEnabled(True)
         extra = ""
@@ -1302,19 +2104,31 @@ class AssetOnboardingDialog(QDialog):
         self.accept()
 
     def _on_failed(self, error_message: str):
+        self._disconnect_asset_job()
         self.btn_open_source.setEnabled(True)
         self.btn_attach.setEnabled(True)
         self.btn_attach_folder.setEnabled(True)
         self.btn_auto_download.setEnabled(self._supports_auto_download())
         self.btn_close.setEnabled(True)
         self.btn_cancel.setVisible(False)
+        self.btn_background.setVisible(False)
         self.progress.setRange(0, 100)
-        if "cancel" in str(error_message).lower():
-            self.lbl_status.setText("Tasca cancel·lada; es podrà reprendre.")
+        if any(
+            token in str(error_message).lower()
+            for token in ("cancel", "paus")
+        ):
+            self.lbl_status.setText("Tasca pausada; es podrà reprendre.")
+            self.btn_auto_download.setText("Reprendre descàrrega")
             QMessageBox.information(self, "TerraLab", str(error_message))
         else:
             self.lbl_status.setText("Error durant la preparacio de dades.")
-            QMessageBox.critical(self, "TerraLab", str(error_message))
+            message_box = QMessageBox(self)
+            message_box.setIcon(QMessageBox.Critical)
+            message_box.setWindowTitle("TerraLab")
+            message_box.setTextFormat(Qt.PlainText)
+            message_box.setText(str(error_message))
+            message_box.setStandardButtons(QMessageBox.Ok)
+            message_box.exec_()
 
     def reject(self):
         """Executa el metode reject de la classe AssetOnboardingDialog.
@@ -1325,6 +2139,27 @@ class AssetOnboardingDialog(QDialog):
         Retorna:
         - None.
         """
+        probe_thread = getattr(self, "_copernicus_probe_thread", None)
+        probe_worker = getattr(self, "_copernicus_probe_worker", None)
+        if (
+            probe_thread is not None
+            and probe_thread.isRunning()
+            and probe_worker is not None
+        ):
+            probe_worker.cancel()
+            self.btn_cancel.setEnabled(False)
+            self.lbl_status.setText(
+                "Cancel·lant la comprovació Copernicus…"
+            )
+            return
+        process = self._gaia_tap_process
+        job = self._job
+        if (
+            process is not None
+            and process.state() != QProcess.NotRunning
+        ) or (job is not None and bool(job.running)):
+            self._continue_in_background()
+            return
         self._stop_gaia_state_watch_timer()
         proc = self._gaia_tap_process
         if proc is not None:
@@ -1335,7 +2170,7 @@ class AssetOnboardingDialog(QDialog):
                         proc.kill()
                         proc.waitForFinished(2000)
             except Exception:
-                pass
+                log_suppressed_exception(__name__, "AssetOnboardingDialog.reject")
             self._cleanup_gaia_tap_process()
         super().reject()
 
@@ -1454,7 +2289,9 @@ class WelcomeOnboardingDialog(QDialog):
         panel_layout.addWidget(subtitle)
 
         self.layer_configurator = LayerConfiguratorWidget(
-            LayerManager(self.manager), panel
+            LayerManager(self.manager),
+            panel,
+            asset_dialog_factory=AssetOnboardingDialog,
         )
         panel_layout.addWidget(self.layer_configurator, 1)
         layout.addWidget(panel, 1)

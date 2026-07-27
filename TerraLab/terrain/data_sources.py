@@ -33,8 +33,10 @@ from TerraLab.terrain.representation import (
     normalize_terrain_representation_mode,
 )
 
-CATALOG_SCHEMA_VERSION = 1
+CATALOG_SCHEMA_VERSION = 3
 LEGACY_PATHS_MIGRATION = "legacy_paths_v1"
+LAND_COVER_TYPE_MIGRATION = "land_cover_types_v2"
+SURFACE_MODEL_MIGRATION = "surface_model_v3"
 _CATALOG_IO_LOCK = threading.RLock()
 
 
@@ -49,17 +51,32 @@ class LayerType(_StableStringEnum):
     """Semantic type of a geospatial dataset."""
 
     ELEVATION = "elevation"
-    SURFACE_CATEGORICAL = "surface_categorical"
-    SURFACE_RGB = "surface_rgb"
+    ORTHOPHOTO_RGB = "orthophoto_rgb"
+    LAND_COVER_CATEGORICAL = "land_cover_categorical"
+    LAND_COVER_RGB = "land_cover_rgb"
+    # Source-compatible names retained for Python callers.  Persisted values
+    # use the explicit semantic ``land_cover_*`` identifiers from schema v2.
+    SURFACE_CATEGORICAL = "land_cover_categorical"
+    SURFACE_RGB = "land_cover_rgb"
     LIGHT_POLLUTION = "light_pollution"
 
 
 class LayerRole(_StableStringEnum):
-    """User-selectable role; both surface types share one selection."""
+    """User-selectable data role."""
 
     ELEVATION = "elevation"
-    SURFACE = "surface"
+    ORTHOPHOTO = "orthophoto"
+    LAND_COVER = "land_cover"
+    # Compatibility name for callers that used the old umbrella role.
+    SURFACE = "land_cover"
     LIGHT_POLLUTION = "light_pollution"
+
+
+class SurfaceMode(_StableStringEnum):
+    """Semantic appearance selected for the terrain surface."""
+
+    ORTHOPHOTO = "orthophoto"
+    LAND_COVER = "land_cover"
 
 
 class SelectionMode(_StableStringEnum):
@@ -93,6 +110,17 @@ def _coerce_layer_type(value: LayerType | str) -> LayerType:
     if isinstance(value, LayerType):
         return value
     normalized = str(value or "").strip().lower()
+    legacy_aliases = {
+        "orthophoto": LayerType.ORTHOPHOTO_RGB,
+        "ortho": LayerType.ORTHOPHOTO_RGB,
+        "ortho_rgb": LayerType.ORTHOPHOTO_RGB,
+        "surface_categorical": LayerType.LAND_COVER_CATEGORICAL,
+        "surface_rgb": LayerType.LAND_COVER_RGB,
+        "categorical_land_cover": LayerType.LAND_COVER_CATEGORICAL,
+        "rgb_land_cover": LayerType.LAND_COVER_RGB,
+    }
+    if normalized in legacy_aliases:
+        return legacy_aliases[normalized]
     for member in LayerType:
         if normalized in {member.value, member.name.lower()}:
             return member
@@ -109,17 +137,51 @@ def _coerce_selection_mode(value: SelectionMode | str) -> SelectionMode:
     raise ValueError(f"Unsupported selection mode: {value!r}")
 
 
+def _coerce_surface_mode(value: SurfaceMode | LayerType | str) -> SurfaceMode:
+    if isinstance(value, SurfaceMode):
+        return value
+    if isinstance(value, LayerType):
+        return (
+            SurfaceMode.ORTHOPHOTO
+            if value is LayerType.ORTHOPHOTO_RGB
+            else SurfaceMode.LAND_COVER
+        )
+    normalized = str(value or "").strip().lower()
+    if normalized in {
+        "orthophoto",
+        "orthophoto_rgb",
+        "ortho",
+        "ortofoto",
+    }:
+        return SurfaceMode.ORTHOPHOTO
+    if normalized in {
+        "land_cover",
+        "land_cover_rgb",
+        "land_cover_categorical",
+        "surface",
+        "surface_rgb",
+        "surface_categorical",
+        "categorical",
+    }:
+        return SurfaceMode.LAND_COVER
+    raise ValueError(f"Unsupported surface mode: {value!r}")
+
+
 def _role_for(value: LayerRole | LayerType | str) -> LayerRole:
     if isinstance(value, LayerRole):
         return value
     if isinstance(value, LayerType):
-        if value in {LayerType.SURFACE_RGB, LayerType.SURFACE_CATEGORICAL}:
-            return LayerRole.SURFACE
+        if value is LayerType.ORTHOPHOTO_RGB:
+            return LayerRole.ORTHOPHOTO
+        if value in {LayerType.LAND_COVER_RGB, LayerType.LAND_COVER_CATEGORICAL}:
+            return LayerRole.LAND_COVER
         return LayerRole(value.value)
 
     normalized = str(value or "").strip().lower()
-    if normalized == LayerRole.SURFACE.value:
-        return LayerRole.SURFACE
+    if normalized in {"surface", LayerRole.LAND_COVER.value}:
+        return LayerRole.LAND_COVER
+    if normalized == LayerRole.ORTHOPHOTO.value:
+        return LayerRole.ORTHOPHOTO
     try:
         return _role_for(_coerce_layer_type(normalized))
     except ValueError as exc:
@@ -127,10 +189,12 @@ def _role_for(value: LayerRole | LayerType | str) -> LayerRole:
 
 
 def _source_matches_role(source: "DataSource", role: LayerRole) -> bool:
-    if role is LayerRole.SURFACE:
+    if role is LayerRole.ORTHOPHOTO:
+        return source.layer_type is LayerType.ORTHOPHOTO_RGB
+    if role is LayerRole.LAND_COVER:
         return source.layer_type in {
-            LayerType.SURFACE_RGB,
-            LayerType.SURFACE_CATEGORICAL,
+            LayerType.LAND_COVER_RGB,
+            LayerType.LAND_COVER_CATEGORICAL,
         }
     return source.layer_type.value == role.value
 
@@ -581,13 +645,17 @@ class DataSourceRegistry:
             role: LayerSelection() for role in LayerRole
         }
         self._representation_mode = TerrainRepresentationMode.RELIEF
+        self._surface_mode = SurfaceMode.LAND_COVER
+        self._legacy_surface_selection = LayerSelection()
         self._migrations: set[str] = set()
 
         with _CATALOG_IO_LOCK:
             existed = self._path.exists()
             if existed:
                 self._load()
-            migrated = self._migrate_legacy_paths()
+            migrated = self._migrate_land_cover_types()
+            migrated = self._migrate_surface_model() or migrated
+            migrated = self._migrate_legacy_paths() or migrated
             if migrated or not existed:
                 self.save()
 
@@ -626,6 +694,8 @@ class DataSourceRegistry:
         self._path_index.clear()
         self._selections = {role: LayerSelection() for role in LayerRole}
         self._representation_mode = TerrainRepresentationMode.RELIEF
+        self._surface_mode = SurfaceMode.LAND_COVER
+        self._legacy_surface_selection = LayerSelection()
         self._migrations.clear()
         if signature is not None:
             self._load_locked()
@@ -653,6 +723,24 @@ class DataSourceRegistry:
             if self._representation_mode is normalized:
                 return normalized
             self._representation_mode = normalized
+            self._save_locked()
+        return normalized
+
+    @property
+    def surface_mode(self) -> SurfaceMode:
+        with _CATALOG_IO_LOCK, self._lock:
+            self._refresh_if_changed_locked()
+            return self._surface_mode
+
+    def set_surface_mode(
+        self, mode: SurfaceMode | LayerType | str
+    ) -> SurfaceMode:
+        normalized = _coerce_surface_mode(mode)
+        with _CATALOG_IO_LOCK, self._lock:
+            self._refresh_if_changed_locked()
+            if self._surface_mode is normalized:
+                return normalized
+            self._surface_mode = normalized
             self._save_locked()
         return normalized
 
@@ -861,6 +949,8 @@ class DataSourceRegistry:
             self._path_index.clear()
             self._selections = {role: LayerSelection() for role in LayerRole}
             self._representation_mode = TerrainRepresentationMode.RELIEF
+            self._surface_mode = SurfaceMode.LAND_COVER
+            self._legacy_surface_selection = LayerSelection()
             self._migrations.clear()
             if self._path.exists():
                 self._load_locked()
@@ -963,6 +1053,18 @@ class DataSourceRegistry:
             role: LayerSelection.from_dict(raw_selections.get(role.value))
             for role in LayerRole
         }
+        self._legacy_surface_selection = LayerSelection.from_dict(
+            raw_selections.get("surface")
+        )
+        self._surface_mode = _coerce_surface_mode(
+            payload.get(
+                "surface_mode",
+                payload.get(
+                    "surface_layer_type",
+                    SurfaceMode.LAND_COVER.value,
+                ),
+            )
+        )
         self._representation_mode = normalize_terrain_representation_mode(
             payload.get(
                 "terrain_representation_mode",
@@ -994,6 +1096,7 @@ class DataSourceRegistry:
                 for role in LayerRole
             },
             "terrain_representation_mode": self._representation_mode.value,
+            "surface_mode": self._surface_mode.value,
             "migrations": {name: True for name in sorted(self._migrations)},
         }
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -1118,6 +1221,97 @@ class DataSourceRegistry:
             self._migrations.add(LEGACY_PATHS_MIGRATION)
             return True
 
+    def _migrate_land_cover_types(self) -> bool:
+        """Rewrite legacy ``surface_*`` values using schema-v2 identifiers.
+
+        ``DataSource.from_dict`` already coerces the old strings while loading;
+        marking this migration forces one atomic save even in catalogues whose
+        unrelated legacy-path migration had completed in an earlier release.
+        """
+
+        with self._lock:
+            if LAND_COVER_TYPE_MIGRATION in self._migrations:
+                return False
+            self._migrations.add(LAND_COVER_TYPE_MIGRATION)
+            return True
+
+    @staticmethod
+    def _inspected_band_counts(source: DataSource) -> set[int]:
+        values: set[int] = set()
+        metadata = source.metadata if isinstance(source.metadata, Mapping) else {}
+        for raster in metadata.get("rasters", ()) or ():
+            if not isinstance(raster, Mapping):
+                continue
+            try:
+                values.add(int(raster.get("band_count", 0) or 0))
+            except (TypeError, ValueError):
+                continue
+        return {value for value in values if value > 0}
+
+    def _migrate_surface_model(self) -> bool:
+        """Split legacy RGB surfaces into orthophotos and land-cover encodings."""
+
+        with self._lock:
+            if SURFACE_MODEL_MIGRATION in self._migrations:
+                return False
+
+            changed_sources: dict[str, DataSource] = {}
+            for source_id, source in self._sources.items():
+                if source.layer_type is not LayerType.LAND_COVER_RGB:
+                    changed_sources[source_id] = source
+                    continue
+                metadata = dict(source.metadata)
+                product_id = str(metadata.get("product_id", "") or "").casefold()
+                legend_id = str(
+                    metadata.get("legend_id", metadata.get("legend", "")) or ""
+                ).casefold()
+                band_counts = self._inspected_band_counts(source)
+                known_land_cover_rgb = bool(
+                    "s2glc" in product_id or "s2glc" in legend_id
+                )
+                if known_land_cover_rgb:
+                    target_type = LayerType.LAND_COVER_RGB
+                    metadata.setdefault("legend_id", "s2glc_europe_2017")
+                elif band_counts == {1}:
+                    target_type = LayerType.LAND_COVER_CATEGORICAL
+                    identity = f"{source.display_name} {source.path}".casefold()
+                    if "clcplus" in identity or "clc+" in identity:
+                        metadata.setdefault("legend_id", "clcplus_backbone_2023")
+                elif band_counts and min(band_counts) >= 3:
+                    target_type = LayerType.ORTHOPHOTO_RGB
+                else:
+                    # Unverified legacy RGB stays land-cover RGB until the
+                    # user or a later metadata inspection can classify it.
+                    target_type = LayerType.LAND_COVER_RGB
+                metadata["semantic_type"] = target_type.value
+                changed_sources[source_id] = replace(
+                    source,
+                    layer_type=target_type,
+                    metadata=metadata,
+                )
+
+            self._sources = changed_sources
+            self._path_index.clear()
+            for source in self._sources.values():
+                self._add_indexes_locked(source)
+
+            legacy = self._legacy_surface_selection
+            if (
+                legacy.mode is SelectionMode.MANUAL
+                and legacy.source_id in self._sources
+            ):
+                selected = self._sources[legacy.source_id]
+                role = _role_for(selected.layer_type)
+                if role in {LayerRole.ORTHOPHOTO, LayerRole.LAND_COVER}:
+                    self._selections[role] = legacy
+                    self._surface_mode = (
+                        SurfaceMode.ORTHOPHOTO
+                        if role is LayerRole.ORTHOPHOTO
+                        else SurfaceMode.LAND_COVER
+                    )
+            self._migrations.add(SURFACE_MODEL_MIGRATION)
+            return True
+
 
 class LayerSelectionService:
     """Resolve deterministic applicable source chains for observer positions."""
@@ -1133,13 +1327,41 @@ class LayerSelectionService:
             lon,
         )
 
-    def select_surface(self, lat: float, lon: float) -> LayerSelectionResult:
+    def select_surface(
+        self,
+        lat: float,
+        lon: float,
+        *,
+        mode: SurfaceMode | LayerType | str | None = None,
+        layer_type: LayerType | str | None = None,
+    ) -> LayerSelectionResult:
+        requested = layer_type if layer_type is not None else mode
+        surface_mode = (
+            self.registry.surface_mode
+            if requested is None
+            else _coerce_surface_mode(requested)
+        )
+        if surface_mode is SurfaceMode.ORTHOPHOTO:
+            role = LayerRole.ORTHOPHOTO
+            allowed_types = (LayerType.ORTHOPHOTO_RGB,)
+        else:
+            role = LayerRole.LAND_COVER
+            allowed_types = (
+                LayerType.LAND_COVER_CATEGORICAL,
+                LayerType.LAND_COVER_RGB,
+            )
         return self._select(
-            LayerRole.SURFACE,
-            (LayerType.SURFACE_RGB, LayerType.SURFACE_CATEGORICAL),
+            role,
+            allowed_types,
             lat,
             lon,
         )
+
+    def select_orthophoto(self, lat: float, lon: float) -> LayerSelectionResult:
+        return self.select_surface(lat, lon, mode=SurfaceMode.ORTHOPHOTO)
+
+    def select_land_cover(self, lat: float, lon: float) -> LayerSelectionResult:
+        return self.select_surface(lat, lon, mode=SurfaceMode.LAND_COVER)
 
     def select_light_pollution(
         self, lat: float, lon: float
@@ -1154,8 +1376,8 @@ class LayerSelectionService:
     @staticmethod
     def _sort_key(source: DataSource) -> tuple[int, int, float, str]:
         surface_rank = {
-            LayerType.SURFACE_RGB: 0,
-            LayerType.SURFACE_CATEGORICAL: 1,
+            LayerType.LAND_COVER_CATEGORICAL: 0,
+            LayerType.LAND_COVER_RGB: 1,
         }.get(source.layer_type, 0)
         resolution = (
             float(source.resolution_m)
@@ -1163,6 +1385,78 @@ class LayerSelectionService:
             else math.inf
         )
         return surface_rank, -int(source.priority), resolution, source.id
+
+    @staticmethod
+    def _surface_semantic_key(source: DataSource) -> tuple[Any, ...] | None:
+        metadata = source.metadata if isinstance(source.metadata, Mapping) else {}
+        product_id = str(metadata.get("product_id", "") or "").strip().casefold()
+        if not product_id:
+            return None
+
+        def extent_token(value: Extent | None) -> tuple[float, ...] | None:
+            if value is None:
+                return None
+            return tuple(round(float(item), 7) for item in value)
+
+        version = str(
+            metadata.get(
+                "product_version",
+                metadata.get("source_version", metadata.get("version", "")),
+            )
+            or ""
+        ).strip().casefold()
+        resolution = (
+            round(float(source.resolution_m), 6)
+            if source.resolution_m is not None
+            else None
+        )
+        return (
+            # Deduplicate mirrors within one encoding, but retain the
+            # categorical and RGB encodings of the same product as fallbacks
+            # for one another.
+            source.layer_type.value,
+            product_id,
+            version,
+            str(source.crs or metadata.get("nominal_crs", "")).strip().upper(),
+            extent_token(source.bounds or source.coverage),
+            resolution,
+        )
+
+    @classmethod
+    def _deduplicate_surface_sources(
+        cls,
+        candidates: Sequence[DataSource],
+        *,
+        configured_id: str | None,
+    ) -> list[DataSource]:
+        groups: dict[tuple[Any, ...], list[DataSource]] = {}
+        positions: dict[tuple[Any, ...], int] = {}
+        passthrough: list[tuple[int, DataSource]] = []
+        for position, source in enumerate(candidates):
+            key = cls._surface_semantic_key(source)
+            if key is None:
+                passthrough.append((position, source))
+                continue
+            positions.setdefault(key, position)
+            groups.setdefault(key, []).append(source)
+
+        selected: list[tuple[int, DataSource]] = list(passthrough)
+        for key, sources in groups.items():
+            manual = next(
+                (source for source in sources if source.id == configured_id), None
+            )
+            managed = next(
+                (
+                    source
+                    for source in sources
+                    if bool(source.metadata.get("managed", False))
+                    or source.provenance.strip().casefold() == "managed"
+                ),
+                None,
+            )
+            selected.append((positions[key], manual or managed or sources[0]))
+        selected.sort(key=lambda item: item[0])
+        return [source for _position, source in selected]
 
     def _select(
         self,
@@ -1194,6 +1488,12 @@ class LayerSelectionService:
         reason = "automatic"
         if selection.mode is SelectionMode.MANUAL:
             issue = self._manual_issue(configured, role, lat, lon)
+            if (
+                issue is None
+                and configured is not None
+                and configured.layer_type not in layer_types
+            ):
+                issue = "manual_type_mismatch"
             if issue is None:
                 assert configured is not None
                 candidates = [
@@ -1211,6 +1511,16 @@ class LayerSelectionService:
                     reason = f"{reason}_fallback"
                 else:
                     reason = f"{reason}_no_fallback"
+
+        if role in {LayerRole.ORTHOPHOTO, LayerRole.LAND_COVER}:
+            candidates = self._deduplicate_surface_sources(
+                candidates,
+                configured_id=(
+                    configured.id
+                    if selection.mode is SelectionMode.MANUAL and configured is not None
+                    else None
+                ),
+            )
 
         chain = tuple(candidates)
         effective = chain[0] if chain else None
@@ -1251,6 +1561,8 @@ class LayerSelectionService:
 __all__ = [
     "CATALOG_SCHEMA_VERSION",
     "LEGACY_PATHS_MIGRATION",
+    "LAND_COVER_TYPE_MIGRATION",
+    "SURFACE_MODEL_MIGRATION",
     "DataSource",
     "DataSourceRegistry",
     "LayerRole",
@@ -1258,6 +1570,7 @@ __all__ = [
     "LayerSelectionResult",
     "LayerSelectionService",
     "LayerType",
+    "SurfaceMode",
     "SelectionMode",
     "SourceHealthStatus",
     "TerrainRepresentationMode",

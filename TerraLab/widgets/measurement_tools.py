@@ -440,15 +440,12 @@ class MeasurementController:
         self,
         painter: QPainter,
         project_fn: Callable[[float, float], Optional[Tuple[float, float]]],
-        formatters: Dict[str, Callable[[float], str]],
     ) -> None:
         """Executa el metode draw de la classe MeasurementController.
 
         Par?metres:
         - painter (QPainter): Valor del parametre 'painter'.
         - project_fn (Callable[[float, float], Optional[Tuple[float, float]]]): Valor del parametre 'project_fn'.
-        - formatters (Dict[str, Callable[[float], str]]): Valor del parametre 'formatters'.
-
         Retorna:
         - None.
         """

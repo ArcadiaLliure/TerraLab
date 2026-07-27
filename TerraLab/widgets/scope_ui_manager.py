@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PyQt5.QtCore import QTimer
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.perf_events import append_perf_event
 from TerraLab.common.utils import get_config_value
 from TerraLab.widgets.measurement_tools import TOOL_NONE
@@ -345,7 +346,7 @@ class ScopeUIManager:
                             reason="scope_exit_restore_subset"
                         )
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "ScopeUIManager.exit")
         self.sync_ui_state(False)
         QTimer.singleShot(0, w._update_button_pos)
 

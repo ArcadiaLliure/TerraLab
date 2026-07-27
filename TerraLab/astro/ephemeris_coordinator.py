@@ -24,6 +24,64 @@ except Exception:  # pragma: no cover
     wgs84 = None
 
 
+EPHEMERIS_VISUAL_MAX_AGE_SECONDS = 1.5
+
+
+def utc_datetime_from_context(
+    year_utc: int,
+    day_of_year_utc: int,
+    ut_hour: float,
+) -> datetime:
+    """Build UTC time from TerraLab's zero-based day-of-year convention."""
+
+    return datetime(int(year_utc), 1, 1, tzinfo=timezone.utc) + timedelta(
+        days=int(day_of_year_utc),
+        hours=float(ut_hour),
+    )
+
+
+def snapshot_datetime_utc(payload: Any) -> datetime | None:
+    """Return a snapshot timestamp normalized to UTC."""
+
+    if not isinstance(payload, dict):
+        return None
+    raw_timestamp = payload.get("timestamp_utc")
+    if not raw_timestamp:
+        return None
+    try:
+        text = str(raw_timestamp).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        timestamp = datetime.fromisoformat(text)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return timestamp.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def snapshot_matches_utc_context(
+    payload: Any,
+    *,
+    year_utc: int,
+    day_of_year_utc: int,
+    ut_hour: float,
+    max_age_seconds: float = EPHEMERIS_VISUAL_MAX_AGE_SECONDS,
+) -> bool:
+    """Reject ephemerides old enough to skip a short eclipse phase."""
+
+    timestamp = snapshot_datetime_utc(payload)
+    if timestamp is None:
+        return False
+    requested = utc_datetime_from_context(
+        year_utc,
+        day_of_year_utc,
+        ut_hour,
+    )
+    delta_seconds = abs((timestamp - requested).total_seconds())
+    return bool(delta_seconds <= max(0.0, float(max_age_seconds)))
+
+
 class EphemerisCoordinator(QObject):
     """Orquestra calcul d'efemerides i publica snapshots asinc."""
 
@@ -43,6 +101,7 @@ class EphemerisCoordinator(QObject):
         self._last_request_key: tuple[int, int, int, int, int] | None = None
         self._last_submit_mono: float = 0.0
         self._min_submit_interval_s: float = 0.20
+        self._shutdown = False
 
         self._ts = None
         self._eph = None
@@ -57,7 +116,10 @@ class EphemerisCoordinator(QObject):
 
     def shutdown(self) -> None:
         """Atura el pool intern del coordinador."""
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        with self._request_lock:
+            self._shutdown = True
+            self._pending_request = None
+        self._executor.shutdown(wait=True, cancel_futures=True)
 
     def configure_observer(self, latitude: float, longitude: float) -> None:
         """Actualitza coordenades de l'observador per futurs calculs."""
@@ -65,7 +127,7 @@ class EphemerisCoordinator(QObject):
         self._longitude = float(longitude)
 
     def request_snapshot(self, *, year_utc: int, day_of_year_utc: int, ut_hour: float) -> None:
-        """Programa calcul de snapshot d'efemerides en segon pla."""
+        """Schedule a snapshot using a zero-based UTC day of year."""
         req = (
             int(year_utc),
             int(day_of_year_utc),
@@ -82,6 +144,8 @@ class EphemerisCoordinator(QObject):
         )
         now_mono = float(time.monotonic())
         with self._request_lock:
+            if self._shutdown:
+                return
             # Ignore exact duplicate requests arriving too fast.
             if (
                 self._last_request_key == request_key
@@ -134,7 +198,10 @@ class EphemerisCoordinator(QObject):
             self.ephemeris_error.emit(f"Error calculant efemerides: {exc}")
         finally:
             with self._request_lock:
-                if self._pending_request is not None:
+                if self._shutdown:
+                    self._pending_request = None
+                    self._request_inflight = False
+                elif self._pending_request is not None:
                     next_request = self._pending_request
                     self._pending_request = None
                     self._request_inflight = True
@@ -161,9 +228,10 @@ class EphemerisCoordinator(QObject):
         longitude: float,
     ) -> dict[str, Any]:
         """Calcula snapshot astronomic per context temporal concret."""
-        dt_utc = datetime(year_utc, 1, 1, tzinfo=timezone.utc) + timedelta(
-            days=max(0, int(day_of_year_utc) - 1),
-            hours=float(ut_hour),
+        dt_utc = utc_datetime_from_context(
+            year_utc,
+            day_of_year_utc,
+            ut_hour,
         )
 
         if self._ts is None or self._eph is None or wgs84 is None:

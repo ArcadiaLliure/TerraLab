@@ -23,7 +23,7 @@ def create_gaussian_kernel(
         np.ndarray: A normalized 2D kernel array.
     """
     halo = int(np.ceil(max_radius_km / res_km))
-    n = 2 * halo + 1
+    2 * halo + 1
     y, x = np.ogrid[-halo : halo + 1, -halo : halo + 1]
 
     r_km = np.sqrt(x * x + y * y) * res_km
@@ -59,7 +59,7 @@ def create_power_law_kernel(
         np.ndarray: A normalized 2D kernel array.
     """
     halo = int(np.ceil(max_radius_km / res_km))
-    n = 2 * halo + 1
+    2 * halo + 1
     y, x = np.ogrid[-halo : halo + 1, -halo : halo + 1]
 
     r_km = np.sqrt(x * x + y * y) * res_km

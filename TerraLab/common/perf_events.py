@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import app_root
 
 
@@ -34,4 +35,4 @@ def append_perf_event(event: str, **payload: Any) -> None:
             fh.write(line)
     except Exception:
         # Telemetry must never break runtime execution.
-        pass
+        log_suppressed_exception(__name__, "append_perf_event")

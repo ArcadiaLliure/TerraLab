@@ -1,26 +1,33 @@
-"""AstronomicalWidget misc helpers extracted from sky_widget_impl."""
+"""Miscellaneous helpers for the astronomical widget."""
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from typing import Optional
 
-from TerraLab.common.deprecation_registry import (
-    emit_deprecation_warning,
-    register_deprecated_method,
-)
+import numpy as np
+from PyQt5.QtCore import QThread, QTimer, QUrl
+from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtWidgets import QInputDialog, QMessageBox
 
-register_deprecated_method(
-    entry_id="TerraLab.ui.widget_misc_helpers.widget_reload_star_catalog_async",
-    module_path="TerraLab.ui.widget_misc_helpers",
-    class_name=None,
-    method_name="widget_reload_star_catalog_async",
-    replacement="TerraLab.data.star_data_coordinator.StarDataCoordinator.load_general_tile",
-    phase_introduced=6,
-    notes="Recarrega legacy substituida per coordinador de tesela general",
+from TerraLab.common.exception_reporting import log_suppressed_exception
+from TerraLab.common.deprecation_registry import emit_deprecation_warning
+from TerraLab.common.perf_events import append_perf_event
+from TerraLab.common.utils import (
+    getTraduction,
+    get_base_dir,
+    get_config_value,
+    set_config_value,
 )
+from TerraLab.ui.design_system import (
+    COLLAPSE_BUTTON_STYLESHEET,
+    CONTROL_PANEL_STYLESHEET,
+)
+from TerraLab.ui.onboarding_dialogs import AssetOnboardingDialog
+from TerraLab.ui.workers.catalog_loader import CatalogLoaderWorker
 
 
 def _load_gaia_state_from_json(path: Path) -> Optional[dict]:
@@ -65,7 +72,7 @@ def _gaia_state_progress_percent(state: Optional[dict]) -> float:
                 )
             )
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "_gaia_state_progress_percent")
 
     deep_tiles = state.get("deep_tiles")
     if not isinstance(deep_tiles, dict):
@@ -147,7 +154,7 @@ def _find_pending_gaia_state(widget) -> Optional[dict]:
             if _is_gaia_state_pending(loaded_state):
                 return loaded_state
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "_find_pending_gaia_state")
 
     for candidate_path in _candidate_gaia_state_paths(widget):
         loaded_state = _load_gaia_state_from_json(candidate_path)
@@ -157,9 +164,6 @@ def _find_pending_gaia_state(widget) -> Optional[dict]:
 
 
 def widget_apply_scope_preloaded_spatial_index(widget):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if not bool(getattr(self, "_scope_preload_ready", False)):
         return False
@@ -218,9 +222,6 @@ def widget_apply_scope_preloaded_spatial_index(widget):
 
 
 def widget_on_scope_preload_ready(widget, payload):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     self._scope_preload_in_progress = False
     self._scope_preload_ready = True
@@ -285,9 +286,6 @@ def widget_on_scope_preload_ready(widget, payload):
 
 
 def widget_maybe_resume_pending_gaia_download(widget):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if bool(getattr(self, "_gaia_resume_prompt_shown", False)):
         return
@@ -341,9 +339,6 @@ def widget_reload_star_catalog_async(widget):
         "TerraLab.ui.widget_misc_helpers.widget_reload_star_catalog_async",
         "TerraLab.data.star_data_coordinator.StarDataCoordinator.load_general_tile",
     )
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     """Reload Gaia catalog after onboarding import without requiring app restart."""
     try:
@@ -352,7 +347,7 @@ def widget_reload_star_catalog_async(widget):
             old_thread.quit()
             old_thread.finished.connect(old_thread.deleteLater)
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "widget_reload_star_catalog_async")
     _gaia_catalog_dir = self.runtime_layout.get(
         "data_gaia", Path(get_base_dir()) / "data" / "gaia"
     )
@@ -390,16 +385,13 @@ def widget_reload_star_catalog_async(widget):
     try:
         self._catalog_thread.setPriority(QThread.LowPriority)
     except Exception:
-        pass
+        log_suppressed_exception(__name__, "widget_reload_star_catalog_async")
     print("[AstroWidget] Star catalog reloading in background...")
 
 
 def widget_on_scope_spatial_index_ready(
     widget, catalog_key, sorted_indices, offsets, ready_mag_cap
 ):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     self._scope_index_loading = False
     restart_warmup = False
@@ -449,64 +441,15 @@ def widget_on_scope_spatial_index_ready(
 
 
 def widget_update_custom_theme(widget):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
-    t = self.current_theme
-    # Extract colors or defaults
-    bg = t.get(
-        "content_bg", t.get("widget_background", "rgba(20, 20, 30, 220)")
-    )
-    txt = t.get("title_text_color", t.get("text_primary", "white"))
-    border = t.get("widget_border_color", "#555")
-    # Ensure bg has alpha if needed, or just use as is
-    self.panel_style = f"""
-        #controlFrame {{
-            background-color: {bg};
-            color: {txt};
-            border: 1px solid {border};
-            border-radius: 8px;
-        }}
-        #controlFrame QLineEdit {{ background: rgba(0,0,0,50); color: {txt}; border: 1px solid {border}; border-radius: 4px; padding: 2px; }}
-        #controlFrame QLineEdit:focus {{ border: 2px solid {txt}; }}
-        #controlFrame QPushButton {{ background: rgba(255,255,255,20); border: 1px solid {border}; border-radius: 3px; color: {txt}; font-weight: bold; }}
-        #controlFrame QPushButton:hover {{ background: rgba(255,255,255,50); }}
-        #controlFrame QPushButton:checked {{ background: rgba(100,200,255,100); color: white; }}
-        #controlFrame QLabel {{ color: {txt}; }}
-        #controlFrame QCheckBox {{ color: {txt}; }}
-        #controlFrame QSlider::handle:horizontal {{ background: {border}; border: 1px solid {txt}; width: 10px; margin: -2px 0; border-radius: 5px; }}
-        #controlFrame QSlider::groove:horizontal {{ border: 1px solid #999; height: 4px; background: rgba(255,255,255,50); margin: 2px 0; }}
-    """
+    self.panel_style = CONTROL_PANEL_STYLESHEET
     if hasattr(self, "frame_controls"):
         self.frame_controls.setStyleSheet(self.panel_style)
     if hasattr(self, "btn_collapse"):
-        # Tab Style
-        self.btn_collapse.setStyleSheet(
-            f"""
-            QPushButton {{
-                background-color: {bg};
-                color: {txt};
-                border: 1px solid {border};
-                border-bottom: 2px solid {bg};
-                font-size: 16px;
-                font-weight: bold;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
-                border-bottom-left-radius: 0px;
-                border-bottom-right-radius: 0px;
-                margin-bottom: -1px;
-                padding-bottom: 2px;
-            }}
-            QPushButton:hover {{ background-color: {bg}; border: 1px solid rgba(255,255,255,200); }}
-        """
-        )
+        self.btn_collapse.setStyleSheet(COLLAPSE_BUTTON_STYLESHEET)
 
 
 def widget_set_scope_coord_inputs(widget, ra_deg: float, dec_deg: float):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if not hasattr(self, "scope_ra_h_spin"):
         return
@@ -559,9 +502,6 @@ def widget_set_scope_coord_inputs(widget, ra_deg: float, dec_deg: float):
 
 
 def widget_sync_constellation_controls(widget):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if not hasattr(self, "canvas"):
         return
@@ -624,9 +564,6 @@ def widget_sync_constellation_controls(widget):
 
 
 def widget_refresh_milkyway_status_indicator(widget):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if not hasattr(self, "lbl_milkyway_status"):
         return
@@ -683,9 +620,6 @@ def widget_refresh_milkyway_status_indicator(widget):
 
 
 def widget_refresh_climate_status_indicator(widget):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if not hasattr(self, "lbl_climate_fallback") or not hasattr(
         self, "chk_clima"
@@ -743,9 +677,6 @@ def widget_refresh_climate_status_indicator(widget):
 
 def widget_refresh_gaia_download_feedback(widget):
     """Actualitza feedback visual de descarrega Gaia pendent a la UI principal."""
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     label_widget = getattr(self, "lbl_gaia_download_status", None)
     progress_widget = getattr(self, "progress_gaia_download", None)
@@ -799,9 +730,6 @@ def widget_refresh_gaia_download_feedback(widget):
 
 
 def widget_ensure_copernicus_credentials_prompt(widget):
-    from TerraLab.ui import sky_widget_impl as _impl
-
-    globals().update(_impl.__dict__)
     self = widget
     if bool(get_config_value("copernicus_informed", False)):
         return

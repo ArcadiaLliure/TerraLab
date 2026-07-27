@@ -2,7 +2,6 @@ import math
 import os
 import sys
 
-import numpy as np
 
 # --- COMENTARIOS DE USO ---
 # Este script escanea los alrededores de una ubicación para encontrar las cúpulas de luz
@@ -41,7 +40,7 @@ def main():
 
     sampler = LightPollutionSampler(tiff_path)
 
-    print(f"--- ESCANEO DE CONTAMINACIÓN ---")
+    print("--- ESCANEO DE CONTAMINACIÓN ---")
     print(f"Observador: {obs_lat}, {obs_lon}")
 
     # Preparar región (50km de radio para el escaneo)

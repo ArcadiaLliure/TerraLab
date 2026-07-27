@@ -30,13 +30,7 @@ class GridRenderer:
             callback(ctx, state)
 
 
-def draw_celestial_grid(painter, hour, *, canvas=None, impl=None):
-    if callable(impl):
-        return impl(painter, hour)
-    return draw_celestial_grid_impl(canvas, painter, hour)
-
-
-def draw_celestial_grid_impl(canvas, painter, hour):
+def draw_celestial_grid(canvas, painter, hour):
     if canvas is None:
         return
 

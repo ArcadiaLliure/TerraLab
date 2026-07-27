@@ -1,4 +1,6 @@
+import copy
 import json
+import inspect
 import os
 import subprocess
 import sys
@@ -8,14 +10,18 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QObject, QMetaObject, Qt, pyqtSignal, pyqtSlot
+from PyQt5.QtCore import QObject, QMetaObject, QThread, Qt, pyqtSignal, pyqtSlot
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import (
     getTraduction,
     get_config_value,
     set_config_value,
 )
-from TerraLab.terrain.engine import HorizonProfile, generate_bands
+from TerraLab.common.perf_events import append_perf_event
+from TerraLab.config import ConfigManager
+from TerraLab.terrain.domain.bands import generate_bands
+from TerraLab.terrain.persistence.profile_npz import load_profile
 from TerraLab.terrain.data_sources import DataSourceRegistry, LayerSelectionService
 
 
@@ -38,11 +44,23 @@ class HorizonWorker(QObject):
     progress_message = pyqtSignal(str)
     error_occurred = pyqtSignal(str)
     bortle_estimate_ready = pyqtSignal(int, float, float, int)
+    bare_elevation_ready = pyqtSignal(float, float, object)
     effective_sources_changed = pyqtSignal(object)
+    shutdown_finished = pyqtSignal()
 
-    def __init__(self, tiles_dir=None, parent=None):
+    def __init__(
+        self,
+        tiles_dir=None,
+        parent=None,
+        *,
+        quit_thread_on_shutdown: bool = False,
+    ):
         super().__init__(parent)
         self.tiles_dir = tiles_dir
+        self._quit_thread_on_shutdown = bool(quit_thread_on_shutdown)
+        self._shutdown_event = threading.Event()
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_complete = False
         self.is_initialized = False
         self.provider = None
         self.baker = None
@@ -70,6 +88,14 @@ class HorizonWorker(QObject):
         self._surface_service = None
         self._surface_source_signature = None
         self._last_profile = None
+        self._surface_generation_lock = threading.Lock()
+        self._surface_request_generation = 0
+        self._surface_cancel_event = threading.Event()
+        self._surface_performance_logging = False
+        self._surface_progress_last_emit = 0.0
+        self._surface_progress_last_phase = ""
+        self._surface_progress_last_percent = -1.0
+        self._surface_progress_min_interval_s = 0.20
 
     def _ensure_light_sampler_for_location(self, lat: float, lon: float):
         enabled = bool(get_config_value("light_pollution_enabled", True))
@@ -96,10 +122,23 @@ class HorizonWorker(QObject):
         self._light_source_signature = signature
         return self.light_sampler
 
-    def _surface_selection(self, lat: float, lon: float):
-        selection = self.layer_selection.select_surface(lat, lon)
+    def _surface_selection(
+        self,
+        lat: float,
+        lon: float,
+        *,
+        surface_mode: str | None = None,
+        surface_layer_type: str | None = None,
+    ):
+        selection = self.layer_selection.select_surface(
+            lat,
+            lon,
+            mode=surface_mode or surface_layer_type,
+        )
         visible = bool(get_config_value("ui.visibility.earth.surface", True))
-        return selection, list(selection.chain) if visible else []
+        if not visible or selection.effective is None:
+            return selection, []
+        return selection, list(selection.chain)
 
     @staticmethod
     def _effective_surface_source_id(cache):
@@ -107,6 +146,10 @@ class HorizonWorker(QObject):
             return None
         get = cache.get if isinstance(cache, dict) else lambda key, default=None: getattr(cache, key, default)
         source_ids = tuple(get("source_ids", ()) or ())
+        if bool(get("observer_valid", False)):
+            observer_index = int(get("observer_source_index", -1))
+            if 0 <= observer_index < len(source_ids):
+                return source_ids[observer_index]
         for valid_name, index_name in (
             ("profile_valid", "profile_source_indices"),
             ("relief_valid", "relief_source_indices"),
@@ -123,18 +166,69 @@ class HorizonWorker(QObject):
                 return source_ids[index] if 0 <= index < len(source_ids) else None
         return None
 
-    def _prepare_surface_samples(self, profile):
+    def set_surface_request_generation(self, generation: int) -> None:
+        """Publish the newest refresh generation without waiting on Qt events."""
+
+        with self._surface_generation_lock:
+            self._surface_request_generation = int(generation)
+            self._surface_cancel_event.clear()
+
+    def cancel_surface_sampling(self) -> None:
+        """Cooperatively stop the current bounded raster sampling operation."""
+
+        self._surface_cancel_event.set()
+
+    def _surface_request_cancelled(self, generation: int) -> bool:
+        with self._surface_generation_lock:
+            current = self._surface_request_generation
+        return (
+            self._shutdown_event.is_set()
+            or self._surface_cancel_event.is_set()
+            or int(generation) != current
+        )
+
+    def _prepare_surface_samples(
+        self,
+        profile,
+        *,
+        surface_request=None,
+        progress_callback=None,
+        abort_check=None,
+    ):
         if profile is None:
             return None
+        if callable(progress_callback):
+            progress_callback(1.0, "discovering-sources")
         selection, sources = self._surface_selection(
             float(getattr(profile, "observer_lat", 0.0)),
             float(getattr(profile, "observer_lon", 0.0)),
+            surface_mode=(
+                getattr(surface_request, "surface_mode", None)
+                if surface_request is not None
+                else None
+            ),
         )
         signature = tuple(
             (
                 str(getattr(source, "id", "")),
                 str(getattr(source, "path", "")),
                 str(getattr(source, "fingerprint", "")),
+                str(getattr(getattr(source, "layer_type", ""), "value", "")),
+                str(getattr(source, "display_name", "")),
+                json.dumps(
+                    {
+                        key: (getattr(source, "metadata", {}) or {}).get(key)
+                        for key in (
+                            "legend_id",
+                            "legend",
+                            "class_colors",
+                            "palette",
+                            "encoding",
+                        )
+                    },
+                    sort_keys=True,
+                    default=str,
+                ),
             )
             for source in sources
         )
@@ -143,21 +237,65 @@ class HorizonWorker(QObject):
                 self._surface_service.close()
             self._surface_service = None
             if sources:
+                if callable(progress_callback):
+                    progress_callback(2.0, "opening-geotiff")
                 from TerraLab.terrain.surface import (
                     SurfaceSamplingService,
                     create_surface_providers,
                 )
+                from TerraLab.common.app_paths import cache_dir
 
+                service_kwargs = {}
+                service_parameters = inspect.signature(
+                    SurfaceSamplingService
+                ).parameters
+                if "persistent_cache_dir" in service_parameters:
+                    service_kwargs["persistent_cache_dir"] = cache_dir(
+                        "terrain", "surface"
+                    )
+                if "persistent_cache_bytes" in service_parameters:
+                    service_kwargs["persistent_cache_bytes"] = 2 * 1024**3
+                try:
+                    performance_logging = bool(
+                        ConfigManager()
+                        .get_terrain_render_settings()
+                        .terrain_performance_logging_enabled
+                    )
+                except Exception:
+                    performance_logging = False
+                self._surface_performance_logging = performance_logging
+                if "performance_logging" in service_parameters:
+                    service_kwargs["performance_logging"] = performance_logging
+                opening_started = time.perf_counter()
                 self._surface_service = SurfaceSamplingService(
-                    create_surface_providers(sources)
+                    create_surface_providers(sources), **service_kwargs
                 )
+                if performance_logging:
+                    append_perf_event(
+                        "surface.sampling",
+                        phase="opening",
+                        source_count=len(sources),
+                        elapsed_ms=int(
+                            (time.perf_counter() - opening_started) * 1000.0
+                        ),
+                    )
             self._surface_source_signature = signature
         if self._surface_service is None:
             profile.surface_samples = None
             return profile
         geometry_id = str(getattr(profile, "geometry_id", "") or "")
+        sample_kwargs = {"geometry_id": geometry_id}
+        sample_parameters = inspect.signature(
+            self._surface_service.sample_profile
+        ).parameters
+        if surface_request is not None and "request" in sample_parameters:
+            sample_kwargs["request"] = surface_request
+        if progress_callback is not None:
+            sample_kwargs["progress_callback"] = progress_callback
+        if abort_check is not None:
+            sample_kwargs["abort_check"] = abort_check
         profile.surface_samples = self._surface_service.sample_profile(
-            profile, geometry_id=geometry_id
+            profile, **sample_kwargs
         )
         profile.effective_surface_source_id = self._effective_surface_source_id(
             profile.surface_samples
@@ -179,24 +317,191 @@ class HorizonWorker(QObject):
 
     @pyqtSlot(object)
     def request_surface_refresh(self, profile=None):
-        target = profile or self._last_profile
+        if self._shutdown_event.is_set():
+            return
+        generation = None
+        target = profile
+        visible_radius_m = None
+        view_azimuth_deg = 0.0
+        view_fov_deg = 360.0
+        viewport_width_px = None
+        viewport_height_px = None
+        surface_mode = None
+        atomic_surface_swap = False
+        if isinstance(profile, dict) and "profile" in profile:
+            target = profile.get("profile")
+            generation = profile.get("generation")
+            visible_radius_m = profile.get("visible_radius_m")
+            view_azimuth_deg = float(profile.get("view_azimuth_deg", 0.0) or 0.0)
+            view_fov_deg = float(profile.get("view_fov_deg", 360.0) or 360.0)
+            viewport_width_px = profile.get("viewport_width_px")
+            viewport_height_px = profile.get("viewport_height_px")
+            surface_mode = (
+                str(
+                    profile.get(
+                        "surface_mode",
+                        profile.get("surface_layer_type", ""),
+                    )
+                    or ""
+                ).strip()
+                or None
+            )
+            atomic_surface_swap = bool(
+                profile.get("atomic_surface_swap", False)
+            )
+        if generation is None:
+            with self._surface_generation_lock:
+                generation = self._surface_request_generation
+        generation = int(generation)
+        if self._surface_request_cancelled(generation):
+            return
+        target = target or self._last_profile
         if target is None:
             return
-        self._prepare_surface_samples(target)
-        self._last_profile = target
-        self._publish_effective_sources(target)
-        self.profile_ready.emit({"job_id": "surface-refresh", "profile": target})
+        job_id = f"surface-refresh-{generation}"
 
-    def shutdown(self) -> None:
+        def progress(percent, phase):
+            self._emit_progress_state(
+                {
+                    "job_id": job_id,
+                    "kind": "surface",
+                    "phase": str(phase),
+                    "percent": float(percent),
+                    "current": int(round(float(percent))),
+                    "total": 100,
+                }
+            )
+
+        try:
+            progress(0.0, "queued")
+            prepare_method = self._prepare_surface_samples
+            prepare_parameters = inspect.signature(prepare_method).parameters
+            from TerraLab.terrain.surface import SurfaceSamplingRequest
+
+            def prepare_stage(stage_profile, stage, start_percent, span_percent):
+                prepare_kwargs = {}
+                if "progress_callback" in prepare_parameters:
+                    prepare_kwargs["progress_callback"] = (
+                        lambda percent, phase: progress(
+                            start_percent + span_percent * float(percent) / 100.0,
+                            f"{stage}:{phase}",
+                        )
+                    )
+                if "abort_check" in prepare_parameters:
+                    prepare_kwargs["abort_check"] = (
+                        lambda: self._surface_request_cancelled(generation)
+                    )
+                if "surface_request" in prepare_parameters:
+                    prepare_kwargs["surface_request"] = SurfaceSamplingRequest(
+                        profile=stage_profile,
+                        visible_radius_m=visible_radius_m,
+                        view_azimuth_deg=view_azimuth_deg,
+                        view_fov_deg=view_fov_deg,
+                        viewport_width_px=viewport_width_px,
+                        viewport_height_px=viewport_height_px,
+                        generation=generation,
+                        stage=stage,
+                        surface_mode=surface_mode,
+                    )
+                return prepare_method(stage_profile, **prepare_kwargs)
+
+            publish_partial = (
+                not atomic_surface_swap
+                and max(0.0, min(360.0, view_fov_deg)) < 340.0
+            )
+            if publish_partial:
+                partial_profile = copy.copy(target)
+                prepare_stage(partial_profile, "visible_partial", 1.0, 24.0)
+                if self._surface_request_cancelled(generation):
+                    return
+                self.profile_ready.emit(
+                    {
+                        "job_id": job_id,
+                        "kind": "surface",
+                        "stage": "visible_partial",
+                        "profile": partial_profile,
+                    }
+                )
+                if self._surface_performance_logging:
+                    append_perf_event(
+                        "surface.publication",
+                        stage="visible_partial",
+                        generation=generation,
+                        view_azimuth_deg=view_azimuth_deg,
+                        view_fov_deg=view_fov_deg,
+                        visible_radius_m=visible_radius_m,
+                    )
+            complete_profile = (
+                copy.copy(target) if atomic_surface_swap else target
+            )
+            prepare_stage(
+                complete_profile,
+                "complete",
+                25.0 if publish_partial else 1.0,
+                74.0 if publish_partial else 98.0,
+            )
+            if self._surface_request_cancelled(generation):
+                return
+            self._last_profile = complete_profile
+            self._publish_effective_sources(complete_profile)
+            progress(100.0, "completed")
+            self.profile_ready.emit(
+                {
+                    "job_id": job_id,
+                    "kind": "surface",
+                    "stage": "complete",
+                    "profile": complete_profile,
+                }
+            )
+            if self._surface_performance_logging:
+                append_perf_event(
+                    "surface.publication",
+                    stage="complete",
+                    generation=generation,
+                    visible_radius_m=visible_radius_m,
+                )
+        except InterruptedError:
+            # Cancellation is expected when a new source selection supersedes
+            # an in-flight refresh.  Keep the previous surface cache visible.
+            return
+        except Exception as exc:
+            self.error_occurred.emit(
+                f"No s'ha pogut carregar la cobertura del sòl: {exc}"
+            )
+        finally:
+            self._store_progress(None)
+            self.progress_message.emit("")
+
+    def request_shutdown(self) -> None:
+        """Thread-safe cancellation entry point used before queued cleanup."""
+
+        self._shutdown_event.set()
+        self.cancel_surface_sampling()
         self.abort_current_job()
+
+    @pyqtSlot()
+    def shutdown(self) -> None:
+        """Close worker-owned resources in the worker thread, exactly once."""
+
+        self.request_shutdown()
+        with self._shutdown_lock:
+            if self._shutdown_complete:
+                self.shutdown_finished.emit()
+                return
+            self._shutdown_complete = True
+
         for resource_name in ("_surface_service", "light_sampler", "provider"):
             resource = getattr(self, resource_name, None)
             if resource is not None and hasattr(resource, "close"):
                 try:
                     resource.close()
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "HorizonWorker.shutdown")
             setattr(self, resource_name, None)
+
+        self.shutdown_finished.emit()
+        if self._quit_thread_on_shutdown:
+            QThread.currentThread().quit()
 
     @staticmethod
     def _paths_equivalent(path_a: object, path_b: object) -> bool:
@@ -372,7 +677,7 @@ class HorizonWorker(QObject):
             runtime_paths = ensure_runtime_layout()
             append_candidate(runtime_paths.get("data_elevation"))
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "HorizonWorker._dem_path_candidates")
 
         project_root = Path(__file__).resolve().parents[1]
         append_candidate(project_root / "data" / "elevation")
@@ -437,7 +742,7 @@ class HorizonWorker(QObject):
                     try:
                         self.light_sampler.close()
                     except Exception:
-                        pass
+                        log_suppressed_exception(__name__, "HorizonWorker.initialize")
                 self.light_sampler = self._build_light_sampler()
                 self.needs_reload = False
                 self._initialize_running = False
@@ -452,7 +757,7 @@ class HorizonWorker(QObject):
                 try:
                     self.light_sampler.close()
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "HorizonWorker.initialize")
             self.provider = None
             self.light_sampler = None
             self.is_initialized = False
@@ -509,6 +814,17 @@ class HorizonWorker(QObject):
         except Exception as exc:
             print(f"[HorizonWorker] get_bare_elevation error: {exc}")
             return None
+
+    @pyqtSlot(float, float)
+    def request_bare_elevation(self, lat: float, lon: float) -> None:
+        """Resolve one elevation query in the worker thread."""
+
+        if self._shutdown_event.is_set():
+            return
+        latitude = float(lat)
+        longitude = float(lon)
+        value = self.get_bare_elevation(latitude, longitude)
+        self.bare_elevation_ready.emit(latitude, longitude, value)
 
     def _estimate_light_pollution_isolated(
         self, lat: float, lon: float
@@ -639,6 +955,8 @@ class HorizonWorker(QObject):
         Retorna:
         - None.
         """
+        if self._shutdown_event.is_set():
+            return
         latitude_deg = 0.0
         longitude_deg = 0.0
         try:
@@ -683,7 +1001,7 @@ class HorizonWorker(QObject):
         )
 
     def abort_current_job(self) -> None:
-        """Executa el metode abort_current_job de la classe HorizonWorker.
+        """Thread-safe cancellation of the worker-owned bake subprocess.
 
         Par?metres:
         - Cap.
@@ -714,12 +1032,25 @@ class HorizonWorker(QObject):
     def _cleanup_temp_dir(self, temp_dir: Optional[str]) -> None:
         if not temp_dir:
             return
-        try:
-            import shutil
+        import shutil
 
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except Exception:
-            pass
+        last_exc = None
+        for attempt in range(6):
+            try:
+                shutil.rmtree(temp_dir)
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError as exc:
+                last_exc = exc
+                time.sleep(0.04 * (attempt + 1))
+            except Exception as exc:
+                last_exc = exc
+                break
+        if last_exc is not None:
+            print(
+                f"[HorizonWorker] Warning cleaning temporary bake data: {last_exc}"
+            )
 
     def _build_subprocess_command(
         self,
@@ -746,6 +1077,8 @@ class HorizonWorker(QObject):
             str(float(job.get("observer_offset", self.observer_offset))),
             "--bands",
             str(int(job["bands"])),
+            "--ray-step-deg",
+            str(float(job.get("ray_step_deg", 0.5))),
             "--output",
             str(output_path),
             "--preview-path",
@@ -758,6 +1091,29 @@ class HorizonWorker(QObject):
             str(float(job.get("view_elevation", 0.0))),
             "--range-settings-json",
             json.dumps(job.get("range_settings", {}), sort_keys=True),
+            "--sampling-settings-json",
+            json.dumps(
+                job.get(
+                    "sampling_settings",
+                    ConfigManager().get_terrain_sampling_settings().to_dict(),
+                ),
+                sort_keys=True,
+            ),
+            "--viewport-height-px",
+            str(max(1, int(job.get("viewport_height_px", 1080)))),
+            "--view-zoom-level",
+            str(max(0.001, float(job.get("view_zoom_level", 1.0)))),
+            "--terrain-performance-logging-enabled",
+            "1"
+            if bool(
+                job.get(
+                    "terrain_performance_logging_enabled",
+                    ConfigManager()
+                    .get_terrain_render_settings()
+                    .terrain_performance_logging_enabled,
+                )
+            )
+            else "0",
         ]
         cmd.extend(
             [
@@ -816,6 +1172,25 @@ class HorizonWorker(QObject):
             percent_text = percent_text[:-2]
         current = state.get("current")
         total = state.get("total")
+        if str(state.get("kind", "") or "") == "surface":
+            phase = str(state.get("phase", "") or "")
+            phase_labels = {
+                "queued": "preparant",
+                "discovering-sources": "detectant fonts",
+                "opening-geotiff": "obrint GeoTIFF",
+                "preparing": "preparant coordenades",
+                "transforming-coordinates": "transformant coordenades",
+                "profile-ready": "perfil preparat",
+                "relief-ready": "relleu preparat",
+                "subdividing-visual-grid": "refinant la malla visual",
+                "sampling-visual-detail": "mostrejant detall visual",
+                "registering-cache": "registrant la memòria cau",
+                "cache-ready": "memòria cau preparada",
+                "completed": "completat",
+            }
+            root_phase = phase.split(":", 1)[0]
+            detail = phase_labels.get(root_phase, "mostrejant el mosaic")
+            return f"Carregant cobertura del sòl: {percent_text}% · {detail}"
         base = getTraduction(
             "Horizon.CalculatingHorizon", "Calculating horizon: {pct}%"
         ).format(pct=percent_text)
@@ -831,13 +1206,33 @@ class HorizonWorker(QObject):
                 if raw:
                     print(f"{prefix}{raw}")
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "HorizonWorker._drain_stream_to_stderr")
 
     def _emit_progress_state(self, state: dict) -> None:
         state = dict(state)
         self._store_progress(state)
+        is_surface = str(state.get("kind", "") or "") == "surface"
+        if is_surface:
+            now = time.perf_counter()
+            phase = str(state.get("phase", "") or "")
+            percent = float(state.get("percent", 0.0) or 0.0)
+            phase_changed = phase != self._surface_progress_last_phase
+            terminal = percent >= 99.9 or phase in {"completed", "error"}
+            interval_elapsed = (
+                now - self._surface_progress_last_emit
+                >= self._surface_progress_min_interval_s
+            )
+            if not terminal and not phase_changed and not interval_elapsed:
+                return
+            self._surface_progress_last_emit = now
+            self._surface_progress_last_phase = phase
+            self._surface_progress_last_percent = percent
         self.progress_state.emit(state)
-        self.progress_message.emit(self._format_progress_text(state))
+        # Surface progress has one structured owner: TerrainCoordinator and
+        # AstronomicalWidget.  The legacy text signal is retained for horizon
+        # bake consumers but would duplicate every surface event.
+        if not is_surface:
+            self.progress_message.emit(self._format_progress_text(state))
 
     @pyqtSlot(object)
     def request_bake(self, job: object):
@@ -849,6 +1244,8 @@ class HorizonWorker(QObject):
         Retorna:
         - None.
         """
+        if self._shutdown_event.is_set():
+            return
         try:
             if not isinstance(job, dict):
                 raise TypeError("Horizon bake job must be a dict")
@@ -889,11 +1286,14 @@ class HorizonWorker(QObject):
                 self._current_temp_dir = temp_dir
 
             initial_state = {
+                # Keep UI progress aligned with the exact subprocess ray grid.
                 "job_id": self._current_job_id,
                 "phase": "prepare",
                 "percent": 0.0,
                 "current": 0,
-                "total": int(round(360.0 / 0.5)),
+                "total": __import__(
+                    "TerraLab.terrain.ray_precision", fromlist=["ray_count"]
+                ).ray_count(job.get("ray_step_deg", 0.5)),
             }
             self._emit_progress_state(initial_state)
 
@@ -961,7 +1361,7 @@ class HorizonWorker(QObject):
                     if not snapshot_path or not os.path.exists(snapshot_path):
                         continue
                     try:
-                        profile = HorizonProfile.load(snapshot_path)
+                        profile = load_profile(snapshot_path)
                         profile._band_defs = band_defs
                         self.preview_ready.emit(
                             {
@@ -982,7 +1382,7 @@ class HorizonWorker(QObject):
                         raise RuntimeError(
                             "Horizon bake completed without profile output"
                         )
-                    profile = HorizonProfile.load(profile_path)
+                    profile = load_profile(profile_path)
                     profile._band_defs = band_defs
                     self.profile_ready.emit(
                         {"job_id": active_job_id, "profile": profile}
@@ -1011,6 +1411,8 @@ class HorizonWorker(QObject):
                     f"Horizon bake subprocess failed with exit code {return_code}"
                 )
         except Exception as exc:
+            if self._shutdown_event.is_set():
+                return
             print(f"[HorizonWorker] CRITICAL ERROR during bake: {exc}")
             import traceback
 
@@ -1030,7 +1432,7 @@ class HorizonWorker(QObject):
                     if proc.stderr:
                         proc.stderr.close()
                 except Exception:
-                    pass
+                    log_suppressed_exception(__name__, "HorizonWorker.request_bake")
             self._cleanup_temp_dir(temp_dir)
             self._store_progress(None)
             self.progress_message.emit("")

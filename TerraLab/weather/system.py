@@ -1,4 +1,4 @@
-﻿"""
+"""
 Sistema meteorològic per al giny astronòmic.
 Generació procedural de clima optimitzada amb projecció esfèrica i memòria cau.
 """
@@ -20,6 +20,7 @@ from PyQt5.QtGui import (
     QRadialGradient,
 )
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.weather.metno_provider import MetNoWeatherProvider
 
 # --- CONFIG ---
@@ -542,7 +543,7 @@ class WeatherSystem:
         try:
             self.provider.shutdown()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "WeatherSystem.shutdown")
 
     def __del__(self):
         self.shutdown()
@@ -553,7 +554,7 @@ class WeatherSystem:
             self.last_weather_source = "fallback"
             self.last_weather_reason = "location_changed"
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "WeatherSystem.set_location")
 
     def get_cache_path(self):
         try:
@@ -568,21 +569,21 @@ class WeatherSystem:
                 self.last_weather_source = "fallback"
                 self.last_weather_reason = "remote_disabled"
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "WeatherSystem.set_remote_weather_enabled")
 
     def set_cache_enabled(self, enabled: bool):
         try:
             self.provider.set_cache_enabled(bool(enabled))
             self.last_weather_reason = self.provider.get_last_status()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "WeatherSystem.set_cache_enabled")
 
     def set_remote_user_agent(self, user_agent: str):
         try:
             self.provider.set_user_agent(str(user_agent or "").strip())
             self.last_weather_reason = self.provider.get_last_status()
         except Exception:
-            pass
+            log_suppressed_exception(__name__, "WeatherSystem.set_remote_user_agent")
 
     def get_runtime_status(self):
         requires_user_agent = False
@@ -1317,12 +1318,12 @@ class WeatherControlWidget:
         )
 
         w = QWidget()
-        l = QVBoxLayout(w)
+        layout = QVBoxLayout(w)
         c = QCheckBox("Activar Clima")
         c.setChecked(system.enabled)
         c.toggled.connect(lambda x: setattr(system, "enabled", x))
-        l.addWidget(c)
+        layout.addWidget(c)
         b = QPushButton("Regenerar")
         b.clicked.connect(lambda: system.palette.generate_random())
-        l.addWidget(b)
+        layout.addWidget(b)
         return w
