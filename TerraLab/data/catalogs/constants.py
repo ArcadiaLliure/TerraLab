@@ -1,5 +1,5 @@
-"""Shared catalogue constants without UI or runtime dependencies."""
+"""Compatibility exports for canonical data constants."""
 
-STAR_CATALOG_NAKED_EYE_MAX_MAG = 8.0
+from TerraLab.data.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
 
 __all__ = ["STAR_CATALOG_NAKED_EYE_MAX_MAG"]

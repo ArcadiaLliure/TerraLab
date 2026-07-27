@@ -1060,94 +1060,23 @@ class HorizonWorker(QObject):
         elevation_sources_json: str | None = None,
         light_pollution_sources_json: str | None = None,
     ):
+        from TerraLab.terrain.bake_process import build_cli_arguments
+
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-        cmd = [
+        arguments = build_cli_arguments(
+            job,
+            output_path,
+            preview_path,
+            default_observer_offset=self.observer_offset,
+            elevation_sources_json=elevation_sources_json,
+            light_pollution_sources_json=light_pollution_sources_json,
+        )
+        return base_dir, [
             sys.executable,
             "-m",
             "TerraLab.terrain.bake_process",
-            "--job-id",
-            str(job["job_id"]),
-            "--lat",
-            str(float(job["lat"])),
-            "--lon",
-            str(float(job["lon"])),
-            "--tiles-dir",
-            str(job["tiles_dir"]),
-            "--observer-offset",
-            str(float(job.get("observer_offset", self.observer_offset))),
-            "--bands",
-            str(int(job["bands"])),
-            "--ray-step-deg",
-            str(float(job.get("ray_step_deg", 0.5))),
-            "--output",
-            str(output_path),
-            "--preview-path",
-            str(preview_path),
-            "--view-azimuth",
-            str(float(job.get("view_azimuth", 180.0))),
-            "--view-fov-deg",
-            str(float(job.get("view_fov_deg", 90.0))),
-            "--view-elevation",
-            str(float(job.get("view_elevation", 0.0))),
-            "--range-settings-json",
-            json.dumps(job.get("range_settings", {}), sort_keys=True),
-            "--sampling-settings-json",
-            json.dumps(
-                job.get(
-                    "sampling_settings",
-                    ConfigManager().get_terrain_sampling_settings().to_dict(),
-                ),
-                sort_keys=True,
-            ),
-            "--viewport-height-px",
-            str(max(1, int(job.get("viewport_height_px", 1080)))),
-            "--view-zoom-level",
-            str(max(0.001, float(job.get("view_zoom_level", 1.0)))),
-            "--terrain-performance-logging-enabled",
-            "1"
-            if bool(
-                job.get(
-                    "terrain_performance_logging_enabled",
-                    ConfigManager()
-                    .get_terrain_render_settings()
-                    .terrain_performance_logging_enabled,
-                )
-            )
-            else "0",
+            *arguments,
         ]
-        cmd.extend(
-            [
-                "--representation-mode",
-                str(job.get("representation_mode", "relief")),
-            ]
-        )
-        if elevation_sources_json:
-            cmd.extend(["--elevation-sources-json", str(elevation_sources_json)])
-        for source_id in tuple(job.get("elevation_source_ids", ()) or ()):
-            cmd.extend(["--elevation-source-id", str(source_id)])
-        if job.get("effective_elevation_source_id"):
-            cmd.extend(
-                [
-                    "--effective-elevation-source-id",
-                    str(job["effective_elevation_source_id"]),
-                ]
-            )
-        if job.get("elevation_source_status"):
-            cmd.extend(
-                ["--elevation-source-status", str(job["elevation_source_status"])]
-            )
-        if job.get("light_pollution_path"):
-            cmd.extend(
-                ["--light-pollution-path", str(job["light_pollution_path"])]
-            )
-        if light_pollution_sources_json:
-            cmd.extend(
-                [
-                    "--light-pollution-sources-json",
-                    str(light_pollution_sources_json),
-                ]
-            )
-        return base_dir, cmd
 
     @staticmethod
     def _parse_json_event(line: str):
@@ -1299,6 +1228,17 @@ class HorizonWorker(QObject):
 
             subprocess_env = os.environ.copy()
             subprocess_env.setdefault("PYTHONUNBUFFERED", "1")
+            existing_pythonpath = str(
+                subprocess_env.get("PYTHONPATH", "") or ""
+            )
+            subprocess_env["PYTHONPATH"] = (
+                str(base_dir)
+                + (
+                    os.pathsep + existing_pythonpath
+                    if existing_pythonpath
+                    else ""
+                )
+            )
             proc = subprocess.Popen(
                 cmd,
                 cwd=base_dir,
@@ -1367,6 +1307,7 @@ class HorizonWorker(QObject):
                             {
                                 "job_id": active_job_id,
                                 "profile": profile,
+                                "profile_path": snapshot_path,
                                 "current": event.get("current"),
                                 "total": event.get("total"),
                             }
@@ -1385,7 +1326,11 @@ class HorizonWorker(QObject):
                     profile = load_profile(profile_path)
                     profile._band_defs = band_defs
                     self.profile_ready.emit(
-                        {"job_id": active_job_id, "profile": profile}
+                        {
+                            "job_id": active_job_id,
+                            "profile": profile,
+                            "profile_path": profile_path,
+                        }
                     )
                     final_emitted = True
                 elif event_type == "error":
@@ -1436,3 +1381,46 @@ class HorizonWorker(QObject):
             self._cleanup_temp_dir(temp_dir)
             self._store_progress(None)
             self.progress_message.emit("")
+
+
+class SurfaceSamplingRuntime:
+    """Non-Qt owner for the existing surface-sampling implementation.
+
+    Compute uses this small lifecycle object so it can reuse the exact source
+    selection and sampling code without constructing a second HorizonWorker.
+    """
+
+    _surface_selection = HorizonWorker._surface_selection
+    _effective_surface_source_id = staticmethod(
+        HorizonWorker._effective_surface_source_id
+    )
+    _prepare_surface_samples = HorizonWorker._prepare_surface_samples
+
+    def __init__(self) -> None:
+        self.data_source_registry = DataSourceRegistry.default()
+        self.layer_selection = LayerSelectionService(
+            self.data_source_registry
+        )
+        self._surface_service = None
+        self._surface_source_signature = None
+        self._surface_performance_logging = False
+
+    def prepare_surface_samples(
+        self,
+        profile,
+        *,
+        surface_request=None,
+        progress_callback=None,
+        abort_check=None,
+    ):
+        return self._prepare_surface_samples(
+            profile,
+            surface_request=surface_request,
+            progress_callback=progress_callback,
+            abort_check=abort_check,
+        )
+
+    def close(self) -> None:
+        service, self._surface_service = self._surface_service, None
+        if service is not None:
+            service.close()

@@ -4,20 +4,13 @@ from __future__ import annotations
 
 import os
 import time
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QApplication, QMessageBox
 
-from TerraLab.astro.search_engine import (
-    AstroSearchEngine,
-    build_search_index_for_widget,
-    center_on_object_for_widget,
-    load_named_star_entries,
-    load_ngc_entries,
-    on_search_triggered_for_widget,
-)
 from TerraLab.common.utils import (
     getTraduction,
     get_base_dir,
@@ -31,7 +24,7 @@ from TerraLab.light_pollution.modes import (
     is_automatic_mode,
     normalize_light_pollution_mode,
 )
-from TerraLab.terrain.data_sources import SurfaceMode
+from TerraLab.data.source_catalog import SurfaceMode
 from TerraLab.ui.data_layers_dialog import DataLayerChanges, DataLayersDialog
 from TerraLab.ui.widget_misc_helpers import (
     widget_ensure_copernicus_credentials_prompt,
@@ -41,7 +34,6 @@ from TerraLab.ui.widget_misc_helpers import (
 from TerraLab.ui.widget_runtime_helpers import (
     run_smoke_scenes as widget_run_smoke_scenes,
 )
-from TerraLab.widgets.spherical_math import ra_dec_to_alt_az
 from TerraLab.widgets.telescope_runtime import on_resize as telescope_on_resize
 
 
@@ -410,7 +402,51 @@ class WidgetSurfaceDataMixin:
         self._apply_light_pollution_graphics()
 
     def build_search_index(self):
-        return build_search_index_for_widget(self)
+        client = getattr(self, "search_index_client", None)
+        if client is None:
+            return
+        runtime_layout = getattr(self, "runtime_layout", {}) or {}
+        catalog_artifact = getattr(
+            self, "_render_catalog_artifact", {}
+        )
+        catalog_artifact = (
+            catalog_artifact
+            if isinstance(catalog_artifact, dict)
+            else {}
+        )
+        client.request(
+            {
+                "named_stars_path": str(
+                    Path(__file__).resolve().parents[2]
+                    / "data"
+                    / "stars"
+                    / "no_gaia_stars.json"
+                ),
+                "ngc_paths": [
+                    str(
+                        get_config_value("ngc_catalog_path", "") or ""
+                    ),
+                    str(
+                        Path(
+                            runtime_layout.get(
+                                "data_ngc", get_base_dir()
+                            )
+                        )
+                        / "openngc_catalog.csv"
+                    ),
+                    str(
+                        Path(__file__).resolve().parents[2]
+                        / "data"
+                        / "sky"
+                        / "openngc_catalog.csv"
+                    ),
+                ],
+                "gaia_catalog_path": str(
+                    catalog_artifact.get("catalog_path", "") or ""
+                ),
+                "gaia_suggestion_limit": 5000,
+            }
+        )
 
     def _attach_search_completer(self, names):
         if not hasattr(self, "txt_search"):
@@ -418,6 +454,15 @@ class WidgetSurfaceDataMixin:
         from PyQt5.QtWidgets import QCompleter
         from PyQt5.QtCore import Qt
 
+        previous = self.txt_search.completer()
+        if previous is not None:
+            try:
+                previous.activated[str].disconnect(
+                    self.on_search_triggered
+                )
+            except (TypeError, RuntimeError):
+                pass
+            previous.deleteLater()
         completer = QCompleter(names, self)
         completer.setCaseSensitivity(Qt.CaseInsensitive)
         completer.setFilterMode(Qt.MatchContains)
@@ -425,89 +470,441 @@ class WidgetSurfaceDataMixin:
         completer.activated[str].connect(self.on_search_triggered)
         self.txt_search.setEnabled(True)
 
-    def _load_named_star_search_entries(self):
-        cached = getattr(self, "_named_star_search_entries_cache", None)
-        if cached is not None:
-            return cached
-        default_path = (
-            Path(__file__).resolve().parents[1]
-            / "data"
-            / "stars"
-            / "no_gaia_stars.json"
-        )
-        self._named_star_search_entries_cache = load_named_star_entries(
-            default_path
-        )
-        return self._named_star_search_entries_cache
-
-    def _load_ngc_search_entries(self):
-        cached = getattr(self, "_ngc_search_entries_cache", None)
-        if cached is not None:
-            return cached
-        path = getattr(self, "_astro_ngc_catalog_path", "")
-        if not path:
-            cfg_path = str(
-                get_config_value("ngc_catalog_path", "") or ""
-            ).strip()
-            if cfg_path and os.path.isfile(cfg_path):
-                path = cfg_path
-        if not path:
-            runtime_layout = getattr(self, "runtime_layout", {}) or {}
-            runtime_path = (
-                Path(runtime_layout.get("data_ngc", get_base_dir()))
-                / "openngc_catalog.csv"
-            )
-            if runtime_path.exists():
-                path = str(runtime_path)
-            else:
-                path = os.path.abspath(
-                    os.path.join(
-                        os.path.dirname(__file__),
-                        "..",
-                        "data",
-                        "sky",
-                        "openngc_catalog.csv",
-                    )
-                )
-        self._ngc_search_entries_cache = load_ngc_entries(path)
-        return self._ngc_search_entries_cache
-
+    @staticmethod
     def _normalize_search_key(text: str) -> str:
-        return AstroSearchEngine.normalize_key(text)
+        lowered = str(text or "").strip().lower()
+        folded = unicodedata.normalize("NFKD", lowered)
+        return "".join(
+            character
+            for character in folded
+            if not unicodedata.combining(character)
+        )
 
-    def _prepare_skyfield_cache_for_search(self):
-        """Force a fresh cache sample so planet search can resolve current Alt/Az."""
-        if not hasattr(self, "canvas") or not hasattr(self, "eph"):
-            return None
-        try:
-            ut_hour, day_of_year_utc, _, _ = (
-                self.canvas._get_current_utc_context()
-            )
-            self.canvas.update_skyfield_cache(ut_hour, day_of_year_utc)
-        except Exception as ex:
-            print(f"[AstroWidget] Search cache update failed: {ex}")
-        sf_cache = getattr(self.canvas, "_sf_cache", None)
-        if isinstance(sf_cache, dict):
-            return sf_cache.get("data")
+    def _on_search_index_ready(self, payload) -> None:
+        records = (
+            payload.get("records", ())
+            if isinstance(payload, dict)
+            else ()
+        )
+        lookup = {}
+        names = []
+        for raw in records:
+            if not isinstance(raw, dict):
+                continue
+            record = dict(raw)
+            for alias in record.get("aliases", ()) or ():
+                name = str(alias or "").strip()
+                key = self._normalize_search_key(name)
+                if key and key not in lookup:
+                    lookup[key] = record
+                    names.append(name)
+        self.search_lookup = lookup
+        artifact = payload.get("ngc_artifact")
+        self._render_ngc_artifact = (
+            dict(artifact) if isinstance(artifact, dict) else {}
+        )
+        self.search_index = {
+            name: lookup[self._normalize_search_key(name)]
+            for name in names
+        }
+        self._attach_search_completer(
+            sorted(names, key=lambda value: value.lower())
+        )
+        self.canvas.update()
+
+    def _search_record(self, text: str):
+        key = self._normalize_search_key(text)
+        record = getattr(self, "search_lookup", {}).get(key)
+        if record is not None:
+            return record
+        for candidate, value in getattr(
+            self, "search_lookup", {}
+        ).items():
+            if key and key in candidate:
+                return value
         return None
 
     def on_search_triggered(self, text_override=None):
-        return on_search_triggered_for_widget(self, text_override)
+        raw = (
+            text_override
+            if isinstance(text_override, str)
+            else self.txt_search.text()
+        )
+        text = str(raw or "").strip()
+        if not text:
+            return
+        normalized = self._normalize_search_key(text)
+        now = time.monotonic()
+        if (
+            normalized
+            and normalized
+            == getattr(self, "_last_search_trigger_key", "")
+            and now
+            - float(getattr(self, "_last_search_trigger_mono", 0.0))
+            < 0.20
+        ):
+            # Selecting a completer row with Return can emit both activated
+            # and returnPressed. One logical Goto must produce one request.
+            return
+        self._last_search_trigger_key = normalized
+        self._last_search_trigger_mono = now
+        record = self._search_record(text)
+        if record is None:
+            print(
+                getTraduction(
+                    "Astro.SearchNotFound",
+                    "Object '{name}' not found in index.",
+                ).format(name=text)
+            )
+            return
+        self.center_on_object(record)
 
     def center_on_object(self, info):
-        return center_on_object_for_widget(self, info)
-
-    def get_horizontal_coords(self, ra, dec):
-        """Helper to convert RA/Dec to Az/Alt for current time/location."""
-        alt_deg, az_deg = ra_dec_to_alt_az(
-            float(ra),
-            float(dec),
-            float(self.time_bar.current_hour),
-            int(self.manual_day),
-            float(self.latitude),
-            float(self.longitude),
+        if not isinstance(info, dict):
+            return
+        record = dict(info)
+        legacy_type = str(record.get("type", "") or "")
+        if "kind" not in record and legacy_type:
+            record["kind"] = legacy_type
+        obj = record.pop("obj", None)
+        if obj is not None and record.get("kind") in {"ngc", "star"}:
+            record.setdefault("ra", getattr(obj, "ra_deg", None))
+            record.setdefault("dec", getattr(obj, "dec_deg", None))
+        try:
+            ut_hour, day, year, _ = self.canvas._get_current_utc_context()
+        except (AttributeError, TypeError, ValueError):
+            return
+        request_sequence = int(
+            getattr(self, "_search_request_sequence", 0)
+        ) + 1
+        self._search_request_sequence = request_sequence
+        request_token = str(request_sequence)
+        self._pending_search_token = request_token
+        view_revision = int(
+            getattr(self.canvas, "_view_interaction_revision", 0)
         )
-        return az_deg, alt_deg
+        self.search_resolve_client.request(
+            {
+                "record": record,
+                "year_utc": int(year),
+                "day_of_year_utc": int(day),
+                "ut_hour": float(ut_hour),
+                "latitude": float(self.latitude),
+                "longitude": float(self.longitude),
+                "client_token": request_token,
+                "view_revision": view_revision,
+            },
+            force=True,
+        )
+
+    def _on_search_resolved(self, result) -> None:
+        if not isinstance(result, dict):
+            return
+        result = dict(result)
+        response_token = str(
+            result.pop("_client_token", "") or ""
+        )
+        if response_token and response_token != str(
+            getattr(self, "_pending_search_token", "") or ""
+        ):
+            return
+        try:
+            request_view_revision = int(
+                result.pop(
+                    "_view_revision",
+                    getattr(
+                        self.canvas,
+                        "_view_interaction_revision",
+                        0,
+                    ),
+                )
+            )
+        except (TypeError, ValueError):
+            return
+        if request_view_revision != int(
+            getattr(self.canvas, "_view_interaction_revision", 0)
+        ):
+            # A delayed Compute response must not override a drag/zoom made
+            # after the search was submitted.
+            return
+        self._pending_search_token = None
+        altitude = max(
+            -89.9,
+            min(89.9, float(result.get("alt", 0.0))),
+        )
+        azimuth = float(result.get("az", 0.0)) % 360.0
+        self.target_azimuth = None
+        self.target_elevation = None
+        anim_timer = getattr(self, "anim_timer", None)
+        if anim_timer is not None:
+            anim_timer.stop()
+        self.canvas._set_selected_target(dict(result))
+        self.canvas.azimuth_offset = azimuth
+        self.canvas.elevation_angle = altitude
+        self.canvas.dragging = False
+        if self.canvas.scope_mode_enabled():
+            self.canvas.scope_camera_lock_to_target = True
+            self.canvas.scope_reticle_lock_to_target = True
+            self.canvas.scope_controller.set_center(
+                (altitude, azimuth), confirmed=True
+            )
+        if altitude < -5 and hasattr(self.canvas, "hint_overlay"):
+            self.canvas.hint_overlay.show_hint(
+                f"Object below horizon ({altitude:.1f} deg)"
+            )
+        self.canvas.update()
+
+    def _request_weather_sample(self) -> None:
+        client = getattr(self, "weather_compute_client", None)
+        if client is None:
+            return
+        try:
+            hour, day, year, _ = self.canvas._get_current_utc_context()
+        except (AttributeError, TypeError, ValueError):
+            return
+        client.request(
+            {
+                "latitude": float(self.latitude),
+                "longitude": float(self.longitude),
+                "year_utc": int(year),
+                "day_of_year_utc": int(day),
+                # Forecast samples change only at the surrounding hourly pair.
+                "ut_hour": int(float(hour)) % 24,
+                "use_remote": bool(self.weather_use_remote_metno),
+                "cache_enabled": bool(self.weather_cache_enabled),
+                "user_agent": str(self.asset_manager.get_user_agent()),
+            }
+        )
+
+    def _on_weather_sample_ready(self, payload) -> None:
+        self.weather.set_sample_artifact(payload)
+        self.canvas.update()
+
+    def _coordinate_context(self) -> dict | None:
+        try:
+            hour, day, year, _ = self.canvas._get_current_utc_context()
+        except (AttributeError, TypeError, ValueError):
+            return None
+        return {
+            "year_utc": int(year),
+            "day_of_year_utc": int(day),
+            "ut_hour": float(hour),
+            "latitude": float(self.latitude),
+            "longitude": float(self.longitude),
+        }
+
+    def request_scope_goto(self, ra_deg: float, dec_deg: float) -> None:
+        context = self._coordinate_context()
+        if context is None:
+            return
+        self.scope_goto_client.request(
+            {
+                **context,
+                "direction": "radec_to_altaz",
+                "ra": float(ra_deg),
+                "dec": float(dec_deg),
+            },
+            force=True,
+        )
+
+    def request_circumpolar_alignment(self) -> None:
+        context = self._coordinate_context()
+        client = getattr(self, "circumpolar_client", None)
+        if context is None or client is None:
+            return
+        client.request(context, force=True)
+
+    def _on_circumpolar_alignment_ready(self, payload) -> None:
+        if not isinstance(payload, dict):
+            return
+        control = getattr(self, "chk_trails", None)
+        if control is None or not bool(control.isChecked()):
+            return
+        altitude = float(payload["alt"])
+        azimuth = float(payload["az"]) % 360.0
+        self.target_azimuth = None
+        self.target_elevation = None
+        self.canvas.azimuth_offset = azimuth
+        self.canvas.elevation_angle = max(-90.0, min(90.0, altitude))
+        self.canvas.dragging = False
+        self.canvas._set_selected_target(
+            {
+                "kind": "star",
+                "name": str(payload.get("name", "Polaris")),
+                "alt": altitude,
+                "az": azimuth,
+                "star": {
+                    "name": str(payload.get("name", "Polaris")),
+                    "ra": float(payload.get("ra", 37.95456067)),
+                    "dec": float(payload.get("dec", 89.26410897)),
+                },
+            }
+        )
+        self.canvas.update()
+
+    def _on_scope_goto_ready(self, payload) -> None:
+        if not isinstance(payload, dict):
+            return
+        altitude = float(payload["alt"])
+        azimuth = float(payload["az"]) % 360.0
+        self.canvas._set_selected_target(
+            {
+                "kind": "radec",
+                "name": "RA/Dec",
+                "ra": float(payload.get("ra", 0.0)) % 360.0,
+                "dec": float(payload.get("dec", 0.0)),
+                "alt": altitude,
+                "az": azimuth,
+            }
+        )
+        self.canvas.scope_camera_lock_to_target = True
+        self.canvas.scope_reticle_lock_to_target = True
+        if not self.canvas.scope_mode_enabled():
+            self._scope_ui_manager.activate()
+        self.canvas.scope_controller.set_center(
+            (altitude, azimuth), confirmed=True
+        )
+        self.canvas.azimuth_offset = azimuth
+        self.canvas.elevation_angle = max(-90.0, min(90.0, altitude))
+        self.canvas.dragging = False
+        self.canvas.update()
+
+    def request_scope_tracking_update(self) -> None:
+        canvas = getattr(self, "canvas", None)
+        if (
+            canvas is None
+            or not canvas.scope_mode_enabled()
+            or not bool(
+                getattr(canvas, "scope_camera_lock_to_target", False)
+            )
+        ):
+            return
+        target = getattr(canvas, "selected_target", None)
+        if not isinstance(target, dict):
+            return
+
+        target_type = str(target.get("type", "") or "").lower()
+        if target.get("kind") == "sky" and target_type in {
+            "sun",
+            "moon",
+            "planet",
+        }:
+            snapshot = self.ephemeris_coordinator.get_snapshot() or {}
+            body = None
+            if target_type in {"sun", "moon"}:
+                body = snapshot.get(target_type)
+            else:
+                wanted = str(target.get("key", "") or "").lower()
+                body = next(
+                    (
+                        item
+                        for item in snapshot.get("planets", ()) or ()
+                        if isinstance(item, dict)
+                        and str(item.get("key", "") or "").lower()
+                        == wanted
+                    ),
+                    None,
+                )
+            if isinstance(body, dict):
+                self._apply_scope_tracking_position(
+                    float(body.get("alt", target.get("alt", 0.0))),
+                    float(body.get("az", target.get("az", 0.0))),
+                )
+            return
+
+        ra = target.get("ra")
+        dec = target.get("dec")
+        star = target.get("star")
+        if isinstance(star, dict):
+            ra = star.get("ra", ra)
+            dec = star.get("dec", dec)
+        if ra is None or dec is None:
+            return
+        context = self._coordinate_context()
+        client = getattr(self, "scope_track_client", None)
+        if context is None or client is None:
+            return
+        client.request(
+            {
+                **context,
+                "direction": "radec_to_altaz",
+                "ra": float(ra),
+                "dec": float(dec),
+            }
+        )
+
+    def _on_scope_track_ready(self, payload) -> None:
+        if not isinstance(payload, dict):
+            return
+        canvas = getattr(self, "canvas", None)
+        if canvas is None or not canvas.scope_mode_enabled():
+            return
+        target = getattr(canvas, "selected_target", None)
+        if not isinstance(target, dict):
+            return
+        target_ra = target.get("ra")
+        target_dec = target.get("dec")
+        if isinstance(target.get("star"), dict):
+            target_ra = target["star"].get("ra", target_ra)
+            target_dec = target["star"].get("dec", target_dec)
+        try:
+            if (
+                abs(
+                    (
+                        float(payload["ra"])
+                        - float(target_ra)
+                        + 180.0
+                    )
+                    % 360.0
+                    - 180.0
+                )
+                > 1e-5
+                or abs(float(payload["dec"]) - float(target_dec))
+                > 1e-5
+            ):
+                return
+        except (KeyError, TypeError, ValueError):
+            return
+        self._apply_scope_tracking_position(
+            float(payload["alt"]), float(payload["az"])
+        )
+
+    def _apply_scope_tracking_position(
+        self, altitude: float, azimuth: float
+    ) -> None:
+        canvas = self.canvas
+        if not canvas.scope_mode_enabled():
+            return
+        altitude = max(-89.9, min(89.9, float(altitude)))
+        azimuth = float(azimuth) % 360.0
+        if bool(getattr(canvas, "scope_reticle_lock_to_target", False)):
+            canvas.scope_controller.set_center(
+                (altitude, azimuth), confirmed=True
+            )
+        if bool(getattr(canvas, "scope_camera_lock_to_target", False)):
+            canvas.azimuth_offset = azimuth
+            canvas.elevation_angle = altitude
+        canvas.update()
+
+    def request_scope_reverse(self, alt: float, az: float) -> None:
+        context = self._coordinate_context()
+        if context is None:
+            return
+        self.scope_reverse_client.request(
+            {
+                **context,
+                "direction": "altaz_to_radec",
+                "alt": float(alt),
+                "az": float(az),
+            }
+        )
+
+    def _on_scope_reverse_ready(self, payload) -> None:
+        if not isinstance(payload, dict):
+            return
+        self._set_scope_coord_inputs(
+            float(payload["ra"]), float(payload["dec"])
+        )
 
     def run_smoke_scenes(self):
         return widget_run_smoke_scenes(self)

@@ -1,7 +1,4 @@
-"""Snapshot immutable de render per frame.
-
-`RenderState` és el contracte estable entre `SceneController` i renderers.
-"""
+"""Canonical immutable snapshot consumed only inside the Render process."""
 
 from __future__ import annotations
 
@@ -70,10 +67,9 @@ class RenderState:
     scope_center_sky: tuple[float, float] | None = None
     scope_fov_deg: tuple[float, float] = (5.0, 5.0)
 
-    # Compatibilitat amb render legacy
     @property
     def ra(self) -> np.ndarray:
-        """Alias de compatibilitat per renderers legacy."""
+        """Stable short alias used by renderers."""
         return self.np_ra
 
     @property

@@ -1,4 +1,4 @@
-﻿"""Coordinador d'efemerides astronomiques.
+"""Coordinador d'efemerides astronomiques.
 
 Calcula snapshots de sol/lluna/planetes fora del cami de render.
 """
@@ -25,6 +25,33 @@ except Exception:  # pragma: no cover
 
 
 EPHEMERIS_VISUAL_MAX_AGE_SECONDS = 1.5
+
+
+def planet_apparent_magnitude(
+    name: str,
+    distance_au: float,
+    phase_angle_deg: float = 0.0,
+) -> float:
+    """Return TerraLab's calibrated visual magnitude for a planet.
+
+    The coefficients are the same ones used by the pre-process renderer.  The
+    distance term is deliberately kept in Compute so Render only consumes the
+    published photometric result.
+    """
+
+    base_magnitude = {
+        "Mercury": -0.6,
+        "Venus": -4.4,
+        "Mars": -0.5,
+        "Jupiter": -5.8,
+        "Saturn": -4.3,
+        "Uranus": -0.7,
+        "Neptune": 0.5,
+        "Pluto": 6.0,
+    }.get(str(name), 0.0)
+    distance = max(1e-9, float(distance_au))
+    phase = max(0.0, float(phase_angle_deg))
+    return float(base_magnitude + 5.0 * math.log10(distance) + 0.01 * phase)
 
 
 def utc_datetime_from_context(
@@ -250,6 +277,7 @@ class EphemerisCoordinator(QObject):
                     "az": 0.0,
                     "rad_deg": 0.2725,
                     "sep_real": 180.0,
+                    "illumination": 1.0,
                     "dist_km": 384_400.0,
                 },
                 "planets": [],
@@ -273,6 +301,7 @@ class EphemerisCoordinator(QObject):
         sun_alt, sun_az, sun_dist = app_sun.altaz()
         moon_alt, moon_az, moon_dist = app_moon.altaz()
         sep_real = float(app_sun.separation_from(app_moon).degrees)
+        moon_illum = float((1.0 - math.cos(math.radians(sep_real))) / 2.0)
         sun_rad_deg = math.degrees(math.atan(695_700.0 / max(1.0, float(sun_dist.km))))
         moon_rad_deg = math.degrees(math.atan(1_737.4 / max(1.0, float(moon_dist.km))))
 
@@ -297,6 +326,11 @@ class EphemerisCoordinator(QObject):
                         "alt": float(p_alt.degrees),
                         "az": float(p_az.degrees),
                         "distance_au": float(p_dist.au),
+                        "phase_angle_deg": 0.0,
+                        "mag": planet_apparent_magnitude(
+                            key.replace(" barycenter", "").title(),
+                            float(p_dist.au),
+                        ),
                     }
                 )
             except Exception:
@@ -315,6 +349,7 @@ class EphemerisCoordinator(QObject):
                 "az": float(moon_az.degrees),
                 "rad_deg": float(moon_rad_deg),
                 "sep_real": float(sep_real),
+                "illumination": float(moon_illum),
                 "dist_km": float(moon_dist.km),
             },
             "planets": planets,

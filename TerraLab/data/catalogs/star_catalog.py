@@ -12,7 +12,7 @@ import numpy as np
 from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 from TerraLab.util.color import bp_rp_to_rgb_arrays
-from TerraLab.data.catalogs.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
+from TerraLab.data.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
 from TerraLab.data.catalogs.scope_cache import ScopeRuntimeCacheManager
 
 NO_GAIA_STARS_JSON_NAME = "no_gaia_stars.json"

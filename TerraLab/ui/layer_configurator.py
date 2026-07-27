@@ -35,7 +35,7 @@ from TerraLab.ui.data_library_dialog import (
     library_free_space,
 )
 from TerraLab.data.resumable_download import human_bytes
-from TerraLab.terrain.data_sources import (
+from TerraLab.data.source_catalog import (
     LayerRole,
     LayerType,
     SelectionMode,

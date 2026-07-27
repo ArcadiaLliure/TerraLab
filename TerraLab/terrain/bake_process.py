@@ -1,4 +1,5 @@
 import argparse
+from collections import deque
 import hashlib
 import json
 import math
@@ -26,6 +27,7 @@ from TerraLab.terrain.representation import (
 
 _EVENT_STREAM = None
 _EVENT_STREAM_INIT_FAILED = False
+_EVENT_CALLBACK = None
 
 
 def _resolve_event_stream():
@@ -63,6 +65,9 @@ def _resolve_event_stream():
 def _emit_event(event_type: str, **payload) -> None:
     """Emet un esdeveniment JSONL cap al pare sense bloquejar el bake."""
     event = {"type": event_type, **payload}
+    if _EVENT_CALLBACK is not None:
+        _EVENT_CALLBACK(dict(event))
+        return
     line = json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n"
     event_stream = _resolve_event_stream()
     if event_stream is None:
@@ -347,12 +352,43 @@ def _path_has_elevation_data(path_value: str | None) -> bool:
         }
     if not os.path.isdir(path):
         return False
-    allowed = {".tif", ".tiff", ".vrt", ".img", ".jp2", ".asc", ".txt", ".npy"}
-    return any(
-        os.path.splitext(name)[1].lower() in allowed
-        for root, _dirs, files in os.walk(path)
-        for name in files
-    )
+    allowed = {
+        ".tif",
+        ".tiff",
+        ".vrt",
+        ".img",
+        ".jp2",
+        ".asc",
+        ".txt",
+        ".npy",
+    }
+    # The configured elevation root can sit inside a very large data
+    # library. Never walk that tree without bounds during startup.
+    pending = deque(((path, 0),))
+    inspected = 0
+    while pending and inspected < 10_000:
+        directory, depth = pending.popleft()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    inspected += 1
+                    if entry.is_file(follow_symlinks=False):
+                        if (
+                            os.path.splitext(entry.name)[1].lower()
+                            in allowed
+                        ):
+                            return True
+                    elif (
+                        depth < 3
+                        and entry.is_dir(follow_symlinks=False)
+                        and not entry.name.startswith(".")
+                    ):
+                        pending.append((entry.path, depth + 1))
+                    if inspected >= 10_000:
+                        break
+        except OSError:
+            continue
+    return False
 
 
 def _observer_elevation_sample(provider, x: float, y: float):
@@ -407,9 +443,95 @@ def _load_source_snapshot(path_value: str | None):
     return payload if isinstance(payload, list) else None
 
 
-def main(argv=None):
+def build_cli_arguments(
+    job: dict,
+    output_path: str,
+    preview_path: str,
+    *,
+    default_observer_offset: float = 0.0,
+    elevation_sources_json: str | None = None,
+    light_pollution_sources_json: str | None = None,
+) -> list[str]:
+    """Build the canonical argument list for in/out-of-process bakes."""
+
+    from TerraLab.config import ConfigManager
+
+    config = ConfigManager()
+    sampling = job.get("sampling_settings")
+    if sampling is None:
+        sampling = config.get_terrain_sampling_settings().to_dict()
+    performance_logging = job.get("terrain_performance_logging_enabled")
+    if performance_logging is None:
+        performance_logging = (
+            config.get_terrain_render_settings()
+            .terrain_performance_logging_enabled
+        )
+    arguments = [
+        "--job-id",
+        str(job["job_id"]),
+        "--lat",
+        str(float(job["lat"])),
+        "--lon",
+        str(float(job["lon"])),
+        "--tiles-dir",
+        str(job["tiles_dir"]),
+        "--observer-offset",
+        str(float(job.get("observer_offset", default_observer_offset))),
+        "--bands",
+        str(int(job.get("bands", 20))),
+        "--ray-step-deg",
+        str(float(job.get("ray_step_deg", 0.5))),
+        "--output",
+        str(output_path),
+        "--preview-path",
+        str(preview_path),
+        "--view-azimuth",
+        str(float(job.get("view_azimuth", 180.0))),
+        "--view-fov-deg",
+        str(float(job.get("view_fov_deg", 90.0))),
+        "--view-elevation",
+        str(float(job.get("view_elevation", 0.0))),
+        "--range-settings-json",
+        json.dumps(job.get("range_settings", {}), sort_keys=True),
+        "--sampling-settings-json",
+        json.dumps(sampling, sort_keys=True),
+        "--viewport-height-px",
+        str(max(1, int(job.get("viewport_height_px", 1080)))),
+        "--view-zoom-level",
+        str(max(0.001, float(job.get("view_zoom_level", 1.0)))),
+        "--terrain-performance-logging-enabled",
+        "1" if bool(performance_logging) else "0",
+        "--representation-mode",
+        str(job.get("representation_mode", "relief")),
+    ]
+    if elevation_sources_json:
+        arguments.extend(
+            ["--elevation-sources-json", str(elevation_sources_json)]
+        )
+    for source_id in tuple(job.get("elevation_source_ids", ()) or ()):
+        arguments.extend(["--elevation-source-id", str(source_id)])
+    for key, option in (
+        ("effective_elevation_source_id", "--effective-elevation-source-id"),
+        ("elevation_source_status", "--elevation-source-status"),
+        ("light_pollution_path", "--light-pollution-path"),
+    ):
+        if job.get(key):
+            arguments.extend([option, str(job[key])])
+    if light_pollution_sources_json:
+        arguments.extend(
+            [
+                "--light-pollution-sources-json",
+                str(light_pollution_sources_json),
+            ]
+        )
+    return arguments
+
+
+def main(argv=None, *, event_callback=None, abort_check=None):
     """Bake a real or explicit flat-fallback profile and return it."""
 
+    global _EVENT_CALLBACK
+    _EVENT_CALLBACK = event_callback
     parser = argparse.ArgumentParser(
         description="Bake a horizon profile in a separate process."
     )
@@ -452,6 +574,12 @@ def main(argv=None):
     provider = None
     light_sampler = None
     try:
+        _emit_event(
+            "progress",
+            job_id=job_id,
+            phase="discovering_sources",
+            percent=0.0,
+        )
         source_snapshot = _load_source_snapshot(args.elevation_sources_json)
         provider_input = source_snapshot if source_snapshot else args.tiles_dir
         has_elevation = bool(source_snapshot) or _path_has_elevation_data(args.tiles_dir)
@@ -484,6 +612,8 @@ def main(argv=None):
             provider_input,
             progress_callback=_phase_progress(job_id, "prepare", 0.0, 15.0),
         )
+        if abort_check and abort_check():
+            raise InterruptedError("Bake aborted")
         x_utm, y_utm = provider.transform_coordinates(args.lat, args.lon)
         from TerraLab.terrain.crs import meridian_convergence_degrees
 
@@ -544,6 +674,7 @@ def main(argv=None):
                 y_utm,
                 min(vis_radius, settings.immediate_preload_radius_km * 1000.0),
                 progress_callback=_phase_progress(job_id, "prepare", 15.0, 35.0),
+                abort_check=abort_check,
             )
         except TypeError:
             provider.prepare_region(x_utm, y_utm, vis_radius)
@@ -670,7 +801,7 @@ def main(argv=None):
             preview_callback=preview_callback,
             preview_every=max(1, int(math.ceil(len(azimuths) / 18.0))),
             light_sampler=light_sampler,
-            abort_check=None,
+            abort_check=abort_check,
         )
         terrain_mesh = None
         if mode is TerrainRepresentationMode.RELIEF:
@@ -681,6 +812,7 @@ def main(argv=None):
                 obs_h_ground=float(ground_h) + float(args.observer_offset),
                 d_max=vis_radius,
                 delta_az_deg=ray_step_deg,
+                abort_check=abort_check,
             )
         final = HorizonProfile(
             azimuths=np.asarray(az_arr),
@@ -720,6 +852,7 @@ def main(argv=None):
         _emit_event("error", job_id=job_id, message=str(exc))
         raise
     finally:
+        _EVENT_CALLBACK = None
         for resource in (light_sampler, provider):
             if resource is not None and hasattr(resource, "close"):
                 try:

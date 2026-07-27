@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import os
-import time
 from datetime import datetime, timedelta
 
 from PyQt5.QtCore import QDate, QPointF, Qt
 from PyQt5.QtWidgets import QApplication, QCalendarWidget, QDialog, QVBoxLayout
 
 from TerraLab.common.exception_reporting import log_suppressed_exception
-from TerraLab.common.app_paths import data_dir as runtime_data_dir_for
 from TerraLab.common.utils import (
     get_config_value,
     getTraduction,
@@ -20,23 +17,10 @@ from TerraLab.light_pollution.modes import (
     is_automatic_mode,
     resolve_bortle_class,
 )
-from TerraLab.data.catalogs.star_catalog import (
-    STAR_CATALOG_NAKED_EYE_MAX_MAG,
-    _bp_rp_to_rgb_arrays,
-    _build_celestial_objects_from_arrays,
-    _discover_star_catalog_npz_entries,
-    _load_star_npz_arrays,
-    _select_base_star_catalog_entry,
-)
+from TerraLab.data.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
 from TerraLab.ui.design_system import CALENDAR_STYLESHEET
 from TerraLab.widgets.telescope_runtime import update_telescope_hud
 from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeInputs
-
-try:
-    import numpy as np
-except Exception:  # pragma: no cover
-    np = None
-
 
 def _resolve_effective_bortle_class(widget) -> float:
     """Resolve the graphical Bortle-equivalent value for the active mode."""
@@ -211,7 +195,7 @@ def request_relocation(widget):
         widget.bake_debounce_timer.start(1500)
 
         if hasattr(widget, "lbl_loading"):
-            from TerraLab.terrain.ray_precision import ray_count
+            from TerraLab.data.ray_precision import ray_count
 
             widget.on_horizon_progress_state(
                 {
@@ -260,144 +244,6 @@ def request_relocation(widget):
 
     except ValueError:
         print("[AstroWidget] Invalid Lat/Lon")
-
-
-def widget_update_loop(widget):
-    target_interval_ms = 16
-    try:
-        if bool(getattr(widget, "_updates_paused", False)):
-            return
-    except Exception:
-        target_interval_ms = 16
-
-    if (
-        hasattr(widget, "timer")
-        and widget.timer.interval() != target_interval_ms
-    ):
-        widget.timer.setInterval(target_interval_ms)
-
-    now_mono = time.monotonic()
-    hud_tick_s = 0.10
-    scope_tick_s = 0.08
-    climate_tick_s = 0.50
-
-    last_hud = float(getattr(widget, "_last_hud_tick_mono", 0.0))
-    last_scope = float(getattr(widget, "_last_scope_tick_mono", 0.0))
-    last_climate = float(getattr(widget, "_last_climate_tick_mono", 0.0))
-
-    run_hud_tick = (now_mono - last_hud) >= hud_tick_s
-    run_scope_tick = (now_mono - last_scope) >= scope_tick_s
-    run_climate_tick = (now_mono - last_climate) >= climate_tick_s
-
-    if run_hud_tick:
-        widget._last_hud_tick_mono = now_mono
-    if run_scope_tick:
-        widget._last_scope_tick_mono = now_mono
-    if run_climate_tick:
-        widget._last_climate_tick_mono = now_mono
-
-    if widget.use_real_time:
-        now = datetime.now()
-        prev_year = int(getattr(widget, "manual_year", now.year))
-        prev_day = int(getattr(widget, "manual_day", 0))
-        widget.manual_year = now.year
-        widget.manual_day = (now - datetime(now.year, 1, 1)).days
-        day_changed = (widget.manual_year != prev_year) or (
-            widget.manual_day != prev_day
-        )
-        if day_changed and hasattr(widget, "lbl_date"):
-            widget.lbl_date.setText(widget.format_date(widget.manual_day))
-        if day_changed and hasattr(widget, "time_bar"):
-            widget.time_bar.update_params(
-                widget.latitude, widget.longitude, widget.manual_day
-            )
-        h = now.hour + now.minute / 60.0 + now.second / 3600.0
-        if (
-            run_hud_tick
-            and hasattr(widget, "time_bar")
-            and widget.time_bar.isVisible()
-        ):
-            widget.time_bar.set_time(h)
-    else:
-        dt_hours = (
-            max(0.001, float(getattr(widget.timer, "interval", lambda: 16)()))
-            / 1000.0
-            / 3600.0
-        )
-        widget.manual_hour += dt_hours
-        if widget.manual_hour >= 24.0:
-            widget.manual_hour -= 24.0
-            widget.manual_day += 1
-        elif widget.manual_hour < 0:
-            widget.manual_hour += 24.0
-            widget.manual_day -= 1
-        if (
-            run_hud_tick
-            and hasattr(widget, "time_bar")
-            and widget.time_bar.isVisible()
-        ):
-            widget.time_bar.set_time(widget.manual_hour)
-
-    if (
-        run_hud_tick
-        and hasattr(widget, "chk_trails")
-        and widget.chk_trails.isChecked()
-        and hasattr(widget.canvas, "trail_start_hour")
-        and widget.canvas.trail_start_hour is not None
-        and hasattr(widget.canvas, "ut_hour")
-    ):
-        start = widget.canvas.trail_start_hour
-        end = widget.canvas.ut_hour
-        diff = end - start
-        if diff < -12.0:
-            diff += 24.0
-        elif diff > 12.0:
-            diff -= 24.0
-        widget.trails_accumulated_seconds = max(0.0, diff * 3600.0)
-        elapsed = int(widget.trails_accumulated_seconds)
-        if elapsed < 60:
-            if hasattr(widget, "lbl_trail_time"):
-                widget.lbl_trail_time.setText(f"{elapsed}s")
-        elif elapsed < 3600:
-            m = elapsed // 60
-            s = elapsed % 60
-            if hasattr(widget, "lbl_trail_time"):
-                widget.lbl_trail_time.setText(f"{m}m {s}s")
-        else:
-            h = elapsed // 3600
-            m = (elapsed % 3600) // 60
-            if hasattr(widget, "lbl_trail_time"):
-                widget.lbl_trail_time.setText(f"{h}h {m}m")
-    elif run_hud_tick:
-        if hasattr(widget, "trails_accumulated_seconds"):
-            delattr(widget, "trails_accumulated_seconds")
-        if hasattr(widget, "lbl_trail_time"):
-            widget.lbl_trail_time.setText("")
-
-    if (
-        run_scope_tick
-        and hasattr(widget, "scope_panel")
-        and widget.scope_panel.isVisible()
-    ):
-        widget._sync_scope_coord_inputs_from_canvas()
-        if bool(getattr(widget.canvas, "scope_mode_enabled", lambda: False)()):
-            try:
-                widget._ensure_scope_catalog_loaded(force_now=False)
-            except Exception:
-                log_suppressed_exception(__name__, "widget_update_loop")
-
-    if run_climate_tick:
-        widget._refresh_climate_status_indicator()
-        widget._refresh_stars_status_indicator()
-        try:
-            from TerraLab.ui.widget_misc_helpers import (
-                widget_refresh_gaia_download_feedback,
-            )
-
-            widget_refresh_gaia_download_feedback(widget)
-        except Exception:
-            log_suppressed_exception(__name__, "widget_update_loop")
-    widget.canvas.update()
 
 
 def open_calendar(widget):
@@ -512,22 +358,35 @@ def run_smoke_scenes(widget):
             c.repaint()
             QApplication.processEvents()
 
-            stars_count = (
-                c._scope_hud_star_count()
-                if c.scope_mode_enabled()
-                else c._visible_star_count_raw()
+            metadata = dict(
+                getattr(
+                    getattr(c, "_frame_presenter", None),
+                    "last_frame_metadata",
+                    {},
+                )
+                or {}
             )
-            snap = c.scene_diagnostics.snapshot()
-            fov = 100.0 / max(0.001, float(c.zoom_level))
+            diagnostics = metadata.get("diagnostics", {})
+            diagnostics = (
+                diagnostics
+                if isinstance(diagnostics, dict)
+                else {}
+            )
+            counters = diagnostics.get("counters", {})
+            timings = diagnostics.get("timings_ms", {})
+            counters = counters if isinstance(counters, dict) else {}
+            timings = timings if isinstance(timings, dict) else {}
+            stars_count = int(metadata.get("visible_stars", 0))
+            fov = 93.9 / max(0.001, float(c.zoom_level))
             print(
                 f"[SmokeScenes] {scene['name']} viewport={c.width()}x{c.height()} "
                 f"zoom={c.zoom_level:.2f} fov={fov:.2f} cam_ra={c.azimuth_offset % 360.0:.2f} "
                 f"cam_dec={c.elevation_angle:.2f} stars_hud={stars_count} "
-                f"total_in_view={snap.counters.get('total_in_view', 0)} "
-                f"after_mag={snap.counters.get('after_mag_cut', 0)} "
-                f"after_bucket={snap.counters.get('after_bucket', 0)} "
-                f"avg_radius={snap.counters.get('avg_radius', 0)} "
-                f"ms_stars_renderer={snap.timings_ms.get('renderer_stars', 0.0):.2f}"
+                f"total_in_view={counters.get('total_in_view', 0)} "
+                f"after_mag={counters.get('after_mag_cut', 0)} "
+                f"after_bucket={counters.get('after_bucket', 0)} "
+                f"avg_radius={counters.get('avg_size_bin', 0)} "
+                f"ms_stars_renderer={float(timings.get('renderer_stars', 0.0)):.2f}"
             )
     finally:
         c.zoom_level = prev["zoom"]
@@ -542,110 +401,3 @@ def run_smoke_scenes(widget):
         c.update()
         QApplication.processEvents()
         print("[SmokeScenes] done")
-
-
-def load_catalog(widget):
-    stars_dir = str(getattr(widget, "_stars_catalog_dir", "") or "").strip()
-    if not stars_dir:
-        try:
-            runtime_layout = getattr(widget, "runtime_layout", {}) or {}
-            stars_dir = str(runtime_layout.get("data_gaia", "") or "").strip()
-        except Exception:
-            stars_dir = ""
-    if not stars_dir:
-        stars_dir = str(runtime_data_dir_for("gaia"))
-    stars_dir = os.path.normpath(os.path.expanduser(stars_dir))
-
-    widget.celestial_objects = []
-    if np is not None:
-        try:
-            entries = _discover_star_catalog_npz_entries(stars_dir)
-            base_entry = _select_base_star_catalog_entry(
-                entries, max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG
-            )
-            if base_entry is not None:
-                base = _load_star_npz_arrays(
-                    base_entry["path"],
-                    max_mag=STAR_CATALOG_NAKED_EYE_MAX_MAG,
-                )
-                if len(base["ra"]) > 0:
-                    order = np.argsort(base["mag"], kind="mergesort")
-                    ra = base["ra"][order]
-                    dec = base["dec"][order]
-                    mag = base["mag"][order]
-                    bp_rp = base["bp_rp"][order]
-                    sid = (
-                        base["source_id"][order]
-                        if base["source_id"] is not None
-                        else None
-                    )
-                    widget.celestial_objects = (
-                        _build_celestial_objects_from_arrays(
-                            ra,
-                            dec,
-                            mag,
-                            bp_rp,
-                            source_id=sid,
-                        )
-                    )
-                    widget.np_ra = np.asarray(ra, dtype=np.float32)
-                    widget.np_dec = np.asarray(dec, dtype=np.float32)
-                    widget.np_mag = np.asarray(mag, dtype=np.float32)
-                    widget.np_r, widget.np_g, widget.np_b = (
-                        _bp_rp_to_rgb_arrays(bp_rp)
-                    )
-                    widget._scope_catalog_loaded_max_mag = max(
-                        float(
-                            getattr(
-                                widget,
-                                "_scope_catalog_loaded_max_mag",
-                                STAR_CATALOG_NAKED_EYE_MAX_MAG,
-                            )
-                        ),
-                        float(STAR_CATALOG_NAKED_EYE_MAX_MAG),
-                    )
-                    print(
-                        f"Loaded base NPZ catalog: {len(widget.np_ra)} stars "
-                        f"from {os.path.basename(base_entry['path'])}."
-                    )
-        except Exception as e:
-            print(f"Error loading base NPZ catalog: {e}")
-
-    if not widget.celestial_objects:
-        print("Fallback to Random Stars")
-        import random
-
-        for _ in range(500):
-            widget.celestial_objects.append(
-                {
-                    "id": "rnd",
-                    "ra": random.uniform(0, 360),
-                    "dec": random.uniform(-90, 90),
-                    "mag": random.uniform(1.0, 6.0),
-                    "bp_rp": random.uniform(-0.5, 2.0),
-                }
-            )
-
-    widget.celestial_objects.sort(key=lambda x: x["mag"])
-
-    if np is not None:
-        try:
-            widget.np_ra = np.array(
-                [s["ra"] for s in widget.celestial_objects], dtype=np.float32
-            )
-            widget.np_dec = np.array(
-                [s["dec"] for s in widget.celestial_objects], dtype=np.float32
-            )
-            widget.np_mag = np.array(
-                [s["mag"] for s in widget.celestial_objects], dtype=np.float32
-            )
-            bprp = np.array(
-                [s.get("bp_rp", 0.8) for s in widget.celestial_objects],
-                dtype=np.float32,
-            )
-            widget.np_r, widget.np_g, widget.np_b = _bp_rp_to_rgb_arrays(bprp)
-            print(f"NumPy Optimization: {len(widget.np_ra)} stars vectorized.")
-        except Exception as e:
-            print(f"NumPy Init Error: {e}")
-            if hasattr(widget, "np_ra"):
-                del widget.np_ra

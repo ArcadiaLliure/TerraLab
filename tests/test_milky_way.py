@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import shutil
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -18,7 +19,7 @@ from TerraLab.light_pollution.modes import (
 )
 from TerraLab.scene.camera import Camera
 from TerraLab.render.qt.context import RenderContext
-from TerraLab.scene.scene_state import SceneState
+from TerraLab.scene.render_state import RenderState
 from TerraLab.data.converters.planck import convert_planck_fits_to_cache
 
 
@@ -32,17 +33,7 @@ def _image_to_rgba(image: QImage) -> np.ndarray:
     return arr[:, : img.width(), :].copy()
 
 
-def _build_state(**overlay_cfg) -> SceneState:
-    state = SceneState(
-        camera=Camera(),
-        latitude=41.4,
-        longitude=2.1,
-        ut_hour=22.0,
-        day_of_year=120,
-        bortle=2.0,
-        light_pollution_mode=LP_MODE_AUTOMATIC,
-        magnitude_limit=6.5,
-    )
+def _build_state(**overlay_cfg) -> RenderState:
     base_cfg = {
         "enabled": True,
         "texture_path": "data/sky/milkyway_overlay.png",
@@ -67,12 +58,31 @@ def _build_state(**overlay_cfg) -> SceneState:
         "dust_extinction_strength": 0.0,
     }
     base_cfg.update(overlay_cfg)
-    state.extras = {"milkyway_overlay": base_cfg}
-    return state
+    empty = np.empty(0, dtype=np.float32)
+    return RenderState(
+        camera=Camera(),
+        latitude=41.4,
+        longitude=2.1,
+        altitude_m=0.0,
+        ut_hour=22.0,
+        day_of_year_utc=120,
+        year_utc=2026,
+        np_ra=empty,
+        np_dec=empty,
+        np_mag=empty,
+        np_r=empty,
+        np_g=empty,
+        np_b=empty,
+        np_bp_rp=empty,
+        bortle=2,
+        light_pollution_mode=LP_MODE_AUTOMATIC,
+        mag_limit=6.5,
+        extras={"milkyway_overlay": base_cfg},
+    )
 
 
 def _render_overlay(
-    overlay: MilkyWayOverlay, state: SceneState, w: int = 128, h: int = 64
+    overlay: MilkyWayOverlay, state: RenderState, w: int = 128, h: int = 64
 ) -> QImage:
     image = QImage(w, h, QImage.Format_ARGB32)
     image.fill(0)
@@ -148,8 +158,8 @@ def test_manual_mag_mode_is_direct_not_inverted() -> None:
         magnitude_limit=10.0,
         bortle=1.0,
     )
-    state_low.sun_alt = -25.0
-    state_high.sun_alt = -25.0
+    state_low = replace(state_low, sun_alt=-25.0)
+    state_high = replace(state_high, sun_alt=-25.0)
     img_low = _render_overlay(overlay, state_low)
     img_high = _render_overlay(overlay, state_high)
     alpha_low = int(np.sum(_image_to_rgba(img_low)[..., 3]))
@@ -272,7 +282,7 @@ def test_optional_missing_dust_map_does_not_break_render() -> None:
 def test_milkyway_hidden_in_daylight() -> None:
     overlay = MilkyWayOverlay()
     state = _build_state()
-    state.sun_alt = 5.0
+    state = replace(state, sun_alt=5.0)
     img = _render_overlay(overlay, state)
     rgba = _image_to_rgba(img)
     assert int(np.sum(rgba[..., 3])) == 0
@@ -281,7 +291,7 @@ def test_milkyway_hidden_in_daylight() -> None:
 def test_milkyway_hidden_from_bortle_5_in_auto_mode() -> None:
     overlay = MilkyWayOverlay()
     state = _build_state(light_pollution_mode=LP_MODE_AUTOMATIC, bortle=5.0)
-    state.sun_alt = -25.0
+    state = replace(state, sun_alt=-25.0)
     img = _render_overlay(overlay, state)
     rgba = _image_to_rgba(img)
     assert int(np.sum(rgba[..., 3])) == 0
@@ -309,15 +319,22 @@ def test_stars_disabled_does_not_raise_and_returns_empty_result() -> None:
         ctx = RenderContext(
             painter=painter, width=64, height=64, diagnostics=None
         )
-        state = SceneState(
+        empty = np.empty(0, dtype=np.float32)
+        state = RenderState(
             camera=Camera(),
             latitude=41.4,
             longitude=2.1,
+            altitude_m=0.0,
             ut_hour=22.0,
-            day_of_year=120,
-            ra=np.array([0.0, 10.0], dtype=np.float32),
-            dec=np.array([0.0, 5.0], dtype=np.float32),
-            mag=np.array([1.0, 2.0], dtype=np.float32),
+            day_of_year_utc=120,
+            year_utc=2026,
+            np_ra=np.array([0.0, 10.0], dtype=np.float32),
+            np_dec=np.array([0.0, 5.0], dtype=np.float32),
+            np_mag=np.array([1.0, 2.0], dtype=np.float32),
+            np_r=np.ones(2, dtype=np.float32),
+            np_g=np.ones(2, dtype=np.float32),
+            np_b=np.ones(2, dtype=np.float32),
+            np_bp_rp=empty,
             extras={
                 "stars_enabled": False,
                 "milkyway_overlay": {

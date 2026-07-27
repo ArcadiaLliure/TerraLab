@@ -9,8 +9,9 @@ import sys
 from PyQt5.QtCore import QTimer
 from PyQt5.QtWidgets import QMessageBox, QToolTip
 
+from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import getTraduction, get_config_value, set_config_value
-from TerraLab.data.catalogs.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
+from TerraLab.data.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
     LP_MODE_MAGNITUDE,
@@ -18,7 +19,7 @@ from TerraLab.light_pollution.modes import (
     normalize_light_pollution_mode,
     resolve_bortle_class,
 )
-from TerraLab.terrain.data_sources import LayerType, SurfaceMode
+from TerraLab.data.source_catalog import LayerType, SurfaceMode
 from TerraLab.ui.widget_runtime_helpers import open_calendar as widget_open_calendar
 
 
@@ -265,6 +266,18 @@ class WidgetLayersMixin:
         ):
             checked = False
         self._persist_visibility_state("topografia", checked)
+        if not checked:
+            coordinator = getattr(self, "terrain_coordinator", None)
+            if coordinator is not None:
+                for cancel_fn in ("cancel_surface_refresh", "cancel_bake", "cancel"):
+                    method = getattr(coordinator, cancel_fn, None)
+                    if callable(method):
+                        try:
+                            method()
+                        except Exception:
+                            log_suppressed_exception(
+                                __name__, "WidgetLayersMixin.on_topography_toggled"
+                            )
         self.canvas.update()
 
     def _surface_refresh_view_kwargs(self):
@@ -496,33 +509,17 @@ class WidgetLayersMixin:
         )
 
     def _sync_surface_terrain_3d_control(self):
-        """Require 3-D relief while a raster surface is visible."""
+        """Allow independent control of 3-D relief and raster surface."""
 
         surface_checkbox = getattr(self, "chk_surface_layer", None)
         terrain_checkbox = getattr(self, "chk_terrain_3d", None)
         if surface_checkbox is None or terrain_checkbox is None:
             return
 
-        surface_enabled = bool(surface_checkbox.isChecked())
-        if surface_enabled and not bool(terrain_checkbox.isChecked()):
-            terrain_checkbox.blockSignals(True)
-            terrain_checkbox.setChecked(True)
-            terrain_checkbox.blockSignals(False)
-            persist = getattr(self, "_persist_visibility_state", None)
-            if callable(persist):
-                persist("relleu_tridimensional", True)
-
-        terrain_checkbox.setEnabled(not surface_enabled)
+        terrain_checkbox.setEnabled(True)
         terrain_checkbox.setToolTip(
-            (
-                "La superfície visible requereix relleu tridimensional. "
-                "Desactiva «Mostrar» per poder canviar-lo."
-            )
-            if surface_enabled
-            else (
-                "Activat: superfície tridimensional. "
-                "Desactivat: siluetes per distància."
-            )
+            "Activat: superfície tridimensional. "
+            "Desactivat: siluetes per distància."
         )
 
     def _sync_surface_mode_control(self):
@@ -642,6 +639,7 @@ class WidgetLayersMixin:
 
         vibrant = bool(int(value))
         style = "vibrant" if vibrant else "original"
+        self.surface_visual_style = style
         set_config_value("surface_visual_style", style)
         # Keep the former key synchronized for external configurations while
         # the renderer treats the visual style as the authoritative switch.

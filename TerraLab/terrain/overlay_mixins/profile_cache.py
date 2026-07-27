@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import replace
 
 import numpy as np
 from PyQt5.QtCore import QPointF, Qt
@@ -234,6 +235,31 @@ class OverlayProfileCacheMixin:
             self._terrain_resolved_material_cache.clear()
         elif previous_resolved_key != next_resolved_key:
             self._terrain_resolved_material_cache.clear()
+        self.request_update.emit()
+
+    def set_surface_visual_style(self, value: str) -> None:
+        """Apply the UI snapshot style without rereading process-local config."""
+
+        style = normalize_surface_visual_style(value)
+        current = normalize_surface_visual_style(
+            self.render_settings.surface_visual_style
+        )
+        if style == current:
+            return
+        self.render_settings = replace(
+            self.render_settings,
+            surface_visual_style=style,
+            categorical_edge_smoothing_enabled=(style == "vibrant"),
+        )
+        self._profile_image_cache_key = None
+        self._profile_image_cache = None
+        self._terrain_surface_image_cache_key = None
+        self._terrain_surface_image_cache = None
+        self._terrain_surface_image_geometry = None
+        self._terrain_raster_cache_key = None
+        self._terrain_raster_cache = None
+        self._terrain_base_material_cache.clear()
+        self._terrain_resolved_material_cache.clear()
         self.request_update.emit()
 
     def set_profile(self, profile, layer_defs=None):

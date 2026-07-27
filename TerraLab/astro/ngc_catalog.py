@@ -328,6 +328,22 @@ def load_ngc_catalog(path: str | Path) -> List[NGCObject]:
     return items
 
 
+def ngc_display_label(obj: NGCObject) -> str:
+    """Return a compact label retaining catalogue and familiar identities."""
+
+    parts: List[str] = []
+    messier = obj.messier_nr
+    if messier is not None and messier > 0:
+        parts.append(f"M{messier}")
+    catalogue_name = str(obj.name or "").strip()
+    if catalogue_name:
+        parts.append(catalogue_name)
+    common_name = str(obj.common_name or "").strip()
+    if common_name and common_name not in parts:
+        parts.append(common_name)
+    return " · ".join(parts) or "NGC"
+
+
 def iter_ngc_aliases(obj: NGCObject) -> List[str]:
     out: List[str] = []
     seen = set()

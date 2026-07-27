@@ -11,21 +11,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-import numpy as np
 from PyQt5.QtCore import QTimer, pyqtSignal
+from PyQt5.QtWidgets import QApplication
 
 from TerraLab.common.exception_reporting import log_suppressed_exception
-from TerraLab.astro.ephemeris_coordinator import EphemerisCoordinator
 from TerraLab.common.custom_widget_base import CustomWidgetBase
-from TerraLab.common.performance.flags import PERFORMANCE_FLAGS
-from TerraLab.data.star_data_coordinator import StarDataCoordinator
-from TerraLab.light_pollution.modes import (
-    normalize_light_pollution_mode,
-    resolve_bortle_class,
+from TerraLab.runtime.clients import (
+    ProcessCatalogClient,
+    ProcessEphemerisClient,
+    ProcessLatestClient,
+    ProcessTerrainClient,
 )
-from TerraLab.scene.scene_controller import SceneController
-from TerraLab.terrain.terrain_coordinator import TerrainCoordinator
-from TerraLab.data.catalogs.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
+from TerraLab.data.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
 from TerraLab.ui.widget_mixins import (
     WidgetBootstrapTerrainMixin,
     WidgetControlsTimeMixin,
@@ -60,24 +57,6 @@ class AstronomicalWidget(
         # only, so construction cannot change when their MRO order changes.
         astronomical_widget_init(self, parent, **kwargs)
 
-        # Coordinators own the canonical scene, terrain and ephemeris state.
-        self.scene_controller = SceneController(
-            latitude=float(self.latitude),
-            longitude=float(self.longitude),
-            altitude_m=float(self._observer_offset),
-            manual_year=int(self.manual_year),
-            manual_day=int(self.manual_day),
-            manual_hour=float(self.manual_hour),
-            use_real_time=bool(self.use_real_time),
-            azimuth_offset=float(self.canvas.azimuth_offset),
-            elevation_angle=float(self.canvas.elevation_angle),
-            zoom_level=float(self.canvas.zoom_level),
-            vertical_offset_ratio=float(self.canvas.vertical_offset_ratio),
-            light_pollution_mode=normalize_light_pollution_mode(
-                self.light_pollution_mode
-            ),
-        )
-
         self.star_data_coordinator = None
         self._last_scope_tile_request = ""
         self.gaia_catalog_status = GAIA_CATALOG_NOT_CONFIGURED
@@ -86,8 +65,12 @@ class AstronomicalWidget(
         self._gaia_general_tile_loaded_mtime = 0.0
         self._try_attach_star_data_coordinator(force_general_reload=True)
 
-        self.terrain_coordinator = TerrainCoordinator(
-            tiles_dir=str(self.runtime_layout.get("data_elevation", "") or "")
+        app = QApplication.instance()
+        runtime = getattr(app, "terralab_runtime", None)
+        if runtime is None:
+            raise RuntimeError("TerraLab runtime supervisor is not available")
+        self.terrain_coordinator = ProcessTerrainClient(
+            runtime, parent=self
         )
         self.terrain_coordinator.horizon_ready.connect(
             self._on_terrain_coordinator_ready
@@ -101,12 +84,80 @@ class AstronomicalWidget(
         self.terrain_coordinator.horizon_preview_ready.connect(
             self.queue_horizon_preview
         )
+        self.terrain_coordinator.surface_ready.connect(
+            self._on_terrain_surface_ready
+        )
         self.terrain_coordinator.bortle_estimate_ready.connect(
             self.on_horizon_bortle_estimate
         )
-        self.ephemeris_coordinator = EphemerisCoordinator()
+        self.ephemeris_coordinator = ProcessEphemerisClient(
+            runtime, parent=self
+        )
         self.ephemeris_coordinator.ephemeris_ready.connect(
             self._on_async_ephemeris_ready
+        )
+        self.search_index_client = ProcessLatestClient(
+            runtime,
+            "search_index",
+            request_id="search-index",
+            parent=self,
+        )
+        self.search_index_client.result_ready.connect(
+            self._on_search_index_ready
+        )
+        self.search_resolve_client = ProcessLatestClient(
+            runtime,
+            "search_resolve",
+            request_id="search-resolve",
+            parent=self,
+        )
+        self.search_resolve_client.result_ready.connect(
+            self._on_search_resolved
+        )
+        self.weather_compute_client = ProcessLatestClient(
+            runtime,
+            "weather_sample",
+            request_id="weather",
+            parent=self,
+        )
+        self.weather_compute_client.result_ready.connect(
+            self._on_weather_sample_ready
+        )
+        self.scope_goto_client = ProcessLatestClient(
+            runtime,
+            "coordinate_convert",
+            request_id="scope-goto",
+            parent=self,
+        )
+        self.scope_goto_client.result_ready.connect(
+            self._on_scope_goto_ready
+        )
+        self.scope_track_client = ProcessLatestClient(
+            runtime,
+            "coordinate_convert",
+            request_id="scope-track",
+            parent=self,
+        )
+        self.scope_track_client.result_ready.connect(
+            self._on_scope_track_ready
+        )
+        self.scope_reverse_client = ProcessLatestClient(
+            runtime,
+            "coordinate_convert",
+            request_id="scope-reverse",
+            parent=self,
+        )
+        self.scope_reverse_client.result_ready.connect(
+            self._on_scope_reverse_ready
+        )
+        self.circumpolar_client = ProcessLatestClient(
+            runtime,
+            "circumpolar_align",
+            request_id="circumpolar-align",
+            parent=self,
+        )
+        self.circumpolar_client.result_ready.connect(
+            self._on_circumpolar_alignment_ready
         )
         self._gaia_attach_timer = None
         self._gaia_attach_timer = QTimer(self)
@@ -194,50 +245,46 @@ class AstronomicalWidget(
             self.on_horizon_progress(f"Error horitzó: {text}")
 
     def _on_terrain_coordinator_ready(self, payload) -> None:
-        """Publish a completed surface cache atomically on the GUI thread."""
+        """Publish a completed immutable terrain artifact to Render."""
 
-        if not isinstance(payload, dict) or payload.get("kind") != "surface":
+        if isinstance(payload, dict) and payload.get("profile_path"):
             self.cancel_pending_horizon_preview()
-            self.on_horizon_profile_ready(payload)
-            return
-        profile = payload.get("profile")
-        if profile is None:
-            return
-        self._full_horizon_profile = profile
-        requested_km = float(
-            getattr(self, "_pending_terrain_depth_km", None)
-            or (
-                self.slider_terrain_depth.value()
-                if hasattr(self, "slider_terrain_depth")
-                else 0.0
+            self._full_horizon_profile = dict(payload)
+            self._remote_terrain_profile_path = str(
+                payload["profile_path"]
             )
-        )
-        visible_profile = (
-            self._profile_for_terrain_depth(profile, requested_km)
-            if requested_km > 0.0
-            else profile
-        )
-        layer_defs = None
-        band_defs = getattr(visible_profile, "_band_defs", None)
-        if band_defs is not None:
-            try:
-                from TerraLab.terrain.render.palette import generate_layer_defs
-
-                layer_defs = generate_layer_defs(band_defs)
-            except (TypeError, ValueError) as exc:
-                print(
-                    "[AstroWidget] Warning: Could not generate surface "
-                    f"layer_defs: {exc}"
-                )
-        overlay = getattr(getattr(self, "canvas", None), "horizon_overlay", None)
-        if overlay is not None:
-            overlay.set_profile(visible_profile, layer_defs=layer_defs)
-        village = getattr(getattr(self, "canvas", None), "village", None)
-        if village is not None:
-            village.set_profile(visible_profile)
-        self.on_horizon_progress("")
-        if hasattr(self, "canvas"):
+            self._remote_terrain_surface_path = ""
+            self._active_horizon_job_id = None
+            self.on_horizon_progress("")
+            self._set_scene_load_stage("scene_ready")
             self.canvas.update()
+            checkbox = getattr(self, "chk_surface_layer", None)
+            if checkbox is not None and bool(checkbox.isChecked()):
+                self.on_surface_layer_toggled(True)
+            return
+        self._on_terrain_coordinator_error(
+            "Compute devolvió un artefacto de terreno incompatible"
+        )
+
+    def _on_terrain_surface_ready(self, payload) -> None:
+        if not isinstance(payload, dict):
+            return
+        profile_path = str(payload.get("profile_path", "") or "")
+        if profile_path != str(
+            getattr(self, "_remote_terrain_profile_path", "") or ""
+        ):
+            return
+        self._remote_terrain_surface_path = str(
+            payload.get("surface_path", "") or ""
+        )
+        self._effective_data_sources_payload = {
+            "surface": {
+                "source_id": str(payload.get("source_id", "") or ""),
+                "status": str(payload.get("status", "") or ""),
+            }
+        }
+        self.on_horizon_progress("")
+        self.canvas.update()
 
     def _on_async_ephemeris_ready(self, _snapshot) -> None:
         canvas = getattr(self, "canvas", None)
@@ -269,7 +316,9 @@ class AstronomicalWidget(
         manifest_path = gaia_dir / "tile_manifest.json"
         if not gaia_dir.is_dir():
             self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
-        elif not manifest_path.is_file():
+        elif not manifest_path.is_file() and not (
+            gaia_dir / "tile_all.npz"
+        ).is_file():
             self.gaia_catalog_status = GAIA_MANIFEST_MISSING
         else:
             self.gaia_catalog_status = GAIA_CATALOG_AVAILABLE
@@ -282,14 +331,8 @@ class AstronomicalWidget(
         self.star_data_coordinator.general_tile_ready.connect(
             self._on_general_tile_ready
         )
-        self.star_data_coordinator.deep_tile_ready.connect(
-            self._on_deep_tile_ready
-        )
         self.star_data_coordinator.extension_ready.connect(
             self._on_extension_ready
-        )
-        self.star_data_coordinator.scope_index_ready.connect(
-            self._on_scope_index_ready
         )
         self.star_data_coordinator.error_occurred.connect(
             self._on_star_data_error
@@ -303,9 +346,14 @@ class AstronomicalWidget(
         if manifest_path is None:
             self.gaia_catalog_status = GAIA_CATALOG_NOT_CONFIGURED
             return
-        self._ensure_partial_manifest_from_general_tile()
+        fallback_tile = manifest_path.parent / "tile_all.npz"
+        source_path = (
+            manifest_path
+            if manifest_path.is_file()
+            else fallback_tile
+        )
         try:
-            manifest_mtime = float(manifest_path.stat().st_mtime)
+            manifest_mtime = float(source_path.stat().st_mtime)
         except FileNotFoundError:
             self.gaia_catalog_status = GAIA_MANIFEST_MISSING
             return
@@ -327,7 +375,17 @@ class AstronomicalWidget(
 
         if self.star_data_coordinator is None:
             try:
-                coordinator = StarDataCoordinator(manifest_path)
+                app = QApplication.instance()
+                runtime = getattr(app, "terralab_runtime", None)
+                if runtime is None:
+                    raise RuntimeError(
+                        "TerraLab runtime supervisor is not available"
+                    )
+                coordinator = ProcessCatalogClient(
+                    runtime,
+                    manifest_path,
+                    parent=self,
+                )
             except FileNotFoundError:
                 self.gaia_catalog_status = GAIA_MANIFEST_MISSING
                 return
@@ -359,53 +417,6 @@ class AstronomicalWidget(
         ):
             self._gaia_manifest_last_mtime = float(manifest_mtime)
             self.star_data_coordinator.load_general_tile()
-
-    def _ensure_partial_manifest_from_general_tile(self) -> None:
-        """Crea manifest parcial minim quan existeix `tile_all` pero no manifest."""
-        manifest_path = self._gaia_manifest_path
-        if manifest_path is None:
-            return
-        if manifest_path.is_file():
-            return
-        tile_all_path = manifest_path.parent / "tile_all.npz"
-        if not tile_all_path.is_file():
-            return
-        try:
-            with np.load(tile_all_path, allow_pickle=False) as tile_data:
-                if "ra" in tile_data:
-                    row_count = int(len(tile_data["ra"]))
-                elif "RA" in tile_data:
-                    row_count = int(len(tile_data["RA"]))
-                else:
-                    row_count = 0
-        except (OSError, ValueError):
-            return
-        if row_count <= 0:
-            return
-
-        payload = {
-            "version": 1,
-            "tile_size_deg": 5.0,
-            "partial": True,
-            "general_tile": {
-                "id": "tile_all",
-                "file": "tile_all.npz",
-                "mag_limit": float(STAR_CATALOG_NAKED_EYE_MAX_MAG),
-                "coverage": "full_sky",
-                "star_count": int(row_count),
-            },
-            "deep_tiles": [],
-        }
-        try:
-            manifest_path.parent.mkdir(parents=True, exist_ok=True)
-            with manifest_path.open("w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=2, ensure_ascii=True)
-        except (OSError, TypeError, ValueError) as exc:
-            self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
-            self._on_star_data_error(
-                f"Could not create the partial Gaia manifest: {exc}"
-            )
-            return
 
     def _poll_incremental_gaia_updates(self) -> None:
         """Polling lleuger per activar carrega incremental de Gaia."""
@@ -539,80 +550,36 @@ class AstronomicalWidget(
         for timer in (
             self._gaia_attach_timer,
             self.timer,
-            self.anim_timer,
             self.bake_debounce_timer,
             self.terrain_depth_debounce_timer,
             self.terrain_ray_precision_debounce_timer,
-            self._gaia_extension_watch_timer,
             self._gaia_extension_status_hide_timer,
         ):
             if timer is not None:
                 timer.stop()
 
-        cleanup_errors: list[RuntimeError] = []
-        scope_preload_worker = getattr(self, "_scope_preload_worker", None)
-        if scope_preload_worker is not None:
-            request_shutdown = getattr(
-                scope_preload_worker,
-                "request_shutdown",
-                None,
-            )
-            if callable(request_shutdown):
-                request_shutdown()
-
-        for thread_name in (
-            "_skyfield_thread",
-            "_catalog_thread",
-            "_scope_catalog_thread",
-            "_scope_index_thread",
-            "_scope_preload_thread",
-        ):
-            thread = getattr(self, thread_name, None)
-            if thread is None or not thread.isRunning():
-                continue
-            thread.requestInterruption()
-            thread.quit()
-            if not thread.wait(15_000):
-                cleanup_errors.append(
-                    RuntimeError(
-                        f"{thread_name} did not stop cooperatively"
-                    )
-                )
-
-        try:
-            self.canvas.shutdown()
-        except RuntimeError as exc:
-            cleanup_errors.append(exc)
+        self.canvas.shutdown()
         if self.star_data_coordinator is not None:
-            try:
-                self.star_data_coordinator.shutdown()
-            except RuntimeError as exc:
-                cleanup_errors.append(exc)
-        try:
-            self.terrain_coordinator.shutdown()
-        except RuntimeError as exc:
-            cleanup_errors.append(exc)
-        try:
-            self.ephemeris_coordinator.shutdown()
-        except RuntimeError as exc:
-            cleanup_errors.append(exc)
-        result = super().closeEvent(event)
-        if cleanup_errors:
-            raise RuntimeError(
-                "One or more TerraLab coordinators failed to shut down"
-            ) from cleanup_errors[0]
-        return result
+            self.star_data_coordinator.shutdown()
+        self.terrain_coordinator.shutdown()
+        self.ephemeris_coordinator.shutdown()
+        self.search_index_client.shutdown()
+        self.search_resolve_client.shutdown()
+        self.weather_compute_client.shutdown()
+        self.scope_goto_client.shutdown()
+        self.scope_track_client.shutdown()
+        self.scope_reverse_client.shutdown()
+        self.circumpolar_client.shutdown()
+        return super().closeEvent(event)
 
     def update_loop(self):
         """Advance time, coordinators and rendering exactly once per frame."""
         if bool(getattr(self, "_updates_paused", False)):
             return
         try:
-            timer_interval_ms = 16.0
+            timer_interval_ms = 250.0
             if hasattr(self, "timer") and callable(getattr(self.timer, "interval", None)):
                 timer_interval_ms = float(self.timer.interval())
-                if self.timer.interval() != 16:
-                    self.timer.setInterval(16)
 
             if self.use_real_time:
                 now = datetime.now()
@@ -635,73 +602,16 @@ class AstronomicalWidget(
                 ) % 24.0
                 if hasattr(self, "time_bar"):
                     self.time_bar.set_time(self.manual_hour)
-
-            self.scene_controller.latitude = float(getattr(self, "latitude", self.scene_controller.latitude))
-            self.scene_controller.longitude = float(getattr(self, "longitude", self.scene_controller.longitude))
-            self.scene_controller.altitude_m = float(getattr(self, "_observer_offset", self.scene_controller.altitude_m))
-            self.scene_controller.manual_year = int(getattr(self, "manual_year", self.scene_controller.manual_year))
-            self.scene_controller.manual_day = int(getattr(self, "manual_day", self.scene_controller.manual_day))
-            self.scene_controller.manual_hour = float(getattr(self, "manual_hour", self.scene_controller.manual_hour))
-            self.scene_controller.use_real_time = bool(getattr(self, "use_real_time", self.scene_controller.use_real_time))
-            self.scene_controller.mag_limit = float(getattr(self, "magnitude_limit", self.scene_controller.mag_limit))
-            self.scene_controller.light_pollution_mode = normalize_light_pollution_mode(
-                getattr(
-                    self,
-                    "light_pollution_mode",
-                    self.scene_controller.light_pollution_mode,
-                )
-            )
-            light_pollution_enabled = bool(
-                getattr(self, "light_pollution_enabled", True)
-            )
-            self.scene_controller.bortle = int(
-                round(
-                    resolve_bortle_class(
-                        self.scene_controller.light_pollution_mode,
-                        automatic_bortle=getattr(self, "auto_bortle_estimate", 1),
-                        bortle_value=getattr(self, "bortle_value", 1),
-                        magnitude_limit=getattr(
-                            self, "magnitude_limit", self.scene_controller.mag_limit
-                        ),
-                        light_pollution_enabled=light_pollution_enabled,
-                    )
-                )
-            )
+            self._request_weather_sample()
 
             canvas = getattr(self, "canvas", None)
-            if canvas is not None:
-                self.scene_controller.azimuth_offset = float(getattr(canvas, "azimuth_offset", self.scene_controller.azimuth_offset))
-                self.scene_controller.elevation_angle = float(getattr(canvas, "elevation_angle", self.scene_controller.elevation_angle))
-                self.scene_controller.zoom_level = float(getattr(canvas, "zoom_level", self.scene_controller.zoom_level))
-                self.scene_controller.vertical_offset_ratio = float(
-                    getattr(canvas, "vertical_offset_ratio", self.scene_controller.vertical_offset_ratio)
-                )
-                self.scene_controller.scope_enabled = bool(
-                    getattr(canvas, "scope_mode_enabled", lambda: False)()
-                )
-                scope_controller = getattr(canvas, "scope_controller", None)
-                scope_center = getattr(scope_controller, "center", None)
-                if scope_center is None:
-                    self.scene_controller.scope_center = None
-                else:
-                    self.scene_controller.scope_center = (
-                        float(scope_center[0]),
-                        float(scope_center[1]),
-                    )
-                try:
-                    fov_w, fov_h = scope_controller.current_fov() if scope_controller is not None else (5.0, 5.0)
-                    self.scene_controller.scope_fov_deg = (float(fov_w), float(fov_h))
-                except Exception:
-                    self.scene_controller.scope_fov_deg = (5.0, 5.0)
-
-            self.scene_controller.update(max(0.0, timer_interval_ms / 1000.0))
             self.ephemeris_coordinator.configure_observer(
-                latitude=float(self.scene_controller.latitude),
-                longitude=float(self.scene_controller.longitude),
+                latitude=float(self.latitude),
+                longitude=float(self.longitude),
             )
-            ephemeris_hour_utc = float(self.scene_controller.manual_hour)
-            ephemeris_day_utc = int(self.scene_controller.manual_day)
-            ephemeris_year_utc = int(self.scene_controller.manual_year)
+            ephemeris_hour_utc = float(self.manual_hour)
+            ephemeris_day_utc = int(self.manual_day)
+            ephemeris_year_utc = int(self.manual_year)
             if canvas is not None and callable(
                 getattr(canvas, "_get_current_utc_context", None)
             ):
@@ -716,6 +626,11 @@ class AstronomicalWidget(
                 day_of_year_utc=int(ephemeris_day_utc),
                 ut_hour=float(ephemeris_hour_utc),
             )
+            track_scope = getattr(
+                self, "request_scope_tracking_update", None
+            )
+            if callable(track_scope):
+                track_scope()
 
             if (
                 self.star_data_coordinator is not None
@@ -723,129 +638,85 @@ class AstronomicalWidget(
                 and bool(getattr(self.canvas, "scope_mode_enabled", lambda: False)())
             ):
                 scope_center = getattr(getattr(self.canvas, "scope_controller", None), "center", None)
-                if scope_center is not None and hasattr(self.canvas, "_altaz_to_ra_dec"):
-                    ra_dec = self.canvas._altaz_to_ra_dec(
-                        float(scope_center[0]),
-                        float(scope_center[1]),
-                        float(self.scene_controller.manual_hour),
-                        int(self.scene_controller.manual_day),
+                if scope_center is not None:
+                    scope_controller = self.canvas.scope_controller
+                    radius = float(max(scope_controller.current_fov()))
+                    query_bucket = max(0.01, radius / 20.0)
+                    signature = (
+                        round(float(scope_center[0]) / query_bucket),
+                        round(float(scope_center[1]) / query_bucket),
+                        round(radius, 3),
+                        int(ephemeris_day_utc),
+                        round(float(ephemeris_hour_utc) * 60.0),
                     )
-                    if ra_dec is not None:
-                        ra_center, dec_center = float(ra_dec[0]), float(ra_dec[1])
-                        radius = float(max(self.scene_controller.scope_fov_deg))
-                        if PERFORMANCE_FLAGS.gaia_out_of_core and hasattr(
-                            self.star_data_coordinator, "request_cone_region"
-                        ):
-                            query_bucket = max(0.01, radius / 20.0)
-                            signature = (
-                                round(ra_center / query_bucket),
-                                round(dec_center / query_bucket),
-                                round(radius, 3),
-                                22.0,
-                            )
-                            if signature != self._last_scope_tile_request:
-                                self._last_scope_tile_request = signature
-                                self.star_data_coordinator.request_cone_region(
-                                    ra_center,
-                                    dec_center,
-                                    radius,
-                                    22.0,
-                                )
-                        else:
-                            central_tile = self.star_data_coordinator.manifest().get_primary_tile_for_region(
-                                ra_center=ra_center,
-                                dec_center=dec_center,
-                                radius_deg=radius,
-                            )
-                            if central_tile is not None:
-                                central_tile_id = str(central_tile.tile_id)
-                                if central_tile_id != self._last_scope_tile_request:
-                                    self._last_scope_tile_request = central_tile_id
-                                    self.star_data_coordinator.load_deep_tile(central_tile_id)
-                                    self.star_data_coordinator.preload_adjacent_tiles(central_tile_id)
-                                    self.star_data_coordinator.build_scope_index(central_tile_id)
+                    if signature != self._last_scope_tile_request:
+                        self._last_scope_tile_request = signature
+                        self.star_data_coordinator.request_scope_region(
+                            alt=float(scope_center[0]),
+                            az=float(scope_center[1]),
+                            radius_deg=radius,
+                            mag_limit=22.0,
+                            ut_hour=float(ephemeris_hour_utc),
+                            day_of_year_utc=int(ephemeris_day_utc),
+                            year_utc=int(ephemeris_year_utc),
+                            latitude=float(self.latitude),
+                            longitude=float(self.longitude),
+                        )
         except Exception as exc:
             self._on_star_data_error(f"frame update failed: {exc}")
         self.canvas.update()
 
     def _on_general_tile_ready(self, payload):
         """Actualitza arrays principals quan arriba la tesela general."""
-        self._apply_star_payload(payload)
-        self._scope_catalog_loaded_max_mag = float(
-            max(
-                float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG)),
-                float(STAR_CATALOG_NAKED_EYE_MAX_MAG),
+        if isinstance(payload, dict) and isinstance(
+            payload.get("artifact"), dict
+        ):
+            self._render_catalog_artifact = dict(payload["artifact"])
+            self._scope_catalog_loaded_max_mag = float(
+                payload.get(
+                    "loaded_max_mag",
+                    STAR_CATALOG_NAKED_EYE_MAX_MAG,
+                )
             )
+            self._catalog_max_mag = self._scope_catalog_loaded_max_mag
+            self._catalog_mag_sorted = True
+            if getattr(self, "scene_load_stage", "boot") in {
+                "boot",
+                "base_sky",
+            }:
+                self._set_scene_load_stage("stars_ready")
+            if hasattr(self, "canvas"):
+                self.canvas.update()
+            if bool(getattr(self, "_deferred_controls_ready", False)):
+                self.build_search_index()
+            return
+        self._on_star_data_error(
+            "Compute returned an invalid Gaia artifact descriptor"
         )
-        if hasattr(self, "canvas"):
-            self.canvas.update()
-
-    def _on_deep_tile_ready(self, tile_id: str, _tile_payload):
-        """Recepcio de tesela profunda carregada.
-
-        No pre-carreguem aqui per evitar expansio en cascada (veina de veina...).
-        La precarrega controlada es fa des del loop quan canvia la tesela central.
-        """
-        _ = tile_id
-        _ = _tile_payload
 
     def _on_extension_ready(self, payload):
         """Actualitza dataset actiu quan arriba nova extensio profunda."""
-        self._apply_star_payload(payload)
-        if hasattr(self, "canvas"):
-            self.canvas.update()
-
-    def _on_scope_index_ready(self, payload):
-        """Aplica l'index scope generat pel coordinador al renderer actiu."""
-        if not isinstance(payload, dict):
-            return
-        canvas = getattr(self, "canvas", None)
-        if canvas is None:
-            return
-        stars_renderer = getattr(
-            getattr(canvas, "sky_renderer", None), "stars_renderer", None
-        )
-        if stars_renderer is None:
-            return
-        sorted_indices = payload.get("sorted_indices")
-        offsets = payload.get("offsets")
-        if sorted_indices is None or offsets is None:
-            return
-
-        ra_all = getattr(self, "np_ra", None)
-        dec_all = getattr(self, "np_dec", None)
-        if ra_all is None or dec_all is None:
-            return
-        expected_rows = int(payload.get("row_count", 0) or 0)
-        if expected_rows > 0 and expected_rows != int(len(ra_all)):
-            # Arriba un index stale d'un dataset anterior; el seguent request el renovara.
-            return
-
-        try:
-            catalog_key = stars_renderer._catalog_array_key(ra_all, dec_all)
-            stars_renderer.apply_scope_spatial_index_payload(
-                catalog_key, sorted_indices, offsets
-            )
-            self._scope_index_target_key = catalog_key
-            self._scope_index_loading = False
-            self._scope_index_rewarm_requested = False
-            self._scope_index_loaded_mag_cap = float(
-                max(
-                    float(getattr(self, "_scope_index_loaded_mag_cap", 0.0)),
-                    float(payload.get("loaded_max_mag", 0.0) or 0.0),
+        if isinstance(payload, dict) and isinstance(
+            payload.get("artifact"), dict
+        ):
+            self._render_catalog_artifact = dict(payload["artifact"])
+            self._scope_catalog_loaded_max_mag = float(
+                payload.get(
+                    "loaded_max_mag",
+                    self._scope_catalog_loaded_max_mag,
                 )
             )
-            print(
-                "[AstronomicalWidget] Scope index ready (coordinator): "
-                f"rows={int(len(ra_all))} max_mag={self._scope_index_loaded_mag_cap:.2f}"
-            )
-            if bool(getattr(canvas, "scope_mode_enabled", lambda: False)()):
-                canvas.update()
-        except Exception as exc:
-            try:
-                print(f"[AstronomicalWidget] scope index apply error: {exc}")
-            except Exception:
-                log_suppressed_exception(__name__, "AstronomicalWidget._on_scope_index_ready")
+            # Without updating this cap the new deep mmap was attached, but
+            # Render still discarded every star fainter than the naked-eye
+            # general tile. That made telescope Goto look entirely black.
+            self._catalog_max_mag = self._scope_catalog_loaded_max_mag
+            self._catalog_mag_sorted = True
+            if hasattr(self, "canvas"):
+                self.canvas.update()
+            return
+        self._on_star_data_error(
+            "Compute returned an invalid deep Gaia artifact descriptor"
+        )
 
     def _on_star_data_error(self, message: str):
         """Log no fatal de errors del coordinador de dades d'estrelles."""
@@ -853,39 +724,3 @@ class AstronomicalWidget(
             print(f"[AstronomicalWidget] StarDataCoordinator error: {message}")
         except Exception:
             log_suppressed_exception(__name__, "AstronomicalWidget._on_star_data_error")
-
-    def _apply_star_payload(self, payload):
-        """Assigna arrays de cataleg al widget des del payload del coordinador."""
-        if not isinstance(payload, dict):
-            return
-        if np is None:
-            return
-        self.np_ra = np.asarray(payload.get("ra", np.empty(0, dtype=np.float32)), dtype=np.float32)
-        self.np_dec = np.asarray(payload.get("dec", np.empty(0, dtype=np.float32)), dtype=np.float32)
-        self.np_mag = np.asarray(payload.get("mag", np.empty(0, dtype=np.float32)), dtype=np.float32)
-        self.np_r = np.asarray(payload.get("r", np.empty(0, dtype=np.float32)), dtype=np.float32)
-        self.np_g = np.asarray(payload.get("g", np.empty(0, dtype=np.float32)), dtype=np.float32)
-        self.np_b = np.asarray(payload.get("b", np.empty(0, dtype=np.float32)), dtype=np.float32)
-        self.np_bp_rp = np.asarray(payload.get("bp_rp", np.empty(0, dtype=np.float32)), dtype=np.float32)
-
-        if len(self.np_mag) > 0:
-            try:
-                self._catalog_max_mag = float(np.nanmax(self.np_mag))
-            except Exception:
-                self._catalog_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
-        self.refresh_light_pollution_catalog_range()
-        self._catalog_mag_sorted = True
-        self._catalog_loaded_subset_only = False
-        self._stars_fallback_active = False
-        self._stars_fallback_reason = ""
-        self._stars_fallback_since = None
-        self._stars_primary_since = None
-        if hasattr(self, "lbl_stars_fallback"):
-            try:
-                self.lbl_stars_fallback.hide()
-            except Exception:
-                log_suppressed_exception(__name__, "AstronomicalWidget._apply_star_payload")
-        try:
-            self._refresh_stars_status_indicator()
-        except Exception:
-            log_suppressed_exception(__name__, "AstronomicalWidget._apply_star_payload")

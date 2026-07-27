@@ -7,25 +7,20 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QThread, Qt
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QCheckBox, QDialog, QFrame, QLabel, QVBoxLayout
 
-from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.perf_events import append_perf_event
-from TerraLab.common.utils import getTraduction, get_base_dir, get_config_value, set_config_value
+from TerraLab.common.utils import getTraduction, get_config_value, set_config_value
 from TerraLab.data.layer_manager import LayerId, LayerState
 from TerraLab.ui.onboarding_dialogs import AssetOnboardingDialog, WelcomeOnboardingDialog
 from TerraLab.ui.widget_bootstrap_helpers import (
     widget_start_async_bootstrap,
-    widget_start_scope_full_preload_async,
 )
 from TerraLab.ui.widget_misc_helpers import (
-    widget_apply_scope_preloaded_spatial_index,
     widget_maybe_resume_pending_gaia_download,
-    widget_on_scope_preload_ready,
     widget_reload_star_catalog_async,
 )
-from TerraLab.ui.workers.catalog_loader import CatalogLoaderWorker
 
 
 class WidgetBootstrapTerrainMixin:
@@ -39,147 +34,9 @@ class WidgetBootstrapTerrainMixin:
         append_perf_event("scene_stage", stage=str(stage), delta_ms_boot=self._boot_delta_ms())
         if hasattr(self, "canvas"):
             self.canvas.update()
-        if stage == "scene_ready":
-            self._start_scope_full_preload_async(reason="scene_ready")
-            self._ensure_scope_catalog_loaded()
 
     def _boot_delta_ms(self) -> int:
         return int((time.perf_counter() - float(getattr(self, "_perf_boot_t0_mono", time.perf_counter()))) * 1000.0)
-
-    def _scope_preload_cache_dir(self) -> str:
-        root = Path(self.runtime_layout.get("root", get_base_dir()))
-        path = root / "cache" / "scope"
-        path.mkdir(parents=True, exist_ok=True)
-        return str(path)
-
-    def _scope_preload_should_wait(self) -> bool:
-        return bool(
-            self.scope_preload_mode == "startup_full"
-            and bool(getattr(self, "scope_requires_full_catalog", True))
-            and str(getattr(self, "scope_activation_policy", "wait_until_ready")) == "wait_until_ready"
-        )
-
-    def _scope_set_data_state(self, new_state: str, *, reason: str = "") -> None:
-        state = str(new_state or "").strip().lower()
-        if state not in {"ready_deep", "loading_deep", "error_deep"}:
-            return
-        prev = str(getattr(self, "_scope_data_state", "ready_deep") or "ready_deep")
-        if prev == state:
-            return
-        self._scope_data_state = state
-        scope_active = bool(getattr(getattr(self, "canvas", None), "scope_mode_enabled", lambda: False)())
-        pending_scope = bool(getattr(self, "_scope_preload_pending_activation", False))
-        emit_state_events = bool(scope_active or pending_scope)
-        if emit_state_events and state in {"loading_deep", "error_deep"} and prev == "ready_deep":
-            append_perf_event(
-                "scope_fallback_on",
-                state=state,
-                reason=str(reason or ""),
-                delta_ms_boot=self._boot_delta_ms(),
-            )
-        elif emit_state_events and prev in {"loading_deep", "error_deep"} and state == "ready_deep":
-            append_perf_event(
-                "scope_fallback_off",
-                reason=str(reason or ""),
-                delta_ms_boot=self._boot_delta_ms(),
-            )
-        if hasattr(self, "canvas"):
-            try:
-                self.canvas._cached_star_image = None
-                self.canvas._cached_trail_image = None
-            except Exception:
-                log_suppressed_exception(__name__, "WidgetBootstrapTerrainMixin._scope_set_data_state")
-            self.canvas.update()
-
-    def _refresh_scope_data_state(self, *, reason: str = "") -> None:
-        if bool(getattr(self, "_scope_preload_failed", False)):
-            self._scope_set_data_state("error_deep", reason=reason or "preload_error")
-            return
-        wait_full_ready = bool(
-            self._scope_preload_should_wait()
-            and (not bool(getattr(self, "_scope_preload_ready", False)))
-        )
-        subset_only = bool(getattr(self, "_catalog_loaded_subset_only", False))
-        if subset_only or wait_full_ready:
-            self._scope_set_data_state("loading_deep", reason=reason or "loading")
-            return
-        self._scope_set_data_state("ready_deep", reason=reason or "ready")
-
-    def _scope_preload_status(self, message: str, *, keep_seconds: float = 0.0):
-        self._set_gaia_extension_status_label(f"[Scope preload] {str(message)}", keep_seconds=keep_seconds)
-
-    def _apply_scope_preloaded_spatial_index(self) -> bool:
-        return widget_apply_scope_preloaded_spatial_index(self)
-
-    def _finalize_scope_preload_worker_refs(self):
-        thread = getattr(self, "_scope_preload_thread", None)
-        if thread is not None:
-            try:
-                if thread.isRunning():
-                    return
-            except Exception:
-                log_suppressed_exception(__name__, "WidgetBootstrapTerrainMixin._finalize_scope_preload_worker_refs")
-        self._scope_preload_thread = None
-        self._scope_preload_worker = None
-
-    def _cleanup_scope_preload_worker(self):
-        thread = getattr(self, "_scope_preload_thread", None)
-        if thread is None:
-            self._finalize_scope_preload_worker_refs()
-            return
-        try:
-            thread.finished.connect(self._finalize_scope_preload_worker_refs)
-        except Exception:
-            log_suppressed_exception(__name__, "WidgetBootstrapTerrainMixin._cleanup_scope_preload_worker")
-        try:
-            if thread.isRunning():
-                thread.quit()
-                return
-        except Exception:
-            log_suppressed_exception(__name__, "WidgetBootstrapTerrainMixin._cleanup_scope_preload_worker")
-        self._finalize_scope_preload_worker_refs()
-
-    def _on_scope_preload_progress(self, payload):
-        if not isinstance(payload, dict):
-            return
-        pct = max(0.0, min(100.0, float(payload.get("percent", 0.0))))
-        msg = str(payload.get("message", "scope preload")).strip() or "scope preload"
-        stage = str(payload.get("stage", "")).strip()
-        self._scope_preload_status(f"{msg} ({int(round(pct))}%)")
-        last_pct = float(getattr(self, "_scope_preload_last_progress_pct", -1.0))
-        if abs(pct - last_pct) >= 1.0 or pct in (0.0, 100.0):
-            self._scope_preload_last_progress_pct = pct
-            append_perf_event(
-                "scope_preload_progress",
-                percent=float(pct),
-                stage=stage,
-                message=msg,
-                delta_ms_boot=self._boot_delta_ms(),
-            )
-
-    def _on_scope_preload_ready(self, payload):
-        return widget_on_scope_preload_ready(self, payload)
-
-    def _on_scope_preload_error(self, message: str):
-        self._scope_preload_started = False
-        self._scope_preload_in_progress = False
-        self._scope_preload_failed = True
-        self._scope_preload_ready = False
-        self._scope_preload_pending_activation = False
-        self._scope_preload_sorted_indices = None
-        self._scope_preload_offsets = None
-        self._scope_preload_indices_path = ""
-        self._scope_preload_offsets_path = ""
-        msg = str(message or "unknown preload error")
-        print(f"[AstroWidget] Scope preload error: {msg}")
-        self._scope_preload_status(f"error: {msg}", keep_seconds=20.0)
-        append_perf_event("scope_preload_error", message=msg, delta_ms_boot=self._boot_delta_ms())
-        self._scope_preload_rows = 0
-        self._refresh_scope_data_state(reason="preload_error")
-        self._cleanup_scope_preload_worker()
-
-    def _start_scope_full_preload_async(self, reason: str = "runtime", force_rebuild: bool = False):
-        return widget_start_scope_full_preload_async(self, reason, force_rebuild)
 
     def _create_startup_placeholder(self):
         if hasattr(self, "_startup_placeholder"):
@@ -414,91 +271,25 @@ class WidgetBootstrapTerrainMixin:
     def _start_catalog_loader_async(self, reason: str = "runtime"):
         if bool(getattr(self, "_catalog_bootstrap_started", False)):
             return
-        np_ra = getattr(self, "np_ra", None)
-        np_dec = getattr(self, "np_dec", None)
-        np_mag = getattr(self, "np_mag", None)
-        np_r = getattr(self, "np_r", None)
-        np_g = getattr(self, "np_g", None)
-        np_b = getattr(self, "np_b", None)
-        np_bp_rp = getattr(self, "np_bp_rp", None)
-        subset_only = bool(getattr(self, "_catalog_loaded_subset_only", False))
-        try:
-            existing_rows = int(len(np_ra)) if np_ra is not None else 0
-        except Exception:
-            existing_rows = 0
-        has_consistent_arrays = (
-            np_ra is not None
-            and np_dec is not None
-            and np_mag is not None
-            and np_r is not None
-            and np_g is not None
-            and np_b is not None
-            and np_bp_rp is not None
-            and existing_rows > 0
-            and existing_rows == int(len(np_dec)) == int(len(np_mag))
-        )
-        # With StarDataCoordinator refactor active, keep current in-memory catalog
-        # and skip legacy worker source probing.
-        if has_consistent_arrays and (not subset_only) and existing_rows >= 5000:
-            self._catalog_bootstrap_started = True
-            print(
-                "[AstroWidget] Star catalog loader skipped: using in-memory "
-                f"catalog rows={existing_rows} (reason={reason})"
-            )
-            try:
-                existing_named = getattr(self, "celestial_objects", [])
-                self._on_catalog_ready(
-                    existing_named,
-                    np_ra,
-                    np_dec,
-                    np_mag,
-                    np_r,
-                    np_g,
-                    np_b,
-                    np_bp_rp,
-                )
-            except Exception as e:
-                print(f"[AstroWidget] In-memory catalog finalize failed: {e}")
-            return
         self._catalog_bootstrap_started = True
-        self._catalog_thread = QThread()
-        self._catalog_worker = CatalogLoaderWorker()
-        self._catalog_worker.moveToThread(self._catalog_thread)
-        self._catalog_worker.catalog_ready.connect(self._on_catalog_ready)
-        self._catalog_thread.started.connect(lambda: self._catalog_worker.load(self._stars_catalog_dir))
-        self._catalog_thread.start()
-        try:
-            self._catalog_thread.setPriority(QThread.LowPriority)
-        except Exception:
-            log_suppressed_exception(__name__, "WidgetBootstrapTerrainMixin._start_catalog_loader_async")
-        print(f"[AstroWidget] Star catalog loading in background... (reason={reason})")
-
-    def _try_start_catalog_loader_deferred(self):
-        if bool(getattr(self, "_catalog_bootstrap_started", False)):
-            return
-        stage = str(getattr(self, "scene_load_stage", "boot"))
-        if stage == "scene_ready":
-            self._start_catalog_loader_async(reason="defer_after_scene_ready")
-            return
-        elapsed = float(time.perf_counter() - float(getattr(self, "_catalog_defer_t0", 0.0)))
-        # Hard safety valve if horizon never reaches scene_ready.
-        if elapsed >= 300.0:
-            self._start_catalog_loader_async(reason="defer_hard_timeout")
-            return
-        self._schedule_lifecycle_callback(
-            15_000, self._try_start_catalog_loader_deferred
+        coordinator = getattr(self, "star_data_coordinator", None)
+        if coordinator is not None:
+            coordinator.load_general_tile()
+        print(
+            "[AstroWidget] Catalog request delegated to compute process "
+            f"(reason={reason})."
         )
 
     def _build_horizon_bake_job(self) -> dict:
         from TerraLab.common.utils import get_config_value
         from TerraLab.config import ConfigManager
-        from TerraLab.terrain.visibility_range import TerrainRangeSettings
+        from TerraLab.data.visibility_range import TerrainRangeSettings
         import uuid
         try:
             n_bands = int(get_config_value("horizon_quality", 20))
         except Exception:
             n_bands = 20
-        from TerraLab.terrain.ray_precision import normalize_ray_step_deg
+        from TerraLab.data.ray_precision import normalize_ray_step_deg
         ray_step_deg = normalize_ray_step_deg(
             get_config_value("horizon_ray_step_deg", 0.5)
         )
@@ -529,7 +320,7 @@ class WidgetBootstrapTerrainMixin:
         }
 
     def _begin_horizon_bake(self):
-        from TerraLab.terrain.ray_precision import ray_count
+        from TerraLab.data.ray_precision import ray_count
 
         self.terrain_coordinator.abort_current_job()
         self._active_horizon_job_id = None

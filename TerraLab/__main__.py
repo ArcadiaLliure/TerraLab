@@ -24,10 +24,17 @@ def build_parser() -> argparse.ArgumentParser:
 def run() -> int:
     """Construct and run the GUI after command-line parsing has completed."""
 
-    from PyQt5.QtCore import Qt
-    from PyQt5.QtWidgets import QApplication, QMessageBox
+    from PyQt5.QtCore import Qt, QTimer
+    from PyQt5.QtWidgets import (
+        QApplication,
+        QLabel,
+        QMessageBox,
+        QVBoxLayout,
+        QWidget,
+    )
 
     from TerraLab.common.timestamped_print import enable_timestamped_print
+    from TerraLab.runtime.supervisor import RuntimeSupervisor
 
     enable_timestamped_print()
     QApplication.setAttribute(
@@ -46,32 +53,78 @@ def run() -> int:
     apply_onboarding_theme(app)
     windows: dict[str, object] = {}
     crash_handle = None
+    runtime = RuntimeSupervisor(app)
+    setattr(app, "terralab_runtime", runtime)
+    runtime.start()
+    app.aboutToQuit.connect(runtime.stop)
+
+    def show_startup_shell() -> None:
+        if "startup" in windows:
+            return
+        shell = QWidget()
+        shell.setObjectName("startupShell")
+        shell.setWindowTitle("TerraLab")
+        shell.setStyleSheet(
+            "#startupShell { background: #02040a; color: #f1cd88; }"
+        )
+        layout = QVBoxLayout(shell)
+        label = QLabel("TERRALAB")
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet(
+            "color: #f1cd88; font-size: 28px; font-weight: 700;"
+        )
+        layout.addWidget(label)
+        windows["startup"] = shell
+        shell.showFullScreen()
 
     def show_main_window() -> None:
         nonlocal crash_handle
-        if "main" in windows:
+        if "main" in windows or windows.get("main_loading"):
             return
-        try:
-            library = ensure_data_library_for_gui()
-        except Exception as exc:
-            QMessageBox.critical(
-                None,
-                "TerraLab",
-                "No s'ha pogut preparar la biblioteca de dades.\n\n"
-                f"{exc}",
-            )
-            app.quit()
-            return
+        windows["main_loading"] = True
+        show_startup_shell()
 
-        if crash_handle is None:
-            crash_log = library.layout(create=True)["logs"] / "terralab_crash.log"
-            crash_handle = crash_log.open("a", encoding="utf-8")
-            faulthandler.enable(crash_handle)
+        def finish_main_window() -> None:
+            nonlocal crash_handle
+            try:
+                library = ensure_data_library_for_gui()
+            except Exception as exc:
+                windows.pop("main_loading", None)
+                QMessageBox.critical(
+                    None,
+                    "TerraLab",
+                    "No s'ha pogut preparar la biblioteca de dades.\n\n"
+                    f"{exc}",
+                )
+                app.quit()
+                return
 
-        main_window = TerraLabMainWindow()
-        windows["main"] = main_window
-        main_window.show()
-        app.setQuitOnLastWindowClosed(True)
+            if crash_handle is None:
+                crash_log = (
+                    library.layout(create=True)["logs"]
+                    / "terralab_crash.log"
+                )
+                crash_handle = crash_log.open("a", encoding="utf-8")
+                faulthandler.enable(crash_handle)
+
+            main_window = TerraLabMainWindow()
+            windows["main"] = main_window
+            windows.pop("main_loading", None)
+            main_window.showFullScreen()
+            main_window.raise_()
+            main_window.activateWindow()
+            app.setQuitOnLastWindowClosed(True)
+
+            def retire_startup_shell() -> None:
+                shell = windows.pop("startup", None)
+                if shell is not None:
+                    shell.close()
+
+            QTimer.singleShot(0, retire_startup_shell)
+
+        # Give Qt one event-loop turn to expose the fullscreen shell before
+        # any compatibility dialog or library inspection can run.
+        QTimer.singleShot(0, finish_main_window)
 
     first_run_manager = FirstRunManager()
     first_run_manager.prepare_config()
@@ -97,6 +150,7 @@ def run() -> int:
             show_main_window()
         return int(app.exec_())
     finally:
+        runtime.finish_shutdown(2_000)
         if crash_handle is not None:
             faulthandler.disable()
             crash_handle.close()

@@ -8,17 +8,13 @@ import time
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
-from PyQt5.QtCore import QThread, QTimer, QUrl
+from PyQt5.QtCore import QUrl
 from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import QInputDialog, QMessageBox
 
 from TerraLab.common.exception_reporting import log_suppressed_exception
-from TerraLab.common.deprecation_registry import emit_deprecation_warning
-from TerraLab.common.perf_events import append_perf_event
 from TerraLab.common.utils import (
     getTraduction,
-    get_base_dir,
     get_config_value,
     set_config_value,
 )
@@ -27,7 +23,6 @@ from TerraLab.ui.design_system import (
     CONTROL_PANEL_STYLESHEET,
 )
 from TerraLab.ui.onboarding_dialogs import AssetOnboardingDialog
-from TerraLab.ui.workers.catalog_loader import CatalogLoaderWorker
 
 
 def _load_gaia_state_from_json(path: Path) -> Optional[dict]:
@@ -163,128 +158,6 @@ def _find_pending_gaia_state(widget) -> Optional[dict]:
     return None
 
 
-def widget_apply_scope_preloaded_spatial_index(widget):
-    self = widget
-    if not bool(getattr(self, "_scope_preload_ready", False)):
-        return False
-    if bool(getattr(self, "_catalog_loaded_subset_only", False)):
-        return False
-    sorted_indices = getattr(self, "_scope_preload_sorted_indices", None)
-    offsets = getattr(self, "_scope_preload_offsets", None)
-    if sorted_indices is None or offsets is None:
-        idx_path = str(getattr(self, "_scope_preload_indices_path", "") or "")
-        off_path = str(getattr(self, "_scope_preload_offsets_path", "") or "")
-        if (
-            idx_path
-            and off_path
-            and os.path.isfile(idx_path)
-            and os.path.isfile(off_path)
-        ):
-            try:
-                sorted_indices = np.load(
-                    idx_path, mmap_mode="r", allow_pickle=False
-                )
-                offsets = np.load(off_path, mmap_mode="r", allow_pickle=False)
-                self._scope_preload_sorted_indices = sorted_indices
-                self._scope_preload_offsets = offsets
-            except Exception as exc:
-                print(f"[AstroWidget] Scope preload mmap attach failed: {exc}")
-                return False
-    if sorted_indices is None or offsets is None:
-        return False
-    stars_renderer = getattr(
-        getattr(self.canvas, "sky_renderer", None), "stars_renderer", None
-    )
-    if stars_renderer is None:
-        return False
-    ra_all = getattr(self, "np_ra", None)
-    dec_all = getattr(self, "np_dec", None)
-    if ra_all is None or dec_all is None:
-        return False
-    preload_rows = int(getattr(self, "_scope_preload_rows", 0) or 0)
-    if preload_rows > 0 and preload_rows != int(len(ra_all)):
-        return False
-    try:
-        key = stars_renderer._catalog_array_key(ra_all, dec_all)
-        stars_renderer.apply_scope_spatial_index_payload(
-            key, sorted_indices, offsets
-        )
-        self._scope_index_loaded_mag_cap = float(
-            max(
-                float(getattr(self, "_scope_index_loaded_mag_cap", 0.0)),
-                float(getattr(self, "_scope_preload_loaded_max_mag", 0.0)),
-            )
-        )
-        return True
-    except Exception as exc:
-        print(f"[AstroWidget] Scope preload apply failed: {exc}")
-        return False
-
-
-def widget_on_scope_preload_ready(widget, payload):
-    self = widget
-    self._scope_preload_in_progress = False
-    self._scope_preload_ready = True
-    self._scope_preload_failed = False
-    self._scope_preload_wait_logged = False
-    self._scope_preload_cache_path = str(payload.get("cache_path", "") or "")
-    self._scope_preload_dataset_signature = str(
-        payload.get("dataset_signature", "") or ""
-    )
-    self._scope_preload_loaded_max_mag = float(
-        payload.get("loaded_max_mag", 0.0) or 0.0
-    )
-    self._scope_preload_sorted_indices = payload.get("sorted_indices")
-    self._scope_preload_offsets = payload.get("offsets")
-    self._scope_preload_indices_path = str(
-        payload.get("indices_path", "") or ""
-    )
-    self._scope_preload_offsets_path = str(
-        payload.get("offsets_path", "") or ""
-    )
-    self._scope_preload_rows = int(payload.get("rows", 0) or 0)
-    rows = int(payload.get("rows", 0) or 0)
-    cached = bool(payload.get("cached", False))
-    print(
-        f"[AstroWidget] Scope preload ready: rows={rows} "
-        f"max_mag={self._scope_preload_loaded_max_mag:.2f} cached={cached}"
-    )
-    self._scope_preload_status(
-        f"ready ({rows} stars, max {self._scope_preload_loaded_max_mag:.2f})",
-        keep_seconds=20.0,
-    )
-    append_perf_event(
-        "scope_preload_ready",
-        rows=rows,
-        loaded_max_mag=float(self._scope_preload_loaded_max_mag),
-        cached=bool(cached),
-        delta_ms_boot=self._boot_delta_ms(),
-    )
-    self._apply_scope_preloaded_spatial_index()
-    self._refresh_scope_data_state(reason="preload_ready")
-    if bool(getattr(self, "_scope_preload_pending_activation", False)) or bool(
-        getattr(
-            getattr(self, "canvas", None), "scope_mode_enabled", lambda: False
-        )()
-    ):
-        append_perf_event(
-            "scope_activation_ready", delta_ms_boot=self._boot_delta_ms()
-        )
-    self._cleanup_scope_preload_worker()
-    if bool(getattr(self, "_scope_preload_pending_activation", False)):
-        if not bool(
-            getattr(
-                getattr(self, "canvas", None),
-                "scope_mode_enabled",
-                lambda: False,
-            )()
-        ):
-            self._scope_preload_pending_activation = False
-            QTimer.singleShot(0, self.activate_scope_mode)
-        else:
-            self._scope_preload_pending_activation = False
-
-
 def widget_maybe_resume_pending_gaia_download(widget):
     self = widget
     if bool(getattr(self, "_gaia_resume_prompt_shown", False)):
@@ -334,110 +207,17 @@ def widget_maybe_resume_pending_gaia_download(widget):
 
 
 def widget_reload_star_catalog_async(widget):
-    """DEPRECATED: useu StarDataCoordinator.load_general_tile()."""
-    emit_deprecation_warning(
-        "TerraLab.ui.widget_misc_helpers.widget_reload_star_catalog_async",
-        "TerraLab.data.star_data_coordinator.StarDataCoordinator.load_general_tile",
-    )
-    self = widget
-    """Reload Gaia catalog after onboarding import without requiring app restart."""
-    try:
-        old_thread = getattr(self, "_catalog_thread", None)
-        if old_thread is not None and old_thread.isRunning():
-            old_thread.quit()
-            old_thread.finished.connect(old_thread.deleteLater)
-    except Exception:
-        log_suppressed_exception(__name__, "widget_reload_star_catalog_async")
-    _gaia_catalog_dir = self.runtime_layout.get(
-        "data_gaia", Path(get_base_dir()) / "data" / "gaia"
-    )
-    self._stars_catalog_dir = str(Path(_gaia_catalog_dir).expanduser())
-    self._scope_preload_started = False
-    self._scope_preload_in_progress = False
-    self._scope_preload_ready = False
-    self._scope_preload_failed = False
-    self._scope_preload_wait_logged = False
-    self._scope_preload_sorted_indices = None
-    self._scope_preload_offsets = None
-    self._scope_preload_indices_path = ""
-    self._scope_preload_offsets_path = ""
-    self._scope_preload_rows = 0
-    self._scope_preload_loaded_max_mag = 0.0
-    self._catalog_loaded_subset_only = False
-    self._scope_base_ra = None
-    self._scope_base_dec = None
-    self._scope_base_mag = None
-    self._scope_base_r = None
-    self._scope_base_g = None
-    self._scope_base_b = None
-    self._scope_base_bp_rp = None
-    self._scope_full_catalog_attached = False
-    self._refresh_scope_data_state(reason="catalog_reload")
-    self._cleanup_scope_preload_worker()
-    self._catalog_thread = QThread()
-    self._catalog_worker = CatalogLoaderWorker()
-    self._catalog_worker.moveToThread(self._catalog_thread)
-    self._catalog_worker.catalog_ready.connect(self._on_catalog_ready)
-    self._catalog_thread.started.connect(
-        lambda: self._catalog_worker.load(self._stars_catalog_dir)
-    )
-    self._catalog_thread.start()
-    try:
-        self._catalog_thread.setPriority(QThread.LowPriority)
-    except Exception:
-        log_suppressed_exception(__name__, "widget_reload_star_catalog_async")
-    print("[AstroWidget] Star catalog reloading in background...")
+    """Ask Compute to republish the newest immutable Gaia artifact."""
 
-
-def widget_on_scope_spatial_index_ready(
-    widget, catalog_key, sorted_indices, offsets, ready_mag_cap
-):
     self = widget
-    self._scope_index_loading = False
-    restart_warmup = False
-    retry_deeper = False
     try:
-        stars_renderer = getattr(
-            getattr(self.canvas, "sky_renderer", None), "stars_renderer", None
-        )
-        if stars_renderer is None:
-            return
-        current_key = stars_renderer._catalog_array_key(
-            getattr(self, "np_ra", None),
-            getattr(self, "np_dec", None),
-        )
-        if current_key != catalog_key:
-            append_perf_event(
-                "scope_deep_stale_discard",
-                reason="scope_index_catalog_key_mismatch",
-                delta_ms_boot=self._boot_delta_ms(),
-            )
-            stars_renderer.clear_scope_index_warmup(catalog_key)
-            restart_warmup = True
-        else:
-            stars_renderer.apply_scope_spatial_index_payload(
-                catalog_key, sorted_indices, offsets
-            )
-            self._scope_index_loaded_mag_cap = float(
-                max(0.0, float(ready_mag_cap))
-            )
-            self._refresh_scope_data_state(reason="scope_index_ready")
-            print(
-                "[AstroWidget] Scope spatial index ready "
-                f"(<= {float(ready_mag_cap):.2f} mag)."
-            )
-            self.canvas.update()
-            needed_mag_cap = float(self._scope_target_index_mag_cap())
-            retry_deeper = bool(
-                getattr(self, "_scope_index_rewarm_requested", False)
-            ) or (needed_mag_cap > self._scope_index_loaded_mag_cap + 0.05)
-    finally:
-        self._cleanup_scope_index_warmup()
-        self._scope_index_rewarm_requested = False
-    if restart_warmup:
-        self._ensure_scope_spatial_index_warmup()
-    elif retry_deeper:
-        QTimer.singleShot(0, self._ensure_scope_spatial_index_warmup)
+        self._gaia_manifest_path = self._resolve_gaia_manifest_path()
+        self._try_attach_star_data_coordinator(force_general_reload=True)
+        coordinator = getattr(self, "star_data_coordinator", None)
+        if coordinator is not None:
+            coordinator.load_general_tile()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        self._on_star_data_error(f"Gaia reload failed: {exc}")
 
 
 def widget_update_custom_theme(widget):

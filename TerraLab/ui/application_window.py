@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QCloseEvent, QKeyEvent
-from PyQt5.QtWidgets import QAction, QApplication, QMainWindow
+from PyQt5.QtWidgets import (
+    QAction,
+    QApplication,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+)
 
 from TerraLab.ui.astronomical_widget import AstronomicalWidget
 from TerraLab.ui.design_system import apply_onboarding_theme
@@ -26,6 +32,7 @@ class TerraLabMainWindow(QMainWindow):
         self.viewer = AstronomicalWidget(parent=self, frameless=False)
         self.setCentralWidget(self.viewer)
         self._build_application_menu()
+        self._build_runtime_status()
 
     def _build_application_menu(self) -> None:
         menu_bar = self.menuBar()
@@ -41,6 +48,53 @@ class TerraLabMainWindow(QMainWindow):
         onboarding_action.triggered.connect(self.open_onboarding)
         help_menu.addAction(onboarding_action)
         self.onboarding_action = onboarding_action
+
+    def _build_runtime_status(self) -> None:
+        self._failed_worker_role = ""
+        self.runtime_status_label = QLabel("", self)
+        self.runtime_retry_button = QPushButton("Reintentar", self)
+        self.runtime_retry_button.clicked.connect(
+            self._retry_failed_worker
+        )
+        status = self.statusBar()
+        status.addWidget(self.runtime_status_label, 1)
+        status.addPermanentWidget(self.runtime_retry_button)
+        status.hide()
+        app = QApplication.instance()
+        runtime = getattr(app, "terralab_runtime", None)
+        if runtime is None:
+            return
+        runtime.worker_unavailable.connect(
+            self._on_worker_unavailable
+        )
+        runtime.worker_ready.connect(self._on_worker_ready)
+
+    def _on_worker_unavailable(self, role: str, detail: str) -> None:
+        self._failed_worker_role = str(role)
+        summary = str(detail or "").strip().splitlines()
+        reason = summary[-1] if summary else "salida inesperada"
+        self.runtime_status_label.setText(
+            f"El proceso {role} no está disponible: {reason}"
+        )
+        self.statusBar().show()
+
+    def _on_worker_ready(self, role: str) -> None:
+        if str(role) != self._failed_worker_role:
+            return
+        self._failed_worker_role = ""
+        self.runtime_status_label.clear()
+        self.statusBar().hide()
+
+    def _retry_failed_worker(self) -> None:
+        role = self._failed_worker_role
+        if not role:
+            return
+        app = QApplication.instance()
+        runtime = getattr(app, "terralab_runtime", None)
+        if runtime is not None and runtime.retry(role):
+            self.runtime_status_label.setText(
+                f"Reiniciando el proceso {role}…"
+            )
 
     def open_onboarding(self) -> None:
         """Torna a obrir el viatge sense alterar la preferència de primer inici."""

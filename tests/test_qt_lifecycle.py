@@ -45,16 +45,31 @@ def test_astronomical_widget_can_close_and_rebuild_offscreen(
             assert widget.ephemeris_coordinator is not None
             assert widget.timer.isActive()
             assert widget._gaia_attach_timer.isActive()
+            bake_started = []
+            widget._begin_horizon_bake = (
+                lambda: bake_started.append(time.monotonic())
+            )
 
             deadline = time.monotonic() + 0.35
             while time.monotonic() < deadline:
                 app.processEvents()
                 time.sleep(0.005)
 
+            assert widget._deferred_controls_ready
+            assert not widget._startup_placeholder_visible
+            assert widget._startup_placeholder.isHidden()
+            assert bake_started == []
+
+            deadline = time.monotonic() + 0.35
+            while time.monotonic() < deadline and not bake_started:
+                app.processEvents()
+                time.sleep(0.005)
+            assert len(bake_started) == 1
+
             widget.close()
             app.processEvents()
-            assert not widget.terrain_coordinator.worker_thread.isRunning()
-            assert not widget.canvas._thread.isRunning()
+            assert not hasattr(widget.terrain_coordinator, "worker_thread")
+            assert not hasattr(widget.canvas, "_thread")
             closed_widgets.append(widget)
 
         deadline = time.monotonic() + 1.0
@@ -64,7 +79,7 @@ def test_astronomical_widget_can_close_and_rebuild_offscreen(
 
         assert all(widget._closing for widget in closed_widgets)
         assert all(
-            not widget.terrain_coordinator.worker_thread.isRunning()
+            not hasattr(widget.terrain_coordinator, "worker_thread")
             for widget in closed_widgets
         )
         survivors = [

@@ -8,21 +8,18 @@ import os
 import re
 import shutil
 import sys
-import threading
+import uuid
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
-import numpy as np
 from PyQt5.QtCore import (
     QObject,
     QProcess,
     QProcessEnvironment,
     Qt,
     QTimer,
-    QThread,
     QUrl,
     pyqtSignal,
-    pyqtSlot,
 )
 from PyQt5.QtGui import QDesktopServices, QFont
 from PyQt5.QtWidgets import (
@@ -53,6 +50,14 @@ from TerraLab.common.utils import (
     set_config_value,
 )
 from TerraLab.data.assets_manager import AssetManager
+from TerraLab.runtime.protocol import (
+    ARTIFACT_READY,
+    COMPUTE_REQUEST,
+    PROGRESS,
+    WORKER_ERROR,
+    Envelope,
+    envelope,
+)
 from TerraLab.ui.design_system import DIALOG_STYLESHEET
 
 _ASTRO_DIALOG_STYLE = """
@@ -182,112 +187,107 @@ def _keep_gaia_process_alive(
         log_suppressed_exception(__name__, "_keep_gaia_process_alive")
 
 
-class _AssetJobWorker(QObject):
-    progress = pyqtSignal(float, str)
-    completed = pyqtSignal(object)
-    failed = pyqtSignal(str)
-
-    def __init__(
-        self,
-        manager: AssetManager,
-        mode: str,
-        asset_id: str,
-        files: Optional[Iterable[str]] = None,
-        options: Optional[dict] = None,
-    ):
-        super().__init__()
-        self.manager = manager
-        self.mode = str(mode)
-        self.asset_id = str(asset_id)
-        self.files = list(files or [])
-        self.options = dict(options or {})
-        self._cancel_event = threading.Event()
-
-    def cancel(self) -> None:
-        self._cancel_event.set()
-
-    @pyqtSlot()
-    def run(self):
-        """Executa el metode run de la classe _AssetJobWorker.
-
-        Par?metres:
-        - Cap.
-
-        Retorna:
-        - None.
-        """
-
-        def _cb(percent: float, message: str):
-            self.progress.emit(float(percent), str(message))
-
-        try:
-            if self.mode == "download":
-                result = self.manager.download_and_prepare(
-                    self.asset_id,
-                    progress_callback=_cb,
-                    options=self.options,
-                    cancelled=self._cancel_event.is_set,
-                )
-            else:
-                result = self.manager.import_files(
-                    self.asset_id,
-                    self.files,
-                    progress_callback=_cb,
-                    options=self.options,
-                    cancelled=self._cancel_event.is_set,
-                )
-            self.completed.emit(result)
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
 class _CopernicusNodataProbeWorker(QObject):
-    """Run the advisory sea/NoData sample without blocking Qt's UI thread."""
+    """Thin UI client for the advisory sample executed by Compute."""
 
     completed = pyqtSignal(object, str, bool)
 
     def __init__(self, request: object) -> None:
         super().__init__()
         self.request = request
-        self._cancel_event = threading.Event()
+        self._request_id = f"copernicus-probe-{uuid.uuid4().hex}"
+        self._generation = 1
+        self._finished = False
+        app = QApplication.instance()
+        self._runtime = getattr(app, "terralab_runtime", None)
+        if self._runtime is not None:
+            self._runtime.message_received.connect(self._on_message)
+            self._runtime.worker_ready.connect(self._on_worker_ready)
+            self._runtime.worker_unavailable.connect(
+                self._on_worker_unavailable
+            )
 
     def cancel(self) -> None:
-        self._cancel_event.set()
+        if self._finished:
+            return
+        self._finish(None, "", True)
 
-    @pyqtSlot()
     def run(self) -> None:
-        if self._cancel_event.is_set():
-            self.completed.emit(None, "", True)
+        if self._finished:
             return
-        try:
-            from TerraLab.data.copernicus import (
-                ArcGISImageServerClient,
+        if self._runtime is None:
+            self._finish(
+                None,
+                "El proceso Compute no está disponible.",
+                False,
+            )
+            return
+        sent = self._runtime.send(
+            "compute",
+            envelope(
+                COMPUTE_REQUEST,
+                {
+                    "operation": "copernicus_probe",
+                    "request": self.request.to_dict(),
+                },
+                request_id=self._request_id,
+                generation=self._generation,
+            ),
+        )
+        if not sent:
+            return
+
+    def _on_worker_ready(self, role: str) -> None:
+        if role == "compute" and not self._finished:
+            self.run()
+
+    def _on_worker_unavailable(self, role: str, reason: str) -> None:
+        if role == "compute" and not self._finished:
+            self._finish(None, str(reason), False)
+
+    def _on_message(self, role: str, message: Envelope) -> None:
+        if (
+            role != "compute"
+            or self._finished
+            or message.request_id != self._request_id
+            or message.generation != self._generation
+        ):
+            return
+        if message.kind == ARTIFACT_READY:
+            self._finish(message.payload.get("value"), "", False)
+        elif message.kind == WORKER_ERROR:
+            self._finish(
+                None,
+                str(message.payload.get("message", "Error en Compute")),
+                False,
             )
 
-            # This is an advisory 128 × 128 request.  Keep its timeout well
-            # below the fragment-download timeout while still allowing a slow
-            # public service to answer.
-            client = ArcGISImageServerClient(
-                timeout=(8.0, 30.0),
-                max_retries=1,
-            )
-            result = client.estimate_nodata_fraction(
-                self.request,
-                sample_size=128,
-                cancelled=self._cancel_event.is_set,
-            )
-        except Exception as exc:
-            self.completed.emit(
-                None,
-                "" if self._cancel_event.is_set() else str(exc),
-                self._cancel_event.is_set(),
-            )
+    def _finish(
+        self, result: object, error_message: str, cancelled: bool
+    ) -> None:
+        if self._finished:
             return
-        self.completed.emit(result, "", self._cancel_event.is_set())
+        self._finished = True
+        self._disconnect_runtime()
+        self.completed.emit(result, error_message, cancelled)
+
+    def _disconnect_runtime(self) -> None:
+        runtime = self._runtime
+        if runtime is None:
+            return
+        for signal, callback in (
+            (runtime.message_received, self._on_message),
+            (runtime.worker_ready, self._on_worker_ready),
+            (runtime.worker_unavailable, self._on_worker_unavailable),
+        ):
+            try:
+                signal.disconnect(callback)
+            except (TypeError, RuntimeError):
+                pass
 
 
 class _AssetBackgroundJob(QObject):
-    """Application-owned asset task whose UI can be detached and restored."""
+    """Application-owned handle for an asset task executed by Compute."""
 
     progress = pyqtSignal(float, str)
     completed = pyqtSignal(object)
@@ -309,30 +309,98 @@ class _AssetBackgroundJob(QObject):
         self.percent = 0.0
         self.message = "Preparant tasca en segon pla..."
         self.running = True
-        self.thread = QThread()
-        self.worker = _AssetJobWorker(
-            manager,
-            mode=self.mode,
-            asset_id=self.asset_id,
-            files=files,
-            options=options,
-        )
-        self.worker.moveToThread(self.thread)
-        self.thread.started.connect(self.worker.run)
-        self.worker.progress.connect(self._on_progress)
-        self.worker.completed.connect(self._on_completed)
-        self.worker.failed.connect(self._on_failed)
-        self.worker.completed.connect(self.thread.quit)
-        self.worker.failed.connect(self.thread.quit)
-        self.thread.finished.connect(self.worker.deleteLater)
-        self.thread.finished.connect(self.thread.deleteLater)
-        self.thread.finished.connect(self._on_thread_finished)
+        self.started = False
+        self._files = tuple(str(value) for value in (files or ()))
+        self._options = dict(options or {})
+        self._job_id = f"asset-{uuid.uuid4().hex}"
+        self._request_id = self._job_id
+        self._generation = 1
+        app = QApplication.instance()
+        self._runtime = getattr(app, "terralab_runtime", None)
+        if self._runtime is not None:
+            self._runtime.message_received.connect(self._on_message)
+            self._runtime.worker_ready.connect(self._on_worker_ready)
+            self._runtime.worker_unavailable.connect(
+                self._on_worker_unavailable
+            )
 
     def start(self) -> None:
-        self.thread.start()
+        if self.started or not self.running:
+            return
+        self.started = True
+        if self._runtime is None:
+            self._on_failed("El proceso Compute no está disponible.")
+            return
+        self._dispatch()
 
     def cancel(self) -> None:
-        self.worker.cancel()
+        if not self.running or self._runtime is None:
+            return
+        self._runtime.send(
+            "compute",
+            envelope(
+                COMPUTE_REQUEST,
+                {
+                    "operation": "asset_cancel",
+                    "job_id": self._job_id,
+                },
+                request_id=f"{self._request_id}-cancel",
+                generation=self._generation,
+            ),
+        )
+
+    def _dispatch(self) -> bool:
+        if self._runtime is None:
+            return False
+        return bool(
+            self._runtime.send(
+                "compute",
+                envelope(
+                    COMPUTE_REQUEST,
+                    {
+                        "operation": "asset_job",
+                        "job_id": self._job_id,
+                        "library_root": str(self.manager.library.root),
+                        "mode": self.mode,
+                        "asset_id": self.asset_id,
+                        "files": list(self._files),
+                        "options": dict(self._options),
+                    },
+                    request_id=self._request_id,
+                    generation=self._generation,
+                ),
+            )
+        )
+
+    def _on_worker_ready(self, role: str) -> None:
+        if role == "compute" and self.started and self.running:
+            self._dispatch()
+
+    def _on_worker_unavailable(self, role: str, reason: str) -> None:
+        if role == "compute" and self.running:
+            self._on_failed(str(reason))
+
+    def _on_message(self, role: str, message: Envelope) -> None:
+        if (
+            role != "compute"
+            or not self.running
+            or message.request_id != self._request_id
+            or message.generation != self._generation
+            or message.payload.get("operation") != "asset_job"
+        ):
+            return
+        if message.kind == PROGRESS:
+            value = message.payload.get("value", {})
+            self._on_progress(
+                float(value.get("percent", -1.0)),
+                str(value.get("message", "")),
+            )
+        elif message.kind == ARTIFACT_READY:
+            self._on_completed(message.payload.get("value"))
+        elif message.kind == WORKER_ERROR:
+            self._on_failed(
+                str(message.payload.get("message", "Error en Compute"))
+            )
 
     def _on_progress(self, percent: float, message: str) -> None:
         self.percent = float(percent)
@@ -344,13 +412,29 @@ class _AssetBackgroundJob(QObject):
         self.percent = 100.0
         self.message = "Dades preparades correctament."
         self.completed.emit(result)
+        self._retire()
 
     def _on_failed(self, error_message: str) -> None:
         self.running = False
         self.message = str(error_message)
         self.failed.emit(self.message)
+        self._retire()
 
-    def _on_thread_finished(self) -> None:
+    def _retire(self) -> None:
+        runtime = self._runtime
+        if runtime is not None:
+            for signal, callback in (
+                (runtime.message_received, self._on_message),
+                (runtime.worker_ready, self._on_worker_ready),
+                (
+                    runtime.worker_unavailable,
+                    self._on_worker_unavailable,
+                ),
+            ):
+                try:
+                    signal.disconnect(callback)
+                except (TypeError, RuntimeError):
+                    pass
         if _BACKGROUND_ASSET_JOBS.get(self.key) is self:
             _BACKGROUND_ASSET_JOBS.pop(self.key, None)
 
@@ -397,11 +481,8 @@ class AssetOnboardingDialog(QDialog):
         self.asset_id = str(asset_id)
         self.spec = self.manager.get_spec(self.asset_id)
         self._completed = False
-        self._thread = None
-        self._worker = None
         self._job: Optional[_AssetBackgroundJob] = None
         self._job_detached = False
-        self._copernicus_probe_thread: Optional[QThread] = None
         self._copernicus_probe_worker: Optional[
             _CopernicusNodataProbeWorker
         ] = None
@@ -669,8 +750,6 @@ class AssetOnboardingDialog(QDialog):
 
     def _bind_asset_job(self, job: _AssetBackgroundJob) -> None:
         self._job = job
-        self._thread = job.thread
-        self._worker = job.worker
         job.progress.connect(self._on_progress)
         job.completed.connect(self._on_completed)
         job.failed.connect(self._on_failed)
@@ -689,8 +768,6 @@ class AssetOnboardingDialog(QDialog):
             except (TypeError, RuntimeError):
                 pass
         self._job = None
-        self._thread = None
-        self._worker = None
 
     def _restore_active_download(self) -> None:
         """Reconnect a reopened dialog to the application-owned task."""
@@ -1134,9 +1211,12 @@ class AssetOnboardingDialog(QDialog):
         nodata_fraction = None
         if result is not None:
             try:
-                nodata_fraction = float(
-                    getattr(result, "fraction", result)
+                value = (
+                    result.get("fraction")
+                    if isinstance(result, dict)
+                    else getattr(result, "fraction", result)
                 )
+                nodata_fraction = float(value)
             except (TypeError, ValueError):
                 nodata_fraction = None
         self.lbl_status.setText(
@@ -1152,28 +1232,16 @@ class AssetOnboardingDialog(QDialog):
         ):
             self._launch_copernicus_download(request)
 
-    def _on_copernicus_probe_thread_finished(self) -> None:
-        self._copernicus_probe_worker = None
-        self._copernicus_probe_thread = None
-
     def _start_copernicus_preflight(
         self,
         request: object,
         estimate: object,
     ) -> None:
-        thread = self._copernicus_probe_thread
-        if thread is not None and thread.isRunning():
+        current = self._copernicus_probe_worker
+        if current is not None and not current._finished:
             return
-        thread = QThread(self)
         worker = _CopernicusNodataProbeWorker(request)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
         worker.completed.connect(self._on_copernicus_probe_completed)
-        worker.completed.connect(thread.quit)
-        thread.finished.connect(worker.deleteLater)
-        thread.finished.connect(self._on_copernicus_probe_thread_finished)
-        thread.finished.connect(thread.deleteLater)
-        self._copernicus_probe_thread = thread
         self._copernicus_probe_worker = worker
         self._copernicus_probe_context = (request, estimate)
         self._set_running_controls(allow_background=False)
@@ -1182,7 +1250,7 @@ class AssetOnboardingDialog(QDialog):
         self.lbl_status.setText(
             "Comprovant cobertura real de mar i NoData en segon pla…"
         )
-        thread.start()
+        worker.run()
 
     def _auto_download_copernicus_orthophoto(self) -> None:
         from TerraLab.data.copernicus import (
@@ -1462,26 +1530,9 @@ class AssetOnboardingDialog(QDialog):
             )
         self._gaia_tap_out_buffer = ""
         self._gaia_tap_process = process
+        # Startup completion/failure is delivered by QProcess signals above.
+        # Waiting here can freeze the entire UI for up to five seconds.
         process.start()
-        if not process.waitForStarted(5000):
-            err_txt = str(
-                process.errorString()
-                or "No es pot iniciar el proces Gaia TAP."
-            )
-            self._cleanup_gaia_tap_process()
-            self.progress.setRange(0, 100)
-            self.lbl_status.setText("Error en iniciar Gaia TAP.")
-            self.btn_open_source.setEnabled(True)
-            self.btn_attach.setEnabled(True)
-            self.btn_attach_folder.setEnabled(True)
-            self.btn_auto_download.setEnabled(self._supports_auto_download())
-            self.btn_close.setEnabled(True)
-            self.btn_cancel.setVisible(False)
-            self.btn_background.setVisible(False)
-            QMessageBox.critical(
-                self, "TerraLab", f"{err_txt}\n\n{self._gaia_tap_log_hint()}"
-            )
-            return
 
     def _resolve_gaia_tap_log_path(self) -> Path:
         try:
@@ -1771,17 +1822,7 @@ class AssetOnboardingDialog(QDialog):
                 return
             if tile_all_path.stat().st_size <= 0:
                 return
-            try:
-                with np.load(tile_all_path, allow_pickle=False) as tile_npz:
-                    if "ra" in tile_npz:
-                        row_count = int(len(tile_npz["ra"]))
-                    elif "RA" in tile_npz:
-                        row_count = int(len(tile_npz["RA"]))
-                    else:
-                        row_count = 0
-                if row_count <= 0:
-                    return
-            except Exception:
+            if int(state.get("general_tile_star_count", 0) or 0) <= 0:
                 return
 
             self._gaia_visible_ready = True
@@ -2011,17 +2052,12 @@ class AssetOnboardingDialog(QDialog):
             start_immediately=False,
         )
         self._bind_asset_job(job)
-        if not job.thread.isRunning():
+        if not job.started:
             job.start()
 
     def _cancel_job(self) -> None:
-        probe_thread = getattr(self, "_copernicus_probe_thread", None)
         probe_worker = getattr(self, "_copernicus_probe_worker", None)
-        if (
-            probe_thread is not None
-            and probe_thread.isRunning()
-            and probe_worker is not None
-        ):
+        if probe_worker is not None and not probe_worker._finished:
             probe_worker.cancel()
             self.btn_cancel.setEnabled(False)
             self.lbl_status.setText(
@@ -2044,13 +2080,9 @@ class AssetOnboardingDialog(QDialog):
             QTimer.singleShot(3000, force_stop)
             return
         job = getattr(self, "_job", None)
-        worker = getattr(self, "_worker", None)
-        if job is None and worker is None:
+        if job is None:
             return
-        if job is not None:
-            job.cancel()
-        else:
-            worker.cancel()
+        job.cancel()
         self.btn_cancel.setEnabled(False)
         self.btn_background.setEnabled(False)
         self.lbl_status.setText(
@@ -2139,13 +2171,8 @@ class AssetOnboardingDialog(QDialog):
         Retorna:
         - None.
         """
-        probe_thread = getattr(self, "_copernicus_probe_thread", None)
         probe_worker = getattr(self, "_copernicus_probe_worker", None)
-        if (
-            probe_thread is not None
-            and probe_thread.isRunning()
-            and probe_worker is not None
-        ):
+        if probe_worker is not None and not probe_worker._finished:
             probe_worker.cancel()
             self.btn_cancel.setEnabled(False)
             self.lbl_status.setText(
@@ -2166,9 +2193,14 @@ class AssetOnboardingDialog(QDialog):
             try:
                 if proc.state() != QProcess.NotRunning:
                     proc.terminate()
-                    if not proc.waitForFinished(2000):
-                        proc.kill()
-                        proc.waitForFinished(2000)
+                    QTimer.singleShot(
+                        2_000,
+                        lambda process=proc: (
+                            process.kill()
+                            if process.state() != QProcess.NotRunning
+                            else None
+                        ),
+                    )
             except Exception:
                 log_suppressed_exception(__name__, "AssetOnboardingDialog.reject")
             self._cleanup_gaia_tap_process()

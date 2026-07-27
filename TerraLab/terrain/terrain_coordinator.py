@@ -13,6 +13,19 @@ from PyQt5.QtCore import QObject, QThread, pyqtSignal
 from TerraLab.terrain.worker import HorizonWorker
 
 
+def create_process_horizon_worker(
+    tiles_dir: str | None = None,
+    *,
+    quit_thread_on_shutdown: bool = False,
+) -> HorizonWorker:
+    """Create the domain worker for a process-owned execution context."""
+
+    return HorizonWorker(
+        tiles_dir=tiles_dir,
+        quit_thread_on_shutdown=quit_thread_on_shutdown,
+    )
+
+
 class TerrainCoordinator(QObject):
     """Coordina bake d'horitzo i perfils de preview/final."""
 
@@ -48,8 +61,8 @@ class TerrainCoordinator(QObject):
         self._shutdown_complete = False
 
         self._thread = QThread(self)
-        self._worker = HorizonWorker(
-            tiles_dir=tiles_dir,
+        self._worker = create_process_horizon_worker(
+            tiles_dir,
             quit_thread_on_shutdown=True,
         )
         self._worker.moveToThread(self._thread)

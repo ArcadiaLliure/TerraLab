@@ -1198,7 +1198,7 @@ def build_deferred_controls_ui(widget):
     self.slider_terrain_depth.setRange(1, 530)
     self.slider_terrain_depth.setSingleStep(1)
     self.slider_terrain_depth.setPageStep(10)
-    from TerraLab.terrain.visibility_range import (
+    from TerraLab.data.visibility_range import (
         TerrainRangeSettings,
         resolve_visibility_range,
     )
@@ -1234,7 +1234,7 @@ def build_deferred_controls_ui(widget):
     )
     h_rays.addWidget(self.lbl_terrain_ray_precision)
     self.slider_terrain_ray_precision = QSlider(Qt.Horizontal)
-    from TerraLab.terrain.ray_precision import (
+    from TerraLab.data.ray_precision import (
         DEFAULT_RAY_STEP_DEG,
         MAX_RAY_STEP_DEG,
         MIN_RAY_STEP_DEG,
@@ -1816,8 +1816,9 @@ def build_deferred_controls_ui(widget):
     # Apply Themes
     self.update_custom_theme()
     self._deferred_controls_ready = True
-    if getattr(self, "search_index", None):
-        self.build_search_index()
+    # The index starts empty by design, so conditioning bootstrap on it being
+    # truthy prevented the first Compute request and left the completer blank.
+    self.build_search_index()
     self._refresh_climate_status_indicator()
     self._refresh_stars_status_indicator()
     QTimer.singleShot(0, self._activate_checked_surface_layer_startup)

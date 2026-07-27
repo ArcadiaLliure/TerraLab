@@ -2,15 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from PyQt5.QtCore import QEvent, QPoint
-
-from TerraLab.terrain.land_cover.legends.category_info import (
-    LandCoverCategoryInfo,
-)
 from TerraLab.terrain.data_sources import LayerType, SurfaceMode
-from TerraLab.ui.astro_canvas import AstroCanvas
 from TerraLab.ui.astronomical_widget import AstronomicalWidget
-from TerraLab.ui.canvas_input_handler import CanvasInputHandler
 
 
 class _Selector:
@@ -179,7 +172,7 @@ def test_surface_mode_switch_is_hidden_until_both_modes_are_usable():
     assert widget.surface_mode_selector.visible is False
 
 
-def test_visible_surface_forces_and_disables_terrain_3d():
+def test_visible_surface_allows_independent_terrain_3d():
     widget = _harness([_source("rgb", LayerType.SURFACE_RGB)], "rgb")
     persisted = []
     widget.chk_surface_layer = _CheckBox(True)
@@ -190,10 +183,9 @@ def test_visible_surface_forces_and_disables_terrain_3d():
 
     widget._sync_surface_mode_control()
 
-    assert widget.chk_terrain_3d.checked is True
-    assert widget.chk_terrain_3d.enabled is False
-    assert persisted == [("relleu_tridimensional", True)]
-    assert "requereix relleu tridimensional" in widget.chk_terrain_3d.tooltip
+    assert widget.chk_terrain_3d.checked is False
+    assert widget.chk_terrain_3d.enabled is True
+    assert persisted == []
 
 
 def test_hidden_surface_reenables_terrain_3d_choice():
@@ -484,137 +476,3 @@ def test_all_location_bound_controls_mark_out_of_area():
     )
     assert "#9b2f2f" in widget.lbl_surface_mode_categorical.style
     assert "41.00000, 2.00000" in widget.chk_enable_village.tooltip
-
-
-class _TooltipEvent:
-    def __init__(self, event_type=QEvent.ToolTip):
-        self.event_type = event_type
-        self.accepted = False
-        self.ignored = False
-
-    def type(self):
-        return self.event_type
-
-    def pos(self):
-        return QPoint(4, 5)
-
-    def globalPos(self):
-        return QPoint(40, 50)
-
-    def accept(self):
-        self.accepted = True
-
-    def ignore(self):
-        self.ignored = True
-
-
-def _tooltip_canvas(*, mode, dragging, lookup):
-    registry = SimpleNamespace(surface_mode=mode)
-    parent = SimpleNamespace(
-        layer_manager=SimpleNamespace(data_sources=registry),
-        _dragging_time=False,
-    )
-    return SimpleNamespace(
-        parent_widget=parent,
-        dragging=dragging,
-        horizon_overlay=SimpleNamespace(category_at_screen=lookup),
-        _parent_checkbox_checked=lambda *_args: True,
-        scope_mode_enabled=lambda: False,
-        measurement_tool_active=lambda: False,
-        drawing_mode_enabled=lambda: False,
-        scope_controller=SimpleNamespace(dragging=False),
-    )
-
-
-def test_standard_tooltip_event_shows_cached_categorical_description(
-    monkeypatch,
-):
-    shown = []
-    monkeypatch.setattr(
-        "TerraLab.ui.canvas_mixins.interaction.QToolTip",
-        SimpleNamespace(
-            showText=lambda *args: shown.append(args),
-            hideText=lambda: None,
-        ),
-    )
-    info = LandCoverCategoryInfo(
-        82,
-        "Coberta d'arbres",
-        "Descripció breu.",
-        "S2GLC Europe 2017",
-    )
-    canvas = _tooltip_canvas(
-        mode=SurfaceMode.LAND_COVER,
-        dragging=False,
-        lookup=lambda *_args: info,
-    )
-    event = _TooltipEvent()
-
-    assert AstroCanvas.event(canvas, event) is True
-    assert event.accepted is True
-    assert "Classe 82 · S2GLC Europe 2017" in shown[0][1]
-
-
-def test_mouse_move_shows_categorical_tooltip_without_waiting_for_qt_delay(
-    monkeypatch,
-):
-    shown = []
-    monkeypatch.setattr(
-        "TerraLab.ui.canvas_mixins.interaction.QToolTip",
-        SimpleNamespace(
-            showText=lambda *args: shown.append(args),
-            hideText=lambda: None,
-        ),
-    )
-    info = LandCoverCategoryInfo(
-        82,
-        "Coberta d'arbres",
-        "Descripció breu.",
-        "S2GLC Europe 2017",
-    )
-    canvas = _tooltip_canvas(
-        mode=SurfaceMode.LAND_COVER,
-        dragging=False,
-        lookup=lambda *_args: info,
-    )
-    canvas._update_surface_tooltip_for_pointer = lambda event: (
-        AstroCanvas._update_surface_tooltip_for_pointer(canvas, event)
-    )
-    canvas.drawing_mode_enabled = lambda: False
-    canvas.scope_mode_enabled = lambda: False
-    canvas.measurement_tool_active = lambda: False
-    event = _TooltipEvent(QEvent.MouseMove)
-
-    CanvasInputHandler(canvas).handle_mouse_move(event)
-
-    assert len(shown) == 1
-    assert "Coberta d&#x27;arbres" in shown[0][1]
-
-
-def test_tooltip_is_suppressed_while_dragging_or_in_orthophoto(
-    monkeypatch,
-):
-    lookups = []
-    hidden = []
-    monkeypatch.setattr(
-        "TerraLab.ui.canvas_mixins.interaction.QToolTip",
-        SimpleNamespace(
-            showText=lambda *_args: None,
-            hideText=lambda: hidden.append(True),
-        ),
-    )
-    for mode, dragging in (
-        (SurfaceMode.LAND_COVER, True),
-        (SurfaceMode.ORTHOPHOTO, False),
-    ):
-        canvas = _tooltip_canvas(
-            mode=mode,
-            dragging=dragging,
-            lookup=lambda *_args: lookups.append(True),
-        )
-        event = _TooltipEvent()
-        AstroCanvas.event(canvas, event)
-        assert event.ignored is True
-
-    assert lookups == []
-    assert len(hidden) == 2

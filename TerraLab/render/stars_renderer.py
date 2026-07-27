@@ -1961,6 +1961,24 @@ class StarsRenderer:
         avg_alpha_u8 = float(np.mean(alpha_u8)) if len(alpha_u8) else 0.0
         halo_count = int(np.count_nonzero(halo_bin)) if len(halo_bin) else 0
 
+        if bool(extras.get("suppress_star_points", False)):
+            # Circumpolar mode owns the complete stellar appearance. Keep
+            # projected positions for picking, but never leave unmatched
+            # static dots on top of the trail layer.
+            return StarsRenderResult(
+                visible_indices=np.asarray(
+                    catalog_idx, dtype=np.int32
+                ),
+                visible_sx=np.asarray(sx, dtype=np.float32),
+                visible_sy=np.asarray(sy, dtype=np.float32),
+                total_in_view=total_in_view,
+                after_mag_cut=after_mag_cut,
+                after_bucket=after_bucket,
+                avg_radius=(
+                    float(np.mean(size_bin)) if len(size_bin) else 0.0
+                ),
+            )
+
         # -----------------------------
         # Paint
         # -----------------------------

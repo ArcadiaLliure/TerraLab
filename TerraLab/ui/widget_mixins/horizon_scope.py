@@ -4,22 +4,12 @@ from __future__ import annotations
 
 import time
 
-import os
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtWidgets import QLabel
 
-from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import getTraduction
-from TerraLab.data.catalogs.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
-from TerraLab.ui.widget_bootstrap_helpers import (
-    widget_ensure_scope_catalog_loaded,
-    widget_ensure_scope_spatial_index_warmup,
-    widget_on_catalog_ready,
-    widget_on_scope_extension_ready,
-)
 from TerraLab.ui.widget_controls_builder import build_deferred_controls_ui
 from TerraLab.ui.widget_misc_helpers import (
-    widget_on_scope_spatial_index_ready,
     widget_update_custom_theme,
 )
 
@@ -79,69 +69,33 @@ class WidgetHorizonScopeMixin:
             self.queue_horizon_preview(queued)
 
     def on_horizon_preview_ready(self, payload):
+        """Publish only the immutable preview descriptor from Compute."""
+
         if not isinstance(payload, dict):
             return
         job_id = str(payload.get("job_id", "") or "")
         if job_id and job_id != getattr(self, "_active_horizon_job_id", None):
             return
-        profile = payload.get("profile")
-        if profile is None:
-            return
-        if hasattr(self, "slider_terrain_depth"):
-            profile = self._profile_for_terrain_depth(
-                profile, self.slider_terrain_depth.value()
-            )
-        layer_defs = None
-        band_defs = getattr(profile, "_band_defs", None)
-        if band_defs is not None:
-            try:
-                from TerraLab.terrain.render.palette import generate_layer_defs
-                layer_defs = generate_layer_defs(band_defs)
-            except Exception as exc:
-                print(f"[AstroWidget] Warning: Could not generate preview layer_defs: {exc}")
-        if hasattr(self.canvas, "horizon_overlay"):
-            self.canvas.horizon_overlay.set_profile(profile, layer_defs=layer_defs)
-        if getattr(self, "scene_load_stage", "base_sky") != "scene_ready":
-            self._set_scene_load_stage("horizon_preview")
+        profile_path = str(payload.get("profile_path", "") or "")
+        if profile_path:
+            self._remote_terrain_profile_path = profile_path
+            if getattr(self, "scene_load_stage", "base_sky") != "scene_ready":
+                self._set_scene_load_stage("horizon_preview")
+            self.canvas.update()
 
-    def on_horizon_profile_ready(self, profile):
-        """Callback when background worker finishes baking horizon."""
+    def on_horizon_profile_ready(self, payload):
+        """Publish a completed immutable profile without opening it in UI."""
+
         self._start_catalog_loader_async(reason="horizon_ready")
-        if isinstance(profile, dict):
-            job_id = str(profile.get("job_id", "") or "")
+        if isinstance(payload, dict):
+            job_id = str(payload.get("job_id", "") or "")
             if job_id and job_id != getattr(self, "_active_horizon_job_id", None):
                 return
-            profile = profile.get("profile")
-        if profile is None:
-            return
-        self._full_horizon_profile = profile
-        requested_km = float(
-            getattr(self, "_pending_terrain_depth_km", None)
-            or (self.slider_terrain_depth.value() if hasattr(self, "slider_terrain_depth") else 0.0)
-        )
-        if requested_km > 0.0:
-            profile = self._profile_for_terrain_depth(profile, requested_km)
-        print(f"[AstroWidget] New Horizon Profile received! Bands: {len(profile.bands)}")
-        # Hide Loading Label
+            profile_path = str(payload.get("profile_path", "") or "")
+            if profile_path:
+                self._remote_terrain_profile_path = profile_path
         if hasattr(self, 'lbl_loading'):
             self.lbl_loading.hide()
-        # Build matching layer_defs from band_defs attached by the worker
-        layer_defs = None
-        band_defs = getattr(profile, '_band_defs', None)
-        if band_defs is not None:
-            try:
-                from TerraLab.terrain.render.palette import generate_layer_defs
-                layer_defs = generate_layer_defs(band_defs)
-            except Exception as e:
-                print(f"[AstroWidget] Warning: Could not generate layer_defs: {e}")
-        # Update Horizon Overlay (Background Mountains)
-        if hasattr(self.canvas, 'horizon_overlay'):
-            self.canvas.horizon_overlay.set_profile(profile, layer_defs=layer_defs)
-        # Update Village Overlay (Foreground Objects)
-        if hasattr(self.canvas, 'village'):
-             self.canvas.village.set_profile(profile)
-        # Refresh the UI altitude label now that the worker has safely initialized the DEM data
-        self.update_altitude_label()
         self._set_scene_load_stage("scene_ready")
         self.canvas.update()
 
@@ -160,7 +114,7 @@ class WidgetHorizonScopeMixin:
 
     def _update_terrain_ray_precision_label(self, slider_value):
         if hasattr(self, "lbl_terrain_ray_precision"):
-            from TerraLab.terrain.ray_precision import slider_to_ray_step
+            from TerraLab.data.ray_precision import slider_to_ray_step
 
             step = slider_to_ray_step(slider_value)
             value = f"{step:.3f}".rstrip("0").rstrip(".").replace(".", ",")
@@ -173,7 +127,7 @@ class WidgetHorizonScopeMixin:
             )
 
     def on_terrain_ray_precision_changed(self, slider_value):
-        from TerraLab.terrain.ray_precision import slider_to_ray_step
+        from TerraLab.data.ray_precision import slider_to_ray_step
 
         self._pending_terrain_ray_step_deg = slider_to_ray_step(slider_value)
         self._update_terrain_ray_precision_label(slider_value)
@@ -183,34 +137,16 @@ class WidgetHorizonScopeMixin:
 
     def _apply_pending_terrain_ray_precision(self):
         from TerraLab.common.utils import set_config_value
-        from TerraLab.terrain.ray_precision import normalize_ray_step_deg
+        from TerraLab.data.ray_precision import normalize_ray_step_deg
 
         step = normalize_ray_step_deg(self._pending_terrain_ray_step_deg)
         set_config_value("horizon_ray_step_deg", step)
         self._pending_terrain_ray_step_deg = step
         self._begin_horizon_bake()
 
-    def _profile_for_terrain_depth(self, profile, radius_km):
-        from TerraLab.terrain.domain.profile import limit_profile_radius
-
-        return limit_profile_radius(profile, float(radius_km) * 1000.0)
-
-    def _show_profile_at_terrain_depth(self, profile, radius_km):
-        visible_profile = self._profile_for_terrain_depth(profile, radius_km)
-        layer_defs = None
-        band_defs = getattr(visible_profile, "_band_defs", None)
-        if band_defs is not None:
-            from TerraLab.terrain.render.palette import generate_layer_defs
-            layer_defs = generate_layer_defs(band_defs)
-        if hasattr(self.canvas, "horizon_overlay"):
-            self.canvas.horizon_overlay.set_profile(visible_profile, layer_defs=layer_defs)
-        if hasattr(self.canvas, "village"):
-            self.canvas.village.set_profile(visible_profile)
-        self.canvas.update()
-
     def _apply_pending_terrain_depth(self):
         from TerraLab.common.utils import get_config_value, set_config_value
-        from TerraLab.terrain.visibility_range import TerrainRangeSettings
+        from TerraLab.data.visibility_range import TerrainRangeSettings
 
         radius_km = int(
             self._pending_terrain_depth_km
@@ -231,11 +167,6 @@ class WidgetHorizonScopeMixin:
             immediate_preload_radius_km=current.immediate_preload_radius_km,
         ).validated()
         set_config_value("terrain_visibility_range", widened.to_dict())
-        profile = getattr(self, "_full_horizon_profile", None)
-        if profile is not None and profile.covers_radius(radius_km * 1000.0):
-            self.terrain_coordinator.abort_current_job()
-            self._show_profile_at_terrain_depth(profile, radius_km)
-            return
         self.terrain_coordinator.reload_config()
         self._begin_horizon_bake()
 
@@ -284,7 +215,7 @@ class WidgetHorizonScopeMixin:
         toolbar_height = toolbar.height() if toolbar is not None else 0
         lbl.move(
             max(10, self.width() - width - 10),
-            toolbar_height + 88,
+            toolbar_height + 120,
         )
 
     def _position_loading_label(self):
@@ -294,7 +225,7 @@ class WidgetHorizonScopeMixin:
         toolbar = getattr(self, "quick_toolbar", None)
         toolbar_height = toolbar.height() if toolbar is not None else 0
         x_pos = min(370, max(10, self.width() - lbl.width() - 10))
-        lbl.move(x_pos, toolbar_height + 48)
+        lbl.move(x_pos, toolbar_height + 84)
 
     def _set_gaia_extension_status_label(self, message: str, *, keep_seconds: float = 0.0):
         lbl = getattr(self, "lbl_gaia_extension_status", None)
@@ -346,24 +277,7 @@ class WidgetHorizonScopeMixin:
         if low:
             self.timer.setInterval(200)  # 5 FPS
         else:
-            self.timer.setInterval(16)   # 60 FPS
-
-    def _on_skyfield_ready(self, ts, eph):
-        """Callback when Skyfield finishes loading in background."""
-        if ts is not None and eph is not None:
-            self.ts = ts
-            self.eph = eph
-            print("[AstroWidget] Skyfield ready (async).")
-            if self.show_satellites:
-                # Only show loading label if not blocking (i.e., if satellites are being loaded)
-                if hasattr(self, 'lbl_loading'):
-                    self.lbl_loading.show()
-                self.load_satellites_from_tle()
-            self.canvas.update()
-        else:
-            print("[AstroWidget] Skyfield failed to load.")
-        # Clean up thread
-        self._skyfield_thread.quit()
+            self.timer.setInterval(250)
 
     def _do_delayed_bake(self):
         """Actually sends the bake request after debouncing."""
@@ -377,145 +291,10 @@ class WidgetHorizonScopeMixin:
         print(f"[AstroWidget] Emitting debounced bake request for {self.latitude}, {self.longitude}")
         self._begin_horizon_bake()
 
-    def _on_catalog_ready(self, celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp):
-        return widget_on_catalog_ready(self, celestial_objects, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp)
-
-    def _maybe_refresh_gaia_extension_catalog(self):
-        stars_dir = getattr(self, "_stars_catalog_dir", "")
-        if not stars_dir:
-            return
-        ext_path = os.path.join(stars_dir, "stars_catalog_extension.npy")
-        if not os.path.isfile(ext_path):
-            return
-        try:
-            mtime = float(os.path.getmtime(ext_path))
-        except Exception:
-            return
-        already_loaded_mag = float(getattr(self, "_scope_catalog_loaded_max_mag", STAR_CATALOG_NAKED_EYE_MAX_MAG))
-        if (mtime <= float(getattr(self, "_gaia_extension_mtime_loaded", 0.0)) + 1e-6) and (already_loaded_mag > STAR_CATALOG_NAKED_EYE_MAX_MAG + 1e-3):
-            return
-        self._gaia_extension_mtime_loaded = float(mtime)
-        if not bool(getattr(self, "_scope_catalog_loading", False)):
-            self._ensure_scope_catalog_loaded()
-
-    def _ensure_scope_catalog_loaded(self, force_now: bool = False):
-        return widget_ensure_scope_catalog_loaded(self, force_now)
-
-    def _finalize_scope_catalog_loader_refs(self):
-        thread = getattr(self, "_scope_catalog_thread", None)
-        if thread is not None:
-            try:
-                if thread.isRunning():
-                    return
-            except Exception:
-                log_suppressed_exception(__name__, "WidgetHorizonScopeMixin._finalize_scope_catalog_loader_refs")
-        self._scope_catalog_worker = None
-        self._scope_catalog_thread = None
-
-    def _cleanup_scope_catalog_loader(self):
-        thread = getattr(self, "_scope_catalog_thread", None)
-        if thread is None:
-            self._finalize_scope_catalog_loader_refs()
-            return
-        try:
-            thread.finished.connect(self._finalize_scope_catalog_loader_refs)
-        except Exception:
-            log_suppressed_exception(__name__, "WidgetHorizonScopeMixin._cleanup_scope_catalog_loader")
-        try:
-            if thread.isRunning():
-                thread.quit()
-                return
-        except Exception:
-            log_suppressed_exception(__name__, "WidgetHorizonScopeMixin._cleanup_scope_catalog_loader")
-        self._finalize_scope_catalog_loader_refs()
-
-    def _finalize_scope_index_warmup_refs(self):
-        thread = getattr(self, "_scope_index_thread", None)
-        if thread is not None:
-            try:
-                if thread.isRunning():
-                    return
-            except Exception:
-                log_suppressed_exception(__name__, "WidgetHorizonScopeMixin._finalize_scope_index_warmup_refs")
-        self._scope_index_worker = None
-        self._scope_index_thread = None
-
-    def _cleanup_scope_index_warmup(self):
-        thread = getattr(self, "_scope_index_thread", None)
-        if thread is None:
-            self._finalize_scope_index_warmup_refs()
-            return
-        try:
-            thread.finished.connect(self._finalize_scope_index_warmup_refs)
-        except Exception:
-            log_suppressed_exception(__name__, "WidgetHorizonScopeMixin._cleanup_scope_index_warmup")
-        try:
-            if thread.isRunning():
-                thread.quit()
-                return
-        except Exception:
-            log_suppressed_exception(__name__, "WidgetHorizonScopeMixin._cleanup_scope_index_warmup")
-        self._finalize_scope_index_warmup_refs()
-
-    def _scope_target_index_mag_cap(self) -> float:
-        base_cap = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
-        try:
-            catalog_cap = float(getattr(self, "_catalog_max_mag", base_cap))
-        except Exception:
-            catalog_cap = base_cap
-        catalog_cap = max(base_cap, catalog_cap)
-        if not self.canvas.scope_mode_enabled():
-            return min(catalog_cap, base_cap)
-        try:
-            ctrl = getattr(self.canvas, "scope_controller", None)
-            first_fix_pending = bool(ctrl is not None and (not bool(getattr(ctrl, "user_center_fixed_once", False))))
-        except Exception:
-            first_fix_pending = False
-        if first_fix_pending:
-            return min(catalog_cap, base_cap)
-        target = base_cap + 1.0
-        vm_state = getattr(self, "visual_magnitude_result", None)
-        if vm_state is not None:
-            try:
-                target = float(getattr(vm_state, "scope_limit_mag", target)) + 0.75
-            except Exception:
-                log_suppressed_exception(__name__, "WidgetHorizonScopeMixin._scope_target_index_mag_cap")
-        return float(max(base_cap, min(catalog_cap, target)))
-
-    def _ensure_scope_spatial_index_warmup(self):
-        return widget_ensure_scope_spatial_index_warmup(self)
-
-    def _on_scope_spatial_index_ready(self, catalog_key, sorted_indices, offsets, ready_mag_cap):
-        return widget_on_scope_spatial_index_ready(self, catalog_key, sorted_indices, offsets, ready_mag_cap)
-
-    def _on_scope_spatial_index_error(self, message: str):
-        self._scope_index_loading = False
-        self._scope_index_rewarm_requested = False
-        print(f"[AstroWidget] Scope spatial index warm-up error: {message}")
-        try:
-            stars_renderer = getattr(getattr(self.canvas, "sky_renderer", None), "stars_renderer", None)
-            if stars_renderer is not None:
-                stars_renderer.clear_scope_index_warmup(self._scope_index_target_key)
-        finally:
-            self._cleanup_scope_index_warmup()
-
-    def _on_scope_extension_ready(self, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp, loaded_max_mag):
-        return widget_on_scope_extension_ready(self, np_ra, np_dec, np_mag, np_r, np_g, np_b, np_bp_rp, loaded_max_mag)
-
     def load_satellites_from_tle(self):
-        try:
-            from skyfield.api import EarthSatellite
-            # ISS TLE (Example - normally from CelesTrak)
-            line1 = "1 25544U 98067A   23015.53927649  .00010079  00000-0  18231-3 0  9993"
-            line2 = "2 25544  51.6421  42.5312 0005527  38.8344 321.3283 15.49830575378370"
-            iss = EarthSatellite(line1, line2, 'ISS', self.ts)
-            self.satellites = [{
-                'name': 'ISS',
-                'obj': iss,
-                'std_mag': -1.8
-            }]
-        except Exception as e:
-            print(f"Sat Load Error: {e}")
+        client = getattr(self, "satellite_client", None)
+        if client is not None:
+            client.request_snapshot()
 
     def toggle_satellites(self, checked):
         self.show_satellites = checked

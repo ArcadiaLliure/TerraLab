@@ -25,7 +25,7 @@ def test_imports_do_not_create_files_or_application(tmp_path: Path) -> None:
             "import TerraLab.common.cache",
             "import TerraLab.common.cancellation",
             "import TerraLab.common.deprecation_registry",
-            "import TerraLab.scene.scene_state",
+            "import TerraLab.scene.render_state",
             "import TerraLab.terrain.domain.profile",
             "import TerraLab.ui.astro_canvas",
             "assert QApplication.instance() is None",
