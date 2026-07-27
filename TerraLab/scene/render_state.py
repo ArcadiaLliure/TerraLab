@@ -12,6 +12,40 @@ from TerraLab.scene.camera import Camera
 
 
 @dataclass(frozen=True)
+class EarthLayerVisibility:
+    """Effective visibility of the layers controlled by the Terra master."""
+
+    horizon_enabled: bool
+    topography_enabled: bool
+    surface_enabled: bool
+    terrain_3d_enabled: bool
+    light_pollution_enabled: bool
+
+
+def resolve_earth_layer_visibility(
+    *,
+    horizon_enabled: bool,
+    topography_enabled: bool,
+    surface_enabled: bool,
+    terrain_3d_enabled: bool,
+    light_pollution_enabled: bool,
+) -> EarthLayerVisibility:
+    """Apply Horitzó as the master switch without changing child preferences."""
+
+    master_enabled = bool(horizon_enabled)
+    effective_topography = bool(master_enabled and topography_enabled)
+    return EarthLayerVisibility(
+        horizon_enabled=master_enabled,
+        topography_enabled=effective_topography,
+        surface_enabled=bool(effective_topography and surface_enabled),
+        terrain_3d_enabled=bool(effective_topography and terrain_3d_enabled),
+        light_pollution_enabled=bool(
+            master_enabled and light_pollution_enabled
+        ),
+    )
+
+
+@dataclass(frozen=True)
 class RenderState:
     """Snapshot immutable de tot l'estat necessari per pintar un frame."""
 

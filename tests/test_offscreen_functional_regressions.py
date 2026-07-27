@@ -93,6 +93,115 @@ def _state(
     )
 
 
+def _earth_snapshot(
+    *,
+    horizon: bool,
+    topography: bool,
+    surface: bool,
+    terrain_3d: bool,
+    light_pollution: bool,
+) -> tuple[dict, dict[str, bool]]:
+    controls = {
+        "chk_enable_horizon": bool(horizon),
+        "chk_enable_village": bool(topography),
+        "chk_surface_layer": bool(surface),
+        "chk_terrain_3d": bool(terrain_3d),
+    }
+    parent = SimpleNamespace(
+        ephemeris_coordinator=None,
+        light_pollution_mode="automatic",
+        light_pollution_enabled=bool(light_pollution),
+        auto_bortle_estimate=8,
+        bortle_value=8,
+        magnitude_limit=3.8,
+        latitude=41.2,
+        longitude=0.8,
+        weather=None,
+    )
+    scope = SimpleNamespace(
+        center=None,
+        current_fov=lambda: (5.0, 5.0),
+        shape="circle",
+        focal_mm=250.0,
+        sensor_key="tiny",
+    )
+    canvas = SimpleNamespace(
+        parent_widget=parent,
+        scope_controller=scope,
+        measurement_controller=SimpleNamespace(active_tool="none"),
+        azimuth_offset=180.0,
+        elevation_angle=45.0,
+        zoom_level=1.0,
+        vertical_offset_ratio=0.0,
+        debug_render_metrics=False,
+        hud_visible=False,
+        trail_start_hour=None,
+        _measurement_clear_revision=0,
+        _get_current_utc_context=lambda: (22.0, 200, 2026, None),
+        _parent_checkbox_checked=lambda name, default: controls.get(
+            name, default
+        ),
+        scope_mode_enabled=lambda: False,
+        _camera_interaction_active=lambda **_kwargs: False,
+        _scope_motion_active=lambda: False,
+        _process_catalog_artifact=lambda: None,
+        _process_selection_payload=lambda: {},
+        _process_constellation_payload=lambda: {},
+    )
+    return AstroCanvas._process_scene_snapshot(canvas), controls
+
+
+@pytest.mark.parametrize(
+    (
+        "horizon",
+        "topography",
+        "surface",
+        "terrain_3d",
+        "expected",
+    ),
+    [
+        (False, False, False, False, (False, False, False, False)),
+        (False, True, True, True, (False, False, False, False)),
+        (True, False, True, True, (True, False, False, False)),
+        (True, True, False, True, (True, True, False, True)),
+        (True, True, True, False, (True, True, True, False)),
+    ],
+)
+def test_horizon_is_the_master_for_effective_earth_visibility(
+    horizon,
+    topography,
+    surface,
+    terrain_3d,
+    expected,
+) -> None:
+    snapshot, controls = _earth_snapshot(
+        horizon=horizon,
+        topography=topography,
+        surface=surface,
+        terrain_3d=terrain_3d,
+        light_pollution=True,
+    )
+    terrain = snapshot["terrain"]
+
+    assert (
+        terrain["horizon_enabled"],
+        terrain["topography_enabled"],
+        terrain["surface_enabled"],
+        terrain["terrain_3d_enabled"],
+    ) == expected
+    assert ("terrain" in snapshot["layers"]) is bool(horizon)
+    assert snapshot["light_pollution_enabled"] is bool(horizon)
+    assert controls == {
+        "chk_enable_horizon": bool(horizon),
+        "chk_enable_village": bool(topography),
+        "chk_surface_layer": bool(surface),
+        "chk_terrain_3d": bool(terrain_3d),
+    }
+    if not horizon:
+        assert snapshot["bortle"] == 1
+        assert snapshot["magnitude_limit"] == pytest.approx(7.6)
+
+
 def test_eclipse_transmission_uses_real_disc_overlap() -> None:
     assert solar_disc_transmission(1.0, 0.2666, 0.2725) == pytest.approx(
         1.0
@@ -839,6 +948,104 @@ def test_render_receives_surface_visual_style_from_snapshot(gui_app) -> None:
         renderer.close()
     assert terrain.styles == ["vibrant", "original"]
     assert terrain.draw_calls == 2
+
+
+def test_render_rejects_incoherent_terrain_when_horizon_is_disabled(
+    gui_app,
+) -> None:
+    class TerrainStub:
+        profile = None
+
+        def __init__(self) -> None:
+            self.styles = []
+            self.draw_calls = 0
+
+        def set_surface_visual_style(self, style: str) -> None:
+            self.styles.append(style)
+
+        def draw(self, *_args, **_kwargs) -> None:
+            self.draw_calls += 1
+
+    renderer = OffscreenSceneRenderer()
+    terrain = TerrainStub()
+    renderer.terrain = terrain
+    renderer._terrain_path = ""
+    renderer._terrain_surface_path = ""
+    image = QImage(320, 180, QImage.Format_ARGB32_Premultiplied)
+    painter = QPainter(image)
+    try:
+        renderer._draw_terrain(
+            painter,
+            image.width(),
+            image.height(),
+            _state(layers=("terrain",)),
+            {
+                "light_pollution_enabled": True,
+                "terrain": {
+                    "profile_path": "",
+                    "surface_path": "",
+                    "horizon_enabled": False,
+                    "topography_enabled": True,
+                    "surface_enabled": True,
+                    "terrain_3d_enabled": True,
+                    "surface_visual_style": "vibrant",
+                },
+            },
+        )
+    finally:
+        painter.end()
+        renderer.terrain = None
+        renderer.close()
+
+    assert terrain.styles == []
+    assert terrain.draw_calls == 0
+
+
+def test_render_neutralizes_stale_earth_state_when_master_is_disabled(
+    gui_app,
+) -> None:
+    renderer = OffscreenSceneRenderer()
+    image = QImage(320, 180, QImage.Format_ARGB32_Premultiplied)
+    painter = QPainter(image)
+    try:
+        renderer.render(
+            painter,
+            image.width(),
+            image.height(),
+            {
+                "camera": {
+                    "azimuth": 180.0,
+                    "elevation": 45.0,
+                    "zoom": 1.0,
+                    "vertical_ratio": 0.0,
+                },
+                "year_utc": 2026,
+                "day_of_year_utc": 0,
+                "ut_hour": 0.0,
+                "latitude": 0.0,
+                "longitude": 0.0,
+                "layers": ["terrain"],
+                "hud_visible": False,
+                "bortle": 9,
+                "magnitude_limit": 3.6,
+                "light_pollution_enabled": True,
+                "terrain": {
+                    "horizon_enabled": False,
+                    "topography_enabled": True,
+                    "surface_enabled": True,
+                    "terrain_3d_enabled": True,
+                },
+            },
+        )
+        state = renderer._last_pick_state
+    finally:
+        painter.end()
+        renderer.close()
+
+    assert state is not None
+    assert "terrain" not in state.layers_enabled
+    assert state.bortle == 1
+    assert state.mag_limit == pytest.approx(7.6)
 
 
 def test_search_records_include_all_catalogue_families(tmp_path) -> None:

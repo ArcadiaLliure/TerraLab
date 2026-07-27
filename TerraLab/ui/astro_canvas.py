@@ -22,6 +22,7 @@ from TerraLab.light_pollution.modes import (
     normalize_light_pollution_mode,
     resolve_bortle_class,
 )
+from TerraLab.scene.render_state import resolve_earth_layer_visibility
 from TerraLab.ui.widget_init_helpers import astro_canvas_init
 from TerraLab.widgets.constellation_drawing import (
     ConstellationGroup,
@@ -211,19 +212,27 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
                 layers.append("sun_moon")
             if self._parent_checkbox_checked("chk_planets", True):
                 layers.append("planets")
-        topography_active = bool(
+        topography_requested = bool(
             self._parent_checkbox_checked("chk_enable_village", False)
         )
-        horizon_active = bool(
+        horizon_requested = bool(
             self._parent_checkbox_checked("chk_enable_horizon", True)
         )
-        terrain_3d_active = bool(
-            topography_active and self._parent_checkbox_checked("chk_terrain_3d", False)
+        light_pollution_requested = bool(
+            getattr(parent, "light_pollution_enabled", True)
         )
-        surface_active = bool(
-            topography_active and self._parent_checkbox_checked("chk_surface_layer", True)
+        earth_visibility = resolve_earth_layer_visibility(
+            horizon_enabled=horizon_requested,
+            topography_enabled=topography_requested,
+            surface_enabled=self._parent_checkbox_checked(
+                "chk_surface_layer", True
+            ),
+            terrain_3d_enabled=self._parent_checkbox_checked(
+                "chk_terrain_3d", False
+            ),
+            light_pollution_enabled=light_pollution_requested,
         )
-        if topography_active or horizon_active:
+        if earth_visibility.horizon_enabled:
             layers.append("terrain")
         if self._parent_checkbox_checked("chk_grid", False):
             layers.append("grid")
@@ -233,7 +242,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
         lp_mode = normalize_light_pollution_mode(
             getattr(parent, "light_pollution_mode", "automatic")
         )
-        lp_enabled = bool(getattr(parent, "light_pollution_enabled", True))
+        lp_enabled = earth_visibility.light_pollution_enabled
         effective_bortle = resolve_bortle_class(
             lp_mode,
             automatic_bortle=getattr(parent, "auto_bortle_estimate", 1),
@@ -326,10 +335,10 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
                     )
                     or ""
                 ),
-                "terrain_3d_enabled": terrain_3d_active,
-                "topography_enabled": topography_active,
-                "horizon_enabled": horizon_active,
-                "surface_enabled": surface_active,
+                "terrain_3d_enabled": earth_visibility.terrain_3d_enabled,
+                "topography_enabled": earth_visibility.topography_enabled,
+                "horizon_enabled": earth_visibility.horizon_enabled,
+                "surface_enabled": earth_visibility.surface_enabled,
                 "surface_visual_style": str(
                     getattr(
                         parent, "surface_visual_style", "original"

@@ -32,7 +32,10 @@ from TerraLab.astro.ephemeris_coordinator import (
 from TerraLab.astro.ngc_catalog import ngc_display_label
 from TerraLab.data.catalogs.star_catalog import _bp_rp_to_rgb_arrays
 from TerraLab.debug.diagnostics import Diagnostics
-from TerraLab.light_pollution.modes import is_automatic_mode
+from TerraLab.light_pollution.modes import (
+    bortle_to_magnitude,
+    is_automatic_mode,
+)
 from TerraLab.render.qt.context import RenderContext
 from TerraLab.render.sky.milkyway_overlay import MilkyWayOverlay
 from TerraLab.render.sky_renderer import sky_color_phys
@@ -44,7 +47,10 @@ from TerraLab.scene.projection import (
     radec_to_altaz_numpy,
     unproject_universal_stereo_point,
 )
-from TerraLab.scene.render_state import RenderState
+from TerraLab.scene.render_state import (
+    RenderState,
+    resolve_earth_layer_visibility,
+)
 from TerraLab.terrain.overlay import HorizonOverlay
 from TerraLab.terrain.render.config import TerrainCelestialLightContext
 from TerraLab.weather.system import WeatherSystem
@@ -785,6 +791,35 @@ class OffscreenSceneRenderer:
 
         arrays = self.catalog.load(payload.get("catalog"))
         layers = frozenset(str(v) for v in payload.get("layers", ()))
+        terrain_artifact = payload.get("terrain")
+        terrain_artifact = (
+            terrain_artifact
+            if isinstance(terrain_artifact, dict)
+            else {}
+        )
+        earth_visibility = resolve_earth_layer_visibility(
+            horizon_enabled=terrain_artifact.get(
+                "horizon_enabled", True
+            ),
+            topography_enabled=terrain_artifact.get(
+                "topography_enabled", True
+            ),
+            surface_enabled=terrain_artifact.get(
+                "surface_enabled", True
+            ),
+            terrain_3d_enabled=terrain_artifact.get(
+                "terrain_3d_enabled", True
+            ),
+            light_pollution_enabled=payload.get(
+                "light_pollution_enabled", True
+            ),
+        )
+        if not earth_visibility.horizon_enabled:
+            layers = layers.difference({"terrain"})
+        magnitude_payload = payload
+        if not earth_visibility.light_pollution_enabled:
+            magnitude_payload = dict(payload)
+            magnitude_payload["magnitude_limit"] = bortle_to_magnitude(1)
         extras = dict(payload.get("extras", {}))
         extras["stars_enabled"] = "stars" in layers
         trail_settings = payload.get("trails")
@@ -834,9 +869,13 @@ class OffscreenSceneRenderer:
             np_b=arrays["b"],
             np_bp_rp=arrays["bp_rp"],
             ephemeris_snapshot=ephemeris,
-            bortle=int(payload.get("bortle", 1)),
+            bortle=(
+                int(payload.get("bortle", 1))
+                if earth_visibility.light_pollution_enabled
+                else 1
+            ),
             mag_limit=self._magnitude_limit(
-                payload, sun_alt, eclipse_factor
+                magnitude_payload, sun_alt, eclipse_factor
             ),
             light_pollution_mode=str(
                 payload.get("light_pollution_mode", "automatic")
@@ -3079,10 +3118,22 @@ class OffscreenSceneRenderer:
     ) -> None:
         artifact = payload.get("terrain")
         artifact = artifact if isinstance(artifact, dict) else {}
-        topography_enabled = bool(artifact.get("topography_enabled", True))
-        horizon_enabled = bool(artifact.get("horizon_enabled", True))
-        if not topography_enabled and not horizon_enabled:
+        earth_visibility = resolve_earth_layer_visibility(
+            horizon_enabled=artifact.get("horizon_enabled", True),
+            topography_enabled=artifact.get(
+                "topography_enabled", True
+            ),
+            surface_enabled=artifact.get("surface_enabled", True),
+            terrain_3d_enabled=artifact.get(
+                "terrain_3d_enabled", True
+            ),
+            light_pollution_enabled=payload.get(
+                "light_pollution_enabled", True
+            ),
+        )
+        if not earth_visibility.horizon_enabled:
             return
+        topography_enabled = earth_visibility.topography_enabled
         path = str(artifact.get("profile_path", "") or "")
         if path != self._terrain_path or self.terrain is None:
             valid_path = path if (path and Path(path).is_file()) else None
@@ -3123,9 +3174,9 @@ class OffscreenSceneRenderer:
         project_many = lambda alt, az: project_universal_stereo_numpy(
             alt, az, width, height, state.camera
         )
-        terrain_3d_enabled = bool(artifact.get("terrain_3d_enabled", True)) if topography_enabled else False
-        surface_enabled = bool(artifact.get("surface_enabled", True)) if topography_enabled else False
-        draw_flat_line = bool(not topography_enabled and horizon_enabled)
+        terrain_3d_enabled = earth_visibility.terrain_3d_enabled
+        surface_enabled = earth_visibility.surface_enabled
+        draw_flat_line = bool(not topography_enabled)
         snapshot = (
             state.ephemeris_snapshot
             if isinstance(state.ephemeris_snapshot, dict)
@@ -3160,7 +3211,7 @@ class OffscreenSceneRenderer:
         self._dome_count = 0
         if (
             not state.interaction_active
-            and bool(payload.get("light_pollution_enabled", True))
+            and earth_visibility.light_pollution_enabled
             and is_automatic_mode(state.light_pollution_mode)
             and state.sun_alt < 0.0
         ):
