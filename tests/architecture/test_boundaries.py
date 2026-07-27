@@ -60,6 +60,68 @@ def test_domain_and_layer_boundaries() -> None:
     _assert_no_imports(PACKAGE / "ui", ("scripts", "tools"))
 
 
+def test_ui_process_cannot_import_science_or_render_implementations() -> None:
+    _assert_no_imports(
+        PACKAGE / "ui",
+        (
+            "TerraLab.render",
+            "TerraLab.terrain",
+            "TerraLab.data.catalogs",
+            "numpy",
+            "rasterio",
+            "skyfield",
+        ),
+    )
+
+
+def test_ui_process_never_uses_blocking_qprocess_waits() -> None:
+    violations: list[str] = []
+    for path in _python_files(PACKAGE / "ui"):
+        for node in ast.walk(_tree(path)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr.startswith("waitFor")
+            ):
+                violations.append(
+                    f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:"
+                    f"{node.func.attr}"
+                )
+    assert not violations, "\n".join(violations)
+
+
+def test_ui_has_no_calculation_threads_or_fixed_16ms_render_loop() -> None:
+    violations: list[str] = []
+    for path in _python_files(PACKAGE / "ui"):
+        tree = _tree(path)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = (
+                    [alias.name for alias in node.names]
+                    if isinstance(node, ast.Import)
+                    else [alias.name for alias in node.names]
+                )
+                if "QThread" in names:
+                    violations.append(
+                        f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:"
+                        "QThread"
+                    )
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"start", "setInterval"}
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value == 16
+            ):
+                continue
+            violations.append(
+                f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:"
+                f"{node.func.attr}(16)"
+            )
+    assert not violations, "\n".join(violations)
+
+
 def test_canonical_runtime_types_have_one_definition() -> None:
     expected = {
         "AstronomicalWidget": PACKAGE / "ui" / "astronomical_widget.py",
@@ -226,7 +288,7 @@ def test_shared_star_catalog_limit_has_one_owner() -> None:
                 for target in targets
             ):
                 assignments.append(path.relative_to(ROOT).as_posix())
-    assert assignments == ["TerraLab/data/catalogs/constants.py"]
+    assert assignments == ["TerraLab/data/constants.py"]
 
 
 def test_pure_terrain_render_does_not_perform_file_io() -> None:

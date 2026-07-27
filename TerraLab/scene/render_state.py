@@ -1,7 +1,4 @@
-"""Snapshot immutable de render per frame.
-
-`RenderState` és el contracte estable entre `SceneController` i renderers.
-"""
+"""Canonical immutable snapshot consumed only inside the Render process."""
 
 from __future__ import annotations
 
@@ -12,6 +9,40 @@ import numpy as np
 
 from TerraLab.light_pollution.modes import LP_MODE_AUTOMATIC
 from TerraLab.scene.camera import Camera
+
+
+@dataclass(frozen=True)
+class EarthLayerVisibility:
+    """Effective visibility of the layers controlled by the Terra master."""
+
+    horizon_enabled: bool
+    topography_enabled: bool
+    surface_enabled: bool
+    terrain_3d_enabled: bool
+    light_pollution_enabled: bool
+
+
+def resolve_earth_layer_visibility(
+    *,
+    horizon_enabled: bool,
+    topography_enabled: bool,
+    surface_enabled: bool,
+    terrain_3d_enabled: bool,
+    light_pollution_enabled: bool,
+) -> EarthLayerVisibility:
+    """Apply Horitzó as the master switch without changing child preferences."""
+
+    master_enabled = bool(horizon_enabled)
+    effective_topography = bool(master_enabled and topography_enabled)
+    return EarthLayerVisibility(
+        horizon_enabled=master_enabled,
+        topography_enabled=effective_topography,
+        surface_enabled=bool(effective_topography and surface_enabled),
+        terrain_3d_enabled=bool(effective_topography and terrain_3d_enabled),
+        light_pollution_enabled=bool(
+            master_enabled and light_pollution_enabled
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -70,10 +101,9 @@ class RenderState:
     scope_center_sky: tuple[float, float] | None = None
     scope_fov_deg: tuple[float, float] = (5.0, 5.0)
 
-    # Compatibilitat amb render legacy
     @property
     def ra(self) -> np.ndarray:
-        """Alias de compatibilitat per renderers legacy."""
+        """Stable short alias used by renderers."""
         return self.np_ra
 
     @property

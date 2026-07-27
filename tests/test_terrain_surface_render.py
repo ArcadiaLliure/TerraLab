@@ -49,7 +49,7 @@ from TerraLab.terrain.render.lighting import (
     light_direction_enu,
 )
 from TerraLab.terrain.render.materials import compose_vertex_rgba
-from TerraLab.ui.canvas_runtime_helpers import (
+from TerraLab.terrain.render.runtime_helpers import (
     _terrain_celestial_light_context,
     _terrain_relief_enabled_for_frame,
 )

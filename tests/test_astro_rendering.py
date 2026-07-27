@@ -495,93 +495,6 @@ def test_ngc_aliases_include_messier_compact_and_common_name_tokens():
     assert "Galaxy" in aliases
 
 
-def test_widget_ngc_search_loader_reads_openngc_catalog():
-    widget = AstronomicalWidget.__new__(AstronomicalWidget)
-    widget._ngc_search_entries_cache = None
-    widget._astro_ngc_catalog_path = str(
-        Path(__file__).resolve().parents[1]
-        / "TerraLab"
-        / "data"
-        / "sky"
-        / "openngc_catalog.csv"
-    )
-    entries = AstronomicalWidget._load_ngc_search_entries(widget)
-    assert entries
-    assert any(
-        obj.name.replace(" ", "") in {"NGC224", "NGC0224"}
-        or obj.messier_nr == 31
-        for obj in entries
-    )
-
-
-def test_search_selection_snaps_object_into_view_and_marks_it_immediately():
-    class _ScopeController:
-        def set_center(self, center):
-            self.center = center
-
-    class _CanvasStub:
-        def __init__(self):
-            self.selected_target = None
-            self.azimuth_offset = 0.0
-            self.elevation_angle = 0.0
-            self.dragging = True
-            self.scope_controller = _ScopeController()
-
-        def _set_selected_target(self, target):
-            self.selected_target = target
-
-        def scope_mode_enabled(self):
-            return False
-
-        def update(self):
-            self.updated = True
-
-    class _TimerStub:
-        def __init__(self):
-            self.stopped = False
-
-        def stop(self):
-            self.stopped = True
-
-    widget = AstronomicalWidget.__new__(AstronomicalWidget)
-    widget.canvas = _CanvasStub()
-    widget.anim_timer = _TimerStub()
-    widget.target_azimuth = 12.0
-    widget.target_elevation = -4.0
-    widget.get_horizontal_coords = lambda ra, dec: (201.5, 37.25)
-
-    obj = NGCObject(
-        name="NGC1976",
-        obj_type="Cl+N",
-        ra_deg=83.8187,
-        dec_deg=-5.3897,
-        maj_deg=1.5,
-        min_deg=1.0,
-        pos_ang_deg=0.0,
-        mag_v=4.0,
-        mag_b=4.0,
-        surf_br_B=None,
-        hubble_type=None,
-        messier_nr=42,
-        common_name=None,
-        notes=None,
-    )
-    info = {"type": "ngc", "obj": obj, "name": "M42"}
-    AstronomicalWidget.center_on_object(widget, info)
-
-    assert widget.canvas.selected_target == {
-        "kind": "ngc",
-        "obj": obj,
-        "info": info,
-    }
-    assert widget.canvas.azimuth_offset == 201.5
-    assert widget.canvas.elevation_angle == 37.25
-    assert widget.canvas.dragging is False
-    assert widget.target_azimuth is None
-    assert widget.target_elevation is None
-    assert widget.anim_timer.stopped is True
-
-
 def test_horizon_worker_parses_json_progress_events_and_formats_user_message():
     event = HorizonWorker._parse_json_event(
         '{"type":"progress","job_id":"abc","phase":"bake","percent":47.3,"current":183,"total":720}'
@@ -1639,3 +1552,24 @@ def test_eclipse_lock_uses_real_moon_position_for_overlap_geometry():
     assert abs(alt_draw - 30.2) < 1e-3
     assert abs(az_draw - 100.2) < 1e-3
     assert canvas.last_corona_opacity == 0.0
+
+
+def test_astro_canvas_update_accepts_unexpected_arguments(monkeypatch):
+    from unittest.mock import MagicMock
+    from PyQt5.QtWidgets import QApplication, QWidget
+    from TerraLab.ui.astro_canvas import AstroCanvas
+
+    app = QApplication.instance() or QApplication([])
+    mock_sched = MagicMock()
+    monkeypatch.setattr(AstroCanvas, "_schedule_process_scene", mock_sched)
+
+    canvas = AstroCanvas.__new__(AstroCanvas)
+    QWidget.__init__(canvas)
+
+    # Calling update with unexpected arguments (e.g. bool from signals or kwargs) should not raise TypeError
+    canvas.update(True)
+    canvas.update(False)
+    canvas.update(10, 20, 30, 40)
+    canvas.update(custom_kwarg=True)
+
+    assert mock_sched.call_count == 4

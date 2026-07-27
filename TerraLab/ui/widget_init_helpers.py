@@ -7,11 +7,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import numpy as np
-from PyQt5.QtCore import QPointF, QThread, QTimer, Qt
+from PyQt5.QtCore import QPointF, QTimer, Qt
 from PyQt5.QtWidgets import QLabel, QWidget
 
-from TerraLab.astro.search_engine import AstroSearchEngine
 from TerraLab.common.app_paths import constellations_path
 from TerraLab.common.custom_widget_base import CustomWidgetBase
 from TerraLab.common.utils import (
@@ -20,16 +18,9 @@ from TerraLab.common.utils import (
     set_config_value,
 )
 from TerraLab.data.assets_manager import AssetManager
-from TerraLab.data.catalogs.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
-from TerraLab.debug.diagnostics import Diagnostics
-from TerraLab.layers.village import VillageOverlay
+from TerraLab.data.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
 from TerraLab.light_pollution.modes import normalize_light_pollution_mode
-from TerraLab.render.sky_renderer import SkyRenderer
-from TerraLab.render.workers.star_render import StarRenderWorker
-from TerraLab.scene.camera import Camera
-from TerraLab.terrain.overlay import HorizonOverlay
-from TerraLab.ui.canvas_input_handler import CanvasInputHandler
-from TerraLab.ui.canvas_selection import CanvasSelection
+from TerraLab.runtime.clients import ProcessWeatherSettings
 from TerraLab.widgets.constellation_drawing import (
     ConstellationDrawingController,
 )
@@ -37,7 +28,6 @@ from TerraLab.widgets.measurement_tools import MeasurementController
 from TerraLab.widgets.scope_ui_manager import ScopeUIManager
 from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
 from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeEngine
-from TerraLab.weather.system import WeatherSystem
 
 
 def astro_canvas_init(obj, parent):
@@ -54,18 +44,11 @@ def astro_canvas_init(obj, parent):
     self.vertical_offset_ratio = 0.3 # Default to Shift Down
     self.zoom_level = 1.0
     self.base_fov_deg = 93.9  # zoom=1.0 => ~17mm equiv (sensor 36mm)
-    self.camera = Camera(
-        azimuth_offset=self.azimuth_offset,
-        elevation_angle=self.elevation_angle,
-        zoom_level=self.zoom_level,
-        vertical_offset_ratio=self.vertical_offset_ratio,
-    )
-    self.sky_renderer = SkyRenderer()
-    self.scene_diagnostics = Diagnostics()
     self.debug_render_metrics = bool(get_config_value("debug_render_metrics", False))
     self._last_diagnostics_log_time = 0.0
     self.dragging = False
     self._camera_interaction_until = 0.0
+    self._view_interaction_revision = 0
     self._camera_idle_timer = QTimer(self)
     self._camera_idle_timer.setSingleShot(True)
     self._camera_idle_timer.timeout.connect(self.update)
@@ -74,8 +57,8 @@ def astro_canvas_init(obj, parent):
     self.setFocusPolicy(Qt.StrongFocus)
     self.setMouseTracking(True)
     self.visible_stars = []
-    self.visible_stars_sx = np.array([], dtype=np.float32) if np is not None else []
-    self.visible_stars_sy = np.array([], dtype=np.float32) if np is not None else []
+    self.visible_stars_sx = []
+    self.visible_stars_sy = []
     self.visible_sky_objects = []
     self.visible_ngc_objects = []
     self.press_pos = QPointF(0,0)
@@ -96,35 +79,12 @@ def astro_canvas_init(obj, parent):
     self.trained_observer = False
     self.atmospheric_context = 0.5
     self.eclipse_lock_mode = False
-    # Weather System
-    self.weather = WeatherSystem(
-        self.width(),
-        self.height(),
-        latitude=float(getattr(parent, "latitude", 0.0)),
-        longitude=float(getattr(parent, "longitude", 0.0)),
-        use_remote_weather=bool(getattr(parent, "weather_use_remote_metno", True)),
-        cache_enabled=bool(getattr(parent, "weather_cache_enabled", True)),
-    )
-    # Horizon Overlay (terrain/mountains -- independent from village)
-    self.horizon_overlay = HorizonOverlay(horizon_profile_path=None, allow_procedural_fallback=False)
-    self.horizon_overlay.request_update.connect(self.update)
-    # Village Overlay (houses, trees, lanterns -- on top of terrain)
-    self.village = VillageOverlay()
-    self.village.request_update.connect(self.update)
+    self.weather = getattr(parent, "weather", None)
     # HintOverlay -- toast HUD contextual per a zoom, temps i ubicacio
     from TerraLab.widgets.hint_overlay import HintOverlay as _HintOverlay
     self.hint_overlay = _HintOverlay(parent=self)
-    # Threading for Stars
     self._cached_star_image = None
     self._cached_trail_image = None
-    self._thread = QThread(self)
-    self._worker = StarRenderWorker()
-    self._worker.moveToThread(self._thread)
-    self._worker.result_ready.connect(self._on_star_result)
-    self._worker.trails_ready.connect(self._on_trail_result)
-    self.request_render_signal.connect(self._worker.render)
-    self.request_trails_signal.connect(self._worker.render_trails)
-    self._thread.start()
     self._render_thread_shutdown = False
     self.rendering_busy = False
     self.trail_rendering_busy = False
@@ -214,26 +174,14 @@ def astro_canvas_init(obj, parent):
     # Telescope scope mode and spherical measurement overlays.
     self.scope_controller = TelescopeScopeController()
     self.measurement_controller = MeasurementController()
+    self._measurement_clear_revision = 0
+    self._remote_pointer_domain = ""
     self.constellation_controller = ConstellationDrawingController(
         str(constellations_path())
     )
-    self._selection = CanvasSelection(self)
-    self._input_handler = CanvasInputHandler(self)
     self._constellation_rename_editor = None
     self._constellation_rename_group_index = None
-    # Continuous key movement for scope mode.
-    self._scope_pressed_keys = set()
-    self._scope_last_tick_ms = int(time.time() * 1000)
-    self._scope_move_timer = QTimer(self)
-    self._scope_move_timer.setTimerType(Qt.PreciseTimer)
-    self._scope_move_timer.setInterval(16)  # ~60Hz
-    self._scope_move_timer.timeout.connect(self._scope_move_tick)
     self._scope_interaction_until = 0.0
-    # Pulse repaint for selected-star marker in normal mode.
-    self._selection_pulse_timer = QTimer(self)
-    self._selection_pulse_timer.setTimerType(Qt.PreciseTimer)
-    self._selection_pulse_timer.setInterval(16)
-    self._selection_pulse_timer.timeout.connect(self._selection_pulse_tick)
 
 def astronomical_widget_init(obj, parent=None, **kwargs):
     self = obj
@@ -350,6 +298,14 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
         get_config_value("bortle_value", self.auto_bortle_estimate)
     )
     self.light_pollution_enabled = bool(get_config_value("light_pollution_enabled", True))
+    configured_surface_style = str(
+        get_config_value("surface_visual_style", "original") or "original"
+    ).strip().lower()
+    self.surface_visual_style = (
+        "vibrant"
+        if configured_surface_style == "vibrant"
+        else "original"
+    )
     now = datetime.now()
     self.manual_year = now.year
     self.manual_day = (now - datetime(now.year, 1, 1)).days
@@ -358,34 +314,15 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     # - weather_cache_enabled: enables/disables disk cache reuse for weather data.
     self.weather_use_remote_metno = bool(get_config_value("weather_use_remote_metno", True))
     self.weather_cache_enabled = bool(get_config_value("weather_cache_enabled", True))
-    self.scope_preload_mode = str(
-        get_config_value("performance.scope_preload_mode", "startup_full")
-    ).strip().lower()
-    if self.scope_preload_mode not in {"startup_full", "disabled"}:
-        self.scope_preload_mode = "startup_full"
-    self.scope_requires_full_catalog = bool(
-        get_config_value("performance.scope_requires_full_catalog", True)
-    )
-    self.scope_activation_policy = str(
-        get_config_value("performance.scope_activation_policy", "wait_until_ready")
-    ).strip().lower()
-    if self.scope_activation_policy not in {"wait_until_ready", "allow_partial"}:
-        self.scope_activation_policy = "wait_until_ready"
     self.scope_fallback_mag_limit = float(
         max(0.0, float(get_config_value("performance.scope_fallback_mag_limit", 8.0)))
     )
-    self.defer_catalog_until_horizon_preview = bool(
-        get_config_value("performance.defer_catalog_until_horizon_preview", True)
-    )
-    self._scope_preload_schema_version = 1
     self._perf_boot_t0_mono = time.perf_counter()
     # Weather needs to exist before setup_content -> AstroCanvas -> WeatherControlWidget
-    self.weather = WeatherSystem(
-        800,
-        600,
+    self.weather = ProcessWeatherSettings(
         latitude=self.latitude,
         longitude=self.longitude,
-        use_remote_weather=self.weather_use_remote_metno,
+        use_remote=self.weather_use_remote_metno,
         cache_enabled=self.weather_cache_enabled,
     )
     self.weather.set_remote_user_agent(self.asset_manager.get_user_agent())
@@ -396,7 +333,8 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     # Scope/search managers must exist before any deferred UI callback can run.
     # Some platforms may process queued singleShot events during/just-after base init.
     self._scope_ui_manager = ScopeUIManager(self)
-    self._search_engine = AstroSearchEngine()
+    self.search_index = {}
+    self.search_lookup = {}
     # 2. Init Base Widget (Calls setup_ui -> setup_content)
     CustomWidgetBase.__init__(self, title="Astronomy", parent=parent, **kwargs)
     self._startup_placeholder_visible = True
@@ -409,72 +347,26 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
         "data_gaia", Path(get_base_dir()) / "data" / "gaia"
     )
     self._stars_catalog_dir = str(Path(_gaia_catalog_dir).expanduser())
-    self._scope_catalog_loading = False
     self._scope_catalog_loaded_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
     self._catalog_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
-    self._catalog_loaded_subset_only = False
-    self._scope_base_ra = None
-    self._scope_base_dec = None
-    self._scope_base_mag = None
-    self._scope_base_r = None
-    self._scope_base_g = None
-    self._scope_base_b = None
-    self._scope_base_bp_rp = None
-    self._scope_full_catalog_attached = False
-    self._scope_catalog_thread = None
-    self._scope_catalog_worker = None
-    self._scope_index_loading = False
-    self._scope_index_target_key = None
-    self._scope_index_loaded_mag_cap = 0.0
-    self._scope_index_requested_mag_cap = 0.0
-    self._scope_index_rewarm_requested = False
-    self._scope_index_suspend_until = 0.0
-    self._scope_index_thread = None
-    self._scope_index_worker = None
-    self._scope_preload_started = False
-    self._scope_preload_in_progress = False
-    self._scope_preload_ready = False
-    self._scope_preload_failed = False
-    self._scope_preload_pending_activation = False
-    self._scope_preload_wait_logged = False
-    self._scope_preload_dataset_signature = ""
-    self._scope_preload_sorted_indices = None
-    self._scope_preload_offsets = None
-    self._scope_preload_indices_path = ""
-    self._scope_preload_offsets_path = ""
-    self._scope_preload_rows = 0
-    self._scope_preload_loaded_max_mag = 0.0
-    self._scope_preload_cache_path = ""
-    self._scope_preload_thread = None
-    self._scope_preload_worker = None
-    self._scope_preload_last_progress_pct = -1.0
-    self._scope_data_state = "ready_deep"
     self._gaia_extension_status_hide_timer = QTimer(self)
     self._gaia_extension_status_hide_timer.setSingleShot(True)
     self._gaia_extension_status_hide_timer.timeout.connect(self._hide_gaia_extension_status_label)
-    self._gaia_extension_mtime_loaded = 0.0
-    self._gaia_extension_watch_timer = QTimer(self)
-    self._gaia_extension_watch_timer.setInterval(5000)
-    self._gaia_extension_watch_timer.timeout.connect(self._maybe_refresh_gaia_extension_catalog)
-    self._gaia_extension_watch_timer.start()
     self._catalog_bootstrap_started = False
-    self._catalog_defer_t0 = 0.0
     self._gaia_resume_prompt_shown = False
     self._gaia_background_dialog = None
     # Default to Horizon View (This uses self.canvas, created in setup_content)
     self.set_horizon_view()
-    self.timer = QTimer()
-    self.timer.setTimerType(Qt.PreciseTimer)
+    self.timer = QTimer(self)
+    self.timer.setTimerType(Qt.CoarseTimer)
     self.timer.timeout.connect(self.update_loop)
-    # 60 FPS base cadence for smooth movement.
-    self.timer.start(16)
-    self.anim_timer = QTimer()
-    self.anim_timer.setTimerType(Qt.PreciseTimer)
-    self.anim_timer.timeout.connect(self.animate_view)
+    # State/clock cadence only. Pointer and animation events submit frames
+    # directly, so there is no unconditional 60 Hz UI wake-up.
+    self.timer.start(250)
     self.target_azimuth = None
     # Performance mode flag
     self._updates_paused = False
-    self._saved_interval = 16
+    self._saved_interval = 250
     # Debounce timer for bake requests (Avoid UI freeze and worker flooding)
     self.bake_debounce_timer = QTimer()
     self.bake_debounce_timer.setSingleShot(True)
@@ -496,6 +388,12 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self._schedule_lifecycle_callback(
         0, lambda: self._set_scene_load_stage("base_sky")
     )
+    # UI construction is independent from catalog, ephemeris and horizon
+    # readiness. The full-canvas shell is only a short launch transition.
+    self._schedule_lifecycle_callback(
+        0, self._schedule_deferred_controls_build
+    )
+    self._schedule_lifecycle_callback(250, self._hide_startup_placeholder)
     self._schedule_lifecycle_callback(200, self._start_async_bootstrap)
     self._schedule_lifecycle_callback(
         1500, self._maybe_resume_pending_gaia_download

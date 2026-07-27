@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from TerraLab import __main__ as application_cli
@@ -39,3 +41,14 @@ def test_calibration_missing_columns_is_an_error(tmp_path):
     )
     with pytest.raises(ValueError, match="elevation_m"):
         calibrate_sqm.run(args)
+
+
+def test_desktop_entrypoint_first_shows_every_route_fullscreen():
+    source = inspect.getsource(application_cli.run)
+
+    assert "shell.showFullScreen()" in source
+    assert "onboarding.showFullScreen()" in source
+    assert "main_window.showFullScreen()" in source
+    assert "shell.show()" not in source
+    assert "onboarding.show()" not in source
+    assert "main_window.show()" not in source

@@ -14,10 +14,8 @@ from TerraLab.ui.widget_misc_helpers import (
     widget_sync_constellation_controls,
 )
 from TerraLab.ui.widget_runtime_helpers import (
-    load_catalog as widget_load_catalog,
     recompute_visual_magnitude_model as widget_recompute_visual_magnitude_model,
     request_relocation as widget_request_relocation,
-    widget_update_loop,
 )
 from TerraLab.widgets.measurement_tools import (
     TOOL_CIRCLE,
@@ -167,16 +165,7 @@ class WidgetControlsTimeMixin:
         center = getattr(center, "center", None)
         if center is None:
             return
-        try:
-            ut_hour, day_of_year_utc = self.canvas._current_ut_context()
-            ra_dec = self.canvas._altaz_to_ra_dec(
-                center[0], center[1], ut_hour, day_of_year_utc
-            )
-            if ra_dec is None:
-                return
-            self._set_scope_coord_inputs(float(ra_dec[0]), float(ra_dec[1]))
-        except Exception:
-            return
+        self.request_scope_reverse(float(center[0]), float(center[1]))
 
     def on_scope_goto_radec(self) -> None:
         return self._scope_ui_manager.goto_radec()
@@ -427,6 +416,22 @@ class WidgetControlsTimeMixin:
         self.btn_realtime.setChecked(False)
         self.manual_hour = val
         self._last_seek_hour = val
+        if hasattr(self, "canvas") and hasattr(self.canvas, "_mark_camera_interaction"):
+            self.canvas._mark_camera_interaction(0.35)
+        coord = getattr(self, "ephemeris_coordinator", None)
+        if coord is not None:
+            canvas = getattr(self, "canvas", None)
+            try:
+                ut_h, day_u, yr_u, _ = canvas._get_current_utc_context()
+            except Exception:
+                ut_h = float(val)
+                day_u = int(getattr(self, "manual_day", 0))
+                yr_u = int(getattr(self, "manual_year", 2026))
+            coord.request_snapshot(
+                year_utc=int(yr_u),
+                day_of_year_utc=int(day_u),
+                ut_hour=float(ut_h),
+            )
         self.canvas.update()
         # Time bar stays LOCAL; hint shows local and UTC from observer tz conversion.
         if hasattr(self.canvas, "hint_overlay"):
@@ -437,7 +442,7 @@ class WidgetControlsTimeMixin:
             lh = f"{int(val % 24):02d}:{int((val % 1) * 60):02d}"
             uth = f"{int(ut_h % 24):02d}:{int(((ut_h % 24) % 1) * 60):02d}"
             txt = getTraduction(
-                "HUD.TimeHint", "?? {local_h} local  ·  UT {ut_h}"
+                "HUD.TimeHint", "🕒 {local_h} local  ·  UT {ut_h}"
             ).format(local_h=lh, ut_h=uth)
             self.canvas.hint_overlay.show_hint(txt)
 
@@ -454,6 +459,13 @@ class WidgetControlsTimeMixin:
         self.time_bar.update_params(
             self.latitude, self.longitude, self.manual_day
         )
+        coord = getattr(self, "ephemeris_coordinator", None)
+        if coord is not None:
+            coord.request_snapshot(
+                year_utc=int(getattr(self, "manual_year", 2026)),
+                day_of_year_utc=int(self.manual_day),
+                ut_hour=float(getattr(self, "manual_hour", 12.0)),
+            )
         self.canvas.update()
 
     def next_day(self):
@@ -462,13 +474,14 @@ class WidgetControlsTimeMixin:
         self.time_bar.update_params(
             self.latitude, self.longitude, self.manual_day
         )
+        coord = getattr(self, "ephemeris_coordinator", None)
+        if coord is not None:
+            coord.request_snapshot(
+                year_utc=int(getattr(self, "manual_year", 2026)),
+                day_of_year_utc=int(self.manual_day),
+                ut_hour=float(getattr(self, "manual_hour", 12.0)),
+            )
         self.canvas.update()
-
-    def load_catalog(self):
-        return widget_load_catalog(self)
-
-    def update_loop(self):
-        return widget_update_loop(self)
 
     def toggle_realtime(self, checked):
         self.use_real_time = checked
@@ -634,7 +647,6 @@ class WidgetControlsTimeMixin:
                     step_el = 0.5 if step_el > 0 else -0.5
                 self.canvas.elevation_angle = current_el + step_el
         if not running:
-            self.anim_timer.stop()
             self.canvas.dragging = False
         else:
             self.canvas.dragging = True
@@ -643,13 +655,25 @@ class WidgetControlsTimeMixin:
     def on_trails_toggled(self, checked):
         self._update_circumpolar_button_text()
         if checked:
-            self.target_azimuth = 0  # Rotate to North
-            # Point to Polaris (Altitude = Latitude)
-            self.target_elevation = self.latitude
+            try:
+                start_hour, _, _, _ = (
+                    self.canvas._get_current_utc_context()
+                )
+            except (AttributeError, TypeError, ValueError):
+                start_hour = float(getattr(self, "manual_hour", 12.0))
+            self.canvas.trail_start_hour = float(start_hour)
+            self.target_azimuth = None
+            self.target_elevation = None
+            request_alignment = getattr(
+                self, "request_circumpolar_alignment", None
+            )
+            if callable(request_alignment):
+                request_alignment()
         else:
+            self.canvas.trail_start_hour = None
             self.target_azimuth = 180  # Return to South
             self.target_elevation = 40  # Default nice view
-        self.anim_timer.start(16)  # ~60 FPS
+        self.canvas.update()
 
     def _update_circumpolar_button_text(self):
         if not hasattr(self, "chk_trails"):

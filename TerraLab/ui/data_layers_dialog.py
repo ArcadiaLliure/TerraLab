@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import os
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from PyQt5.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, pyqtSignal
+from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (
+    QApplication,
     QComboBox,
     QDialog,
     QFileDialog,
@@ -30,16 +32,23 @@ from PyQt5.QtWidgets import (
 from TerraLab.common.utils import getTraduction
 from TerraLab.data.assets_manager import AssetManager
 from TerraLab.data.layer_manager import LayerId, LayerManager
+from TerraLab.runtime.protocol import (
+    ARTIFACT_READY,
+    COMPUTE_REQUEST,
+    WORKER_ERROR,
+    Envelope,
+    envelope,
+)
 from TerraLab.ui.design_system import scoped_dialog_override
 from TerraLab.ui.layer_configurator import LayerConfiguratorWidget
-from TerraLab.terrain.data_sources import (
+from TerraLab.data.source_catalog import (
     DataSourceRegistry,
     LayerSelectionService,
     LayerType,
     SelectionMode,
     SourceHealthStatus,
 )
-from TerraLab.terrain.representation import normalize_terrain_representation_mode
+from TerraLab.data.terrain_contracts import normalize_terrain_representation_mode
 
 
 _DATA_LAYERS_STYLE = """
@@ -237,31 +246,6 @@ QDialog#dataLayersDialog QToolTip {
 _DATA_LAYERS_STYLE += scoped_dialog_override("dataLayersDialog")
 
 
-class _InspectionSignals(QObject):
-    completed = pyqtSignal(str, object, str)
-
-
-class _InspectionTask(QRunnable):
-    """Metadata-only raster inspection performed outside the UI thread."""
-
-    def __init__(self, source) -> None:
-        super().__init__()
-        self.source = source
-        self.signals = _InspectionSignals()
-
-    def run(self) -> None:
-        source_id = str(getattr(self.source, "id", ""))
-        try:
-            from TerraLab.terrain.source_inspection import (
-                inspect_registered_source,
-            )
-
-            result = inspect_registered_source(self.source)
-            self.signals.completed.emit(source_id, result, "")
-        except Exception as exc:
-            self.signals.completed.emit(source_id, None, str(exc))
-
-
 @dataclass(frozen=True)
 class DataLayerChanges:
     """Invalidation scope produced while the dialog was open."""
@@ -400,7 +384,16 @@ class DataLayersDialog(QDialog):
         self.longitude = float(longitude)
         self._updating = False
         self._inspection_jobs = {}
-        self._inspection_pool = QThreadPool.globalInstance()
+        app = QApplication.instance()
+        self._runtime = getattr(app, "terralab_runtime", None)
+        if self._runtime is not None:
+            self._runtime.message_received.connect(
+                self._on_runtime_message
+            )
+            self._runtime.worker_ready.connect(self._on_worker_ready)
+            self._runtime.worker_unavailable.connect(
+                self._on_worker_unavailable
+            )
         self._dialog_closed = False
         self.post_close_changes = _DurableChangeEvent(self)
         self._before = self._snapshot()
@@ -892,10 +885,83 @@ class DataLayersDialog(QDialog):
         source_id = self._source_id(source)
         if not source_id or source_id in self._inspection_jobs:
             return
-        task = _InspectionTask(source)
-        self._inspection_jobs[source_id] = task
-        task.signals.completed.connect(self._inspection_finished)
-        self._inspection_pool.start(task)
+        request_id = f"source-inspection-{uuid.uuid4().hex}"
+        self._inspection_jobs[source_id] = {
+            "request_id": request_id,
+            "source": source.to_dict(),
+        }
+        if not self._dispatch_inspection(source_id):
+            if self._runtime is None:
+                QTimer.singleShot(
+                    0,
+                    lambda sid=source_id: self._inspection_finished(
+                        sid,
+                        None,
+                        "El proceso Compute no está disponible.",
+                    ),
+                )
+
+    def _dispatch_inspection(self, source_id: str) -> bool:
+        job = self._inspection_jobs.get(str(source_id))
+        if self._runtime is None or not isinstance(job, dict):
+            return False
+        return bool(
+            self._runtime.send(
+                "compute",
+                envelope(
+                    COMPUTE_REQUEST,
+                    {
+                        "operation": (
+                            f"source_inspection:{source_id}"
+                        ),
+                        "source": dict(job["source"]),
+                    },
+                    request_id=str(job["request_id"]),
+                    generation=1,
+                ),
+            )
+        )
+
+    def _on_worker_ready(self, role: str) -> None:
+        if role != "compute":
+            return
+        for source_id in tuple(self._inspection_jobs):
+            self._dispatch_inspection(source_id)
+
+    def _on_worker_unavailable(self, role: str, reason: str) -> None:
+        if role != "compute":
+            return
+        for source_id in tuple(self._inspection_jobs):
+            self._inspection_finished(source_id, None, str(reason))
+
+    def _on_runtime_message(
+        self, role: str, message: Envelope
+    ) -> None:
+        if role != "compute" or message.generation != 1:
+            return
+        source_id = next(
+            (
+                sid
+                for sid, job in self._inspection_jobs.items()
+                if isinstance(job, dict)
+                and job.get("request_id") == message.request_id
+            ),
+            "",
+        )
+        if not source_id:
+            return
+        if message.kind == ARTIFACT_READY:
+            self._inspection_finished(
+                source_id,
+                message.payload.get("value"),
+                "",
+            )
+        elif message.kind == WORKER_ERROR:
+            self._inspection_finished(
+                source_id,
+                None,
+                str(message.payload.get("message", "Error en Compute")),
+            )
 
     def _inspection_finished(
         self, source_id: str, result: object, error: str
@@ -907,7 +973,11 @@ class DataLayersDialog(QDialog):
         update_applied = False
         try:
             if result is not None:
-                fields = result.registry_fields()
+                fields = (
+                    dict(result)
+                    if isinstance(result, dict)
+                    else result.registry_fields()
+                )
                 metadata = dict(fields.get("metadata", {}) or {})
                 enable_after = bool(
                     metadata.pop(

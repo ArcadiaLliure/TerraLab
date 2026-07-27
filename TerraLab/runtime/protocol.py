@@ -1,0 +1,149 @@
+"""Small, pickle-free protocol shared by TerraLab processes."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any, Mapping
+
+
+PROTOCOL_VERSION = 1
+
+WORKER_READY = "worker_ready"
+WORKER_ERROR = "worker_error"
+HEARTBEAT = "heartbeat"
+SHUTDOWN = "shutdown"
+SCENE_SNAPSHOT = "scene_snapshot"
+FRAME_POOL = "frame_pool"
+FRAME_READY = "frame_ready"
+FRAME_RELEASED = "frame_released"
+COMPUTE_REQUEST = "compute_request"
+ARTIFACT_READY = "artifact_ready"
+PROGRESS = "progress"
+PICK_REQUEST = "pick_request"
+PICK_RESULT = "pick_result"
+
+MESSAGE_KINDS = frozenset(
+    {
+        WORKER_READY,
+        WORKER_ERROR,
+        HEARTBEAT,
+        SHUTDOWN,
+        SCENE_SNAPSHOT,
+        FRAME_POOL,
+        FRAME_READY,
+        FRAME_RELEASED,
+        COMPUTE_REQUEST,
+        ARTIFACT_READY,
+        PROGRESS,
+        PICK_REQUEST,
+        PICK_RESULT,
+    }
+)
+
+
+class ProtocolError(ValueError):
+    """Raised when a process message violates the runtime contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class Envelope:
+    """Versioned JSON message crossing a process boundary."""
+
+    kind: str
+    payload: Mapping[str, Any]
+    request_id: str = ""
+    generation: int = 0
+    version: int = PROTOCOL_VERSION
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "version": int(self.version),
+            "kind": str(self.kind),
+            "request_id": str(self.request_id),
+            "generation": int(self.generation),
+            "payload": dict(self.payload),
+        }
+
+
+def envelope(
+    kind: str,
+    payload: Mapping[str, Any] | None = None,
+    *,
+    request_id: str = "",
+    generation: int = 0,
+) -> Envelope:
+    """Build and validate an outgoing message."""
+
+    message = Envelope(
+        kind=str(kind),
+        payload=dict(payload or {}),
+        request_id=str(request_id),
+        generation=int(generation),
+    )
+    validate(message)
+    return message
+
+
+def validate(message: Envelope) -> None:
+    if int(message.version) != PROTOCOL_VERSION:
+        raise ProtocolError(
+            f"Unsupported protocol version: {message.version}"
+        )
+    if message.kind not in MESSAGE_KINDS:
+        raise ProtocolError(f"Unknown message kind: {message.kind!r}")
+    if not isinstance(message.payload, Mapping):
+        raise ProtocolError("Message payload must be a mapping")
+    if int(message.generation) < 0:
+        raise ProtocolError("Message generation cannot be negative")
+    try:
+        json.dumps(message.to_dict(), ensure_ascii=True, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ProtocolError(
+            "Message must contain finite JSON values only"
+        ) from exc
+
+
+def encode(message: Envelope) -> bytes:
+    """Encode one compact JSONL message."""
+
+    validate(message)
+    return (
+        json.dumps(
+            message.to_dict(),
+            ensure_ascii=True,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def decode(line: bytes | str) -> Envelope:
+    """Decode and validate one JSONL message."""
+
+    try:
+        raw = (
+            bytes(line).decode("utf-8")
+            if isinstance(line, (bytes, bytearray))
+            else str(line)
+        )
+        value = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ProtocolError("Invalid JSONL runtime message") from exc
+    if not isinstance(value, dict):
+        raise ProtocolError("Runtime message must be a JSON object")
+    try:
+        message = Envelope(
+            version=int(value["version"]),
+            kind=str(value["kind"]),
+            request_id=str(value.get("request_id", "")),
+            generation=int(value.get("generation", 0)),
+            payload=value.get("payload", {}),
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ProtocolError("Incomplete runtime message") from exc
+    validate(message)
+    return message
+

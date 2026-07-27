@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from TerraLab.astro.ngc_catalog import NGCObject
 from TerraLab.astro.search_engine import (
     AstroSearchEngine,
@@ -237,3 +239,66 @@ def test_build_search_index_includes_ngc_even_if_layer_visibility_is_off():
     build_search_index_for_widget(widget)
     keys = [str(k).lower() for k in widget.search_index.keys()]
     assert any(k in {"m42", "messier 42", "ngc1976", "ngc 1976"} for k in keys)
+
+
+def test_normalize_search_key_static_method():
+    from TerraLab.ui.widget_mixins.surface_data import WidgetSurfaceDataMixin
+
+    assert WidgetSurfaceDataMixin._normalize_search_key(" Júpiter ") == "jupiter"
+
+    class DummyWidget(WidgetSurfaceDataMixin):
+        pass
+
+    dummy = DummyWidget()
+    assert dummy._normalize_search_key(" M42 ") == "m42"
+
+
+def test_search_trigger_is_not_duplicated_by_completer_return(
+    monkeypatch,
+):
+    from TerraLab.ui.widget_mixins.surface_data import WidgetSurfaceDataMixin
+
+    class DummyWidget(WidgetSurfaceDataMixin):
+        pass
+
+    dummy = DummyWidget()
+    calls = []
+    dummy._search_record = lambda _text: {"kind": "planet"}
+    dummy.center_on_object = lambda record: calls.append(record)
+    monkeypatch.setattr(
+        "TerraLab.ui.widget_mixins.surface_data.time.monotonic",
+        lambda: 100.0,
+    )
+
+    dummy.on_search_triggered("Jupiter")
+    dummy.on_search_triggered("Jupiter")
+
+    assert calls == [{"kind": "planet"}]
+
+
+def test_delayed_search_result_does_not_override_newer_view_input():
+    from TerraLab.ui.widget_mixins.surface_data import WidgetSurfaceDataMixin
+
+    class DummyWidget(WidgetSurfaceDataMixin):
+        pass
+
+    dummy = DummyWidget()
+    dummy.canvas = SimpleNamespace(_view_interaction_revision=4)
+    dummy._pending_search_token = "9"
+    dummy.target_azimuth = None
+    dummy.target_elevation = None
+
+    dummy._on_search_resolved(
+        {
+            "_client_token": "9",
+            "_view_revision": 3,
+            "kind": "sky",
+            "type": "planet",
+            "key": "jupiter barycenter",
+            "alt": 31.0,
+            "az": 205.0,
+        }
+    )
+
+    assert not hasattr(dummy.canvas, "selected_target")
+    assert not hasattr(dummy.canvas, "azimuth_offset")

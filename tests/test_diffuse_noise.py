@@ -1,24 +1,16 @@
+from dataclasses import replace
+
 from TerraLab.render.sky.milkyway_overlay import MilkyWayOverlay
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
     LP_MODE_MAGNITUDE,
 )
 from TerraLab.scene.camera import Camera
-from TerraLab.scene.scene_state import SceneState
+from TerraLab.scene.render_state import RenderState
+import numpy as np
 
 
-def _state_with_overlay(**overlay_cfg) -> SceneState:
-    state = SceneState(
-        camera=Camera(),
-        latitude=41.4,
-        longitude=2.1,
-        ut_hour=22.0,
-        day_of_year=120,
-        sun_alt=-25.0,
-        bortle=2.0,
-        light_pollution_mode=LP_MODE_AUTOMATIC,
-        magnitude_limit=6.5,
-    )
+def _state_with_overlay(**overlay_cfg) -> RenderState:
     base_cfg = {
         "enabled": True,
         "texture_path": "data/sky/milkyway_overlay.png",
@@ -43,8 +35,28 @@ def _state_with_overlay(**overlay_cfg) -> SceneState:
         "dust_extinction_strength": 0.0,
     }
     base_cfg.update(overlay_cfg)
-    state.extras = {"milkyway_overlay": base_cfg}
-    return state
+    empty = np.empty(0, dtype=np.float32)
+    return RenderState(
+        camera=Camera(),
+        latitude=41.4,
+        longitude=2.1,
+        altitude_m=0.0,
+        ut_hour=22.0,
+        day_of_year_utc=120,
+        year_utc=2026,
+        np_ra=empty,
+        np_dec=empty,
+        np_mag=empty,
+        np_r=empty,
+        np_g=empty,
+        np_b=empty,
+        np_bp_rp=empty,
+        sun_alt=-25.0,
+        bortle=2,
+        light_pollution_mode=LP_MODE_AUTOMATIC,
+        mag_limit=6.5,
+        extras={"milkyway_overlay": base_cfg},
+    )
 
 
 def test_sample_rgba_is_stable_for_same_query():
@@ -75,7 +87,7 @@ def test_sample_rgba_changes_with_ra_offset():
 def test_effective_opacity_is_zero_in_daylight():
     overlay = MilkyWayOverlay()
     state = _state_with_overlay()
-    state.sun_alt = 5.0
+    state = replace(state, sun_alt=5.0)
     cfg = overlay._read_config(state)
     opacity, reason = overlay._compute_effective_opacity(state, cfg)
     assert opacity == 0.0
