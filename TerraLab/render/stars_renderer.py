@@ -24,7 +24,17 @@ try:
 except Exception:  # pragma: no cover
     np = None
 
+from TerraLab.application.star_rendering import (
+    StarRenderingPipeline,
+    resolve_star_rendering_pipeline,
+)
 from TerraLab.common.exception_reporting import log_suppressed_exception
+from TerraLab.render.qpainter.stars import QPainterStarAdapter
+from TerraLab.scene.photometry import update_star_rendering_params
+from TerraLab.scene.plans.stars import (
+    StarScenePlanner,
+    build_scope_spatial_index_payload,
+)
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
     normalize_light_pollution_mode,
@@ -36,7 +46,6 @@ from TerraLab.scene.projection import (
 )
 from TerraLab.util.color import color_from_bp_rp
 from TerraLab.util.math2d import clamp
-from TerraLab.widgets.telescope_runtime import update_star_rendering_params
 
 
 def get_scope_solar_pattern(canvas):
@@ -405,95 +414,6 @@ class StarsRenderResult:
     avg_radius: float = 0.0
 
 
-def build_scope_spatial_index_payload(
-    ra_all,
-    dec_all,
-    mag_all=None,
-    max_mag: float | None = None,
-    ra_bins: int = 360,
-    dec_bins: int = 180,
-    chunk_size: int = 1_000_000,
-):
-    if np is None or ra_all is None or dec_all is None:
-        return None, None
-
-    n_total = int(len(ra_all))
-    num_tiles = int(ra_bins * dec_bins)
-    if n_total <= 0:
-        return np.array([], dtype=np.int32), np.zeros(
-            num_tiles + 1, dtype=np.int64
-        )
-
-    use_mag_cap = (
-        (max_mag is not None)
-        and (mag_all is not None)
-        and (int(len(mag_all)) == n_total)
-    )
-    max_mag_f = float(max_mag) if max_mag is not None else None
-
-    counts = np.zeros(num_tiles, dtype=np.int64)
-    valid_total = 0
-
-    for start in range(0, n_total, chunk_size):
-        end = min(start + chunk_size, n_total)
-        ra_chunk = np.asarray(ra_all[start:end], dtype=np.float32)
-        dec_chunk = np.asarray(dec_all[start:end], dtype=np.float32)
-        valid = np.isfinite(ra_chunk) & np.isfinite(dec_chunk)
-        if use_mag_cap:
-            mag_chunk = np.asarray(mag_all[start:end], dtype=np.float32)
-            valid &= np.isfinite(mag_chunk) & (mag_chunk <= max_mag_f + 1e-6)
-        if not np.any(valid):
-            continue
-
-        ra_valid = np.mod(ra_chunk[valid], 360.0)
-        dec_valid = np.clip(dec_chunk[valid], -90.0, 89.99999)
-        ra_bin = np.asarray(np.floor(ra_valid), dtype=np.int32)
-        dec_bin = np.asarray(np.floor(dec_valid + 90.0), dtype=np.int32)
-        tile_ids = np.asarray(dec_bin * ra_bins + ra_bin, dtype=np.int32)
-        counts += np.bincount(tile_ids, minlength=num_tiles)
-        valid_total += int(len(tile_ids))
-
-    offsets = np.empty(num_tiles + 1, dtype=np.int64)
-    offsets[0] = 0
-    np.cumsum(counts, out=offsets[1:])
-    sorted_indices = np.empty(valid_total, dtype=np.int32)
-    cursor = offsets[:-1].copy()
-
-    for start in range(0, n_total, chunk_size):
-        end = min(start + chunk_size, n_total)
-        ra_chunk = np.asarray(ra_all[start:end], dtype=np.float32)
-        dec_chunk = np.asarray(dec_all[start:end], dtype=np.float32)
-        valid = np.isfinite(ra_chunk) & np.isfinite(dec_chunk)
-        if use_mag_cap:
-            mag_chunk = np.asarray(mag_all[start:end], dtype=np.float32)
-            valid &= np.isfinite(mag_chunk) & (mag_chunk <= max_mag_f + 1e-6)
-        if not np.any(valid):
-            continue
-
-        raw_idx = np.arange(start, end, dtype=np.int32)[valid]
-        ra_valid = np.mod(ra_chunk[valid], 360.0)
-        dec_valid = np.clip(dec_chunk[valid], -90.0, 89.99999)
-        ra_bin = np.asarray(np.floor(ra_valid), dtype=np.int32)
-        dec_bin = np.asarray(np.floor(dec_valid + 90.0), dtype=np.int32)
-        tile_ids = np.asarray(dec_bin * ra_bins + ra_bin, dtype=np.int32)
-
-        local_order = np.argsort(tile_ids, kind="mergesort")
-        tile_sorted = tile_ids[local_order]
-        idx_sorted = raw_idx[local_order]
-        unique_tiles, first_pos = np.unique(tile_sorted, return_index=True)
-        next_pos = np.append(first_pos[1:], len(tile_sorted))
-
-        for tile_id, seg_start, seg_end in zip(
-            unique_tiles, first_pos, next_pos
-        ):
-            dst = int(cursor[int(tile_id)])
-            seg_len = int(seg_end - seg_start)
-            sorted_indices[dst : dst + seg_len] = idx_sorted[seg_start:seg_end]
-            cursor[int(tile_id)] += seg_len
-
-    return sorted_indices, offsets
-
-
 class StarsRenderer:
     """
     Renderer orientado a look "sky map / night-sky":
@@ -502,7 +422,16 @@ class StarsRenderer:
     - Sprites gaussians en memòria cau (ràpid i consistent)
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        star_rendering_pipeline: StarRenderingPipeline | str | None = None,
+    ) -> None:
+        self._star_rendering_pipeline = resolve_star_rendering_pipeline(
+            star_rendering_pipeline
+        )
+        self._star_scene_planner = StarScenePlanner()
+        self._star_scene_adapter = QPainterStarAdapter()
         self._qcolor_cache = {}
         self._sprite_cache = {}
         self._bright_sprite_cache = {}
@@ -534,6 +463,12 @@ class StarsRenderer:
         self._scope_query_cache_tile_count = 0
         self._scope_query_cache_candidate_count = 0
         self._scope_index_pending_key = None
+
+    @property
+    def star_rendering_pipeline(self) -> StarRenderingPipeline:
+        """Selected reversible implementation for the active star slice."""
+
+        return self._star_rendering_pipeline
 
     # -----------------------------
     # Indexing / window selection
@@ -971,7 +906,9 @@ class StarsRenderer:
             try:
                 self._ensure_scope_spatial_index(ra_all, dec_all)
             except Exception:
-                log_suppressed_exception(__name__, "StarsRenderer.prime_catalog_indices")
+                log_suppressed_exception(
+                    __name__, "StarsRenderer.prime_catalog_indices"
+                )
         if (
             dec_all is not None
             and mag_all is not None
@@ -980,7 +917,9 @@ class StarsRenderer:
             try:
                 self._ensure_mag_index(ra_all, dec_all, mag_all)
             except Exception:
-                log_suppressed_exception(__name__, "StarsRenderer.prime_catalog_indices")
+                log_suppressed_exception(
+                    __name__, "StarsRenderer.prime_catalog_indices"
+                )
 
     def _cached_altaz(
         self, ra_all, dec_all, catalog_idx, state, interaction_active: bool
@@ -1123,7 +1062,9 @@ class StarsRenderer:
                 try:
                     cap = min(cap, float(dataset_cap) + 0.15)
                 except Exception:
-                    log_suppressed_exception(__name__, "StarsRenderer._limiting_magnitude")
+                    log_suppressed_exception(
+                        __name__, "StarsRenderer._limiting_magnitude"
+                    )
             cap = max(8.0, cap)
         else:
             cap = 13.5
@@ -1193,11 +1134,14 @@ class StarsRenderer:
         img = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
         img.fill(0)
         p = QPainter(img)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(color))
-        p.drawEllipse(QPointF(center, center), r_bin, r_bin)
-        p.end()
+        try:
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(color))
+            p.drawEllipse(QPointF(center, center), r_bin, r_bin)
+        finally:
+            if p.isActive():
+                p.end()
 
         out = (img, center)
         self._sprite_cache[key] = out
@@ -1236,40 +1180,46 @@ class StarsRenderer:
         img = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
         img.fill(0)
         p = QPainter(img)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        p.setPen(Qt.NoPen)
+        try:
+            p.setRenderHint(QPainter.Antialiasing, True)
+            p.setPen(Qt.NoPen)
 
-        if (not pure_colors) and h > 0:
-            halo = QRadialGradient(center, center, halo_r)
-            halo.setColorAt(
-                0.0,
-                QColor(
-                    color.red(),
-                    color.green(),
-                    color.blue(),
-                    int(clamp(alpha_u8 * (0.32 + 0.08 * h), 0.0, 220.0)),
-                ),
-            )
-            halo.setColorAt(
-                1.0, QColor(color.red(), color.green(), color.blue(), 0)
-            )
-            p.setBrush(QBrush(halo))
-            p.drawEllipse(QPointF(center, center), halo_r, halo_r)
-
-        p.setBrush(QBrush(color))
-        p.drawEllipse(QPointF(center, center), r_core, r_core)
-        if not pure_colors:
-            p.setBrush(
-                QBrush(
+            if (not pure_colors) and h > 0:
+                halo = QRadialGradient(center, center, halo_r)
+                halo.setColorAt(
+                    0.0,
                     QColor(
-                        255, 255, 255, int(clamp(alpha_u8 * 0.75, 0.0, 255.0))
+                        color.red(),
+                        color.green(),
+                        color.blue(),
+                        int(clamp(alpha_u8 * (0.32 + 0.08 * h), 0.0, 220.0)),
+                    ),
+                )
+                halo.setColorAt(
+                    1.0, QColor(color.red(), color.green(), color.blue(), 0)
+                )
+                p.setBrush(QBrush(halo))
+                p.drawEllipse(QPointF(center, center), halo_r, halo_r)
+
+            p.setBrush(QBrush(color))
+            p.drawEllipse(QPointF(center, center), r_core, r_core)
+            if not pure_colors:
+                p.setBrush(
+                    QBrush(
+                        QColor(
+                            255,
+                            255,
+                            255,
+                            int(clamp(alpha_u8 * 0.75, 0.0, 255.0)),
+                        )
                     )
                 )
-            )
-            p.drawEllipse(
-                QPointF(center, center), r_core * 0.42, r_core * 0.42
-            )
-        p.end()
+                p.drawEllipse(
+                    QPointF(center, center), r_core * 0.42, r_core * 0.42
+                )
+        finally:
+            if p.isActive():
+                p.end()
 
         out = (img, center)
         self._bright_sprite_cache[key] = out
@@ -1320,7 +1270,9 @@ class StarsRenderer:
             return
         except Exception:
             # Compatibility fallback for unusual Qt paint engines.
-            log_suppressed_exception(__name__, "StarsRenderer._draw_sprite_batch")
+            log_suppressed_exception(
+                __name__, "StarsRenderer._draw_sprite_batch"
+            )
         for index in indices:
             painter.drawImage(
                 int(sx_i[index] - rounded_center),
@@ -1333,6 +1285,37 @@ class StarsRenderer:
     # Main render
     # -----------------------------
     def render(self, ctx, state):
+        """Render a star frame through the selected reversible capability."""
+
+        if self._star_rendering_pipeline is StarRenderingPipeline.LEGACY:
+            return self._render_legacy(ctx, state)
+        plan = self._star_scene_planner.build(
+            state,
+            width=int(ctx.width),
+            height=int(ctx.height),
+        )
+        draw_calls = self._star_scene_adapter.paint(
+            ctx.painter,
+            plan,
+            pure_colors=bool(state.pure_colors),
+        )
+        diagnostics = getattr(ctx, "diagnostics", None)
+        if diagnostics is not None:
+            for name, value in plan.counters.items():
+                diagnostics.set_counter(name, value)
+            diagnostics.set_counter("star_draw_calls", draw_calls)
+            diagnostics.set_counter("star_scene_pipeline", 1.0)
+        return StarsRenderResult(
+            visible_indices=plan.picks.catalog_indices,
+            visible_sx=plan.picks.screen_x,
+            visible_sy=plan.picks.screen_y,
+            total_in_view=plan.total_in_view,
+            after_mag_cut=plan.after_magnitude_cut,
+            after_bucket=plan.after_bucket,
+            avg_radius=plan.average_radius,
+        )
+
+    def _render_legacy(self, ctx, state):
         self._frame_fragment_draw_calls = 0
         if np is None:
             return self._empty_result()
@@ -1966,9 +1949,7 @@ class StarsRenderer:
             # projected positions for picking, but never leave unmatched
             # static dots on top of the trail layer.
             return StarsRenderResult(
-                visible_indices=np.asarray(
-                    catalog_idx, dtype=np.int32
-                ),
+                visible_indices=np.asarray(catalog_idx, dtype=np.int32),
                 visible_sx=np.asarray(sx, dtype=np.float32),
                 visible_sy=np.asarray(sy, dtype=np.float32),
                 total_in_view=total_in_view,

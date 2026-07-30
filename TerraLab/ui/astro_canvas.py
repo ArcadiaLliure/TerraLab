@@ -15,16 +15,44 @@ from PyQt5.QtWidgets import QApplication, QMenu, QToolTip, QWidget
 from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.app_paths import app_root
 from TerraLab.common.utils import getTraduction, set_config_value
+from TerraLab.application.commands import (
+    LayerIntent,
+    LightPollutionIntent,
+    ModelSnapshots,
+    PresentationIntent,
+    SceneFrameInputs,
+    ScopeIntent,
+    TerrainIntent,
+    UserViewState,
+)
+from TerraLab.application.controller import ApplicationController
+from TerraLab.application.ports.rendering import PickResult
+from TerraLab.scene.contracts import (
+    CameraState,
+    CatalogResource,
+    ConstellationGroupState,
+    ConstellationNodeState,
+    ConstellationState,
+    EphemerisSnapshot,
+    MeasurementState,
+    MilkyWayState,
+    Observer,
+    ResourceRef,
+    ResourceVersions,
+    SceneTime,
+    ScopeSettings,
+    ScopeShape,
+    SelectionStar,
+    SelectionState,
+    SurfaceVisualStyle,
+    TrailState,
+    WeatherState,
+    freeze_json_mapping,
+)
 from TerraLab.ui.canvas_mixins.interaction import CanvasInteractionMixin
 from TerraLab.ui.frame_presenter import SharedFramePresenter
-from TerraLab.light_pollution.modes import (
-    bortle_to_magnitude,
-    normalize_light_pollution_mode,
-    resolve_bortle_class,
-)
-from TerraLab.scene.render_state import resolve_earth_layer_visibility
 from TerraLab.ui.widget_init_helpers import astro_canvas_init
-from TerraLab.widgets.constellation_drawing import (
+from TerraLab.scene.constellations import (
     ConstellationGroup,
     ConstellationNode,
 )
@@ -52,6 +80,14 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             app.aboutToQuit.connect(runtime.stop)
 
         self._frame_presenter = SharedFramePresenter(runtime, self)
+        controller = getattr(parent, "application_controller", None)
+        self._application_controller = (
+            controller if isinstance(controller, ApplicationController) else ApplicationController()
+        )
+        if parent is not None and controller is None:
+            # The parent owns the controller lifetime; the canvas is only an
+            # input/presentation adapter and may be recreated safely.
+            setattr(parent, "application_controller", self._application_controller)
         self._frame_presenter.setAttribute(
             Qt.WA_TransparentForMouseEvents, True
         )
@@ -59,17 +95,13 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
         self._frame_presenter.show()
         self._frame_presenter.raise_()
         self._raise_local_widgets()
-        self._frame_presenter.pick_result.connect(
-            self._on_process_pick
-        )
+        self._frame_presenter.pick_result.connect(self._on_process_pick)
         self._frame_presenter.frame_presented.connect(
             self._on_process_frame_presented
         )
         self._remote_submit_timer = QTimer(self)
         self._remote_submit_timer.setSingleShot(True)
-        self._remote_submit_timer.timeout.connect(
-            self._submit_process_scene
-        )
+        self._remote_submit_timer.timeout.connect(self._submit_process_scene)
         self._scope_pressed_keys: set[int] = set()
         self._scope_last_tick = time.monotonic()
         self._scope_move_timer = QTimer(self)
@@ -81,9 +113,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
         self._selection_pulse_timer = QTimer(self)
         self._selection_pulse_timer.setTimerType(Qt.PreciseTimer)
         self._selection_pulse_timer.setInterval(33)
-        self._selection_pulse_timer.timeout.connect(
-            self._selection_pulse_tick
-        )
+        self._selection_pulse_timer.timeout.connect(self._selection_pulse_tick)
         self._schedule_process_scene()
 
     def shutdown(self, timeout_ms: int = 15_000) -> None:
@@ -147,7 +177,8 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
         is_interactive = bool(
             self.dragging
             or getattr(parent, "_dragging_time", False)
-            or time.monotonic() < float(getattr(self, "_camera_interaction_until", 0.0))
+            or time.monotonic()
+            < float(getattr(self, "_camera_interaction_until", 0.0))
         )
         if is_interactive:
             if now - float(getattr(self, "_last_submit_ts", 0.0)) < 0.015:
@@ -155,7 +186,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
                 return
         self._last_submit_ts = now
         try:
-            self._frame_presenter.submit(self._process_scene_snapshot())
+            self._frame_presenter.submit(self._next_scene_frame())
         except Exception:
             log_suppressed_exception(
                 __name__, "AstroCanvas._submit_process_scene"
@@ -167,9 +198,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
         parent = self.parent_widget
         if not bool(getattr(self, "_reported_first_useful_paint", False)):
             self._reported_first_useful_paint = True
-            callback = getattr(
-                parent, "_on_canvas_first_useful_paint", None
-            )
+            callback = getattr(parent, "_on_canvas_first_useful_paint", None)
             if callable(callback):
                 callback()
         if (
@@ -180,380 +209,417 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             # than the isolated renderer can consume them.
             QTimer.singleShot(0, parent.animate_view)
 
-    def _process_scene_snapshot(self) -> dict[str, Any]:
+    def _next_scene_frame(self):
+        """Translate Qt control state, then let ApplicationController build the frame."""
+
         parent = self.parent_widget
         try:
-            ut_hour, day_utc, year_utc, _ = (
-                self._get_current_utc_context()
-            )
+            ut_hour, day_utc, year_utc, _ = self._get_current_utc_context()
         except (AttributeError, TypeError, ValueError):
             ut_hour = float(getattr(parent, "manual_hour", 12.0))
             day_utc = int(getattr(parent, "manual_day", 0))
             year_utc = int(getattr(parent, "manual_year", 2026))
-
         coordinator = getattr(parent, "ephemeris_coordinator", None)
         ephemeris = (
-            coordinator.get_snapshot()
-            if coordinator is not None
-            else None
+            coordinator.get_snapshot() if coordinator is not None else None
         )
         scope_center = getattr(self.scope_controller, "center", None)
         try:
             scope_fov = self.scope_controller.current_fov()
         except (AttributeError, TypeError, ValueError):
             scope_fov = (5.0, 5.0)
-        layers: list[str] = []
-        if self._parent_checkbox_checked("chk_enable_sky", True):
-            layers.append("stars")
-        if self._parent_checkbox_checked("chk_enable_milkyway", True):
-            layers.append("milkyway")
-        if self._parent_checkbox_checked("chk_solar_system", True):
-            if self._parent_checkbox_checked("chk_sun_moon", True):
-                layers.append("sun_moon")
-            if self._parent_checkbox_checked("chk_planets", True):
-                layers.append("planets")
-        topography_requested = bool(
-            self._parent_checkbox_checked("chk_enable_village", False)
-        )
-        horizon_requested = bool(
-            self._parent_checkbox_checked("chk_enable_horizon", True)
-        )
-        light_pollution_requested = bool(
-            getattr(parent, "light_pollution_enabled", True)
-        )
-        earth_visibility = resolve_earth_layer_visibility(
-            horizon_enabled=horizon_requested,
-            topography_enabled=topography_requested,
-            surface_enabled=self._parent_checkbox_checked(
-                "chk_surface_layer", True
-            ),
-            terrain_3d_enabled=self._parent_checkbox_checked(
-                "chk_terrain_3d", False
-            ),
-            light_pollution_enabled=light_pollution_requested,
-        )
-        if earth_visibility.horizon_enabled:
-            layers.append("terrain")
-        if self._parent_checkbox_checked("chk_grid", False):
-            layers.append("grid")
-        if self._parent_checkbox_checked("chk_deep_space", False):
-            layers.append("deep_sky")
         weather = getattr(parent, "weather", None)
-        lp_mode = normalize_light_pollution_mode(
-            getattr(parent, "light_pollution_mode", "automatic")
+        weather_snapshot = (
+            weather.snapshot()
+            if weather is not None
+            and callable(getattr(weather, "snapshot", None))
+            else {}
         )
-        lp_enabled = earth_visibility.light_pollution_enabled
-        effective_bortle = resolve_bortle_class(
-            lp_mode,
-            automatic_bortle=getattr(parent, "auto_bortle_estimate", 1),
-            bortle_value=getattr(parent, "bortle_value", 1),
-            magnitude_limit=getattr(parent, "magnitude_limit", 8.0),
-            light_pollution_enabled=lp_enabled,
+        weather_values = (
+            weather_snapshot if isinstance(weather_snapshot, dict) else {}
         )
-        if lp_mode == "magnitude" and lp_enabled:
-            effective_mag_limit = float(getattr(parent, "magnitude_limit", 8.0))
-        else:
-            effective_mag_limit = bortle_to_magnitude(effective_bortle)
-        return {
-            "camera": {
-                "azimuth": float(self.azimuth_offset),
-                "elevation": float(self.elevation_angle),
-                "zoom": float(self.zoom_level),
-                "vertical_ratio": float(self.vertical_offset_ratio),
-            },
-            "ut_hour": float(ut_hour),
-            "day_of_year_utc": int(day_utc),
-            "year_utc": int(year_utc),
-            "latitude": float(getattr(parent, "latitude", 0.0)),
-            "longitude": float(getattr(parent, "longitude", 0.0)),
-            "altitude_m": float(getattr(parent, "_observer_offset", 0.0)),
-            "magnitude_limit": float(effective_mag_limit),
-            "naked_eye_cap": float(
-                getattr(parent, "scope_fallback_mag_limit", 8.0)
-            ),
-            "bortle": int(round(effective_bortle)),
-            "light_pollution_mode": str(lp_mode),
-            "light_pollution_enabled": bool(lp_enabled),
-            "pure_colors": bool(getattr(parent, "pure_colors", False)),
-            "spike_magnitude_threshold": float(
-                getattr(parent, "spike_magnitude_threshold", 2.0)
-            ),
-            "star_scale": float(getattr(parent, "star_scale", 1.0)),
-            "auto_star_scale_multiplier": float(
-                getattr(parent, "auto_star_scale_multiplier", 1.0)
-            ),
-            "scope_k_fallback": float(
-                getattr(parent, "scope_k_fallback", 0.2)
-            ),
-            "scope_enabled": self.scope_mode_enabled(),
-            "scope_center_sky": (
-                [float(scope_center[0]), float(scope_center[1])]
-                if scope_center is not None
-                else None
-            ),
-            "scope_fov_deg": [
-                float(scope_fov[0]),
-                float(scope_fov[1]),
-            ],
-            "scope_shape": str(
-                getattr(self.scope_controller, "shape", "circle")
-            ),
-            "interaction_active": bool(
-                self._camera_interaction_active(
-                    include_time_drag=True,
-                    include_animation=True,
-                )
-                or self._scope_motion_active()
-            ),
-            "debug_render_metrics": bool(self.debug_render_metrics),
-            "hud_visible": bool(self.hud_visible),
-            "layers": layers,
-            "trails": {
-                "enabled": bool(
-                    self._parent_checkbox_checked("chk_trails", False)
+        weather_artifact = weather_values.get("sample_artifact", {})
+        weather_artifact = (
+            weather_artifact if isinstance(weather_artifact, dict) else {}
+        )
+        ngc_artifact = getattr(parent, "_render_ngc_artifact", {}) or {}
+        ngc_values = ngc_artifact if isinstance(ngc_artifact, dict) else {}
+        atmosphere = getattr(parent, "scope_atmo_metrics", {}) or {}
+        hud_metrics = (
+            atmosphere.get("hud_metrics", {})
+            if isinstance(atmosphere, dict)
+            else {}
+        )
+        inputs = SceneFrameInputs(
+            user_view=UserViewState(
+                time=SceneTime(float(ut_hour), int(day_utc), int(year_utc)),
+                observer=Observer(
+                    float(getattr(parent, "latitude", 0.0)),
+                    float(getattr(parent, "longitude", 0.0)),
+                    float(getattr(parent, "_observer_offset", 0.0)),
                 ),
-                "start_hour": (
-                    float(self.trail_start_hour)
-                    if self.trail_start_hour is not None
-                    else None
+                camera=CameraState(
+                    float(self.azimuth_offset),
+                    float(self.elevation_angle),
+                    float(self.zoom_level),
+                    float(self.vertical_offset_ratio),
                 ),
-            },
-            "catalog": self._process_catalog_artifact(),
-            "ngc": dict(
-                getattr(parent, "_render_ngc_artifact", {}) or {}
+                layers=LayerIntent(
+                    stars_enabled=self._parent_checkbox_checked(
+                        "chk_enable_sky", True
+                    ),
+                    milkyway_enabled=self._parent_checkbox_checked(
+                        "chk_enable_milkyway", True
+                    ),
+                    solar_system_enabled=self._parent_checkbox_checked(
+                        "chk_solar_system", True
+                    ),
+                    sun_moon_enabled=self._parent_checkbox_checked(
+                        "chk_sun_moon", True
+                    ),
+                    planets_enabled=self._parent_checkbox_checked(
+                        "chk_planets", True
+                    ),
+                    grid_enabled=self._parent_checkbox_checked(
+                        "chk_grid", False
+                    ),
+                    deep_sky_enabled=self._parent_checkbox_checked(
+                        "chk_deep_space", False
+                    ),
+                ),
+                terrain=TerrainIntent(
+                    horizon_enabled=self._parent_checkbox_checked(
+                        "chk_enable_horizon", True
+                    ),
+                    topography_enabled=self._parent_checkbox_checked(
+                        "chk_enable_village", False
+                    ),
+                    surface_enabled=self._parent_checkbox_checked(
+                        "chk_surface_layer", True
+                    ),
+                    terrain_3d_enabled=self._parent_checkbox_checked(
+                        "chk_terrain_3d", False
+                    ),
+                    light_pollution_enabled=bool(
+                        getattr(parent, "light_pollution_enabled", True)
+                    ),
+                    surface_visual_style=SurfaceVisualStyle(
+                        str(
+                            getattr(parent, "surface_visual_style", "original")
+                            or "original"
+                        )
+                    ),
+                ),
+                light_pollution=LightPollutionIntent(
+                    mode=str(
+                        getattr(parent, "light_pollution_mode", "automatic")
+                        or "automatic"
+                    ),
+                    automatic_bortle=float(
+                        getattr(parent, "auto_bortle_estimate", 1)
+                    ),
+                    bortle_value=float(getattr(parent, "bortle_value", 1)),
+                    magnitude_limit=float(
+                        getattr(parent, "magnitude_limit", 8.0)
+                    ),
+                ),
+                scope=ScopeIntent(
+                    enabled=self.scope_mode_enabled(),
+                    center_sky=(
+                        (float(scope_center[0]), float(scope_center[1]))
+                        if scope_center is not None
+                        else None
+                    ),
+                    fov_deg=(float(scope_fov[0]), float(scope_fov[1])),
+                    shape=ScopeShape(
+                        str(getattr(self.scope_controller, "shape", "circle"))
+                    ),
+                    settings=ScopeSettings(
+                        focal_mm=float(
+                            getattr(self.scope_controller, "focal_mm", 250.0)
+                        ),
+                        sensor_profile=str(
+                            getattr(
+                                self.scope_controller, "sensor_key", "tiny"
+                            )
+                        ),
+                        instrument_profile=str(
+                            getattr(
+                                parent, "scope_instrument_profile", "telescope"
+                            )
+                        ),
+                        aperture_input_mode=str(
+                            getattr(
+                                parent,
+                                "scope_aperture_input_mode",
+                                "diameter_mm",
+                            )
+                        ),
+                        aperture_mm=float(
+                            getattr(parent, "scope_aperture_mm", 80.0)
+                        ),
+                        aperture_f_number=float(
+                            getattr(parent, "scope_aperture_f_number", 4.0)
+                        ),
+                        eyepiece_mm=float(
+                            getattr(parent, "scope_eyepiece_mm", 20.0)
+                        ),
+                        eye_pupil_dark_mm=float(
+                            getattr(parent, "scope_eye_pupil_dark_mm", 6.5)
+                        ),
+                        atmospheric_loss_mag=float(
+                            hud_metrics.get("loss_mag", 0.0) or 0.0
+                        ),
+                        exposure_s=float(
+                            getattr(parent, "scope_exposure_s", 2.0)
+                        ),
+                        iso=int(getattr(parent, "scope_iso", 800)),
+                        dataset_max_mag=float(
+                            getattr(parent, "_catalog_max_mag", 8.0)
+                        ),
+                        catalog_mag_sorted=bool(
+                            getattr(parent, "_catalog_mag_sorted", True)
+                        ),
+                    ),
+                ),
+                milkyway=MilkyWayState(
+                    enabled=bool(
+                        getattr(parent, "milkyway_overlay_enabled", True)
+                    ),
+                    opacity=float(
+                        getattr(parent, "milkyway_overlay_opacity", 0.65)
+                    ),
+                    blend_mode=str(
+                        getattr(parent, "milkyway_overlay_blend_mode", "add")
+                    ),
+                    ra_offset_deg=float(
+                        getattr(
+                            parent, "milkyway_overlay_ra_offset_deg", 180.0
+                        )
+                    ),
+                    coord_frame=str(
+                        getattr(
+                            parent, "milkyway_overlay_coord_frame", "galactic"
+                        )
+                    ),
+                    lat_flip=bool(
+                        getattr(parent, "milkyway_overlay_lat_flip", True)
+                    ),
+                    lon_flip=bool(
+                        getattr(parent, "milkyway_overlay_lon_flip", True)
+                    ),
+                    sample_scale=float(
+                        getattr(parent, "milkyway_overlay_sample_scale", 1.0)
+                    ),
+                    dust_map_enabled=bool(
+                        getattr(parent, "dust_map_enabled", False)
+                    ),
+                    dust_density_strength=float(
+                        getattr(parent, "dust_density_strength", 0.0)
+                    ),
+                    dust_extinction_strength=float(
+                        getattr(parent, "dust_extinction_strength", 0.65)
+                    ),
+                ),
+                trails=TrailState(
+                    enabled=self._parent_checkbox_checked("chk_trails", False),
+                    start_hour=(
+                        float(self.trail_start_hour)
+                        if self.trail_start_hour is not None
+                        else None
+                    ),
+                ),
+                presentation=PresentationIntent(
+                    hud_visible=bool(self.hud_visible),
+                    debug_render_metrics=bool(self.debug_render_metrics),
+                    pure_colors=bool(getattr(parent, "pure_colors", False)),
+                    spike_magnitude_threshold=float(
+                        getattr(parent, "spike_magnitude_threshold", 2.0)
+                    ),
+                    star_scale=float(getattr(parent, "star_scale", 1.0)),
+                    auto_star_scale_multiplier=float(
+                        getattr(parent, "auto_star_scale_multiplier", 1.0)
+                    ),
+                    scope_k_fallback=float(
+                        getattr(parent, "scope_k_fallback", 0.2)
+                    ),
+                    interaction_active=bool(
+                        self._camera_interaction_active(
+                            include_time_drag=True, include_animation=True
+                        )
+                        or self._scope_motion_active()
+                    ),
+                    naked_eye_cap=float(
+                        getattr(parent, "scope_fallback_mag_limit", 8.0)
+                    ),
+                ),
             ),
-            "terrain": {
-                "profile_path": str(
-                    getattr(
-                        parent, "_remote_terrain_profile_path", ""
+            model=ModelSnapshots(
+                ephemeris=EphemerisSnapshot(
+                    freeze_json_mapping(ephemeris or {})
+                ),
+                weather=WeatherState(
+                    enabled=bool(weather_values.get("enabled", False)),
+                    latitude=float(weather_values.get("latitude", 0.0)),
+                    longitude=float(weather_values.get("longitude", 0.0)),
+                    use_remote=bool(weather_values.get("use_remote", False)),
+                    cache_enabled=bool(
+                        weather_values.get("cache_enabled", False)
+                    ),
+                    user_agent=str(weather_values.get("user_agent", "")),
+                    bortle=int(weather_values.get("bortle", 1)),
+                    sample_artifact=freeze_json_mapping(weather_artifact),
+                    sample_revision=int(
+                        weather_values.get("sample_revision", 0)
+                    ),
+                ),
+                selection=self._selection_state(),
+                measurement=MeasurementState(
+                    str(
+                        getattr(
+                            self.measurement_controller, "active_tool", "none"
+                        )
+                    ),
+                    int(getattr(self, "_measurement_clear_revision", 0)),
+                ),
+                constellation=self._constellation_state(),
+            ),
+            resources=ResourceVersions(
+                catalog=self._process_catalog_resource(),
+                ngc=ResourceRef(
+                    path=str(ngc_values.get("catalog_path", "") or ""),
+                    version=str(ngc_values.get("revision", "") or ""),
+                ),
+                terrain_profile=ResourceRef(
+                    str(
+                        getattr(parent, "_remote_terrain_profile_path", "")
+                        or ""
                     )
-                    or ""
                 ),
-                "surface_path": str(
-                    getattr(
-                        parent, "_remote_terrain_surface_path", ""
+                terrain_surface=ResourceRef(
+                    str(
+                        getattr(parent, "_remote_terrain_surface_path", "")
+                        or ""
                     )
-                    or ""
                 ),
-                "terrain_3d_enabled": earth_visibility.terrain_3d_enabled,
-                "topography_enabled": earth_visibility.topography_enabled,
-                "horizon_enabled": earth_visibility.horizon_enabled,
-                "surface_enabled": earth_visibility.surface_enabled,
-                "surface_visual_style": str(
-                    getattr(
-                        parent, "surface_visual_style", "original"
+                milkyway_texture=ResourceRef(
+                    str(
+                        getattr(parent, "milkyway_overlay_texture_path", "")
+                        or ""
                     )
-                    or "original"
                 ),
-            },
-            "weather": (
-                weather.snapshot()
-                if weather is not None
-                and callable(getattr(weather, "snapshot", None))
-                else {"enabled": False}
+                dust_map=ResourceRef(
+                    str(getattr(parent, "dust_map_path", "") or "")
+                ),
             ),
-            "ephemeris": ephemeris or {},
-            "selection": self._process_selection_payload(),
-            "measurement": {
-                "tool": str(
-                    getattr(
-                        self.measurement_controller,
-                        "active_tool",
-                        "none",
-                    )
-                ),
-                "clear_revision": int(
-                    getattr(self, "_measurement_clear_revision", 0)
-                ),
-            },
-            "constellation": self._process_constellation_payload(),
-            "milkyway": {
-                "enabled": bool(
-                    getattr(parent, "milkyway_overlay_enabled", True)
-                ),
-                "texture_path": str(
-                    getattr(parent, "milkyway_overlay_texture_path", "")
-                ),
-                "opacity": float(
-                    getattr(parent, "milkyway_overlay_opacity", 0.65)
-                ),
-                "blend_mode": str(
-                    getattr(parent, "milkyway_overlay_blend_mode", "add")
-                ),
-                "ra_offset_deg": float(
-                    getattr(parent, "milkyway_overlay_ra_offset_deg", 180.0)
-                ),
-                "coord_frame": str(
-                    getattr(
-                        parent,
-                        "milkyway_overlay_coord_frame",
-                        "galactic",
-                    )
-                ),
-                "lat_flip": bool(
-                    getattr(parent, "milkyway_overlay_lat_flip", True)
-                ),
-                "lon_flip": bool(
-                    getattr(parent, "milkyway_overlay_lon_flip", True)
-                ),
-                "sample_scale": float(
-                    getattr(parent, "milkyway_overlay_sample_scale", 1.0)
-                ),
-                "dust_map_enabled": bool(
-                    getattr(parent, "dust_map_enabled", False)
-                ),
-                "dust_map_path": str(
-                    getattr(parent, "dust_map_path", "")
-                ),
-                "dust_density_strength": float(
-                    getattr(parent, "dust_density_strength", 0.0)
-                ),
-                "dust_extinction_strength": float(
-                    getattr(parent, "dust_extinction_strength", 0.65)
-                ),
-            },
-            "extras": {
-                "catalog_mag_sorted": bool(
-                    getattr(parent, "_catalog_mag_sorted", True)
-                ),
-                "scope_instrument_profile": str(
-                    getattr(
-                        parent,
-                        "scope_instrument_profile",
-                        "telescope",
-                    )
-                ),
-                "scope_iso": int(getattr(parent, "scope_iso", 800)),
-                "scope_focal_mm": float(
-                    getattr(self.scope_controller, "focal_mm", 250.0)
-                ),
-                "scope_sensor_profile": str(
-                    getattr(self.scope_controller, "sensor_key", "tiny")
-                ),
-                "scope_aperture_input_mode": str(
-                    getattr(
-                        parent,
-                        "scope_aperture_input_mode",
-                        "diameter_mm",
-                    )
-                ),
-                "scope_aperture_mm": float(
-                    getattr(parent, "scope_aperture_mm", 80.0)
-                ),
-                "scope_eyepiece_mm": float(
-                    getattr(parent, "scope_eyepiece_mm", 20.0)
-                ),
-                "scope_eye_pupil_dark_mm": float(
-                    getattr(parent, "scope_eye_pupil_dark_mm", 6.5)
-                ),
-                "scope_dataset_max_mag": float(
-                    getattr(parent, "_catalog_max_mag", 8.0)
-                ),
-                "scope_atmospheric_loss_mag": float(
-                    (
-                        getattr(parent, "scope_atmo_metrics", {}) or {}
-                    )
-                    .get("hud_metrics", {})
-                    .get("loss_mag", 0.0)
-                    or 0.0
-                ),
-                "scope_exposure_s": float(
-                    getattr(parent, "scope_exposure_s", 2.0)
-                ),
-                "scope_aperture_f_number": float(
-                    getattr(parent, "scope_aperture_f_number", 4.0)
-                ),
-            },
-        }
+        )
+        self._application_controller.replace_scene_inputs(inputs)
+        self._application_controller.set_viewport(
+            max(1, int(self.width())),
+            max(1, int(self.height())),
+            max(1.0, float(self.devicePixelRatioF())),
+        )
+        return self._application_controller.build_scene_frame()
 
-    def _process_selection_payload(self) -> dict[str, Any]:
+    def _selection_state(self) -> SelectionState:
         selected = self.selected_target
         if not isinstance(selected, dict):
-            return {}
-        result = {}
-        for key in (
-            "kind",
-            "type",
-            "key",
-            "name",
-            "alt",
-            "az",
-            "screen_distance",
-            "mag",
-            "ra",
-            "dec",
-        ):
-            value = selected.get(key)
-            if isinstance(value, (str, int, float, bool)):
-                result[key] = value
-        star = selected.get("star")
-        if isinstance(star, dict):
-            result["star"] = {
-                str(key): value
-                for key, value in star.items()
-                if isinstance(value, (str, int, float, bool))
-            }
-        return result
+            return SelectionState()
 
-    def _process_constellation_payload(self) -> dict[str, Any]:
-        controller = self.constellation_controller
-        return {
-            "data_path": str(controller.data_path or ""),
-            "enabled": bool(controller.enabled),
-            "visible": bool(controller.visible),
-            "groups": [
-                {
-                    "name": str(group.name),
-                    "nodes": [
-                        {
-                            "ra": float(node.ra_deg),
-                            "dec": float(node.dec_deg),
-                            "star_id": str(node.star_id or ""),
-                            "star_name": str(node.star_name or ""),
-                            "connect": bool(node.connect_from_prev),
-                        }
-                        for node in group.nodes
-                    ],
-                }
-                for group in controller.groups
-            ],
-            "active_group_index": controller.active_group_index,
-            "selected_group_index": controller.selected_group_index,
-            "selected_node_index": controller.selected_node_index,
-            "selected_segment_index": controller.selected_segment_index,
-            "selected_segments": [
-                [int(group), int(segment)]
-                for group, segment in sorted(
-                    controller.selected_segments
+        def number(name: str) -> float | None:
+            value = selected.get(name)
+            return float(value) if isinstance(value, (int, float)) else None
+
+        star = selected.get("star")
+        star_values = star if isinstance(star, dict) else {}
+        star_mag = star_values.get("mag")
+        return SelectionState(
+            kind=str(selected.get("kind", "") or ""),
+            object_type=str(selected.get("type", "") or ""),
+            key=str(selected.get("key", "") or ""),
+            name=str(selected.get("name", "") or ""),
+            altitude=number("alt"),
+            azimuth=number("az"),
+            screen_distance=number("screen_distance"),
+            magnitude=number("mag"),
+            ra=number("ra"),
+            dec=number("dec"),
+            star=(
+                SelectionStar(
+                    name=str(star_values.get("name", "") or ""),
+                    magnitude=(
+                        float(star_mag)
+                        if isinstance(star_mag, (int, float))
+                        else None
+                    ),
                 )
-            ],
-            "selected_group_indices": sorted(
-                int(value)
-                for value in controller.selected_group_indices
+                if star_values
+                else None
             ),
-            "group_drawing_active": bool(
-                controller.group_drawing_active
+        )
+
+    def _constellation_state(self) -> ConstellationState:
+        controller = self.constellation_controller
+        groups = tuple(
+            ConstellationGroupState(
+                name=str(group.name),
+                nodes=tuple(
+                    ConstellationNodeState(
+                        ra=float(node.ra_deg),
+                        dec=float(node.dec_deg),
+                        star_id=str(node.star_id or ""),
+                        star_name=str(node.star_name or ""),
+                        connect=bool(node.connect_from_prev),
+                    )
+                    for node in group.nodes
+                ),
+            )
+            for group in controller.groups
+        )
+        return ConstellationState(
+            data_path=str(controller.data_path or ""),
+            enabled=bool(controller.enabled),
+            visible=bool(controller.visible),
+            groups=groups,
+            active_group_index=controller.active_group_index,
+            selected_group_index=controller.selected_group_index,
+            selected_node_index=controller.selected_node_index,
+            selected_segment_index=controller.selected_segment_index,
+            selected_segments=tuple(
+                (int(group), int(segment))
+                for group, segment in sorted(controller.selected_segments)
             ),
-            "resume_from_node_index": controller.resume_from_node_index,
-            "preview_ra_dec": (
-                list(controller.preview_ra_dec)
+            selected_group_indices=tuple(
+                sorted(
+                    int(value) for value in controller.selected_group_indices
+                )
+            ),
+            group_drawing_active=bool(controller.group_drawing_active),
+            resume_from_node_index=controller.resume_from_node_index,
+            preview_ra_dec=(
+                (
+                    float(controller.preview_ra_dec[0]),
+                    float(controller.preview_ra_dec[1]),
+                )
                 if controller.preview_ra_dec is not None
                 else None
             ),
-            "preview_snapped": bool(controller.preview_snapped),
-        }
+            preview_snapped=bool(controller.preview_snapped),
+        )
 
-    def _process_catalog_artifact(self) -> dict[str, str]:
+    def _process_catalog_resource(self) -> CatalogResource:
         artifact = getattr(
             self.parent_widget, "_render_catalog_artifact", None
         )
         if not isinstance(artifact, dict):
-            return {"catalog_path": ""}
-        return {
-            str(key): str(value)
-            for key, value in artifact.items()
-            if key in {"catalog_path", "r_path", "g_path", "b_path"}
-        }
+            return CatalogResource()
+        return CatalogResource(
+            catalog_path=str(artifact.get("catalog_path", "") or ""),
+            r_path=str(artifact.get("r_path", "") or ""),
+            g_path=str(artifact.get("g_path", "") or ""),
+            b_path=str(artifact.get("b_path", "") or ""),
+            version=str(artifact.get("revision", "") or ""),
+        )
 
     def _resolve_observer_tzinfo(self):
         configured = str(
@@ -569,16 +635,12 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
     def _get_current_utc_context(self):
         parent = self.parent_widget
         local_hour = float(parent.get_current_hour())
-        local = datetime(
-            int(parent.manual_year), 1, 1
-        ) + timedelta(
+        local = datetime(int(parent.manual_year), 1, 1) + timedelta(
             days=int(parent.manual_day), hours=local_hour
         )
         local = local.replace(tzinfo=self._resolve_observer_tzinfo())
         utc = local.astimezone(timezone.utc)
-        ut_hour = (
-            utc.hour + utc.minute / 60.0 + utc.second / 3600.0
-        )
+        ut_hour = utc.hour + utc.minute / 60.0 + utc.second / 3600.0
         day = (utc.date() - datetime(utc.year, 1, 1).date()).days
         return ut_hour, day, utc.year, utc
 
@@ -598,8 +660,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
         if timer is None:
             return
         should_run = (
-            self.selected_target is not None
-            and not self.scope_mode_enabled()
+            self.selected_target is not None and not self.scope_mode_enabled()
         )
         if should_run and not timer.isActive():
             timer.start()
@@ -617,7 +678,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             1.0, float(getattr(self.scope_controller, "focal_mm", 250.0))
         )
         self.set_scope_focal_mm(
-            max(20.0, min(5000.0, current * (1.12 ** steps)))
+            max(20.0, min(5000.0, current * (1.12**steps)))
         )
 
     def _pan_camera_from_pointer(
@@ -637,8 +698,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             -89.9,
             min(
                 89.9,
-                float(self.elevation_angle)
-                + dy * float(sensitivity),
+                float(self.elevation_angle) + dy * float(sensitivity),
             ),
         )
         self.last_mouse_x = float(x)
@@ -691,9 +751,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
                     self._remote_pointer_domain = "scope"
                     self.scope_camera_lock_to_target = False
                     self.scope_reticle_lock_to_target = False
-                    if not (
-                        event.modifiers() & Qt.ShiftModifier
-                    ):
+                    if not (event.modifiers() & Qt.ShiftModifier):
                         self._set_selected_target(None)
                 event.accept()
                 return
@@ -707,9 +765,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
 
     def mouseMoveEvent(self, event) -> None:
         if self._remote_pointer_domain == "measurement":
-            self._request_process_interaction(
-                "move", event.x(), event.y()
-            )
+            self._request_process_interaction("move", event.x(), event.y())
             event.accept()
             return
         if (
@@ -729,18 +785,14 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             self._remote_pointer_domain == "constellation_camera"
             and self.dragging
         ):
-            if (
-                event.pos() - self.press_pos
-            ).manhattanLength() >= 3:
+            if (event.pos() - self.press_pos).manhattanLength() >= 3:
                 self._drawing_ctrl_pan_started = True
             if self._drawing_ctrl_pan_started:
                 self._pan_camera_from_pointer(event.x(), event.y())
             event.accept()
             return
         if self._remote_pointer_domain == "scope":
-            self._request_process_pick(
-                event.x(), event.y(), purpose="scope"
-            )
+            self._request_process_pick(event.x(), event.y(), purpose="scope")
             event.accept()
             return
         if self._remote_pointer_domain == "scope_camera" and self.dragging:
@@ -758,9 +810,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             return
         QWidget.mouseMoveEvent(self, event)
         self._last_hover_global_pos = event.globalPos()
-        self._request_process_pick(
-            event.x(), event.y(), purpose="hover"
-        )
+        self._request_process_pick(event.x(), event.y(), purpose="hover")
 
     def mouseReleaseEvent(self, event) -> None:
         modifiers = int(getattr(self, "_pointer_modifiers", 0)) | int(
@@ -771,9 +821,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             and self._remote_pointer_domain == "measurement"
         ):
             self._remote_pointer_domain = ""
-            self._request_process_interaction(
-                "release", event.x(), event.y()
-            )
+            self._request_process_interaction("release", event.x(), event.y())
             event.accept()
             return
         if (
@@ -820,9 +868,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
                 event.x(),
                 event.y(),
                 force_add=bool(modifiers & int(Qt.ShiftModifier)),
-                additive_select=bool(
-                    modifiers & int(Qt.ControlModifier)
-                ),
+                additive_select=bool(modifiers & int(Qt.ControlModifier)),
             )
             event.accept()
             return
@@ -889,9 +935,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
                 "constellation_double",
                 event.x(),
                 event.y(),
-                additive_select=bool(
-                    event.modifiers() & Qt.ControlModifier
-                ),
+                additive_select=bool(event.modifiers() & Qt.ControlModifier),
                 allow_when_disabled=not self.drawing_mode_enabled(),
             )
             event.accept()
@@ -910,9 +954,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             event.accept()
             return
         self._context_menu_global_pos = event.globalPos()
-        self._request_process_pick(
-            event.x(), event.y(), purpose="context"
-        )
+        self._request_process_pick(event.x(), event.y(), purpose="context")
         event.accept()
 
     def wheelEvent(self, event) -> None:
@@ -927,9 +969,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
 
     def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key_F9:
-            self.debug_render_metrics = not bool(
-                self.debug_render_metrics
-            )
+            self.debug_render_metrics = not bool(self.debug_render_metrics)
             set_config_value(
                 "debug_render_metrics",
                 bool(self.debug_render_metrics),
@@ -946,17 +986,12 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             and event.modifiers() & Qt.ControlModifier
             and event.modifiers() & Qt.ShiftModifier
         ):
-            run_smoke = getattr(
-                self.parent_widget, "run_smoke_scenes", None
-            )
+            run_smoke = getattr(self.parent_widget, "run_smoke_scenes", None)
             if callable(run_smoke):
                 run_smoke()
             event.accept()
             return
-        if (
-            event.key() == Qt.Key_L
-            and event.modifiers() & Qt.ControlModifier
-        ):
+        if event.key() == Qt.Key_L and event.modifiers() & Qt.ControlModifier:
             self.log_positions()
             event.accept()
             return
@@ -1032,17 +1067,13 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
                 else self.scope_controller.SPEED_SLOW
             )
             self.set_scope_speed_mode(new_mode)
-            sync = getattr(
-                self.parent_widget, "sync_scope_speed_ui", None
-            )
+            sync = getattr(self.parent_widget, "sync_scope_speed_ui", None)
             if callable(sync):
                 sync(new_mode)
             event.accept()
             return
         if self.scope_mode_enabled() and event.key() == Qt.Key_Escape:
-            manager = getattr(
-                self.parent_widget, "_scope_ui_manager", None
-            )
+            manager = getattr(self.parent_widget, "_scope_ui_manager", None)
             if manager is not None:
                 manager.exit()
             else:
@@ -1055,11 +1086,8 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
         """Append the current process-published sky positions to a log."""
 
         try:
-            snapshot = self._process_scene_snapshot()
-            ephemeris = snapshot.get("ephemeris")
-            ephemeris = (
-                ephemeris if isinstance(ephemeris, dict) else {}
-            )
+            frame = self._next_scene_frame()
+            ephemeris = dict(frame.ephemeris.payload)
             sun = (
                 ephemeris.get("sun")
                 if isinstance(ephemeris.get("sun"), dict)
@@ -1070,12 +1098,12 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
                 if isinstance(ephemeris.get("moon"), dict)
                 else {}
             )
-            timestamp = datetime.now().astimezone().isoformat(
-                timespec="seconds"
+            timestamp = (
+                datetime.now().astimezone().isoformat(timespec="seconds")
             )
             line = (
                 f"[{timestamp}] "
-                f"UT={float(snapshot.get('ut_hour', 0.0)):.4f}h | "
+                f"UT={float(frame.time.ut_hour):.4f}h | "
                 f"CAM: Alt={float(self.elevation_angle):.3f} "
                 f"Az={float(self.azimuth_offset) % 360.0:.3f} | "
                 f"SUN: Alt={float(sun.get('alt', float('nan'))):.4f} "
@@ -1129,9 +1157,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
         if Qt.Key_Right in self._scope_pressed_keys:
             delta_azimuth -= step
         if delta_altitude or delta_azimuth:
-            self.scope_controller.nudge(
-                delta_altitude, delta_azimuth
-            )
+            self.scope_controller.nudge(delta_altitude, delta_azimuth)
             self._mark_scope_interaction(0.15)
             self.update()
 
@@ -1152,9 +1178,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
         additive_select: bool = False,
         allow_when_disabled: bool = False,
     ) -> None:
-        request = getattr(
-            self._frame_presenter, "request_interaction", None
-        )
+        request = getattr(self._frame_presenter, "request_interaction", None)
         if callable(request):
             request(
                 str(action),
@@ -1168,12 +1192,28 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
     def _on_process_pick(self, result: object) -> None:
         if not isinstance(result, dict):
             return
+        # Runtime already resolved the hit against its plan.  The canvas only
+        # presents it; application state remains the single selection owner.
+        try:
+            self._application_controller.process_pick_result(
+                PickResult(
+                    generation=int(getattr(self, "_scene_generation", 0)),
+                    request_id="qt-presenter",
+                    payload=freeze_json_mapping(result),
+                )
+            )
+        except (TypeError, ValueError):
+            log_suppressed_exception(__name__, "AstroCanvas.pick_state")
         if str(result.get("purpose", "")) == "hover":
             if result.get("kind") != "surface":
                 QToolTip.hideText()
                 return
             QToolTip.showText(
-                getattr(self, "_last_hover_global_pos", self.mapToGlobal(self.rect().center())),
+                getattr(
+                    self,
+                    "_last_hover_global_pos",
+                    self.mapToGlobal(self.rect().center()),
+                ),
                 "<b>{}</b><br>{}<br>Classe {} · {}".format(
                     html.escape(str(result.get("name", ""))),
                     html.escape(str(result.get("description", ""))),
@@ -1184,9 +1224,8 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             )
             return
         if str(result.get("purpose", "")) == "interaction":
-            if (
-                result.get("domain") == "constellation"
-                and isinstance(result.get("constellation"), dict)
+            if result.get("domain") == "constellation" and isinstance(
+                result.get("constellation"), dict
             ):
                 self._apply_process_constellation_payload(
                     result["constellation"]
@@ -1301,9 +1340,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             manager.activate()
         if not self.scope_mode_enabled():
             self.set_scope_enabled(True)
-        self.scope_controller.set_center(
-            (altitude, azimuth), confirmed=True
-        )
+        self.scope_controller.set_center((altitude, azimuth), confirmed=True)
         self.azimuth_offset = azimuth
         self.elevation_angle = max(-90.0, min(90.0, altitude))
         fov_width, fov_height = self.scope_controller.current_fov()
@@ -1339,9 +1376,7 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
                         dec_deg=float(raw_node.get("dec", 0.0)),
                         star_id=str(raw_node.get("star_id", "") or ""),
                         star_name=str(raw_node.get("star_name", "") or ""),
-                        connect_from_prev=bool(
-                            raw_node.get("connect", True)
-                        ),
+                        connect_from_prev=bool(raw_node.get("connect", True)),
                     )
                 )
             groups.append(

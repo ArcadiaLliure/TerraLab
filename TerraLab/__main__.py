@@ -18,10 +18,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version="TerraLab 0.1.0",
     )
+    parser.add_argument(
+        "--render-backend",
+        metavar="ID",
+        help="Select the render backend for this run (default: qpainter).",
+    )
     return parser
 
 
-def run() -> int:
+def run(*, render_backend: str | None = None) -> int:
     """Construct and run the GUI after command-line parsing has completed."""
 
     from PyQt5.QtCore import Qt, QTimer
@@ -53,7 +58,7 @@ def run() -> int:
     apply_onboarding_theme(app)
     windows: dict[str, object] = {}
     crash_handle = None
-    runtime = RuntimeSupervisor(app)
+    runtime = RuntimeSupervisor(app, render_backend=render_backend)
     setattr(app, "terralab_runtime", runtime)
     runtime.start()
     app.aboutToQuit.connect(runtime.stop)
@@ -157,8 +162,8 @@ def run() -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    build_parser().parse_args(argv)
-    return run()
+    arguments = build_parser().parse_args(argv)
+    return run(render_backend=arguments.render_backend)
 
 
 if __name__ == "__main__":

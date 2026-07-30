@@ -14,7 +14,7 @@ from typing import Iterable
 
 from TerraLab.common.utils import get_config_value, set_config_value
 from TerraLab.data.assets_manager import AssetManager
-from TerraLab.terrain.data_sources import (
+from TerraLab.data.source_catalog import (
     LayerRole,
     LayerType,
     SelectionMode,

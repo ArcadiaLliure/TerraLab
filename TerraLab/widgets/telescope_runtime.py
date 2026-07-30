@@ -6,8 +6,10 @@ from datetime import datetime, timezone
 
 from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import get_config_value
-from TerraLab.light_pollution.modes import mode_uses_bortle
-from TerraLab.widgets.physical_math import (
+from TerraLab.scene.photometry import (
+    update_star_rendering_params as _update_star_rendering_params,
+)
+from TerraLab.scene.photometry_math import (
     AtmosphericMath,
     InstrumentOpticsMath,
     VisualPhotometryMath,
@@ -155,7 +157,9 @@ def _download_copernicus_cams_snapshot(
             except Exception:
                 continue
     except Exception:
-        log_suppressed_exception(__name__, "_download_copernicus_cams_snapshot")
+        log_suppressed_exception(
+            __name__, "_download_copernicus_cams_snapshot"
+        )
     shutil.rmtree(workdir, ignore_errors=True)
     return None
 
@@ -292,7 +296,9 @@ def _extract_aod_pressure_from_netcdf(path):
                     else:
                         os.remove(file_path)
             except Exception:
-                log_suppressed_exception(__name__, "_extract_aod_pressure_from_netcdf")
+                log_suppressed_exception(
+                    __name__, "_extract_aod_pressure_from_netcdf"
+                )
 
     if pressure_hpa is not None and pressure_hpa > 2000.0:
         pressure_hpa = pressure_hpa / 100.0
@@ -524,35 +530,4 @@ def on_resize(state):
 
 
 def update_star_rendering_params(state):
-    scope_enabled = bool(state.get("scope_enabled", False))
-    light_pollution_mode = state.get("light_pollution_mode")
-    bortle = max(1.0, min(9.0, float(state.get("bortle", 1.0))))
-    scope_mlim = float(state.get("scope_mlim", 6.0))
-    magnitude_limit = float(state.get("magnitude_limit", 6.0))
-    render_compensation_mag = float(
-        state.get(
-            "render_compensation_mag", DEFAULT_RENDER_MLIM_COMPENSATION_MAG
-        )
-    )
-
-    if mode_uses_bortle(light_pollution_mode):
-        general_mlim, physical_nelm = _compute_general_render_mlim_mag(
-            bortle_class=bortle,
-            render_compensation_mag=render_compensation_mag,
-        )
-    else:
-        general_mlim = magnitude_limit
-        physical_nelm = magnitude_limit
-
-    general_mlim = max(-27.0, min(30.0, general_mlim))
-    state["general_mlim_physical"] = float(physical_nelm)
-    state["general_mlim_compensation_mag"] = float(
-        render_compensation_mag if mode_uses_bortle(light_pollution_mode) else 0.0
-    )
-    state["general_mlim_compensation_description"] = (
-        RENDER_MLIM_COMPENSATION_DESCRIPTION
-    )
-    state["general_mlim"] = general_mlim
-    state["scope_mlim"] = scope_mlim
-    state["render_mag_limit"] = scope_mlim if scope_enabled else general_mlim
-    return state
+    return _update_star_rendering_params(state)

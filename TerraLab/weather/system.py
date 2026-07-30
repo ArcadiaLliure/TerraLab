@@ -20,8 +20,10 @@ from PyQt5.QtGui import (
     QRadialGradient,
 )
 
-from TerraLab.common.exception_reporting import log_suppressed_exception
-from TerraLab.weather.metno_provider import MetNoWeatherProvider
+HAS_PYQT = True
+
+from TerraLab.common.exception_reporting import log_suppressed_exception  # noqa: E402
+from TerraLab.weather.metno_provider import MetNoWeatherProvider  # noqa: E402
 
 # --- CONFIG ---
 DEBUG_CLOUD_DENSITY = (
@@ -157,81 +159,83 @@ class Cloud:
         cx, cy = w / 2, h / 2
 
         painter = QPainter(self.pixmap)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(Qt.NoPen)
+        try:
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(Qt.NoPen)
 
-        # --- "SMOKE" ALGORITHM (Accumulated Transparency) ---
-        # Instead of solid bubbles, we draw hundreds of faint, distorted ellipses
-        # to build up volume. This hides the "circular" edges.
+            # --- "SMOKE" ALGORITHM (Accumulated Transparency) ---
+            # Instead of solid bubbles, we draw hundreds of faint, distorted ellipses
+            # to build up volume. This hides the "circular" edges.
 
-        # 1. Seeds (The "Skeleton" of the cloud)
-        seeds = []
-        num_cores = random.randint(4, 8)
+            # 1. Seeds (The "Skeleton" of the cloud)
+            seeds = []
+            num_cores = random.randint(4, 8)
 
-        # Spread seeds horizontally
-        for i in range(num_cores):
-            sx = (random.random() - 0.5) * w * 0.4  # Keep seeds more central
-            sy = (random.random() - 0.5) * h * 0.15
-            sr = w * 0.15 * random.uniform(0.8, 1.5)
-            seeds.append((cx + sx, cy + sy, sr))
+            # Spread seeds horizontally
+            for _ in range(num_cores):
+                sx = (random.random() - 0.5) * w * 0.4  # Keep seeds more central
+                sy = (random.random() - 0.5) * h * 0.15
+                sr = w * 0.15 * random.uniform(0.8, 1.5)
+                seeds.append((cx + sx, cy + sy, sr))
 
-        # 2. Particles ( The "Flesh")
-        # Higher count because soft edges make them fainter effectively
-        total_particles = int(240 * puffiness)
+            # 2. Particles ( The "Flesh")
+            # Higher count because soft edges make them fainter effectively
+            total_particles = int(240 * puffiness)
 
-        for _ in range(total_particles):
-            # Pick a seed
-            parent_x, parent_y, parent_r = random.choice(seeds)
+            for _ in range(total_particles):
+                # Pick a seed
+                parent_x, parent_y, parent_r = random.choice(seeds)
 
-            # Scatter
-            angle = random.uniform(0, 6.28)
-            dist = (
-                parent_r * (random.random() ** 0.5) * 1.3
-            )  # Slightly wider spread
+                # Scatter
+                angle = random.uniform(0, 6.28)
+                dist = (
+                    parent_r * (random.random() ** 0.5) * 1.3
+                )  # Slightly wider spread
 
-            px = parent_x + math.cos(angle) * dist
-            py = parent_y + math.sin(angle) * dist
+                px = parent_x + math.cos(angle) * dist
+                py = parent_y + math.sin(angle) * dist
 
-            # Texture/Shading Logic
-            rel_y = (py - (cy - h * 0.2)) / (h * 0.5)
-            rel_y = max(0.0, min(1.0, rel_y))
+                # Texture/Shading Logic
+                rel_y = (py - (cy - h * 0.2)) / (h * 0.5)
+                rel_y = max(0.0, min(1.0, rel_y))
 
-            # Base Colors (Higher alpha because gradients will fade them out)
-            if rel_y < 0.3:
-                c = QColor(255, 255, 255, 25)
-            elif rel_y < 0.7:
-                c = QColor(230, 235, 245, 20)
-            else:
-                c = QColor(200, 210, 220, 15)
+                # Base Colors (Higher alpha because gradients will fade them out)
+                if rel_y < 0.3:
+                    c = QColor(255, 255, 255, 25)
+                elif rel_y < 0.7:
+                    c = QColor(230, 235, 245, 20)
+                else:
+                    c = QColor(200, 210, 220, 15)
 
-            # Random size
-            pr = parent_r * random.uniform(0.3, 0.7)
+                # Random size
+                pr = parent_r * random.uniform(0.3, 0.7)
 
-            # Distortion
-            sx = random.uniform(0.8, 1.6)
-            sy = random.uniform(0.7, 1.2)
-            rot = random.uniform(0, 360)
+                # Distortion
+                sx = random.uniform(0.8, 1.6)
+                sy = random.uniform(0.7, 1.2)
+                rot = random.uniform(0, 360)
 
-            painter.save()
-            painter.translate(px, py)
-            painter.rotate(rot)
-            painter.scale(sx, sy)
+                painter.save()
+                painter.translate(px, py)
+                painter.rotate(rot)
+                painter.scale(sx, sy)
 
-            # SOFT EDGE MAGIC: Radial Gradient instead of Solid Brush
-            # Center: Color, Edge: Transparent
-            grad = QRadialGradient(0, 0, pr)
-            grad.setColorAt(0.0, c)
-            grad.setColorAt(0.4, c)  # Core is solid-ish
-            grad.setColorAt(
-                1.0, QColor(c.red(), c.green(), c.blue(), 0)
-            )  # Edge fades to 0
+                # SOFT EDGE MAGIC: Radial Gradient instead of Solid Brush
+                # Center: Color, Edge: Transparent
+                grad = QRadialGradient(0, 0, pr)
+                grad.setColorAt(0.0, c)
+                grad.setColorAt(0.4, c)  # Core is solid-ish
+                grad.setColorAt(
+                    1.0, QColor(c.red(), c.green(), c.blue(), 0)
+                )  # Edge fades to 0
 
-            painter.setBrush(QBrush(grad))
-            painter.drawEllipse(QPointF(0, 0), pr, pr)
+                painter.setBrush(QBrush(grad))
+                painter.drawEllipse(QPointF(0, 0), pr, pr)
 
-            painter.restore()
-
-        painter.end()
+                painter.restore()
+        finally:
+            if painter.isActive():
+                painter.end()
 
     def move_with_wind(self, dx, dy):
         """
@@ -569,21 +573,27 @@ class WeatherSystem:
                 self.last_weather_source = "fallback"
                 self.last_weather_reason = "remote_disabled"
         except Exception:
-            log_suppressed_exception(__name__, "WeatherSystem.set_remote_weather_enabled")
+            log_suppressed_exception(
+                __name__, "WeatherSystem.set_remote_weather_enabled"
+            )
 
     def set_cache_enabled(self, enabled: bool):
         try:
             self.provider.set_cache_enabled(bool(enabled))
             self.last_weather_reason = self.provider.get_last_status()
         except Exception:
-            log_suppressed_exception(__name__, "WeatherSystem.set_cache_enabled")
+            log_suppressed_exception(
+                __name__, "WeatherSystem.set_cache_enabled"
+            )
 
     def set_remote_user_agent(self, user_agent: str):
         try:
             self.provider.set_user_agent(str(user_agent or "").strip())
             self.last_weather_reason = self.provider.get_last_status()
         except Exception:
-            log_suppressed_exception(__name__, "WeatherSystem.set_remote_user_agent")
+            log_suppressed_exception(
+                __name__, "WeatherSystem.set_remote_user_agent"
+            )
 
     def get_runtime_status(self):
         requires_user_agent = False
@@ -1182,86 +1192,93 @@ class WeatherSystem:
             temp_cloud.fill(Qt.transparent)
 
             pt = QPainter(temp_cloud)
-            pt.setRenderHint(QPainter.Antialiasing)
+            try:
+                pt.setRenderHint(QPainter.Antialiasing)
 
-            # 1. Select Source Mapping
-            source_pixmap = c.pixmap  # Always use the soft texture
+                # 1. Select Source Mapping
+                source_pixmap = c.pixmap  # Always use the soft texture
 
-            # 2. HOMOGENIZED RENDERING (Fix used shape changing)
-            # Always use the SAME number of passes to define the cloud "Volume/Shape".
-            CONST_PASSES = 2
+                # 2. HOMOGENIZED RENDERING (Fix used shape changing)
+                # Always use the SAME number of passes to define the cloud "Volume/Shape".
+                CONST_PASSES = 2
 
-            # Default opacity for "Day/Wispy"
-            master_opacity = 0.60
+                # Default opacity for "Day/Wispy"
+                master_opacity = 0.60
 
-            if base_tint:
-                # Map tint alpha to solidity
-                # Night (Black, Alpha 255) -> Opacity 1.0 (Solid)
-                t_alpha = base_tint.alpha() / 255.0
-                if eff_sun_alt < -8.0:
-                    master_opacity = 0.66 + (t_alpha * 0.28)
-                else:
-                    # Keep rain/twilight clouds textured and avoid near-black blobs.
-                    master_opacity = 0.50 + (t_alpha * 0.26)
-
-            pt.setOpacity(master_opacity)
-
-            # 3. Draw Source Stack (Constant Geometry)
-            for _ in range(CONST_PASSES):
-                pt.drawPixmap(0, 0, source_pixmap)
-
-            # Restore opacity for tinting operations
-            pt.setOpacity(1.0)
-
-            # 3. Apply Tint (SourceAtop = Tint only where Alpha > 0)
-            if base_tint:
-                pt.setCompositionMode(QPainter.CompositionMode_SourceAtop)
-
-                if tint_gradient:
-                    grad = QLinearGradient(0, h_px / 2, 0, -h_px / 2)
-                    c_bottom = base_tint
-
-                    # Dynamic Top Color for Eclipse Homogenization
-                    # If eclipsing, top should also darken towards black, not clear white
-                    if eclipse_dimming < 0.95:
-                        darkness = 1.0 - eclipse_dimming
-                        alpha_val = int(min(255, darkness * 255))
-                        c_top = QColor(5, 5, 15, alpha_val)  # Fade to Black
+                if base_tint:
+                    # Map tint alpha to solidity
+                    # Night (Black, Alpha 255) -> Opacity 1.0 (Solid)
+                    t_alpha = base_tint.alpha() / 255.0
+                    if eff_sun_alt < -8.0:
+                        master_opacity = 0.66 + (t_alpha * 0.28)
                     else:
-                        c_top = QColor(255, 255, 255, 0)
+                        # Keep rain/twilight clouds textured and avoid near-black blobs.
+                        master_opacity = 0.50 + (t_alpha * 0.26)
 
-                    grad.setColorAt(0.0, c_bottom)
-                    # MIDDLE: Slightly tinted towards light pollution hue
-                    mid_alpha = max(110, c_top.alpha())
-                    grad.setColorAt(
-                        0.3,
-                        QColor(
-                            base_tint.red(),
-                            base_tint.green(),
-                            int(min(255, base_tint.blue() * 1.2)),
-                            mid_alpha,
-                        ),
-                    )
-                    # TOP: Gaussian-like decay to atmospheric black
-                    grad.setColorAt(1.0, c_top)
-                    pt.fillRect(QRectF(0, 0, w_px, h_px), QBrush(grad))
-                else:
-                    # Uniform tint
-                    pt.fillRect(QRectF(0, 0, w_px, h_px), base_tint)
+                pt.setOpacity(master_opacity)
 
-            # 4. SAFETY FADE (Erode edges to prevent square artifacts)
-            # This ensures that even if particles hit the edge of the buffer,
-            # they fade out softy instead of cutting off.
-            pt.setCompositionMode(QPainter.CompositionMode_DestinationIn)
-            mask_grad = QRadialGradient(0.5, 0.5, 0.5)
-            mask_grad.setCoordinateMode(QRadialGradient.ObjectBoundingMode)
-            mask_grad.setColorAt(0.0, QColor(0, 0, 0, 255))  # Center: Opaque
-            mask_grad.setColorAt(
-                0.7, QColor(0, 0, 0, 255)
-            )  # 70% of radius: Opaque
-            mask_grad.setColorAt(1.0, QColor(0, 0, 0, 0))  # Edge: Transparent
-            pt.fillRect(QRectF(0, 0, w_px, h_px), QBrush(mask_grad))
-            pt.end()  # Finish composition
+                # 3. Draw Source Stack (Constant Geometry)
+                for _ in range(CONST_PASSES):
+                    pt.drawPixmap(0, 0, source_pixmap)
+
+                # Restore opacity for tinting operations
+                pt.setOpacity(1.0)
+
+                # 3. Apply Tint (SourceAtop = Tint only where Alpha > 0)
+                if base_tint:
+                    pt.setCompositionMode(QPainter.CompositionMode_SourceAtop)
+
+                    if tint_gradient:
+                        grad = QLinearGradient(0, h_px / 2, 0, -h_px / 2)
+                        c_bottom = base_tint
+
+                        # Dynamic Top Color for Eclipse Homogenization
+                        # If eclipsing, top should also darken towards black, not clear white
+                        if eclipse_dimming < 0.95:
+                            darkness = 1.0 - eclipse_dimming
+                            alpha_val = int(min(255, darkness * 255))
+                            c_top = QColor(5, 5, 15, alpha_val)  # Fade to Black
+                        else:
+                            c_top = QColor(255, 255, 255, 0)
+
+                        grad.setColorAt(0.0, c_bottom)
+                        # MIDDLE: Slightly tinted towards light pollution hue
+                        mid_alpha = max(110, c_top.alpha())
+                        grad.setColorAt(
+                            0.3,
+                            QColor(
+                                base_tint.red(),
+                                base_tint.green(),
+                                int(min(255, base_tint.blue() * 1.2)),
+                                mid_alpha,
+                            ),
+                        )
+                        # TOP: Gaussian-like decay to atmospheric black
+                        grad.setColorAt(1.0, c_top)
+                        pt.fillRect(QRectF(0, 0, w_px, h_px), QBrush(grad))
+                    else:
+                        # Uniform tint
+                        pt.fillRect(QRectF(0, 0, w_px, h_px), base_tint)
+
+                # 4. SAFETY FADE (Erode edges to prevent square artifacts)
+                # This ensures that even if particles hit the edge of the buffer,
+                # they fade out softy instead of cutting off.
+                pt.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+                mask_grad = QRadialGradient(0.5, 0.5, 0.5)
+                mask_grad.setCoordinateMode(QRadialGradient.ObjectBoundingMode)
+                mask_grad.setColorAt(
+                    0.0, QColor(0, 0, 0, 255)
+                )  # Center: Opaque
+                mask_grad.setColorAt(
+                    0.7, QColor(0, 0, 0, 255)
+                )  # 70% of radius: Opaque
+                mask_grad.setColorAt(
+                    1.0, QColor(0, 0, 0, 0)
+                )  # Edge: Transparent
+                pt.fillRect(QRectF(0, 0, w_px, h_px), QBrush(mask_grad))
+            finally:
+                if pt.isActive():
+                    pt.end()
 
             # --- DRAW TO SCREEN ---
             painter.save()

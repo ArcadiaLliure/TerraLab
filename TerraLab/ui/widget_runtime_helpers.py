@@ -20,7 +20,8 @@ from TerraLab.light_pollution.modes import (
 from TerraLab.data.constants import STAR_CATALOG_NAKED_EYE_MAX_MAG
 from TerraLab.ui.design_system import CALENDAR_STYLESHEET
 from TerraLab.widgets.telescope_runtime import update_telescope_hud
-from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeInputs
+from TerraLab.scene.photometry import VisualMagnitudeInputs
+
 
 def _resolve_effective_bortle_class(widget) -> float:
     """Resolve the graphical Bortle-equivalent value for the active mode."""
@@ -31,7 +32,9 @@ def _resolve_effective_bortle_class(widget) -> float:
         magnitude_limit=getattr(
             widget, "magnitude_limit", STAR_CATALOG_NAKED_EYE_MAX_MAG
         ),
-        light_pollution_enabled=getattr(widget, "light_pollution_enabled", True),
+        light_pollution_enabled=getattr(
+            widget, "light_pollution_enabled", True
+        ),
     )
 
 
@@ -50,7 +53,9 @@ def recompute_visual_magnitude_model(
         try:
             focal_mm = float(widget.scope_focal_spin.value())
         except Exception:
-            log_suppressed_exception(__name__, "recompute_visual_magnitude_model")
+            log_suppressed_exception(
+                __name__, "recompute_visual_magnitude_model"
+            )
     aperture_mm_effective = widget._effective_scope_aperture_mm(focal_mm)
     instrument_profile = str(
         getattr(widget, "scope_instrument_profile", "telescope")
@@ -112,7 +117,9 @@ def recompute_visual_magnitude_model(
             if current_sensor:
                 sensor_profile = str(current_sensor)
         except Exception:
-            log_suppressed_exception(__name__, "recompute_visual_magnitude_model")
+            log_suppressed_exception(
+                __name__, "recompute_visual_magnitude_model"
+            )
 
     inputs = VisualMagnitudeInputs(
         aperture_mm=aperture_mm_effective,
@@ -151,9 +158,7 @@ def request_relocation(widget):
 
         widget.latitude = new_lat
         widget.longitude = new_lon
-        sync_coverage = getattr(
-            widget, "_sync_surface_mode_control", None
-        )
+        sync_coverage = getattr(widget, "_sync_surface_mode_control", None)
         if callable(sync_coverage):
             sync_coverage()
 
@@ -367,11 +372,7 @@ def run_smoke_scenes(widget):
                 or {}
             )
             diagnostics = metadata.get("diagnostics", {})
-            diagnostics = (
-                diagnostics
-                if isinstance(diagnostics, dict)
-                else {}
-            )
+            diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
             counters = diagnostics.get("counters", {})
             timings = diagnostics.get("timings_ms", {})
             counters = counters if isinstance(counters, dict) else {}

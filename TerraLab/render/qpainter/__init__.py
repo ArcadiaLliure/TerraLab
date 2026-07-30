@@ -1,0 +1,1 @@
+"""QPainter View adapter package."""

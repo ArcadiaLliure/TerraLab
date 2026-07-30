@@ -32,8 +32,10 @@ from TerraLab.util.gaia_importer import build_gaia_catalog_from_tables
 
 try:
     import requests
+    from requests.exceptions import RequestException
 except Exception:  # pragma: no cover
     requests = None
+    RequestException = OSError
 
 
 TAP_BASE_URL = "https://gea.esac.esa.int/tap-server/tap"
@@ -102,7 +104,7 @@ class _TeeStream:
         if self._secondary is not None:
             try:
                 self._secondary.write(text)
-            except Exception:
+            except (OSError, ValueError):
                 pass
         return count
 
@@ -117,12 +119,12 @@ class _TeeStream:
         """
         try:
             self._primary.flush()
-        except Exception:
+        except (OSError, ValueError):
             pass
         if self._secondary is not None:
             try:
                 self._secondary.flush()
-            except Exception:
+            except (OSError, ValueError):
                 pass
 
 
@@ -145,7 +147,7 @@ def _setup_file_logging(
     sys.stderr = _TeeStream(orig_stderr, log_stream)
     try:
         faulthandler.enable(file=log_stream, all_threads=True)
-    except Exception:
+    except (OSError, RuntimeError, ValueError):
         pass
     print(f"[gaia-tap] log file: {log_path}")
     return log_stream, orig_stdout, orig_stderr, log_path
@@ -160,16 +162,16 @@ def _teardown_file_logging(
         sys.stderr = orig_stderr
     try:
         faulthandler.disable()
-    except Exception:
+    except RuntimeError:
         pass
     if log_stream is not None:
         try:
             log_stream.flush()
-        except Exception:
+        except (OSError, ValueError):
             pass
         try:
             log_stream.close()
-        except Exception:
+        except (OSError, ValueError):
             pass
 
 
@@ -511,7 +513,7 @@ def _run_async_job(
                 err_resp = session.get(f"{job_url}/error", timeout=20.0)
                 if err_resp.ok:
                     err_msg = err_resp.text.strip()
-            except Exception:
+            except RequestException:
                 pass
             raise RuntimeError(
                 f"TAP async job failed ({phase}). {err_msg}".strip()
@@ -803,7 +805,7 @@ def _fuse_no_gaia_into_visible_catalog(
             datetime.now().isoformat(timespec="seconds"),
             encoding="utf-8",
         )
-    except Exception:
+    except OSError:
         pass
     print(
         f"[gaia-tap] no-Gaia stars fused into visible cache: +{len(supplement)}"
@@ -1080,11 +1082,11 @@ def main() -> int:
 
     try:
         signal.signal(signal.SIGTERM, _sig_abort)
-    except Exception:
+    except (OSError, ValueError):
         pass
     try:
         signal.signal(signal.SIGINT, _sig_abort)
-    except Exception:
+    except (OSError, ValueError):
         pass
 
     try:
@@ -1488,7 +1490,7 @@ def main() -> int:
         else:
             try:
                 shutil.rmtree(stage_dir, ignore_errors=True)
-            except Exception:
+            except OSError:
                 pass
 
         state["status"] = "done"
@@ -1522,7 +1524,7 @@ def main() -> int:
         if session is not None:
             try:
                 session.close()
-            except Exception:
+            except RequestException:
                 pass
         _teardown_file_logging(log_stream, orig_stdout, orig_stderr)
 

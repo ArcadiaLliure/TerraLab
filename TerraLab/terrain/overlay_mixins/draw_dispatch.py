@@ -62,9 +62,7 @@ class OverlayDrawDispatchMixin:
         if elevation_angle > 60.0:
             return  # Looking at zenith — skip terrain
 
-        self._set_surface_visible(
-            bool(surface_enabled), request_repaint=False
-        )
+        self._set_surface_visible(bool(surface_enabled), request_repaint=False)
 
         # Compatibility: the old control only disabled mesh lighting. The
         # replacement selects between two complete representations instead.
@@ -210,7 +208,6 @@ class OverlayDrawDispatchMixin:
         has_terrain_mesh = bool(terrain_mesh)
         has_surface2d = self._has_terrain_surface_2d(terrain_mesh)
         use_3d_relief = bool(terrain_3d_enabled and has_surface2d)
-        profile_target_painter = painter
         profile_image = None
         profile_image_painter = None
         profile_image_key = None
@@ -258,17 +255,12 @@ class OverlayDrawDispatchMixin:
                     (
                         None
                         if light_context.moon_azimuth_deg is None
-                        else round(
-                            float(light_context.moon_azimuth_deg) * 4.0
-                        )
+                        else round(float(light_context.moon_azimuth_deg) * 4.0)
                         / 4.0
                     ),
-                    round(
-                        float(light_context.moon_illumination) * 256.0
-                    )
+                    round(float(light_context.moon_illumination) * 256.0)
                     / 256.0,
-                    round(float(light_context.eclipse_factor) * 256.0)
-                    / 256.0,
+                    round(float(light_context.eclipse_factor) * 256.0) / 256.0,
                     repr(self.render_settings),
                 )
                 if (
@@ -282,25 +274,35 @@ class OverlayDrawDispatchMixin:
                 )
                 profile_image.fill(0)
                 profile_image_painter = QPainter(profile_image)
-                profile_image_painter.setRenderHint(
-                    QPainter.Antialiasing,
-                    painter.testRenderHint(QPainter.Antialiasing),
-                )
-                profile_target_painter = profile_image_painter
+                try:
+                    profile_image_painter.setRenderHint(
+                        QPainter.Antialiasing,
+                        painter.testRenderHint(QPainter.Antialiasing),
+                    )
+                except Exception:
+                    if profile_image_painter.isActive():
+                        profile_image_painter.end()
+                    raise
+
+        # ── Farciment del terra amb gradient de perspectiva ───────────────────────
+        # Simulem el pla de terra que s'allunya amb un gradient fosc→color terra,
+        # evitant el rectangle pla uniforme que trenca el realisme.
+        def draw_profile_layers_and_ground(target_painter: QPainter) -> None:
             # Bands are already ordered far-to-near. In silhouette mode the
             # layer-count control remains authoritative even if a mesh exists.
             terrain_layers = self._profile_layers_for_frame(interaction_active)
             for band_pts, _night_c, day_c in terrain_layers:
-                # First: Draw any domes that are behind or within this band (further than band_min)
+                # First: draw domes behind or within this band.
                 while (
-                    pending_domes and pending_domes[0]["dist"] >= band_pts.band_min
+                    pending_domes
+                    and pending_domes[0]["dist"] >= band_pts.band_min
                 ):
                     d_info = pending_domes.pop(0)
                     draw_domes_callback(painter, d_info["idx"], d_info["dist"])
 
-                color = QColor(day_c)
+                color = _qcolor_from_rgba(day_c)
                 self._draw_band_linear(
-                    profile_target_painter,
+                    target_painter,
                     band_pts,
                     color,
                     projection_fn,
@@ -319,58 +321,62 @@ class OverlayDrawDispatchMixin:
                     light_context=light_context,
                 )
 
-        # ── Farciment del terra amb gradient de perspectiva ───────────────────────
-        # Simulem el pla de terra que s'allunya amb un gradient fosc→color terra,
-        # evitant el rectangle pla uniforme que trenca el realisme.
-        profile_resolved = getattr(self.profile, "resolved_mask", None)
-        profile_is_partial = profile_resolved is not None and not bool(
-            np.all(profile_resolved)
-        )
-        if (
-            self._layers
-            and not use_3d_relief
-            and not has_terrain_mesh
-            and not profile_is_partial
-        ):
-            ground_light = self._terrain_light_components(
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                light_context=light_context,
+            profile_resolved = getattr(self.profile, "resolved_mask", None)
+            profile_is_partial = profile_resolved is not None and not bool(
+                np.all(profile_resolved)
             )
-            ground_c = self._compose_profile_light_color(
-                GROUND_DAY,
-                float(ground_light.intensity),
-                0.0,
-                sky_ref,
-                ground_light.factors,
-                solar_exposure=float(ground_light.solar_exposure),
-                lunar_exposure=float(ground_light.lunar_exposure),
-            )
-            nearest = self._layers[-1]
-            self._draw_ground_linear(
-                profile_target_painter,
-                nearest[0],
-                ground_c,
-                projection_fn,
-                width,
-                height,
-                px_per_alt_deg,
-                current_azimuth,
-                az_min,
-                az_max,
-                overlap_px=1.0,
-                projection_fn_numpy=projection_fn_numpy,
-                interaction_active=interaction_active,
-            )
+            if (
+                self._layers
+                and not has_terrain_mesh
+                and not profile_is_partial
+            ):
+                ground_light = self._terrain_light_components(
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.0,
+                    light_context=light_context,
+                )
+                ground_c = self._compose_profile_light_color(
+                    GROUND_DAY,
+                    float(ground_light.intensity),
+                    0.0,
+                    sky_ref,
+                    ground_light.factors,
+                    solar_exposure=float(ground_light.solar_exposure),
+                    lunar_exposure=float(ground_light.lunar_exposure),
+                )
+                nearest = self._layers[-1]
+                self._draw_ground_linear(
+                    target_painter,
+                    nearest[0],
+                    ground_c,
+                    projection_fn,
+                    width,
+                    height,
+                    px_per_alt_deg,
+                    current_azimuth,
+                    az_min,
+                    az_max,
+                    overlap_px=1.0,
+                    projection_fn_numpy=projection_fn_numpy,
+                    interaction_active=interaction_active,
+                )
 
-        if profile_image_painter is not None and profile_image is not None:
-            profile_image_painter.end()
-            self._profile_image_cache_key = profile_image_key
-            self._profile_image_cache = profile_image
-            painter.drawImage(0, 0, profile_image)
-            return
+        if not use_3d_relief:
+            if profile_image_painter is not None and profile_image is not None:
+                try:
+                    draw_profile_layers_and_ground(profile_image_painter)
+                finally:
+                    # The cache owns the image; never let it be destroyed
+                    # while Qt still has an active painter for it.
+                    if profile_image_painter.isActive():
+                        profile_image_painter.end()
+                self._profile_image_cache_key = profile_image_key
+                self._profile_image_cache = profile_image
+                painter.drawImage(0, 0, profile_image)
+                return
+            draw_profile_layers_and_ground(painter)
 
         if use_3d_relief:
             rendered = False
@@ -385,12 +391,9 @@ class OverlayDrawDispatchMixin:
                 self._visible_surface_cache()
             )
             if (
-                (
-                    self.render_settings.terrain_shading_mode == "interpolated"
-                    or categorical_surface
-                )
-                and supports_interpolated
-            ):
+                self.render_settings.terrain_shading_mode == "interpolated"
+                or categorical_surface
+            ) and supports_interpolated:
                 rendered = self._draw_terrain_interpolated(
                     painter,
                     terrain_mesh,
@@ -451,7 +454,11 @@ class OverlayDrawDispatchMixin:
     def _reference_sky_color(
         self, sky_color_fn, sun_alt, sun_az, current_azimuth, t_night
     ):
-        if callable(sky_color_fn) and sun_alt is not None and sun_az is not None:
+        if (
+            callable(sky_color_fn)
+            and sun_alt is not None
+            and sun_az is not None
+        ):
             try:
                 color = sky_color_fn(
                     0.0,
@@ -462,8 +469,12 @@ class OverlayDrawDispatchMixin:
                 if isinstance(color, QColor):
                     return color
             except Exception:
-                log_suppressed_exception(__name__, "OverlayDrawDispatchMixin._reference_sky_color")
-        return _lerp_color(QColor(170, 195, 215), QColor(5, 5, 12), t_night)
+                log_suppressed_exception(
+                    __name__, "OverlayDrawDispatchMixin._reference_sky_color"
+                )
+        return _qcolor_from_rgba(
+            _lerp_color(QColor(170, 195, 215), QColor(5, 5, 12), t_night)
+        )
 
     def _terrain_polygon_layers(self, has_terrain_mesh: bool):
         if not has_terrain_mesh or len(self._layers) <= 16:
@@ -574,7 +585,14 @@ class OverlayDrawDispatchMixin:
     ) -> QColor:
         """Run fallback/profile colours through the same surface pipeline."""
 
-        base = np.asarray(base_color.getRgb(), dtype=np.uint8)
+        base_rgba = (
+            base_color
+            if isinstance(base_color, tuple) and len(base_color) == 4
+            else (base_color[0], base_color[1], base_color[2], 255)
+            if isinstance(base_color, tuple)
+            else base_color.getRgb()
+        )
+        base = np.asarray(base_rgba, dtype=np.uint8)
         vibrant = (
             normalize_surface_visual_style(
                 self.render_settings.surface_visual_style
@@ -627,4 +645,3 @@ class OverlayDrawDispatchMixin:
             ],
             dtype=np.float32,
         )
-

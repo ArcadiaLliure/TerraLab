@@ -929,7 +929,7 @@ def _resolve_search_record(payload: dict, coordinator) -> dict:
                 body.get("key", key) or key
             ).lower()
     else:
-        from TerraLab.widgets.spherical_math import ra_dec_to_alt_az
+        from TerraLab.scene.spherical_math import ra_dec_to_alt_az
 
         altitude, azimuth = ra_dec_to_alt_az(
             float(record["ra"]),
@@ -1020,7 +1020,7 @@ def _prepare_weather_sample(payload: dict) -> dict:
 def _convert_coordinates(payload: dict) -> dict:
     """Convert astronomical coordinates only inside Compute."""
 
-    from TerraLab.widgets.spherical_math import (
+    from TerraLab.scene.spherical_math import (
         altaz_to_ra_dec,
         ra_dec_to_alt_az,
     )
@@ -1275,7 +1275,7 @@ def _prepare_catalog_scope(payload):
         _read_tile_npz,
     )
     from TerraLab.data.tile_manifest import TileManifest
-    from TerraLab.widgets.spherical_math import altaz_to_ra_dec
+    from TerraLab.scene.spherical_math import altaz_to_ra_dec
 
     manifest_path = _ensure_catalog_manifest(
         Path(str(payload["manifest_path"]))

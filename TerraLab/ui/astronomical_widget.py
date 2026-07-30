@@ -219,6 +219,7 @@ class AstronomicalWidget(
         self._surface_progress_ui_phase = raw_phase
         labels = {
             "queued": "preparant",
+            "waiting-terrain-profile": "esperant el perfil del terreny",
             "discovering-sources": "detectant fonts",
             "opening-geotiff": "obrint el GeoTIFF",
             "preparing": "preparant coordenades",
@@ -258,9 +259,8 @@ class AstronomicalWidget(
             self.on_horizon_progress("")
             self._set_scene_load_stage("scene_ready")
             self.canvas.update()
-            checkbox = getattr(self, "chk_surface_layer", None)
-            if checkbox is not None and bool(checkbox.isChecked()):
-                self.on_surface_layer_toggled(True)
+            # The terrain client owns queued surface requests. Reissuing one
+            # here would make Compute sample the same immutable profile twice.
             return
         self._on_terrain_coordinator_error(
             "Compute devolvió un artefacto de terreno incompatible"

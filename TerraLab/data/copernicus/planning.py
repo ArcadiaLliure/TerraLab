@@ -8,7 +8,7 @@ from typing import Iterator
 
 from pyproj import Geod, Transformer
 
-from TerraLab.terrain.crs import PYPROJ_TRANSFORMER_LOCK
+from TerraLab.data.crs import PYPROJ_TRANSFORMER_LOCK
 from .constants import (
     CRS_PRODUCT,
     CRS_WGS84,

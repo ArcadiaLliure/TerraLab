@@ -60,9 +60,15 @@ class RuntimeSupervisor(QObject):
         "compute": "TerraLab.runtime.compute_service",
     }
 
-    def __init__(self, parent: QObject | None = None) -> None:
+    def __init__(
+        self,
+        parent: QObject | None = None,
+        *,
+        render_backend: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self._workers: dict[str, _WorkerState] = {}
+        self._render_backend = str(render_backend or "").strip() or None
         self._closing = False
         self._shutdown_timer = QTimer(self)
         self._shutdown_timer.setSingleShot(True)
@@ -200,6 +206,8 @@ class RuntimeSupervisor(QObject):
                 pythonpath + os.pathsep + existing_pythonpath
             )
         environment.insert("PYTHONPATH", pythonpath)
+        if state.role == "render" and self._render_backend is not None:
+            environment.insert("TERRALAB_RENDER_BACKEND", self._render_backend)
         state.process.setProcessEnvironment(environment)
         state.process.setWorkingDirectory(str(import_root))
         state.process.setProgram(sys.executable)

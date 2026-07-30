@@ -354,10 +354,20 @@ class ProcessTerrainClient(QObject):
         self._observer_offset = 0.0
         self._profile_path = ""
         self._surface_generation = 0
+        self._surface_request: dict[str, object] | None = None
+        self._surface_request_sent = False
+        self._surface_retry_after_worker_restart = False
+        self._surface_worker_unavailable_reported = False
         self._progress_text = ""
         self._shutdown = False
         runtime.message_received.connect(self._on_message)
         runtime.worker_ready.connect(self._on_worker_ready)
+        worker_unavailable = getattr(runtime, "worker_unavailable", None)
+        if worker_unavailable is not None:
+            worker_unavailable.connect(self._on_worker_unavailable)
+        worker_failed = getattr(runtime, "worker_failed", None)
+        if worker_failed is not None:
+            worker_failed.connect(self._on_worker_failed)
 
     @property
     def observer_offset(self) -> float:
@@ -408,6 +418,11 @@ class ProcessTerrainClient(QObject):
 
     def cancel_surface_refresh(self) -> None:
         self._surface_generation += 1
+        self._surface_request = None
+        self._surface_request_sent = False
+        self._surface_retry_after_worker_restart = False
+        self._surface_worker_unavailable_reported = False
+        self._progress_text = ""
 
     def request_surface_refresh(self, *args, **kwargs) -> None:
         if self._shutdown:
@@ -420,19 +435,45 @@ class ProcessTerrainClient(QObject):
             profile_path = str(profile.get("profile_path", "") or profile_path)
         elif isinstance(profile, (str, bytes)):
             profile_path = str(profile)
-        if not profile_path:
-            return
         self._surface_generation += 1
-        generation = self._surface_generation
-        payload = {
+        request_payload = {
             key: value
             for key, value in kwargs.items()
             if isinstance(value, (str, int, float, bool)) or value is None
         }
+        self._surface_request = {
+            "profile_path": str(profile_path),
+            "generation": self._surface_generation,
+            "payload": request_payload,
+        }
+        self._surface_request_sent = False
+        self._surface_retry_after_worker_restart = False
+        self._surface_worker_unavailable_reported = False
+        self._dispatch_surface_refresh()
+
+    def _dispatch_surface_refresh(self) -> bool:
+        """Send the newest surface request once its terrain profile exists."""
+
+        request = self._surface_request
+        if self._shutdown or request is None:
+            return False
+        profile_path = str(request.get("profile_path", "") or self._profile_path)
+        if not profile_path:
+            self._progress_text = "surface: waiting-terrain-profile"
+            self.horizon_progress.emit(
+                {
+                    "kind": "surface",
+                    "phase": "waiting-terrain-profile",
+                    "percent": 0.0,
+                }
+            )
+            return False
+        payload = dict(request.get("payload", {}))
+        generation = int(request["generation"])
         payload.update(
             {
                 "operation": "terrain_surface",
-                "profile_path": str(profile_path),
+                "profile_path": profile_path,
                 "surface_generation": generation,
             }
         )
@@ -445,10 +486,20 @@ class ProcessTerrainClient(QObject):
                 generation=generation,
             ),
         )
+        self._surface_request_sent = bool(accepted)
+        if accepted:
+            request["profile_path"] = profile_path
+            self._progress_text = "surface: queued"
+            self.horizon_progress.emit(
+                {"kind": "surface", "phase": "queued", "percent": 0.0}
+            )
+            return True
         if not accepted:
             self.horizon_error.emit(
                 "Compute no está disponible para preparar la superficie."
             )
+
+        return False
 
     def request_bortle_estimate(
         self, lat: float, lon: float, request_id: int = 0
@@ -480,9 +531,52 @@ class ProcessTerrainClient(QObject):
             except (TypeError, RuntimeError):
                 pass
 
+        worker_unavailable = getattr(self._runtime, "worker_unavailable", None)
+        if worker_unavailable is not None:
+            try:
+                worker_unavailable.disconnect(self._on_worker_unavailable)
+            except (TypeError, RuntimeError):
+                pass
+        worker_failed = getattr(self._runtime, "worker_failed", None)
+        if worker_failed is not None:
+            try:
+                worker_failed.disconnect(self._on_worker_failed)
+            except (TypeError, RuntimeError):
+                pass
+
     def _on_worker_ready(self, role: str) -> None:
-        if role == "compute" and self._job is not None and not self._shutdown:
+        if role != "compute" or self._shutdown:
+            return
+        if self._job is not None:
             self.request_bake(self._job)
+        if self._surface_request is not None and (
+            not self._surface_request_sent
+            or self._surface_retry_after_worker_restart
+        ):
+            # A restarted worker has lost in-flight work. The request describes
+            # only immutable resources, so replaying it is safe and necessary.
+            self._surface_request_sent = False
+            self._surface_retry_after_worker_restart = False
+            self._dispatch_surface_refresh()
+
+    def _on_worker_failed(self, role: str, _reason: str) -> None:
+        if role == "compute" and self._surface_request is not None:
+            self._surface_retry_after_worker_restart = True
+
+    def _on_worker_unavailable(self, role: str, _reason: str) -> None:
+        if (
+            role != "compute"
+            or self._shutdown
+            or self._surface_request is None
+            or self._surface_worker_unavailable_reported
+        ):
+            return
+        self._surface_worker_unavailable_reported = True
+        self._surface_request_sent = False
+        self.horizon_error.emit(
+            "Compute no ha pogut preparar la superfície; torna-ho a provar "
+            "quan el procés s'hagi recuperat."
+        )
 
     def _on_message(self, role: str, message: Envelope) -> None:
         if (
@@ -503,9 +597,15 @@ class ProcessTerrainClient(QObject):
             elif message.kind == ARTIFACT_READY:
                 value = message.payload.get("value")
                 if isinstance(value, dict):
+                    self._surface_request = None
+                    self._surface_request_sent = False
+                    self._surface_retry_after_worker_restart = False
                     self._progress_text = ""
                     self.surface_ready.emit(dict(value))
             elif message.kind == WORKER_ERROR:
+                self._surface_request = None
+                self._surface_request_sent = False
+                self._surface_retry_after_worker_restart = False
                 self.horizon_error.emit(
                     str(
                         message.payload.get(
@@ -537,6 +637,8 @@ class ProcessTerrainClient(QObject):
                     value.get("profile_path", "") or ""
                 )
                 self._progress_text = ""
+                if self._surface_request is not None:
+                    self._dispatch_surface_refresh()
                 self.horizon_ready.emit(dict(value))
         elif message.kind == WORKER_ERROR:
             self.horizon_error.emit(

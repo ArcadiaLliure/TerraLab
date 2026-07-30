@@ -15,7 +15,7 @@ from pyproj import CRS as PyprojCRS
 
 from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.locks import RASTERIO_LOCK
-from TerraLab.terrain.crs import PYPROJ_TRANSFORMER_LOCK
+from TerraLab.data.crs import PYPROJ_TRANSFORMER_LOCK
 from .constants import (
     SERVICE_PIXEL_TYPE,
     U8_STRETCH_HIGH_PERCENTILE,

@@ -302,9 +302,39 @@ class WidgetLayersMixin:
             ),
         }
 
+    def _surface_refresh_mode_kwargs(self):
+        """Freeze the selected data representation into a surface request."""
+
+        manager = getattr(self, "layer_manager", None)
+        registry = getattr(manager, "data_sources", None)
+        mode = getattr(registry, "surface_mode", None)
+        value = str(getattr(mode, "value", mode) or "").strip()
+        return {"surface_mode": value} if value else {}
+
+    def _ensure_surface_profile_bake(self) -> None:
+        """Start the terrain prerequisite when surface data has no profile yet."""
+
+        if getattr(self, "_full_horizon_profile", None) is not None:
+            return
+        if getattr(self, "_active_horizon_job_id", None):
+            return
+        if not bool(getattr(self, "_async_bootstrap_started", False)):
+            return
+        begin_bake = getattr(self, "_begin_horizon_bake", None)
+        if callable(begin_bake):
+            begin_bake()
+
     def on_surface_layer_toggled(self, checked):
         checked = bool(checked)
         self._persist_visibility_state("superficie", checked)
+        ensure_topography = getattr(
+            self, "_ensure_topography_for_surface", None
+        )
+        topography_ready = (
+            bool(ensure_topography(checked))
+            if callable(ensure_topography)
+            else WidgetLayersMixin._ensure_topography_for_surface(self, checked)
+        )
         canvas = getattr(self, "canvas", None)
         overlay = getattr(canvas, "horizon_overlay", None)
         set_visible = getattr(overlay, "set_surface_visible", None)
@@ -314,12 +344,24 @@ class WidgetLayersMixin:
             QToolTip.hideText()
         coordinator = getattr(self, "terrain_coordinator", None)
         refresh = getattr(coordinator, "request_surface_refresh", None)
-        if checked and callable(refresh):
+        if checked and topography_ready and callable(refresh):
             view_context = getattr(self, "_surface_refresh_view_kwargs", None)
+            mode_context = getattr(self, "_surface_refresh_mode_kwargs", None)
+            mode_kwargs = (
+                mode_context()
+                if callable(mode_context)
+                else WidgetLayersMixin._surface_refresh_mode_kwargs(self)
+            )
             refresh(
                 profile=getattr(self, "_full_horizon_profile", None),
                 **(view_context() if callable(view_context) else {}),
+                **mode_kwargs,
             )
+            ensure_profile = getattr(self, "_ensure_surface_profile_bake", None)
+            if callable(ensure_profile):
+                ensure_profile()
+            else:
+                WidgetLayersMixin._ensure_surface_profile_bake(self)
         elif not checked:
             cancel = getattr(coordinator, "cancel_surface_refresh", None)
             if callable(cancel):
@@ -329,6 +371,32 @@ class WidgetLayersMixin:
             sync()
         if canvas is not None:
             canvas.update()
+
+    def _ensure_topography_for_surface(self, surface_enabled: bool) -> bool:
+        """Activate the terrain prerequisite before requesting a surface."""
+
+        if not surface_enabled:
+            return False
+        topography = getattr(self, "chk_enable_village", None)
+        if topography is None:
+            return False
+        try:
+            if bool(topography.isChecked()):
+                return True
+        except Exception:
+            return False
+        try:
+            topography.blockSignals(True)
+            topography.setChecked(True)
+        finally:
+            topography.blockSignals(False)
+        on_topography_toggled = getattr(self, "on_topography_toggled", None)
+        if callable(on_topography_toggled):
+            on_topography_toggled(True)
+        try:
+            return bool(topography.isChecked())
+        except Exception:
+            return False
 
     def _usable_surface_mode_sources(self):
         """Return installed, enabled surface sources grouped by render mode."""
@@ -666,4 +734,3 @@ class WidgetLayersMixin:
             reload_settings()
         if canvas is not None:
             canvas.update()
-

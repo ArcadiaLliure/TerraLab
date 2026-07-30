@@ -6,7 +6,7 @@ import json
 import math
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -25,22 +25,84 @@ from PyQt5.QtGui import (
     QRadialGradient,
 )
 
-from TerraLab.astro.ephemeris_coordinator import (
-    planet_apparent_magnitude,
-    snapshot_matches_utc_context,
+from TerraLab.application.sky_background import (
+    SkyBackgroundPipeline,
+    resolve_sky_background_pipeline,
 )
+from TerraLab.application.celestial_rendering import (
+    CelestialRenderingPipeline,
+    resolve_celestial_rendering_pipeline,
+)
+from TerraLab.application.deep_sky_rendering import (
+    DeepSkyRenderingPipeline,
+    MilkyWayRenderingPipeline,
+    resolve_deep_sky_rendering_pipeline,
+    resolve_milkyway_rendering_pipeline,
+)
+from TerraLab.application.overlay_rendering import (
+    OverlayRenderingPipeline,
+    resolve_overlay_rendering_pipeline,
+)
+from TerraLab.application.interaction import (
+    PickingPipeline,
+    resolve_picking_pipeline,
+)
+from TerraLab.scene.picking import PickIndex, PickRecord
+from TerraLab.scene.contracts import freeze_json_mapping
+
+
+from TerraLab.astro.apparent import (
+    angular_separation_deg,
+    daylight_moon_alpha,
+    resolve_ephemeris_snapshot,
+    solar_disc_transmission,  # noqa: F401 - compatibility export
+    standard_refracted_altitude_deg,
+    standard_refraction_vertical_scale,
+)
+from TerraLab.astro.photometry import planet_apparent_magnitude
 from TerraLab.astro.ngc_catalog import ngc_display_label
 from TerraLab.data.catalogs.star_catalog import _bp_rp_to_rgb_arrays
+from TerraLab.data.sky_resources import SkyResourceRepository
 from TerraLab.debug.diagnostics import Diagnostics
 from TerraLab.light_pollution.modes import (
     bortle_to_magnitude,
     is_automatic_mode,
 )
 from TerraLab.render.qt.context import RenderContext
+from TerraLab.render.qpainter.sky import (
+    QPainterSkyBackgroundAdapter,
+    qcolor_from_rgba,
+)
+from TerraLab.render.qpainter.bodies import QPainterBodiesAdapter
+from TerraLab.render.qpainter.deep_sky import QPainterDeepSkyAdapter
+from TerraLab.render.qpainter.labels import (
+    QPainterFontMetrics,
+    QPainterLabelsAdapter,
+)
 from TerraLab.render.sky.milkyway_overlay import MilkyWayOverlay
-from TerraLab.render.sky_renderer import sky_color_phys
+from TerraLab.application.star_rendering import StarRenderingPipeline
 from TerraLab.render.stars_renderer import StarsRenderer
 from TerraLab.scene.camera import Camera
+from TerraLab.scene.contracts import Viewport
+from TerraLab.scene.plans.sky import (
+    SkyBackgroundInputs,
+    SkyBackgroundPlanner,
+    apply_eclipse_transmission,
+    calculate_sky_rgba,
+)
+from TerraLab.scene.plans.bodies import (
+    CelestialBodiesPlanner,
+    CelestialTrailsPlanner,
+)
+from TerraLab.scene.plans.deep_sky import DeepSkyPlanner, MilkyWayPlanner
+from TerraLab.scene.plans.labels import (
+    CompassPlanner,
+    GridPlanner,
+    HudPlanner,
+    InformationalLabelPlanner,
+    TextCandidate,
+    TextLayoutPlanner,
+)
 from TerraLab.scene.projection import (
     project_universal_stereo_numpy,
     project_universal_stereo_point,
@@ -51,11 +113,26 @@ from TerraLab.scene.render_state import (
     RenderState,
     resolve_earth_layer_visibility,
 )
+from TerraLab.scene.resources import StarCatalogResource
 from TerraLab.terrain.overlay import HorizonOverlay
 from TerraLab.terrain.render.config import TerrainCelestialLightContext
 from TerraLab.weather.system import WeatherSystem
-from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
-from TerraLab.widgets.visual_magnitude_engine import (
+from TerraLab.scene.constellations import (
+    ConstellationGroup,
+    ConstellationNode,
+)
+from TerraLab.scene.spherical_math import altaz_to_ra_dec
+from TerraLab.application.scope import (
+    ScopeController,
+)
+from TerraLab.application.constellations import (
+    ConstellationController,
+)
+from TerraLab.render.qpainter.scope import render_qpainter_scope_plan
+from TerraLab.render.qpainter.constellations import (
+    render_qpainter_constellation_plan,
+)
+from TerraLab.scene.photometry import (
     VisualMagnitudeEngine,
     VisualMagnitudeInputs,
 )
@@ -63,15 +140,32 @@ from TerraLab.widgets.measurement_tools import (
     TOOL_NONE,
     MeasurementController,
 )
-from TerraLab.widgets.constellation_drawing import (
-    ConstellationDrawingController,
-    ConstellationGroup,
-    ConstellationNode,
-)
-from TerraLab.widgets.spherical_math import altaz_to_ra_dec
 
 
 _RENDER_FONT_READY = False
+
+
+def _terrain_reference_sky_qcolor(
+    view_altitude_deg: float,
+    view_azimuth_deg: float,
+    sun_altitude_deg: float,
+    sun_azimuth_deg: float,
+    *,
+    bortle: int = 1,
+    twilight_factor: float = 1.0,
+) -> QColor:
+    """Bridge the shared Model colour for the unmigrated terrain adapter."""
+
+    return qcolor_from_rgba(
+        calculate_sky_rgba(
+            view_altitude_deg,
+            view_azimuth_deg,
+            sun_altitude_deg,
+            sun_azimuth_deg,
+            bortle_class=bortle,
+            twilight_factor=twilight_factor,
+        )
+    )
 
 
 def ensure_render_font_available() -> bool:
@@ -90,7 +184,9 @@ def ensure_render_font_available() -> bool:
         windows_root / "Fonts" / "segoeui.ttf",
         windows_root / "Fonts" / "arial.ttf",
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-        Path("/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"),
+        Path(
+            "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf"
+        ),
         Path("/System/Library/Fonts/Helvetica.ttc"),
     )
     for candidate in candidates:
@@ -103,19 +199,33 @@ def ensure_render_font_available() -> bool:
     return False
 
 
-def fast_sun_altaz(
-    ut_hour: float, day_of_year_utc: int, latitude: float, longitude: float, year_utc: int = 2026
+def _legacy_fast_sun_altaz(
+    ut_hour: float,
+    day_of_year_utc: int,
+    latitude: float,
+    longitude: float,
+    year_utc: int = 2026,
 ) -> tuple[float, float]:
     """Fast analytical solar position (altitude, azimuth) in degrees using J2000 orbital elements."""
     try:
-        dt = datetime(int(year_utc), 1, 1, tzinfo=timezone.utc) + timedelta(days=int(day_of_year_utc), hours=float(ut_hour))
+        dt = datetime(int(year_utc), 1, 1, tzinfo=timezone.utc) + timedelta(
+            days=int(day_of_year_utc), hours=float(ut_hour)
+        )
     except Exception:
-        dt = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=int(day_of_year_utc), hours=float(ut_hour))
-    d = (dt - datetime(2000, 1, 1, 12, 0, tzinfo=timezone.utc)).total_seconds() / 86400.0
+        dt = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(
+            days=int(day_of_year_utc), hours=float(ut_hour)
+        )
+    d = (
+        dt - datetime(2000, 1, 1, 12, 0, tzinfo=timezone.utc)
+    ).total_seconds() / 86400.0
 
     L_sun = (280.460 + 0.9856474 * d) % 360.0
     M_sun = (357.528 + 0.9856003 * d) % 360.0
-    l_sun = (L_sun + 1.915 * math.sin(math.radians(M_sun)) + 0.020 * math.sin(math.radians(2 * M_sun))) % 360.0
+    l_sun = (
+        L_sun
+        + 1.915 * math.sin(math.radians(M_sun))
+        + 0.020 * math.sin(math.radians(2 * M_sun))
+    ) % 360.0
 
     eps = 23.439 - 0.0000004 * d
     eps_r = math.radians(eps)
@@ -136,11 +246,15 @@ def fast_sun_altaz(
     dec_r = math.radians(dec_deg)
     ha_r = math.radians(ha_deg)
 
-    sin_alt = math.sin(lat_r) * math.sin(dec_r) + math.cos(lat_r) * math.cos(dec_r) * math.cos(ha_r)
+    sin_alt = math.sin(lat_r) * math.sin(dec_r) + math.cos(lat_r) * math.cos(
+        dec_r
+    ) * math.cos(ha_r)
     sin_alt = max(-1.0, min(1.0, sin_alt))
     alt_deg = math.degrees(math.asin(sin_alt))
 
-    cos_az = (math.sin(dec_r) - math.sin(lat_r) * sin_alt) / (math.cos(lat_r) * math.cos(math.radians(alt_deg)) + 1e-10)
+    cos_az = (math.sin(dec_r) - math.sin(lat_r) * sin_alt) / (
+        math.cos(lat_r) * math.cos(math.radians(alt_deg)) + 1e-10
+    )
     cos_az = max(-1.0, min(1.0, cos_az))
     az_deg = math.degrees(math.acos(cos_az))
     if math.sin(ha_r) > 0:
@@ -149,15 +263,25 @@ def fast_sun_altaz(
     return alt_deg, az_deg
 
 
-def fast_moon_altaz(
-    ut_hour: float, day_of_year_utc: int, latitude: float, longitude: float, year_utc: int = 2026
+def _legacy_fast_moon_altaz(
+    ut_hour: float,
+    day_of_year_utc: int,
+    latitude: float,
+    longitude: float,
+    year_utc: int = 2026,
 ) -> tuple[float, float, float]:
     """Fast analytical moon position (altitude, azimuth, illumination 0..1) using J2000 orbital elements."""
     try:
-        dt = datetime(int(year_utc), 1, 1, tzinfo=timezone.utc) + timedelta(days=int(day_of_year_utc), hours=float(ut_hour))
+        dt = datetime(int(year_utc), 1, 1, tzinfo=timezone.utc) + timedelta(
+            days=int(day_of_year_utc), hours=float(ut_hour)
+        )
     except Exception:
-        dt = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=int(day_of_year_utc), hours=float(ut_hour))
-    d = (dt - datetime(2000, 1, 1, 12, 0, tzinfo=timezone.utc)).total_seconds() / 86400.0
+        dt = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(
+            days=int(day_of_year_utc), hours=float(ut_hour)
+        )
+    d = (
+        dt - datetime(2000, 1, 1, 12, 0, tzinfo=timezone.utc)
+    ).total_seconds() / 86400.0
 
     L = (218.3164477 + 13.1763965268 * d) % 360.0
     M_moon = (134.9633964 + 13.0649929509 * d) % 360.0
@@ -165,15 +289,24 @@ def fast_moon_altaz(
     D = (297.8501921 + 12.1907491174 * d) % 360.0
     M_sun = (357.5291092 + 0.9856002831 * d) % 360.0
 
-    l_moon = (L + 6.289 * math.sin(math.radians(M_moon))
-              - 1.274 * math.sin(math.radians(2*D - M_moon))
-              + 0.658 * math.sin(math.radians(2*D))
-              - 0.186 * math.sin(math.radians(M_sun))) % 360.0
-    b_moon = (5.128 * math.sin(math.radians(F))
-              + 0.280 * math.sin(math.radians(M_moon + F))
-              + 0.278 * math.sin(math.radians(F - M_moon)))
+    l_moon = (
+        L
+        + 6.289 * math.sin(math.radians(M_moon))
+        - 1.274 * math.sin(math.radians(2 * D - M_moon))
+        + 0.658 * math.sin(math.radians(2 * D))
+        - 0.186 * math.sin(math.radians(M_sun))
+    ) % 360.0
+    b_moon = (
+        5.128 * math.sin(math.radians(F))
+        + 0.280 * math.sin(math.radians(M_moon + F))
+        + 0.278 * math.sin(math.radians(F - M_moon))
+    )
 
-    elongation = D + 6.289 * math.sin(math.radians(M_moon)) - 2.100 * math.sin(math.radians(M_sun))
+    elongation = (
+        D
+        + 6.289 * math.sin(math.radians(M_moon))
+        - 2.100 * math.sin(math.radians(M_sun))
+    )
     illum = (1.0 - math.cos(math.radians(elongation))) / 2.0
     illum = max(0.0, min(1.0, float(illum)))
 
@@ -182,7 +315,9 @@ def fast_moon_altaz(
     l_r = math.radians(l_moon)
     b_r = math.radians(b_moon)
 
-    sin_dec = math.sin(b_r) * math.cos(eps_r) + math.cos(b_r) * math.sin(eps_r) * math.sin(l_r)
+    sin_dec = math.sin(b_r) * math.cos(eps_r) + math.cos(b_r) * math.sin(
+        eps_r
+    ) * math.sin(l_r)
     sin_dec = max(-1.0, min(1.0, sin_dec))
     dec_deg = math.degrees(math.asin(sin_dec))
 
@@ -197,11 +332,15 @@ def fast_moon_altaz(
     dec_r = math.radians(dec_deg)
     ha_r = math.radians(ha_deg)
 
-    sin_alt = math.sin(lat_r) * math.sin(dec_r) + math.cos(lat_r) * math.cos(dec_r) * math.cos(ha_r)
+    sin_alt = math.sin(lat_r) * math.sin(dec_r) + math.cos(lat_r) * math.cos(
+        dec_r
+    ) * math.cos(ha_r)
     sin_alt = max(-1.0, min(1.0, sin_alt))
     alt_deg = math.degrees(math.asin(sin_alt))
 
-    cos_az = (math.sin(dec_r) - math.sin(lat_r) * sin_alt) / (math.cos(lat_r) * math.cos(math.radians(alt_deg)) + 1e-10)
+    cos_az = (math.sin(dec_r) - math.sin(lat_r) * sin_alt) / (
+        math.cos(lat_r) * math.cos(math.radians(alt_deg)) + 1e-10
+    )
     cos_az = max(-1.0, min(1.0, cos_az))
     az_deg = math.degrees(math.acos(cos_az))
     if math.sin(ha_r) > 0:
@@ -210,7 +349,7 @@ def fast_moon_altaz(
     return alt_deg, az_deg, illum
 
 
-def angular_separation_deg(
+def _legacy_angular_separation_deg(
     alt_a: float,
     az_a: float,
     alt_b: float,
@@ -221,14 +360,13 @@ def angular_separation_deg(
     alt_a_r = math.radians(float(alt_a))
     alt_b_r = math.radians(float(alt_b))
     delta_az_r = math.radians(float(az_a) - float(az_b))
-    cosine = (
-        math.sin(alt_a_r) * math.sin(alt_b_r)
-        + math.cos(alt_a_r) * math.cos(alt_b_r) * math.cos(delta_az_r)
-    )
+    cosine = math.sin(alt_a_r) * math.sin(alt_b_r) + math.cos(
+        alt_a_r
+    ) * math.cos(alt_b_r) * math.cos(delta_az_r)
     return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
 
 
-def standard_refracted_altitude_deg(true_altitude_deg: float) -> float:
+def _legacy_standard_refracted_altitude_deg(true_altitude_deg: float) -> float:
     """Map geometric altitude to apparent altitude in a standard atmosphere.
 
     This is Skyfield's iterative USNO-style correction evaluated at 10 C and
@@ -266,15 +404,21 @@ def standard_refracted_altitude_deg(true_altitude_deg: float) -> float:
     return float(apparent_altitude)
 
 
-def standard_refraction_vertical_scale(true_altitude_deg: float) -> float:
+def _legacy_standard_refraction_vertical_scale(
+    true_altitude_deg: float,
+) -> float:
     """Return local vertical compression caused by differential refraction."""
 
     altitude = float(true_altitude_deg)
     if not -1.0 <= altitude <= 89.9:
         return 1.0
     epsilon = 0.01
-    lower = standard_refracted_altitude_deg(max(-0.999, altitude - epsilon))
-    upper = standard_refracted_altitude_deg(min(89.899, altitude + epsilon))
+    lower = _legacy_standard_refracted_altitude_deg(
+        max(-0.999, altitude - epsilon)
+    )
+    upper = _legacy_standard_refracted_altitude_deg(
+        min(89.899, altitude + epsilon)
+    )
     derivative = (upper - lower) / (2.0 * epsilon)
     if not math.isfinite(derivative):
         return 1.0
@@ -293,7 +437,7 @@ class RefractedDiscGeometry:
     apparent_altitude_deg: float
 
 
-def solar_disc_transmission(
+def _legacy_solar_disc_transmission(
     separation_deg: float,
     sun_radius_deg: float,
     moon_radius_deg: float,
@@ -312,12 +456,12 @@ def solar_disc_transmission(
             else math.pi * sun_radius**2
         )
     else:
-        sun_term = (
-            distance**2 + sun_radius**2 - moon_radius**2
-        ) / (2.0 * distance * sun_radius)
-        moon_term = (
-            distance**2 + moon_radius**2 - sun_radius**2
-        ) / (2.0 * distance * moon_radius)
+        sun_term = (distance**2 + sun_radius**2 - moon_radius**2) / (
+            2.0 * distance * sun_radius
+        )
+        moon_term = (distance**2 + moon_radius**2 - sun_radius**2) / (
+            2.0 * distance * moon_radius
+        )
         sun_angle = math.acos(max(-1.0, min(1.0, sun_term)))
         moon_angle = math.acos(max(-1.0, min(1.0, moon_term)))
         radical = max(
@@ -336,7 +480,7 @@ def solar_disc_transmission(
     return max(0.0, min(1.0, 1.0 - occulted))
 
 
-def daylight_moon_alpha(
+def _legacy_daylight_moon_alpha(
     *,
     illumination: float,
     elongation_deg: float,
@@ -436,6 +580,7 @@ class CatalogCache:
         self._key: tuple[Any, ...] | None = None
         self._handles: list[Any] = []
         self.arrays = self._empty()
+        self.resource: StarCatalogResource | None = None
 
     @staticmethod
     def _empty() -> dict[str, np.ndarray]:
@@ -446,6 +591,7 @@ class CatalogCache:
 
     def close(self) -> None:
         self.arrays = self._empty()
+        self.resource = None
         handles, self._handles = self._handles, []
         self._key = None
         for handle in handles:
@@ -468,14 +614,14 @@ class CatalogCache:
 
         loaded = np.load(catalog_path, mmap_mode="r", allow_pickle=False)
         self._handles.append(loaded)
-        names = tuple(getattr(getattr(loaded, "dtype", None), "names", ()) or ())
+        names = tuple(
+            getattr(getattr(loaded, "dtype", None), "names", ()) or ()
+        )
         if names:
             ra = np.asarray(loaded["ra"])
             dec = np.asarray(loaded["dec"])
             mag_key = (
-                "phot_g_mean_mag"
-                if "phot_g_mean_mag" in names
-                else "mag"
+                "phot_g_mean_mag" if "phot_g_mean_mag" in names else "mag"
             )
             mag = np.asarray(loaded[mag_key])
             bp = (
@@ -487,11 +633,7 @@ class CatalogCache:
             files = set(getattr(loaded, "files", ()))
             ra = np.asarray(loaded["ra" if "ra" in files else "RA"])
             dec = np.asarray(loaded["dec" if "dec" in files else "DEC"])
-            mag_key = (
-                "mag"
-                if "mag" in files
-                else "phot_g_mean_mag"
-            )
+            mag_key = "mag" if "mag" in files else "phot_g_mean_mag"
             mag = np.asarray(loaded[mag_key])
             bp = (
                 np.asarray(loaded["bp_rp"])
@@ -527,6 +669,13 @@ class CatalogCache:
             "g": np.asarray(channels[1][:total]),
             "b": np.asarray(channels[2][:total]),
         }
+        self.resource = StarCatalogResource(
+            ra_deg=self.arrays["ra"],
+            dec_deg=self.arrays["dec"],
+            magnitude=self.arrays["mag"],
+            bp_rp=self.arrays["bp_rp"],
+            version="|".join(key),
+        )
         self._key = key
         return self.arrays
 
@@ -549,9 +698,18 @@ class NgcCache:
         payload = artifact if isinstance(artifact, dict) else {}
         path = str(payload.get("catalog_path", "") or "")
         if not path:
-            fallback_csv = Path(__file__).resolve().parents[1] / "data" / "sky" / "openngc_catalog.csv"
+            fallback_csv = (
+                Path(__file__).resolve().parents[1]
+                / "data"
+                / "sky"
+                / "openngc_catalog.csv"
+            )
             if not fallback_csv.is_file():
-                fallback_csv = Path(__file__).resolve().parents[1] / "data" / "openngc_catalog.csv"
+                fallback_csv = (
+                    Path(__file__).resolve().parents[1]
+                    / "data"
+                    / "openngc_catalog.csv"
+                )
             if fallback_csv.is_file():
                 path = str(fallback_csv)
         if path == self._path and self._array is not None:
@@ -560,18 +718,21 @@ class NgcCache:
         if path and Path(path).is_file():
             if path.endswith(".csv"):
                 from TerraLab.astro.ngc_catalog import load_ngc_catalog
+
                 items = load_ngc_catalog(path)
                 if items:
-                    dt = np.dtype([
-                        ("name", "U32"),
-                        ("kind", "U16"),
-                        ("ra", "f4"),
-                        ("dec", "f4"),
-                         ("mag", "f4"),
-                         ("maj", "f4"),
-                         ("min", "f4"),
-                         ("pa", "f4"),
-                    ])
+                    dt = np.dtype(
+                        [
+                            ("name", "U32"),
+                            ("kind", "U16"),
+                            ("ra", "f4"),
+                            ("dec", "f4"),
+                            ("mag", "f4"),
+                            ("maj", "f4"),
+                            ("min", "f4"),
+                            ("pa", "f4"),
+                        ]
+                    )
                     records = np.zeros(len(items), dtype=dt)
                     for idx, item in enumerate(items):
                         records[idx] = (
@@ -584,7 +745,12 @@ class NgcCache:
                             ),
                             float(getattr(item, "ra_deg", 0.0) or 0.0),
                             float(getattr(item, "dec_deg", 0.0) or 0.0),
-                            float(item.effective_mag if getattr(item, "effective_mag", None) is not None else 10.0),
+                            float(
+                                item.effective_mag
+                                if getattr(item, "effective_mag", None)
+                                is not None
+                                else 10.0
+                            ),
                             float(
                                 getattr(
                                     item,
@@ -621,16 +787,12 @@ class NgcCache:
                                 )
                                 or 0.1
                             ),
-                            float(
-                                getattr(item, "pos_ang_deg", 0.0) or 0.0
-                            ),
+                            float(getattr(item, "pos_ang_deg", 0.0) or 0.0),
                         )
                     self._array = records
                     self._path = path
             else:
-                self._array = np.load(
-                    path, mmap_mode="r", allow_pickle=False
-                )
+                self._array = np.load(path, mmap_mode="r", allow_pickle=False)
                 self._path = path
         return self._array
 
@@ -638,31 +800,90 @@ class NgcCache:
 class OffscreenSceneRenderer:
     """Render the complete process-owned scene into a caller-provided image."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        sky_background_pipeline: SkyBackgroundPipeline | str | None = None,
+        star_rendering_pipeline: StarRenderingPipeline | str | None = None,
+        celestial_rendering_pipeline: CelestialRenderingPipeline
+        | str
+        | None = None,
+        milkyway_rendering_pipeline: MilkyWayRenderingPipeline
+        | str
+        | None = None,
+        deep_sky_rendering_pipeline: DeepSkyRenderingPipeline
+        | str
+        | None = None,
+        overlay_rendering_pipeline: OverlayRenderingPipeline
+        | str
+        | None = None,
+        picking_pipeline: PickingPipeline | str | None = None,
+    ) -> None:
         ensure_render_font_available()
+        self._picking_pipeline = (
+            resolve_picking_pipeline()
+            if picking_pipeline is None
+            else PickingPipeline(str(picking_pipeline).strip().lower())
+        )
+        self._last_pick_index: PickIndex | None = None
+
         self.catalog = CatalogCache()
         self.ngc = NgcCache()
-        self.stars = StarsRenderer()
+        self.stars = StarsRenderer(
+            star_rendering_pipeline=star_rendering_pipeline
+        )
         self.milkyway = MilkyWayOverlay()
+        self._sky_resources = SkyResourceRepository()
+        self._milkyway_planner = MilkyWayPlanner()
+        self._deep_sky_planner = DeepSkyPlanner()
+        self._deep_sky_adapter = QPainterDeepSkyAdapter()
+        self._overlay_rendering_pipeline = resolve_overlay_rendering_pipeline(
+            overlay_rendering_pipeline
+        )
+        self._font_metrics = QPainterFontMetrics()
+        self._labels_adapter = QPainterLabelsAdapter()
+        self._text_layout = TextLayoutPlanner()
+        self._grid_planner = GridPlanner()
+        self._compass_planner = CompassPlanner(self._text_layout)
+        self._hud_planner = HudPlanner(self._text_layout)
+        self._milkyway_rendering_pipeline = (
+            resolve_milkyway_rendering_pipeline(milkyway_rendering_pipeline)
+        )
+        self._deep_sky_rendering_pipeline = (
+            resolve_deep_sky_rendering_pipeline(deep_sky_rendering_pipeline)
+        )
+        self._milkyway_scene_status: dict[str, object] = {}
         self.terrain: HorizonOverlay | None = None
         self._terrain_path = ""
         self._terrain_surface_path = ""
-        self._background_key = None
-        self._background = None
+        self._sky_background_pipeline = resolve_sky_background_pipeline(
+            sky_background_pipeline
+        )
+        self._sky_background_planner = SkyBackgroundPlanner()
+        self._sky_background_adapter = QPainterSkyBackgroundAdapter()
+        self._celestial_rendering_pipeline = (
+            resolve_celestial_rendering_pipeline(celestial_rendering_pipeline)
+        )
+        self._bodies_planner = CelestialBodiesPlanner()
+        self._trails_planner = CelestialTrailsPlanner()
+        self._bodies_adapter = QPainterBodiesAdapter()
+        self._legacy_sky_background_key = None
+        self._legacy_sky_background_image = None
         self.diagnostics = Diagnostics()
         self.weather: WeatherSystem | None = None
         self._weather_sample_revision = -1
-        self.scope = TelescopeScopeController()
+        self.scope = ScopeController()
         self.measurements = MeasurementController()
         self._measurement_revision = -1
-        self.constellations = ConstellationDrawingController("")
+        self.constellations = ConstellationController("")
         self._constellation_payload_cache: dict = {}
         self._last_pick_state: RenderState | None = None
         self._last_pick_result = None
         self._last_pick_size = (1, 1)
         self._visible_ngc: list[dict] = []
         self._visible_sky_objects: list[dict] = []
-        self._occupied_labels: list[QRectF] = []
+        self._legacy_occupied_labels: list[QRectF] = []
+        self._scene_label_candidates: list[TextCandidate] = []
         self._trail_cache_key = None
         self._trail_image: QImage | None = None
         self._last_diagnostics_log_time = 0.0
@@ -670,10 +891,14 @@ class OffscreenSceneRenderer:
     def close(self) -> None:
         self.catalog.close()
         self.ngc.close()
+        self._sky_resources.close()
         self.terrain = None
         if self.weather is not None:
             self.weather.shutdown()
             self.weather = None
+        self._sky_background_adapter.clear_cache()
+        self._trails_planner.clear_cache()
+        self._bodies_adapter.clear_cache()
 
     def render(
         self,
@@ -693,120 +918,31 @@ class OffscreenSceneRenderer:
         latitude = float(payload.get("latitude", 0.0))
         longitude = float(payload.get("longitude", 0.0))
 
-        ephemeris_payload = payload.get("ephemeris")
-        ephemeris = (
-            dict(ephemeris_payload)
-            if isinstance(ephemeris_payload, dict)
-            else {}
-        )
-        for body_name in ("sun", "moon"):
-            body = ephemeris.get(body_name)
-            if isinstance(body, dict):
-                ephemeris[body_name] = dict(body)
-
-        fast_s_alt, fast_s_az = fast_sun_altaz(
-            ut_hour, day_of_year_utc, latitude, longitude, year_utc=year_utc
-        )
-        snapshot_valid = snapshot_matches_utc_context(
-            ephemeris,
+        resolved_ephemeris = resolve_ephemeris_snapshot(
+            payload.get("ephemeris"),
             year_utc=year_utc,
             day_of_year_utc=day_of_year_utc,
             ut_hour=ut_hour,
+            latitude=latitude,
+            longitude=longitude,
         )
-
-        has_scientific_snapshot = bool(
-            ephemeris.get("timestamp_utc")
-            and isinstance(ephemeris.get("sun"), dict)
-            and isinstance(ephemeris.get("moon"), dict)
-            and all(
-                key in ephemeris[body_name]
-                for body_name in ("sun", "moon")
-                for key in ("alt", "az")
-            )
-        )
-        if (
-            snapshot_valid or has_scientific_snapshot
-        ) and isinstance(ephemeris.get("sun"), dict):
-            # When Compute is still resolving a newly selected time, keep the
-            # last internally coherent scientific snapshot. Mixing analytical
-            # fallback coordinates with its old separation made intermediate
-            # eclipse phases disappear or jump.
-            sun_alt = float(ephemeris["sun"].get("alt", fast_s_alt))
-            sun_az = float(ephemeris["sun"].get("az", fast_s_az))
-        else:
-            sun_alt = fast_s_alt
-            sun_az = fast_s_az
-            if not isinstance(ephemeris.get("sun"), dict):
-                ephemeris["sun"] = {}
-            ephemeris["sun"]["alt"] = sun_alt
-            ephemeris["sun"]["az"] = sun_az
-            ephemeris["sun"]["rad_deg"] = 0.2666
-
-            if not snapshot_valid:
-                m_alt, m_az, m_illum = fast_moon_altaz(
-                    ut_hour, day_of_year_utc, latitude, longitude, year_utc=year_utc
-                )
-                if not isinstance(ephemeris.get("moon"), dict):
-                    ephemeris["moon"] = {}
-                ephemeris["moon"]["alt"] = m_alt
-                ephemeris["moon"]["az"] = m_az
-                ephemeris["moon"]["rad_deg"] = 0.2725
-                ephemeris["moon"]["illumination"] = m_illum
-
-        sun_data = (
-            ephemeris.get("sun")
-            if isinstance(ephemeris.get("sun"), dict)
-            else {}
-        )
-        moon_data = (
-            ephemeris.get("moon")
-            if isinstance(ephemeris.get("moon"), dict)
-            else {}
-        )
-        moon_alt = float(moon_data.get("alt", -90.0))
-        moon_az = float(moon_data.get("az", 0.0))
-        geometric_separation = angular_separation_deg(
-            sun_alt, sun_az, moon_alt, moon_az
-        )
-        separation = float(
-            moon_data.get("sep_real", geometric_separation)
-            if has_scientific_snapshot
-            else geometric_separation
-        )
-        sun_radius_deg = max(
-            1e-6, float(sun_data.get("rad_deg", 0.2666))
-        )
-        moon_radius_deg = max(
-            1e-6, float(moon_data.get("rad_deg", 0.2725))
-        )
-        eclipse_factor = (
-            solar_disc_transmission(
-                separation, sun_radius_deg, moon_radius_deg
-            )
-            if sun_alt > -2.0 and moon_alt > -2.0
-            else 1.0
-        )
-        ephemeris["eclipse_factor"] = float(eclipse_factor)
-        moon_data["sep_real"] = float(separation)
+        ephemeris = resolved_ephemeris.snapshot
+        sun_alt = resolved_ephemeris.sun_altitude_deg
+        sun_az = resolved_ephemeris.sun_azimuth_deg
+        eclipse_factor = resolved_ephemeris.eclipse_transmission
 
         arrays = self.catalog.load(payload.get("catalog"))
         layers = frozenset(str(v) for v in payload.get("layers", ()))
         terrain_artifact = payload.get("terrain")
         terrain_artifact = (
-            terrain_artifact
-            if isinstance(terrain_artifact, dict)
-            else {}
+            terrain_artifact if isinstance(terrain_artifact, dict) else {}
         )
         earth_visibility = resolve_earth_layer_visibility(
-            horizon_enabled=terrain_artifact.get(
-                "horizon_enabled", True
-            ),
+            horizon_enabled=terrain_artifact.get("horizon_enabled", True),
             topography_enabled=terrain_artifact.get(
                 "topography_enabled", True
             ),
-            surface_enabled=terrain_artifact.get(
-                "surface_enabled", True
-            ),
+            surface_enabled=terrain_artifact.get("surface_enabled", True),
             terrain_3d_enabled=terrain_artifact.get(
                 "terrain_3d_enabled", True
             ),
@@ -822,6 +958,7 @@ class OffscreenSceneRenderer:
             magnitude_payload["magnitude_limit"] = bortle_to_magnitude(1)
         extras = dict(payload.get("extras", {}))
         extras["stars_enabled"] = "stars" in layers
+        extras["star_catalog_resource"] = self.catalog.resource
         trail_settings = payload.get("trails")
         trail_settings = (
             trail_settings if isinstance(trail_settings, dict) else {}
@@ -843,10 +980,9 @@ class OffscreenSceneRenderer:
             and sun_alt <= -6.0
             and trail_elapsed > 1e-4
         )
-        extras["milkyway_overlay"] = dict(
-            payload.get("milkyway", {})
-        )
+        extras["milkyway_overlay"] = dict(payload.get("milkyway", {}))
         extras["eclipse_factor"] = float(eclipse_factor)
+        extras["ephemeris_source"] = resolved_ephemeris.source
         self._prepare_scope_extras(
             extras,
             payload,
@@ -889,9 +1025,7 @@ class OffscreenSceneRenderer:
             spike_magnitude_threshold=float(
                 payload.get("spike_magnitude_threshold", 2.0)
             ),
-            interaction_active=bool(
-                payload.get("interaction_active", False)
-            ),
+            interaction_active=bool(payload.get("interaction_active", False)),
             star_scale=float(payload.get("star_scale", 1.0)),
             auto_star_scale_multiplier=float(
                 payload.get("auto_star_scale_multiplier", 1.0)
@@ -901,9 +1035,7 @@ class OffscreenSceneRenderer:
             scope_center_sky=self._optional_pair(
                 payload.get("scope_center_sky")
             ),
-            scope_fov_deg=self._pair(
-                payload.get("scope_fov_deg"), (5.0, 5.0)
-            ),
+            scope_fov_deg=self._pair(payload.get("scope_fov_deg"), (5.0, 5.0)),
         )
 
         painter.setRenderHint(
@@ -913,7 +1045,7 @@ class OffscreenSceneRenderer:
             QPainter.TextAntialiasing, not state.interaction_active
         )
         self.diagnostics.start_timer("renderer_background")
-        self._draw_background(painter, width, height, state)
+        self._paint_sky_background(painter, width, height, state)
         self.diagnostics.stop_timer("renderer_background")
         context = RenderContext(
             painter=painter,
@@ -922,22 +1054,45 @@ class OffscreenSceneRenderer:
             diagnostics=self.diagnostics,
         )
         if "milkyway" in layers:
-            self.milkyway.render(context, state)
-        if "grid" in layers:
-            self._draw_grid(painter, width, height, state)
-        self._draw_compass(painter, width, height, state)
+            if (
+                self._milkyway_rendering_pipeline
+                is MilkyWayRenderingPipeline.LEGACY
+            ):
+                self.milkyway.render(context, state)
+                self._milkyway_scene_status = self.milkyway.runtime_status()
+            else:
+                self._paint_milkyway_scene(
+                    painter, width, height, state, payload
+                )
+        if self._overlay_rendering_pipeline is OverlayRenderingPipeline.LEGACY:
+            if "grid" in layers:
+                self._draw_grid(painter, width, height, state)
+            self._draw_compass(painter, width, height, state)
+        else:
+            self._paint_informational_overlays_scene(
+                painter, width, height, state, draw_grid="grid" in layers
+            )
         self._draw_trails(painter, width, height, state, payload)
         self.diagnostics.start_timer("renderer_stars")
         star_result = self.stars.render(context, state)
         self.diagnostics.stop_timer("renderer_stars")
         self._visible_sky_objects = []
-        self._occupied_labels = []
+        self._legacy_occupied_labels = []
+        self._scene_label_candidates = []
         self._last_pick_state = state
         self._last_pick_result = star_result
         self._last_pick_size = (width, height)
         self.diagnostics.start_timer("renderer_overlays")
         self._draw_ephemeris(painter, width, height, state)
-        self._draw_ngc(painter, width, height, state, payload)
+        if (
+            self._deep_sky_rendering_pipeline
+            is DeepSkyRenderingPipeline.LEGACY
+        ):
+            self._draw_ngc(painter, width, height, state, payload)
+        else:
+            self._paint_deep_sky_scene(painter, width, height, state, payload)
+        if self._overlay_rendering_pipeline is OverlayRenderingPipeline.SCENE:
+            self._paint_scene_object_labels(painter, width, height)
         self.diagnostics.stop_timer("renderer_overlays")
         if "terrain" in layers:
             self.diagnostics.start_timer("renderer_terrain")
@@ -950,16 +1105,18 @@ class OffscreenSceneRenderer:
         self._draw_constellations(painter, width, height, state, payload)
         visible_indices = getattr(star_result, "visible_indices", ())
         visible_count = (
-            int(len(visible_indices))
-            if visible_indices is not None
-            else 0
+            int(len(visible_indices)) if visible_indices is not None else 0
         )
-        if bool(payload.get("hud_visible", True)):
-            self._draw_hud(
+        if self._overlay_rendering_pipeline is OverlayRenderingPipeline.LEGACY:
+            if bool(payload.get("hud_visible", True)):
+                self._draw_hud(painter, width, state, visible_count)
+        else:
+            self._paint_hud_scene(
                 painter,
                 width,
                 state,
                 visible_count,
+                payload,
             )
         self.diagnostics.stop_timer("renderer_total")
         diagnostics = self.diagnostics.snapshot()
@@ -967,9 +1124,90 @@ class OffscreenSceneRenderer:
             now = time.monotonic()
             if now - self._last_diagnostics_log_time >= 1.0:
                 self._last_diagnostics_log_time = now
-                print(self.diagnostics.to_log_line("[SkyDiagnostics]"))
+                print(
+                    f"[SkyDiagnostics] sky_pipeline="
+                    f"{self._sky_background_pipeline.value} "
+                    f"stars_pipeline={self.stars.star_rendering_pipeline.value} "
+                    f"celestial_pipeline={self._celestial_rendering_pipeline.value} "
+                    f"milkyway_pipeline={self._milkyway_rendering_pipeline.value} "
+                    f"deep_sky_pipeline={self._deep_sky_rendering_pipeline.value} "
+                    f"overlay_pipeline={self._overlay_rendering_pipeline.value} "
+                    f"{self.diagnostics.to_log_line()}"
+                )
+        sky_records: list[PickRecord] = []
+        for item in self._visible_sky_objects:
+            sky_records.append(
+                PickRecord(
+                    kind="sky",
+                    key=str(item.get("key", "")),
+                    name=str(item.get("name", "")),
+                    alt_deg=float(item.get("alt", 0.0)),
+                    az_deg=float(item.get("az", 0.0)),
+                    screen_x=float(item.get("sx", 0.0)),
+                    screen_y=float(item.get("sy", 0.0)),
+                    radius_px=float(item.get("pick_radius", 20.0)),
+                    magnitude=float(item["mag"]) if "mag" in item else None,
+                    extra_data=freeze_json_mapping(
+                        {"type": str(item.get("type", ""))}
+                    ),
+                )
+            )
+        ngc_records: list[PickRecord] = []
+        for item in self._visible_ngc:
+            ngc_records.append(
+                PickRecord(
+                    kind="ngc",
+                    key=str(item.get("name", "")),
+                    name=str(item.get("name", "")),
+                    alt_deg=float(item.get("alt", 0.0)),
+                    az_deg=float(item.get("az", 0.0)),
+                    screen_x=float(item.get("sx", 0.0)),
+                    screen_y=float(item.get("sy", 0.0)),
+                    radius_px=float(item.get("pick_radius", 20.0)),
+                    extra_data=freeze_json_mapping(
+                        {
+                            "ra": float(item.get("ra", 0.0)),
+                            "dec": float(item.get("dec", 0.0)),
+                        }
+                    ),
+                )
+            )
+
+        def _unproject_fn(sx: float, sy: float):
+            if state is None:
+                return None
+            return unproject_universal_stereo_point(
+                float(sx), float(sy), width, height, state.camera
+            )
+
+        self._last_pick_index = PickIndex(
+            generation=int(getattr(state, "generation", 0)),
+            sky_objects=tuple(sky_records),
+            ngc_objects=tuple(ngc_records),
+            star_catalog_indices=np.asarray(
+                getattr(star_result, "visible_indices", ())
+            ),
+            star_screen_x=np.asarray(getattr(star_result, "visible_sx", ())),
+            star_screen_y=np.asarray(getattr(star_result, "visible_sy", ())),
+            star_ra=self.catalog.arrays.get("ra"),
+            star_dec=self.catalog.arrays.get("dec"),
+            star_mag=self.catalog.arrays.get("mag"),
+            star_bp_rp=self.catalog.arrays.get("bp_rp"),
+            surface_picker=self.pick_surface,
+            unproject_fn=_unproject_fn,
+        )
+
         return {
             "visible_stars": visible_count,
+            "sky_background_pipeline": self._sky_background_pipeline.value,
+            "star_rendering_pipeline": self.stars.star_rendering_pipeline.value,
+            "celestial_rendering_pipeline": self._celestial_rendering_pipeline.value,
+            "milkyway_rendering_pipeline": self._milkyway_rendering_pipeline.value,
+            "deep_sky_rendering_pipeline": self._deep_sky_rendering_pipeline.value,
+            "overlay_rendering_pipeline": self._overlay_rendering_pipeline.value,
+            "picking_pipeline": self._picking_pipeline.value,
+            "milkyway_status": dict(self._milkyway_scene_status),
+            "ephemeris_source": resolved_ephemeris.source,
             "diagnostics": {
                 "counters": diagnostics.counters,
                 "timings_ms": diagnostics.timings_ms,
@@ -977,6 +1215,17 @@ class OffscreenSceneRenderer:
         }
 
     def pick(self, x: float, y: float, radius: float = 20.0) -> dict:
+        """Resolve screen coordinates against the last complete frame."""
+        if (
+            self._picking_pipeline == PickingPipeline.SCENE
+            and self._last_pick_index is not None
+        ):
+            return self._last_pick_index.query(
+                float(x), float(y), float(radius)
+            )
+        return self._legacy_pick(float(x), float(y), float(radius))
+
+    def _legacy_pick(self, x: float, y: float, radius: float = 20.0) -> dict:
         """Resolve screen coordinates against the last complete frame."""
 
         state = self._last_pick_state
@@ -992,9 +1241,7 @@ class OffscreenSceneRenderer:
             "alt": float(sky[0]) if sky is not None else 0.0,
             "az": float(sky[1]) if sky is not None else 0.0,
         }
-        sky_object = self._pick_sky_object(
-            float(x), float(y), float(radius)
-        )
+        sky_object = self._pick_sky_object(float(x), float(y), float(radius))
         if sky_object is not None:
             return sky_object
         ngc = self._pick_ngc(float(x), float(y), float(radius))
@@ -1008,9 +1255,7 @@ class OffscreenSceneRenderer:
         total = min(len(sx), len(sy), len(indices))
         if total <= 0:
             return response
-        distances = np.hypot(
-            sx[:total] - float(x), sy[:total] - float(y)
-        )
+        distances = np.hypot(sx[:total] - float(x), sy[:total] - float(y))
         local_index = int(np.argmin(distances))
         if float(distances[local_index]) > float(radius):
             return response
@@ -1052,9 +1297,7 @@ class OffscreenSceneRenderer:
             pick_radius = max(
                 float(radius), float(item.get("pick_radius", 0.0))
             )
-            distance = math.hypot(
-                float(item["sx"]) - x, float(item["sy"]) - y
-            )
+            distance = math.hypot(float(item["sx"]) - x, float(item["sy"]) - y)
             if distance <= pick_radius and distance <= nearest_distance:
                 nearest = item
                 nearest_distance = distance
@@ -1100,15 +1343,11 @@ class OffscreenSceneRenderer:
             item["mag"] = float(mag)
         self._visible_sky_objects.append(item)
 
-    def _pick_ngc(
-        self, x: float, y: float, radius: float
-    ) -> dict | None:
+    def _pick_ngc(self, x: float, y: float, radius: float) -> dict | None:
         nearest = None
         nearest_distance = float("inf")
         for item in self._visible_ngc:
-            distance = math.hypot(
-                float(item["sx"]) - x, float(item["sy"]) - y
-            )
+            distance = math.hypot(float(item["sx"]) - x, float(item["sy"]) - y)
             pick_radius = max(
                 float(radius), float(item.get("pick_radius", 0.0))
             )
@@ -1171,21 +1410,22 @@ class OffscreenSceneRenderer:
                 height,
                 options=options,
             )
-        project = lambda alt, az: self._project(
-            alt, az, width, height, state.camera
-        )
-        unproject = lambda sx, sy: unproject_universal_stereo_point(
-            sx, sy, width, height, state.camera
-        )
+
+        def project(alt, az):
+            return self._project(alt, az, width, height, state.camera)
+
+        def unproject(sx, sy):
+            return unproject_universal_stereo_point(
+                sx, sy, width, height, state.camera
+            )
+
         action = str(action or "")
         if action == "press":
             handled = self.measurements.on_mouse_press(
                 x, y, unproject, project
             )
         elif action == "move":
-            handled = self.measurements.on_mouse_move(
-                x, y, unproject, project
-            )
+            handled = self.measurements.on_mouse_move(x, y, unproject, project)
             self.measurements.update_preview_cursor(x, y, unproject)
         elif action == "release":
             handled = self.measurements.on_mouse_release(
@@ -1218,15 +1458,15 @@ class OffscreenSceneRenderer:
         options: dict[str, Any] | None = None,
     ) -> dict:
         options = options if isinstance(options, dict) else {}
-        project = lambda alt, az: self._project(
-            alt, az, width, height, state.camera
-        )
-        radec_to_sky = lambda ra, dec: self._radec_to_sky(
-            ra, dec, state
-        )
-        pick_star = lambda sx, sy, radius: (
-            self.pick(sx, sy, radius).get("star")
-        )
+
+        def project(alt, az):
+            return self._project(alt, az, width, height, state.camera)
+
+        def radec_to_sky(ra, dec):
+            return self._radec_to_sky(ra, dec, state)
+
+        def pick_star(sx, sy, radius):
+            return self.pick(sx, sy, radius).get("star")
 
         def screen_to_radec(sx, sy):
             sky = unproject_universal_stereo_point(
@@ -1253,9 +1493,7 @@ class OffscreenSceneRenderer:
                 radec_to_sky,
                 pick_star,
                 force_add=bool(options.get("force_add", False)),
-                additive_select=bool(
-                    options.get("additive_select", False)
-                ),
+                additive_select=bool(options.get("additive_select", False)),
                 allow_when_disabled=bool(
                     options.get("allow_when_disabled", False)
                 ),
@@ -1274,9 +1512,7 @@ class OffscreenSceneRenderer:
                 y,
                 project,
                 radec_to_sky,
-                additive_select=bool(
-                    options.get("additive_select", False)
-                ),
+                additive_select=bool(options.get("additive_select", False)),
                 allow_when_disabled=bool(
                     options.get("allow_when_disabled", False)
                 ),
@@ -1333,9 +1569,7 @@ class OffscreenSceneRenderer:
             self.weather.provider = _PayloadWeatherProvider()
         revision = int(settings.get("sample_revision", 0))
         if revision != self._weather_sample_revision:
-            self.weather.provider.replace(
-                settings.get("sample_artifact")
-            )
+            self.weather.provider.replace(settings.get("sample_artifact"))
             self._weather_sample_revision = revision
         self.weather.set_bortle(int(settings.get("bortle", state.bortle)))
         self.weather.resize(width, height)
@@ -1345,9 +1579,7 @@ class OffscreenSceneRenderer:
             year=state.year_utc,
         )
         self.weather.update_thunder()
-        current_fov = 100.0 / max(
-            0.001, float(state.camera.zoom_level)
-        )
+        current_fov = 100.0 / max(0.001, float(state.camera.zoom_level))
         self.weather.draw(
             painter,
             state.sun_alt,
@@ -1359,6 +1591,78 @@ class OffscreenSceneRenderer:
             ),
         )
 
+    def _paint_milkyway_scene(
+        self,
+        painter: QPainter,
+        width: int,
+        height: int,
+        state: RenderState,
+        payload: dict[str, Any],
+    ) -> None:
+        """Resolve resources and a pure image plan before delegating to QPainter."""
+
+        options = payload.get("milkyway", {})
+        options = options if isinstance(options, dict) else {}
+        texture = self._sky_resources.load_texture(
+            str(options.get("texture_path", "") or ""),
+            version=str(options.get("texture_revision", "") or ""),
+        )
+        dust = None
+        if bool(options.get("dust_map_enabled", False)):
+            dust = self._sky_resources.load_texture(
+                str(options.get("dust_map_path", "") or ""),
+                version=str(options.get("dust_map_revision", "") or ""),
+                dust=True,
+            )
+        plan = self._milkyway_planner.plan(
+            width=width,
+            height=height,
+            state=state,
+            texture=texture,
+            dust=dust,
+        )
+        self._deep_sky_adapter.paint_milkyway(painter, plan, width, height)
+        self._milkyway_scene_status = dict(plan.status)
+
+    def _paint_deep_sky_scene(
+        self,
+        painter: QPainter,
+        width: int,
+        height: int,
+        state: RenderState,
+        payload: dict[str, Any],
+    ) -> None:
+        """Resolve NGC geometry and label candidates before any QPainter call."""
+
+        options = payload.get("ngc", {})
+        options = options if isinstance(options, dict) else {}
+        catalog = self._sky_resources.load_catalog(
+            str(options.get("catalog_path", "") or ""),
+            version=str(options.get("revision", "") or ""),
+        )
+        batch = self._deep_sky_planner.plan(
+            width=width,
+            height=height,
+            state=state,
+            catalog=catalog,
+        )
+        self._deep_sky_adapter.paint_deep_sky(painter, batch)
+        self._scene_label_candidates.extend(batch.label_candidates)
+        self._visible_ngc = [
+            {
+                "sx": pick.screen_x,
+                "sy": pick.screen_y,
+                "name": pick.name,
+                "ra": pick.right_ascension_deg,
+                "dec": pick.declination_deg,
+                "alt": pick.altitude_deg,
+                "az": pick.azimuth_deg,
+                "pick_radius": pick.radius_px,
+                "label_visible": False,
+            }
+            for pick in batch.picks
+        ]
+
     def _draw_ngc(
         self,
         painter: QPainter,
@@ -1368,10 +1672,7 @@ class OffscreenSceneRenderer:
         payload: dict[str, Any],
     ) -> None:
         self._visible_ngc = []
-        if (
-            "deep_sky" not in state.layers_enabled
-            or state.sun_alt > -6.0
-        ):
+        if "deep_sky" not in state.layers_enabled or state.sun_alt > -6.0:
             return
         catalog = self.ngc.load(payload.get("ngc"))
         if catalog is None or len(catalog) == 0:
@@ -1411,9 +1712,7 @@ class OffscreenSceneRenderer:
             magnitudes[indices],
             99.0,
         ) - np.minimum(3.0, major_degrees[indices] * 3.0)
-        indices = indices[
-            np.argsort(importance, kind="stable")[:max_markers]
-        ]
+        indices = indices[np.argsort(importance, kind="stable")[:max_markers]]
         angular_scale = height * 0.5 * state.camera.zoom_level / 90.0
         painter.save()
         try:
@@ -1423,7 +1722,7 @@ class OffscreenSceneRenderer:
             label_font.setStyleHint(QFont.SansSerif)
             label_font.setPixelSize(12)
             painter.setFont(label_font)
-            occupied_labels = self._occupied_labels
+            occupied_labels = self._legacy_occupied_labels
             max_labels = 90 if state.camera.zoom_level < 2.0 else 180
             for index in indices:
                 x = float(sx[index])
@@ -1437,12 +1736,8 @@ class OffscreenSceneRenderer:
                     if "min" in names
                     else maj_deg,
                 )
-                radius_x = max(
-                    3.0, min(84.0, 0.5 * maj_deg * angular_scale)
-                )
-                radius_y = max(
-                    2.0, min(64.0, 0.5 * min_deg * angular_scale)
-                )
+                radius_x = max(3.0, min(84.0, 0.5 * maj_deg * angular_scale))
+                radius_y = max(2.0, min(64.0, 0.5 * min_deg * angular_scale))
                 position_angle = (
                     float(catalog["pa"][index]) if "pa" in names else 0.0
                 )
@@ -1466,9 +1761,7 @@ class OffscreenSceneRenderer:
                 painter.rotate(position_angle)
                 painter.setPen(QPen(color, 1.2))
                 painter.setBrush(Qt.NoBrush)
-                painter.drawEllipse(
-                    QPointF(0.0, 0.0), radius_x, radius_y
-                )
+                painter.drawEllipse(QPointF(0.0, 0.0), radius_x, radius_y)
                 if "GC" in kind:
                     painter.drawLine(
                         QPointF(-radius_x, 0.0),
@@ -1505,8 +1798,9 @@ class OffscreenSceneRenderer:
                         label_rect.width() > 8.0
                         and label_rect.height() > 4.0
                         and not any(
-                            label_rect.adjusted(-2.0, -1.0, 2.0, 1.0)
-                            .intersects(existing)
+                            label_rect.adjusted(
+                                -2.0, -1.0, 2.0, 1.0
+                            ).intersects(existing)
                             for existing in occupied_labels
                         )
                     ):
@@ -1541,9 +1835,7 @@ class OffscreenSceneRenderer:
                         "dec": float(catalog["dec"][index]),
                         "alt": float(altitudes[index]),
                         "az": float(azimuths[index]),
-                        "pick_radius": float(
-                            max(radius_x, radius_y) + 8.0
-                        ),
+                        "pick_radius": float(max(radius_x, radius_y) + 8.0),
                         "label_visible": label_visible,
                     }
                 )
@@ -1560,9 +1852,7 @@ class OffscreenSceneRenderer:
     ) -> None:
         if not bool(payload.get("scope_enabled", False)):
             return
-        focal_mm = max(
-            1.0, float(extras.get("scope_focal_mm", 250.0))
-        )
+        focal_mm = max(1.0, float(extras.get("scope_focal_mm", 250.0)))
         aperture_mode = str(
             extras.get("scope_aperture_input_mode", "diameter_mm")
         )
@@ -1575,9 +1865,7 @@ class OffscreenSceneRenderer:
             aperture_mm = max(
                 1.0, float(extras.get("scope_aperture_mm", 80.0))
             )
-        instrument = str(
-            extras.get("scope_instrument_profile", "telescope")
-        )
+        instrument = str(extras.get("scope_instrument_profile", "telescope"))
         eyepiece_mm = (
             max(0.5, float(extras.get("scope_eyepiece_mm", 20.0)))
             if instrument == "telescope"
@@ -1605,29 +1893,21 @@ class OffscreenSceneRenderer:
                     payload.get("light_pollution_mode", "automatic")
                 ),
                 bortle_class=float(payload.get("bortle", 4.0)),
-                magnitude_limit=float(
-                    payload.get("magnitude_limit", 8.0)
-                ),
+                magnitude_limit=float(payload.get("magnitude_limit", 8.0)),
                 exposure_seconds=max(
                     0.001, float(extras.get("scope_exposure_s", 2.0))
                 ),
                 iso=max(1.0, float(extras.get("scope_iso", 800.0))),
                 instrument_profile=instrument,
-                sensor_profile=str(
-                    extras.get("scope_sensor_profile", "tiny")
-                ),
+                sensor_profile=str(extras.get("scope_sensor_profile", "tiny")),
             )
         )
         extras["scope_limit_mag"] = float(result.scope_limit_mag)
         extras["scope_dataset_max_mag"] = float(
             extras.get("scope_dataset_max_mag", 8.0)
         )
-        extras["scope_exposure_gain_mag"] = float(
-            result.exposure_gain_mag
-        )
-        extras["scope_aperture_gain_mag"] = float(
-            result.aperture_gain_mag
-        )
+        extras["scope_exposure_gain_mag"] = float(result.exposure_gain_mag)
+        extras["scope_aperture_gain_mag"] = float(result.aperture_gain_mag)
         extras["scope_depth_gain_mag"] = max(
             0.0, float(result.scope_limit_mag - result.eye_limit_mag)
         )
@@ -1655,8 +1935,7 @@ class OffscreenSceneRenderer:
         extras["scope_fov_diag_deg"] = float(fov_diagonal)
         extras["scope_fov_penalty_mag"] = min(
             5.5,
-            max(0.0, math.log2(max(1.0, fov_diagonal / 9.0)))
-            * 1.35,
+            max(0.0, math.log2(max(1.0, fov_diagonal / 9.0))) * 1.35,
         )
         center = payload.get("scope_center_sky")
         if isinstance(center, (list, tuple)) and len(center) >= 2:
@@ -1673,9 +1952,7 @@ class OffscreenSceneRenderer:
             dec_pad = min(90.0, max(3.0, half_diagonal * 1.3 + 2.5))
             ra_pad = min(
                 180.0,
-                dec_pad
-                / max(0.12, math.cos(math.radians(center_dec)))
-                + 2.0,
+                dec_pad / max(0.12, math.cos(math.radians(center_dec))) + 2.0,
             )
             extras["scope_center_ra_deg"] = float(center_ra)
             extras["scope_center_dec_deg"] = float(center_dec)
@@ -1724,7 +2001,39 @@ class OffscreenSceneRenderer:
             return 3.0 + (night_limit - 3.0) * t
         return night_limit
 
-    def _draw_background(
+    def _paint_sky_background(
+        self,
+        painter: QPainter,
+        width: int,
+        height: int,
+        state: RenderState,
+    ) -> None:
+        """Coordinate the reversible sky-background capability at the boundary."""
+
+        if self._sky_background_pipeline is SkyBackgroundPipeline.LEGACY:
+            self._paint_legacy_sky_background(painter, width, height, state)
+            return
+
+        eclipse_transmission = float(state.extras.get("eclipse_factor", 1.0))
+        plan = self._sky_background_planner.build_plan(
+            SkyBackgroundInputs(
+                viewport=Viewport(width, height),
+                camera=state.camera,
+                sun_altitude_deg=state.sun_alt,
+                sun_azimuth_deg=state.sun_az,
+                bortle_class=state.bortle,
+                eclipse_transmission=eclipse_transmission,
+                interaction_active=state.interaction_active,
+            )
+        )
+        self._sky_background_adapter.paint(
+            painter,
+            plan,
+            width=width,
+            height=height,
+        )
+
+    def _paint_legacy_sky_background(
         self,
         painter: QPainter,
         width: int,
@@ -1744,7 +2053,7 @@ class OffscreenSceneRenderer:
             int(state.bortle),
             round(float(state.extras.get("eclipse_factor", 1.0)), 3),
         )
-        if self._background_key != key:
+        if self._legacy_sky_background_key != key:
             image = QImage(
                 resolution,
                 resolution,
@@ -1762,37 +2071,32 @@ class OffscreenSceneRenderer:
                         state.camera,
                     )
                     alt, az = sky if sky is not None else (-90.0, 0.0)
-                    color = sky_color_phys(
+                    red, green, blue, alpha = calculate_sky_rgba(
                         alt,
                         az,
                         state.sun_alt,
                         state.sun_az,
-                        bortle=state.bortle,
+                        bortle_class=state.bortle,
                     )
                     eclipse_factor = float(
                         state.extras.get("eclipse_factor", 1.0)
                     )
-                    if state.sun_alt > -1.0 and eclipse_factor < 0.999:
-                        dim = 0.08 + 0.92 * math.sqrt(
-                            max(0.0, eclipse_factor)
-                        )
-                        color = QColor(
-                            int(color.red() * dim),
-                            int(color.green() * dim),
-                            int(color.blue() * dim),
-                            color.alpha(),
-                        )
+                    red, green, blue, alpha = apply_eclipse_transmission(
+                        (red, green, blue, alpha),
+                        sun_altitude_deg=state.sun_alt,
+                        eclipse_transmission=eclipse_factor,
+                    )
                     image.setPixelColor(
                         x,
                         y,
-                        color,
+                        QColor(red, green, blue, alpha),
                     )
-            self._background = image
-            self._background_key = key
+            self._legacy_sky_background_image = image
+            self._legacy_sky_background_key = key
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
         painter.drawImage(
             QRectF(0.0, 0.0, width, height),
-            self._background,
+            self._legacy_sky_background_image,
         )
 
     @staticmethod
@@ -1803,11 +2107,9 @@ class OffscreenSceneRenderer:
         height: int,
         camera: Camera,
     ):
-        return project_universal_stereo_point(
-            alt, az, width, height, camera
-        )
+        return project_universal_stereo_point(alt, az, width, height, camera)
 
-    def _draw_trails(
+    def _draw_trails_legacy(
         self,
         painter: QPainter,
         width: int,
@@ -1829,9 +2131,7 @@ class OffscreenSceneRenderer:
             start_hour = float(settings["start_hour"])
         except (KeyError, TypeError, ValueError):
             return
-        difference = (
-            (float(state.ut_hour) - start_hour + 12.0) % 24.0
-        ) - 12.0
+        difference = ((float(state.ut_hour) - start_hour + 12.0) % 24.0) - 12.0
         if difference <= 1e-4:
             return
 
@@ -1868,8 +2168,7 @@ class OffscreenSceneRenderer:
             # whole minute as the first process renderer accidentally did.
             int(
                 round(
-                    float(state.ut_hour)
-                    * (3600.0 if interaction else 1200.0)
+                    float(state.ut_hour) * (3600.0 if interaction else 1200.0)
                 )
             ),
             round(state.latitude, 5),
@@ -1903,9 +2202,7 @@ class OffscreenSceneRenderer:
                 )
                 screen_x = np.empty((len(indices), steps), dtype=np.float32)
                 screen_y = np.empty((len(indices), steps), dtype=np.float32)
-                screen_valid = np.empty(
-                    (len(indices), steps), dtype=bool
-                )
+                screen_valid = np.empty((len(indices), steps), dtype=bool)
                 ra = np.asarray(state.np_ra[indices])
                 dec = np.asarray(state.np_dec[indices])
                 for column, hour in enumerate(hours):
@@ -1948,9 +2245,7 @@ class OffscreenSceneRenderer:
                         min(255, (green // 24) * 24 + 15),
                         min(255, (blue // 24) * 24 + 15),
                     )
-                    path = color_paths.setdefault(
-                        color_key, QPainterPath()
-                    )
+                    path = color_paths.setdefault(color_key, QPainterPath())
                     drawing = False
                     previous_x = previous_y = 0.0
                     for column in range(steps):
@@ -1961,9 +2256,7 @@ class OffscreenSceneRenderer:
                         y = float(screen_y[row, column])
                         if (
                             drawing
-                            and math.hypot(
-                                x - previous_x, y - previous_y
-                            )
+                            and math.hypot(x - previous_x, y - previous_y)
                             <= jump_limit
                         ):
                             path.lineTo(x, y)
@@ -1975,9 +2268,7 @@ class OffscreenSceneRenderer:
                 alpha = 68 if interaction else 138
                 trail_painter.setBrush(Qt.NoBrush)
                 for color, path in color_paths.items():
-                    trail_painter.setPen(
-                        QPen(QColor(*color, alpha), 1.0)
-                    )
+                    trail_painter.setPen(QPen(QColor(*color, alpha), 1.0))
                     trail_painter.drawPath(path)
             finally:
                 trail_painter.end()
@@ -1985,7 +2276,7 @@ class OffscreenSceneRenderer:
             self._trail_cache_key = cache_key
         painter.drawImage(0, 0, self._trail_image)
 
-    def _draw_ephemeris(
+    def _draw_ephemeris_legacy(
         self,
         painter: QPainter,
         width: int,
@@ -2027,7 +2318,14 @@ class OffscreenSceneRenderer:
                 moon_alt = float(moon.get("alt", -90.0))
                 moon_az = float(moon.get("az", 0.0))
                 self._draw_moon_body(
-                    painter, width, height, state, moon_alt, moon_az, scale, moon
+                    painter,
+                    width,
+                    height,
+                    state,
+                    moon_alt,
+                    moon_az,
+                    scale,
+                    moon,
                 )
 
         if show_planets:
@@ -2064,9 +2362,7 @@ class OffscreenSceneRenderer:
             return
         x, y = geometry.x, geometry.y
         physical_radius = geometry.radius_x
-        visual_factor = self._celestial_disc_visual_factor(
-            physical_radius
-        )
+        visual_factor = self._celestial_disc_visual_factor(physical_radius)
         radius_x = geometry.radius_x * visual_factor
         radius_y = geometry.radius_y * visual_factor
         self._register_sky_object(
@@ -2092,9 +2388,7 @@ class OffscreenSceneRenderer:
                 if isinstance(snapshot.get("moon"), dict)
                 else {}
             )
-            moon_radius_deg = float(
-                moon_data.get("rad_deg", 0.2725)
-            )
+            moon_radius_deg = float(moon_data.get("rad_deg", 0.2725))
             separation_deg = float(
                 moon_data.get(
                     "sep_real",
@@ -2108,8 +2402,7 @@ class OffscreenSceneRenderer:
             )
             is_totality = bool(
                 moon_radius_deg >= rad_deg
-                and separation_deg
-                <= max(0.0, moon_radius_deg - rad_deg)
+                and separation_deg <= max(0.0, moon_radius_deg - rad_deg)
             )
             if is_totality:
                 self._draw_solar_corona(
@@ -2119,8 +2412,7 @@ class OffscreenSceneRenderer:
                     radius_x,
                     1.0,
                     orientation_deg=(
-                        state.day_of_year_utc * 0.73
-                        + state.ut_hour * 4.0
+                        state.day_of_year_utc * 0.73 + state.ut_hour * 4.0
                     ),
                     vertical_scale=radius_y / max(0.05, radius_x),
                 )
@@ -2151,9 +2443,7 @@ class OffscreenSceneRenderer:
             body_grad.setColorAt(1.0, edge_col)
             painter.setPen(Qt.NoPen)
             painter.setBrush(QBrush(body_grad))
-            painter.drawEllipse(
-                QPointF(x, y), radius_x, radius_y
-            )
+            painter.drawEllipse(QPointF(x, y), radius_x, radius_y)
         finally:
             painter.restore()
 
@@ -2170,14 +2460,10 @@ class OffscreenSceneRenderer:
     ) -> float:
         """Measure angular radius in the same local projection as its centre."""
 
-        centre = project_universal_stereo_point(
-            alt, az, width, height, camera
-        )
+        centre = project_universal_stereo_point(alt, az, width, height, camera)
         if centre is None:
             return max(0.05, float(fallback_px))
-        angular_radius_deg = max(
-            1e-6, float(angular_radius_deg)
-        )
+        angular_radius_deg = max(1e-6, float(angular_radius_deg))
         samples = []
         for direction in (-1.0, 1.0):
             sample_alt = float(alt) + direction * angular_radius_deg
@@ -2262,9 +2548,7 @@ class OffscreenSceneRenderer:
         if physical_radius_px <= 36.0:
             scale = 4.0
         elif physical_radius_px < 96.0:
-            scale = 4.0 - 3.0 * (
-                (physical_radius_px - 36.0) / 60.0
-            )
+            scale = 4.0 - 3.0 * ((physical_radius_px - 36.0) / 60.0)
         else:
             # In a narrow telescope field the physical disc is already large;
             # additional inflation would push it outside the viewport.
@@ -2290,26 +2574,16 @@ class OffscreenSceneRenderer:
         painter.save()
         try:
             painter.translate(float(x), float(y))
-            painter.scale(
-                1.0, max(0.55, min(1.0, float(vertical_scale)))
-            )
+            painter.scale(1.0, max(0.55, min(1.0, float(vertical_scale))))
             painter.rotate(float(orientation_deg))
             painter.setPen(Qt.NoPen)
 
             corona_radius = radius * (2.4 + 0.8 * strength)
             glow = QRadialGradient(0.0, 0.0, corona_radius)
-            glow.setColorAt(
-                0.0, QColor(246, 251, 255, int(225 * strength))
-            )
-            glow.setColorAt(
-                0.18, QColor(236, 247, 255, int(190 * strength))
-            )
-            glow.setColorAt(
-                0.42, QColor(196, 220, 246, int(72 * strength))
-            )
-            glow.setColorAt(
-                0.72, QColor(154, 190, 230, int(23 * strength))
-            )
+            glow.setColorAt(0.0, QColor(246, 251, 255, int(225 * strength)))
+            glow.setColorAt(0.18, QColor(236, 247, 255, int(190 * strength)))
+            glow.setColorAt(0.42, QColor(196, 220, 246, int(72 * strength)))
+            glow.setColorAt(0.72, QColor(154, 190, 230, int(23 * strength)))
             glow.setColorAt(1.0, QColor(130, 175, 220, 0))
             painter.setBrush(QBrush(glow))
             painter.drawEllipse(
@@ -2393,9 +2667,7 @@ class OffscreenSceneRenderer:
         separation = float(
             moon_data.get(
                 "sep_real",
-                angular_separation_deg(
-                    state.sun_alt, state.sun_az, alt, az
-                ),
+                angular_separation_deg(state.sun_alt, state.sun_az, alt, az),
             )
         )
         illum = max(
@@ -2405,8 +2677,7 @@ class OffscreenSceneRenderer:
                 float(
                     moon_data.get(
                         "illumination",
-                        (1.0 - math.cos(math.radians(separation)))
-                        / 2.0,
+                        (1.0 - math.cos(math.radians(separation))) / 2.0,
                     )
                 ),
             ),
@@ -2490,24 +2761,18 @@ class OffscreenSceneRenderer:
                 g_grad.setColorAt(1.0, QColor(200, 215, 235, 0))
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(QBrush(g_grad))
-                painter.drawEllipse(
-                    QPointF(x, y), glow_rx, glow_ry
-                )
+                painter.drawEllipse(QPointF(x, y), glow_rx, glow_ry)
 
             painter.setPen(Qt.NoPen)
             if eclipsing and sun_geometry is not None:
                 # Against a daylight sky the unlit Moon is not a black
                 # cardboard disc. Only the part physically in front of the
                 # photosphere is an opaque silhouette.
-                sun_visual_factor = (
-                    self._celestial_disc_visual_factor(
-                        sun_geometry.radius_x
-                    )
+                sun_visual_factor = self._celestial_disc_visual_factor(
+                    sun_geometry.radius_x
                 )
                 moon_disc = QPainterPath()
-                moon_disc.addEllipse(
-                    QPointF(x, y), radius_x, radius_y
-                )
+                moon_disc.addEllipse(QPointF(x, y), radius_x, radius_y)
                 sun_disc = QPainterPath()
                 sun_disc.addEllipse(
                     QPointF(sun_geometry.x, sun_geometry.y),
@@ -2522,9 +2787,7 @@ class OffscreenSceneRenderer:
             painter.scale(1.0, vertical_scale)
             if not eclipsing and not is_day:
                 painter.setBrush(QColor(18, 21, 28, 105))
-                painter.drawEllipse(
-                    QPointF(0.0, 0.0), radius_x, radius_x
-                )
+                painter.drawEllipse(QPointF(0.0, 0.0), radius_x, radius_x)
 
             rotation_deg = 0.0
             if sun_geometry is not None:
@@ -2544,16 +2807,10 @@ class OffscreenSceneRenderer:
                 )
                 painter.setBrush(base_col)
                 painter.drawPath(lit_path)
-            if (
-                not eclipsing
-                and radius_x >= 5.0
-                and illum > 0.01
-            ):
+            if not eclipsing and radius_x >= 5.0 and illum > 0.01:
                 painter.setClipPath(lit_path)
                 painter.rotate(-rotation_deg)
-                painter.setBrush(
-                    QColor(175, 180, 188, int(alpha * 0.58))
-                )
+                painter.setBrush(QColor(175, 180, 188, int(alpha * 0.58)))
                 r = radius_x
                 painter.drawEllipse(
                     QPointF(-r * 0.2, -r * 0.4), r * 0.25, r * 0.25
@@ -2593,7 +2850,7 @@ class OffscreenSceneRenderer:
         path.closeSubpath()
         return path
 
-    def _draw_planets(
+    def _draw_planets_legacy(
         self,
         painter: QPainter,
         width: int,
@@ -2648,35 +2905,28 @@ class OffscreenSceneRenderer:
 
                 planet_altitude = math.radians(alt)
                 sun_altitude = math.radians(state.sun_alt)
-                cosine_solar_distance = (
-                    math.sin(planet_altitude)
-                    * math.sin(sun_altitude)
-                    + math.cos(planet_altitude)
-                    * math.cos(sun_altitude)
-                    * math.cos(
-                        math.radians(az - state.sun_az)
-                    )
-                )
+                cosine_solar_distance = math.sin(planet_altitude) * math.sin(
+                    sun_altitude
+                ) + math.cos(planet_altitude) * math.cos(
+                    sun_altitude
+                ) * math.cos(math.radians(az - state.sun_az))
                 directional_modifier = -1.5 * max(
                     -1.0, min(1.0, cosine_solar_distance)
                 )
                 extinction_altitude = max(0.1, alt)
                 airmass = 1.0 / (
                     math.sin(math.radians(extinction_altitude))
-                    + 0.15
-                    * (extinction_altitude + 3.885) ** -1.253
+                    + 0.15 * (extinction_altitude + 3.885) ** -1.253
                 )
-                atmospheric_extinction = float(
-                    state.scope_k_fallback
-                ) * (airmass - 1.0)
+                atmospheric_extinction = float(state.scope_k_fallback) * (
+                    airmass - 1.0
+                )
                 local_limit = (
                     state.mag_limit
                     + directional_modifier
                     - atmospheric_extinction
                 )
-                fade_in = max(
-                    0.0, min(1.0, (local_limit - mag) * 2.0)
-                )
+                fade_in = max(0.0, min(1.0, (local_limit - mag) * 2.0))
                 if fade_in <= 0.01:
                     continue
                 point = project_universal_stereo_point(
@@ -2688,11 +2938,13 @@ class OffscreenSceneRenderer:
                 if x < -30 or x > width + 30 or y < -30 or y > height + 30:
                     continue
 
-                col = QColor(
-                    planet_colors.get(name, QColor(230, 220, 200))
-                )
+                col = QColor(planet_colors.get(name, QColor(230, 220, 200)))
                 col.setAlphaF(fade_in)
-                sz = 4.0 if name in ("Venus", "Jupiter") else (3.5 if name in ("Mars", "Saturn") else 3.0)
+                sz = (
+                    4.0
+                    if name in ("Venus", "Jupiter")
+                    else (3.5 if name in ("Mars", "Saturn") else 3.0)
+                )
 
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(col)
@@ -2718,9 +2970,7 @@ class OffscreenSceneRenderer:
                     float(metrics.height() + 4),
                 )
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(
-                    QColor(4, 7, 14, int(round(175 * fade_in)))
-                )
+                painter.setBrush(QColor(4, 7, 14, int(round(175 * fade_in))))
                 painter.drawRoundedRect(label_rect, 3.0, 3.0)
                 painter.setPen(
                     QPen(
@@ -2739,9 +2989,237 @@ class OffscreenSceneRenderer:
                     ),
                     label,
                 )
-                self._occupied_labels.append(label_rect)
+                self._legacy_occupied_labels.append(label_rect)
         finally:
             painter.restore()
+
+    # The active phase-06 path is deliberately defined after the temporary
+    # compatibility implementation above.  The old code remains callable only
+    # while the rollback flag exists; normal rendering delegates to the pure
+    # planners and the QPainter adapter below.
+    def _draw_trails(
+        self,
+        painter: QPainter,
+        width: int,
+        height: int,
+        state: RenderState,
+        payload: dict[str, Any],
+    ) -> None:
+        if (
+            self._celestial_rendering_pipeline
+            is CelestialRenderingPipeline.LEGACY
+        ):
+            self._draw_trails_legacy(painter, width, height, state, payload)
+            return
+        plan = self._trails_planner.plan(
+            state, width, height, payload.get("trails")
+        )
+        self._bodies_adapter.paint_trails(painter, width, height, plan)
+        self._trail_image = self._bodies_adapter.trail_image
+        self._trail_cache_key = plan.cache_key if plan is not None else None
+
+    def _draw_ephemeris(
+        self,
+        painter: QPainter,
+        width: int,
+        height: int,
+        state: RenderState,
+    ) -> None:
+        if (
+            self._celestial_rendering_pipeline
+            is CelestialRenderingPipeline.LEGACY
+        ):
+            self._draw_ephemeris_legacy(painter, width, height, state)
+            return
+        plan = self._bodies_planner.plan(state, width, height)
+        self._bodies_adapter.paint_bodies(painter, plan)
+        if self._overlay_rendering_pipeline is OverlayRenderingPipeline.SCENE:
+            self._scene_label_candidates.extend(
+                InformationalLabelPlanner.planet_candidates(
+                    plan.planets, width, height
+                )
+            )
+        self._visible_sky_objects.extend(
+            {
+                "type": pick.body_type,
+                "key": pick.key,
+                "name": pick.name,
+                "alt": pick.altitude_deg,
+                "az": pick.azimuth_deg % 360.0,
+                "sx": pick.screen_x,
+                "sy": pick.screen_y,
+                "pick_radius": max(8.0, pick.radius_px),
+                **(
+                    {"mag": pick.magnitude}
+                    if pick.magnitude is not None
+                    else {}
+                ),
+            }
+            for pick in plan.picks
+        )
+
+    def _draw_planets(
+        self,
+        painter: QPainter,
+        width: int,
+        height: int,
+        state: RenderState,
+        scale: float,
+        planets: list[dict],
+    ) -> None:
+        """Compatibility entry point backed by the Solar-system scene plan."""
+
+        del scale
+        snapshot = dict(state.ephemeris_snapshot or {})
+        snapshot["planets"] = list(planets)
+        planned_state = replace(
+            state,
+            layers_enabled=frozenset({"planets"}),
+            ephemeris_snapshot=snapshot,
+        )
+        plan = self._bodies_planner.plan(planned_state, width, height)
+        self._bodies_adapter.paint_bodies(painter, plan)
+        if self._overlay_rendering_pipeline is OverlayRenderingPipeline.SCENE:
+            candidates = InformationalLabelPlanner.planet_candidates(
+                plan.planets, width, height
+            )
+            labels = self._text_layout.plan(
+                candidates,
+                self._font_metrics,
+                cache_key=("compatibility_planets", width, height, candidates),
+            )
+            self._labels_adapter.paint_text_batch(painter, labels)
+        self._visible_sky_objects.extend(
+            {
+                "type": pick.body_type,
+                "key": pick.key,
+                "name": pick.name,
+                "alt": pick.altitude_deg,
+                "az": pick.azimuth_deg % 360.0,
+                "sx": pick.screen_x,
+                "sy": pick.screen_y,
+                "pick_radius": max(8.0, pick.radius_px),
+                **(
+                    {"mag": pick.magnitude}
+                    if pick.magnitude is not None
+                    else {}
+                ),
+            }
+            for pick in plan.picks
+        )
+
+    def _paint_informational_overlays_scene(
+        self,
+        painter: QPainter,
+        width: int,
+        height: int,
+        state: RenderState,
+        *,
+        draw_grid: bool,
+    ) -> None:
+        """Compose pre-resolved grid and compass plans for the active slice."""
+
+        if draw_grid:
+            grid_plan = self._grid_planner.plan(state, width, height)
+            grid_calls = self._labels_adapter.paint_grid(painter, grid_plan)
+            self.diagnostics.set_counter("overlay_grid_draw_calls", grid_calls)
+        compass_plan = self._compass_planner.plan(
+            state, width, height, self._font_metrics
+        )
+        compass_calls = self._labels_adapter.paint_compass(
+            painter, compass_plan
+        )
+        self.diagnostics.set_counter(
+            "overlay_compass_draw_calls", compass_calls
+        )
+        self.diagnostics.set_counter(
+            "overlay_compass_labels", compass_plan.labels.stats.accepted
+        )
+
+    def _paint_scene_object_labels(
+        self, painter: QPainter, width: int, height: int
+    ) -> None:
+        """Resolve planet/NGC collision once, then paint the resulting batch."""
+
+        candidates = tuple(self._scene_label_candidates)
+        labels = self._text_layout.plan(
+            candidates,
+            self._font_metrics,
+            cache_key=("scene_object_labels", width, height, candidates),
+        )
+        calls = self._labels_adapter.paint_text_batch(painter, labels)
+        self.diagnostics.set_counter(
+            "overlay_label_candidates", labels.stats.candidates
+        )
+        self.diagnostics.set_counter(
+            "overlay_label_accepted", labels.stats.accepted
+        )
+        self.diagnostics.set_counter(
+            "overlay_label_rejected_collision", labels.stats.rejected_collision
+        )
+        self.diagnostics.set_counter(
+            "overlay_label_rejected_clip", labels.stats.rejected_clip
+        )
+        self.diagnostics.set_counter("overlay_label_draw_calls", calls)
+        visible_names = {
+            label.pick_id.removeprefix("deep_sky:")
+            for label in labels.labels
+            if label.pick_id is not None
+            and label.pick_id.startswith("deep_sky:")
+        }
+        for item in self._visible_ngc:
+            item["label_visible"] = str(item.get("name", "")) in visible_names
+
+    def _hud_debug_lines(self, payload: dict[str, Any]) -> tuple[str, ...]:
+        """Expose renderer diagnostics as plain content, never HUD paint logic."""
+
+        if not bool(payload.get("debug_render_metrics", False)):
+            return ()
+        terrain = payload.get("terrain", {})
+        terrain = terrain if isinstance(terrain, dict) else {}
+        if not bool(terrain.get("topography_enabled", False)):
+            surface_status = "requires topography"
+        elif not bool(terrain.get("surface_enabled", False)):
+            surface_status = "disabled"
+        elif not str(terrain.get("surface_path", "") or ""):
+            surface_status = "waiting for data"
+        else:
+            surface_status = "active"
+        return (
+            "DEBUG | "
+            f"Sky {self._sky_background_pipeline.value.upper()} | "
+            f"Stars {self.stars.star_rendering_pipeline.value.upper()} | "
+            f"Surface {surface_status}",
+            "Solar "
+            f"{self._celestial_rendering_pipeline.value.upper()} | "
+            f"Milky Way {self._milkyway_rendering_pipeline.value.upper()} | "
+            f"NGC {self._deep_sky_rendering_pipeline.value.upper()} | "
+            f"Overlays {self._overlay_rendering_pipeline.value.upper()}",
+        )
+
+    def _paint_hud_scene(
+        self,
+        painter: QPainter,
+        width: int,
+        state: RenderState,
+        visible_stars: int,
+        payload: dict[str, Any],
+    ) -> None:
+        """Render a fully resolved HUD; hidden HUDs produce no View calls."""
+
+        plan = self._hud_planner.plan(
+            state,
+            width,
+            visible_stars,
+            self._font_metrics,
+            debug_lines=self._hud_debug_lines(payload),
+            visible=bool(payload.get("hud_visible", True)),
+        )
+        calls = self._labels_adapter.paint_hud(painter, plan)
+        self.diagnostics.set_counter("overlay_hud_draw_calls", calls)
+        self.diagnostics.set_counter(
+            "overlay_hud_labels", plan.labels.stats.accepted
+        )
 
     def _draw_grid(
         self,
@@ -2766,20 +3244,12 @@ class OffscreenSceneRenderer:
             ra = index * 2.5
             hour_angle = math.radians(lst - ra)
             sin_alt = math.cos(latitude) * math.cos(hour_angle)
-            altitude = math.degrees(
-                math.asin(max(-1.0, min(1.0, sin_alt)))
-            )
+            altitude = math.degrees(math.asin(max(-1.0, min(1.0, sin_alt))))
             denominator = (
-                math.cos(math.radians(altitude))
-                * math.cos(latitude)
-                + 1e-10
+                math.cos(math.radians(altitude)) * math.cos(latitude) + 1e-10
             )
-            cos_azimuth = (
-                -sin_alt * math.sin(latitude)
-            ) / denominator
-            azimuth = math.degrees(
-                math.acos(max(-1.0, min(1.0, cos_azimuth)))
-            )
+            cos_azimuth = (-sin_alt * math.sin(latitude)) / denominator
+            azimuth = math.degrees(math.acos(max(-1.0, min(1.0, cos_azimuth))))
             if math.sin(hour_angle) > 0.0:
                 azimuth = 360.0 - azimuth
             point = self._project(
@@ -2807,9 +3277,7 @@ class OffscreenSceneRenderer:
             previous = current
         painter.save()
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(
-            QPen(QColor(0, 255, 255, 80), 1.0, Qt.DashLine)
-        )
+        painter.setPen(QPen(QColor(0, 255, 255, 80), 1.0, Qt.DashLine))
         painter.drawPath(path)
         painter.restore()
 
@@ -2829,14 +3297,22 @@ class OffscreenSceneRenderer:
         scope.awaiting_center_click = scope.center is None
         scope.set_shape(str(payload.get("scope_shape", "circle")))
         scope.set_manual_fov(*state.scope_fov_deg)
-        scope.draw(
-            painter,
-            width,
-            height,
-            lambda alt, az: self._project(
-                alt, az, width, height, state.camera
-            ),
+        cx, cy = float(width) * 0.5, float(height) * 0.5
+        if scope.center is not None:
+            res = self._project(
+                scope.center[0], scope.center[1], width, height, state.camera
+            )
+            if res is not None:
+                cx, cy = float(res[0]), float(res[1])
+        fov = scope.state.get_fov_deg()
+        px_per_deg = min(width, height) / max(0.1, fov[0])
+        plan = scope.build_plan(
+            screen_center_px=(cx, cy),
+            viewport_w=float(width),
+            viewport_h=float(height),
+            px_per_deg=px_per_deg,
         )
+        render_qpainter_scope_plan(painter, plan, float(width), float(height))
 
     def _draw_selection(
         self,
@@ -2853,9 +3329,7 @@ class OffscreenSceneRenderer:
             azimuth = float(selected["az"])
         except (KeyError, TypeError, ValueError):
             return
-        point = self._project(
-            altitude, azimuth, width, height, state.camera
-        )
+        point = self._project(altitude, azimuth, width, height, state.camera)
         if point is None:
             return
         x, y = float(point[0]), float(point[1])
@@ -2878,8 +3352,7 @@ class OffscreenSceneRenderer:
                 type_matches = bool(
                     not selected_key
                     and selected_type
-                    and str(item.get("type", "")).lower()
-                    == selected_type
+                    and str(item.get("type", "")).lower() == selected_type
                 )
                 if key_matches or type_matches:
                     x = float(item["sx"])
@@ -2894,16 +3367,17 @@ class OffscreenSceneRenderer:
         elif selected_kind == "ngc":
             selected_name = str(selected.get("name", "") or "")
             for item in self._visible_ngc:
-                if selected_name and str(item.get("name", "")) != selected_name:
+                if (
+                    selected_name
+                    and str(item.get("name", "")) != selected_name
+                ):
                     continue
                 x = float(item["sx"])
                 y = float(item["sy"])
                 body_radius = max(
                     0.0, float(item.get("pick_radius", 8.0)) - 8.0
                 )
-                object_label_visible = bool(
-                    item.get("label_visible", False)
-                )
+                object_label_visible = bool(item.get("label_visible", False))
                 break
         pulse = 0.5 * (
             math.sin(time.monotonic() * (2.0 * math.pi / 1.15)) + 1.0
@@ -2914,12 +3388,8 @@ class OffscreenSceneRenderer:
         painter.save()
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(
-            QPen(QColor(255, 255, 255, max(30, alpha // 2)), 2.2)
-        )
-        painter.drawEllipse(
-            QPointF(x, y), radius + 2.5, radius + 2.5
-        )
+        painter.setPen(QPen(QColor(255, 255, 255, max(30, alpha // 2)), 2.2))
+        painter.drawEllipse(QPointF(x, y), radius + 2.5, radius + 2.5)
         painter.setPen(QPen(QColor(102, 232, 218, alpha), 1.3))
         painter.drawEllipse(QPointF(x, y), radius, radius)
         name = str(selected.get("name", "") or "")
@@ -2973,12 +3443,20 @@ class OffscreenSceneRenderer:
         if settings != self._constellation_payload_cache:
             self._apply_constellation_payload(settings)
             self._constellation_payload_cache = dict(settings)
-        self.constellations.draw(
-            painter,
-            lambda alt, az: self._project(
-                alt, az, width, height, state.camera
-            ),
-            lambda ra, dec: self._radec_to_sky(ra, dec, state),
+
+        def _project_ra_dec(
+            ra: float, dec: float
+        ) -> tuple[float, float] | None:
+            sky = self._radec_to_sky(ra, dec, state)
+            if sky is None:
+                return None
+            return self._project(sky[0], sky[1], width, height, state.camera)
+
+        plan = self.constellations.build_plan(
+            _project_ra_dec, viewport_w=float(width), viewport_h=float(height)
+        )
+        render_qpainter_constellation_plan(
+            painter, plan, float(width), float(height)
         )
 
     @staticmethod
@@ -3017,9 +3495,7 @@ class OffscreenSceneRenderer:
                         dec_deg=float(raw_node.get("dec", 0.0)),
                         star_id=str(raw_node.get("star_id", "") or ""),
                         star_name=str(raw_node.get("star_name", "") or ""),
-                        connect_from_prev=bool(
-                            raw_node.get("connect", True)
-                        ),
+                        connect_from_prev=bool(raw_node.get("connect", True)),
                     )
                 )
             groups.append(
@@ -3037,7 +3513,9 @@ class OffscreenSceneRenderer:
             "resume_from_node_index",
         ):
             value = payload.get(name)
-            setattr(controller, name, int(value) if value is not None else None)
+            setattr(
+                controller, name, int(value) if value is not None else None
+            )
         controller.selected_segments = {
             (int(value[0]), int(value[1]))
             for value in payload.get("selected_segments", ()) or ()
@@ -3088,17 +3566,12 @@ class OffscreenSceneRenderer:
             "selected_segment_index": controller.selected_segment_index,
             "selected_segments": [
                 [int(group), int(segment)]
-                for group, segment in sorted(
-                    controller.selected_segments
-                )
+                for group, segment in sorted(controller.selected_segments)
             ],
             "selected_group_indices": sorted(
-                int(value)
-                for value in controller.selected_group_indices
+                int(value) for value in controller.selected_group_indices
             ),
-            "group_drawing_active": bool(
-                controller.group_drawing_active
-            ),
+            "group_drawing_active": bool(controller.group_drawing_active),
             "resume_from_node_index": controller.resume_from_node_index,
             "preview_ra_dec": (
                 list(controller.preview_ra_dec)
@@ -3120,13 +3593,9 @@ class OffscreenSceneRenderer:
         artifact = artifact if isinstance(artifact, dict) else {}
         earth_visibility = resolve_earth_layer_visibility(
             horizon_enabled=artifact.get("horizon_enabled", True),
-            topography_enabled=artifact.get(
-                "topography_enabled", True
-            ),
+            topography_enabled=artifact.get("topography_enabled", True),
             surface_enabled=artifact.get("surface_enabled", True),
-            terrain_3d_enabled=artifact.get(
-                "terrain_3d_enabled", True
-            ),
+            terrain_3d_enabled=artifact.get("terrain_3d_enabled", True),
             light_pollution_enabled=payload.get(
                 "light_pollution_enabled", True
             ),
@@ -3146,10 +3615,7 @@ class OffscreenSceneRenderer:
         if self.terrain is None:
             return
         self.terrain.set_surface_visual_style(
-            str(
-                artifact.get("surface_visual_style", "original")
-                or "original"
-            )
+            str(artifact.get("surface_visual_style", "original") or "original")
         )
         surface_path = str(artifact.get("surface_path", "") or "")
         if surface_path != self._terrain_surface_path:
@@ -3168,12 +3634,17 @@ class OffscreenSceneRenderer:
                     profile.surface_samples = None
                 self.terrain.set_profile(profile)
             self._terrain_surface_path = surface_path
-        project = lambda alt, az: project_universal_stereo_point(
-            alt, az, width, height, state.camera
-        )
-        project_many = lambda alt, az: project_universal_stereo_numpy(
-            alt, az, width, height, state.camera
-        )
+
+        def project(alt, az):
+            return project_universal_stereo_point(
+                alt, az, width, height, state.camera
+            )
+
+        def project_many(alt, az):
+            return project_universal_stereo_numpy(
+                alt, az, width, height, state.camera
+            )
+
         terrain_3d_enabled = earth_visibility.terrain_3d_enabled
         surface_enabled = earth_visibility.surface_enabled
         draw_flat_line = bool(not topography_enabled)
@@ -3203,9 +3674,7 @@ class OffscreenSceneRenderer:
             moon_illumination=float(
                 moon.get("illumination", 0.0) if moon else 0.0
             ),
-            eclipse_factor=float(
-                state.extras.get("eclipse_factor", 1.0)
-            ),
+            eclipse_factor=float(state.extras.get("eclipse_factor", 1.0)),
         )
         draw_domes_callback = None
         self._dome_count = 0
@@ -3215,15 +3684,12 @@ class OffscreenSceneRenderer:
             and is_automatic_mode(state.light_pollution_mode)
             and state.sun_alt < 0.0
         ):
-            twilight_factor = (
-                min(1.0, max(0.0, -state.sun_alt / 18.0))
-                * float(state.extras.get("eclipse_factor", 1.0))
-            )
+            twilight_factor = min(
+                1.0, max(0.0, -state.sun_alt / 18.0)
+            ) * float(state.extras.get("eclipse_factor", 1.0))
             if twilight_factor > 0.01:
 
-                def draw_domes_callback(
-                    target_painter, index, distance
-                ):
+                def draw_domes_callback(target_painter, index, distance):
                     self._draw_single_city_dome(
                         target_painter,
                         self.terrain.profile,
@@ -3252,12 +3718,10 @@ class OffscreenSceneRenderer:
             terrain_3d_enabled=terrain_3d_enabled,
             interaction_active=state.interaction_active,
             surface_enabled=surface_enabled,
-            sky_color_fn=sky_color_phys,
+            sky_color_fn=_terrain_reference_sky_qcolor,
             light_context=light_context,
         )
-        self.diagnostics.set_counter(
-            "light_domes", float(self._dome_count)
-        )
+        self.diagnostics.set_counter("light_domes", float(self._dome_count))
 
     def _draw_single_city_dome(
         self,
@@ -3299,24 +3763,17 @@ class OffscreenSceneRenderer:
         if point is None:
             return
 
-        distance_factor = math.exp(
-            -max(0.0, float(distance_m)) / 35_000.0
-        )
+        distance_factor = math.exp(-max(0.0, float(distance_m)) / 35_000.0)
         log_intensity = math.log10(1.0 + intensity)
         visual_intensity = log_intensity * distance_factor
-        alpha = int(
-            min(150.0, visual_intensity * 90.0 * twilight_factor)
-        )
+        alpha = int(min(150.0, visual_intensity * 90.0 * twilight_factor))
         if alpha <= 2:
             return
 
         maximum_radius = float(width) * 0.4
         radius_x = min(
             maximum_radius,
-            log_intensity
-            * 30.0
-            * state.camera.zoom_level
-            * distance_factor,
+            log_intensity * 30.0 * state.camera.zoom_level * distance_factor,
         )
         if radius_x <= 1.0:
             return
@@ -3325,21 +3782,15 @@ class OffscreenSceneRenderer:
         gradient = QRadialGradient(0.0, 0.0, radius_x)
         gradient.setColorAt(
             0.0,
-            QColor.fromHsl(
-                int(hue), 50, 80, int(alpha * 0.40)
-            ),
+            QColor.fromHsl(int(hue), 50, 80, int(alpha * 0.40)),
         )
         gradient.setColorAt(
             0.30,
-            QColor.fromHsl(
-                int(hue), 40, 60, int(alpha * 0.15)
-            ),
+            QColor.fromHsl(int(hue), 40, 60, int(alpha * 0.15)),
         )
         gradient.setColorAt(
             0.60,
-            QColor.fromHsl(
-                int(hue), 30, 40, max(1, int(alpha * 0.05))
-            ),
+            QColor.fromHsl(int(hue), 30, 40, max(1, int(alpha * 0.05))),
         )
         gradient.setColorAt(1.0, QColor(0, 0, 0, 0))
 
@@ -3350,9 +3801,7 @@ class OffscreenSceneRenderer:
             painter.scale(1.0, radius_y / radius_x)
             painter.setBrush(QBrush(gradient))
             painter.setPen(Qt.NoPen)
-            painter.drawEllipse(
-                QPointF(0.0, 0.0), radius_x, radius_x
-            )
+            painter.drawEllipse(QPointF(0.0, 0.0), radius_x, radius_x)
         finally:
             painter.restore()
         self._dome_count += 1
@@ -3370,9 +3819,7 @@ class OffscreenSceneRenderer:
             if "__metadata__" not in archive.files:
                 raise ValueError("Surface artifact metadata is missing")
             metadata = json.loads(
-                np.asarray(
-                    archive["__metadata__"], dtype=np.uint8
-                )
+                np.asarray(archive["__metadata__"], dtype=np.uint8)
                 .tobytes()
                 .decode("utf-8")
             )

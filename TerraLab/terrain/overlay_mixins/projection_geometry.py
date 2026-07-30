@@ -9,7 +9,14 @@ import numpy as np
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QImage, QPainter
 
+from TerraLab.application.terrain_geometry import (
+    TerrainGeometryPipeline,
+    resolve_terrain_geometry_pipeline,
+)
 from TerraLab.common.performance.flags import PERFORMANCE_FLAGS
+from TerraLab.scene.plans.terrain_geometry import (
+    build_terrain_triangles_geometry,
+)
 from TerraLab.terrain.render.config import TerrainCelestialLightContext
 from TerraLab.terrain.render.lighting import terrain_celestial_light_factors
 from TerraLab.terrain.render.overlay_types import (
@@ -57,7 +64,9 @@ class OverlayProjectionGeometryMixin:
             else:
                 sx.append(np.nan)
                 sy.append(np.nan)
-        return np.asarray(sx, dtype=np.float64), np.asarray(sy, dtype=np.float64)
+        return np.asarray(sx, dtype=np.float64), np.asarray(
+            sy, dtype=np.float64
+        )
 
     def _profile_horizon_lookup(self):
         if not self._layers:
@@ -129,7 +138,9 @@ class OverlayProjectionGeometryMixin:
         self._last_surface2d_paint_s = 0.0
         asset = self._terrain_render_asset
         surface_cache = self._visible_surface_cache()
-        visual_altitudes = _sample_cache_value(surface_cache, "visual_altitudes")
+        visual_altitudes = _sample_cache_value(
+            surface_cache, "visual_altitudes"
+        )
         mesh_token = (
             hash((id(mesh), id(visual_altitudes)))
             if visual_altitudes is not None
@@ -277,48 +288,69 @@ class OverlayProjectionGeometryMixin:
             surface_painter = QPainter(surface_image)
             target_painter = surface_painter
 
-        # Adjacent depth spans share exact boundaries. Antialiasing each fill
-        # independently exposes sub-pixel sky seams between those polygons;
-        # the final profile ridge is antialiased separately after the surface.
-        target_painter.setRenderHint(QPainter.Antialiasing, False)
-        target_painter.setPen(Qt.NoPen)
-        drawn = 0
-        for span, polygon in self._terrain_polygons_for_geometry(geometry):
-            xs = span.x
-            ys = np.concatenate((span.top_y, span.bottom_y))
-            if float(np.max(xs)) < -64.0 or float(np.min(xs)) > float(width) + 64.0:
-                continue
-            if float(np.max(ys)) < -64.0 or float(np.min(ys)) > float(height) + 64.0:
-                continue
-            if self._quad_area_px(polygon) < 0.35:
-                continue
-            segment_shade = shade_grid[
-                int(span.row_index), span.column_indices
-            ]
-            brush = self._terrain_span_brush(
-                span.x,
-                segment_shade,
-                span.distance_m,
-                quantized_night,
-                sky_color,
-                sun_vec,
-                sun_alt,
-                terrain_shading_enabled,
-                light_context=light_context,
-            )
-            target_painter.setBrush(brush)
-            target_painter.drawPolygon(polygon)
-            drawn += 1
+        def draw_surface_spans() -> int:
+            # Adjacent depth spans share exact boundaries. Antialiasing each
+            # fill independently exposes sub-pixel sky seams between those
+            # polygons; the final profile ridge is antialiased separately.
+            target_painter.setRenderHint(QPainter.Antialiasing, False)
+            target_painter.setPen(Qt.NoPen)
+            drawn_spans = 0
+            for span, polygon in self._terrain_polygons_for_geometry(geometry):
+                xs = span.x
+                ys = np.concatenate((span.top_y, span.bottom_y))
+                if (
+                    float(np.max(xs)) < -64.0
+                    or float(np.min(xs)) > float(width) + 64.0
+                ):
+                    continue
+                if (
+                    float(np.max(ys)) < -64.0
+                    or float(np.min(ys)) > float(height) + 64.0
+                ):
+                    continue
+                if self._quad_area_px(polygon) < 0.35:
+                    continue
+                segment_shade = shade_grid[
+                    int(span.row_index), span.column_indices
+                ]
+                brush = self._terrain_span_brush(
+                    span.x,
+                    segment_shade,
+                    span.distance_m,
+                    quantized_night,
+                    sky_color,
+                    sun_vec,
+                    sun_alt,
+                    terrain_shading_enabled,
+                    light_context=light_context,
+                )
+                target_painter.setBrush(brush)
+                target_painter.drawPolygon(polygon)
+                drawn_spans += 1
+            return drawn_spans
+
+        if surface_painter is not None:
+            try:
+                drawn = draw_surface_spans()
+            finally:
+                # A cached frame owns its QImage. It must never leave this
+                # scope while a QPainter is active, including on bad geometry
+                # or material data from a background calculation.
+                if surface_painter.isActive():
+                    surface_painter.end()
+        else:
+            drawn = draw_surface_spans()
 
         if surface_painter is not None and surface_image is not None:
-            surface_painter.end()
             self._terrain_surface_image_cache_key = surface_cache_key
             self._terrain_surface_image_cache = surface_image
             self._terrain_surface_image_geometry = geometry
             self._terrain_surface_image_drawn = int(drawn)
             painter.drawImage(0, 0, surface_image)
         self._last_surface2d_quads = drawn
-        self._last_surface2d_paint_s = float(time.perf_counter() - paint_started)
+        self._last_surface2d_paint_s = float(
+            time.perf_counter() - paint_started
+        )
         painter.setRenderHint(QPainter.Antialiasing, True)
 
     def _terrain_triangles_for_view(
@@ -350,18 +382,45 @@ class OverlayProjectionGeometryMixin:
         if (
             PERFORMANCE_FLAGS.relief_cached
             and cache_key == self._terrain_geometry_cache_key
-            and isinstance(self._terrain_geometry_cache, _TerrainTriangleGeometry)
+            and isinstance(
+                self._terrain_geometry_cache, _TerrainTriangleGeometry
+            )
         ):
             return self._terrain_geometry_cache
+
+        if (
+            resolve_terrain_geometry_pipeline()
+            == TerrainGeometryPipeline.SCENE
+        ):
+            convergence = float(
+                getattr(
+                    getattr(self, "profile", None), "grid_convergence_deg", 0.0
+                )
+                or 0.0
+            )
+            result = build_terrain_triangles_geometry(
+                asset,
+                projection_fn,
+                int(width),
+                int(height),
+                float(cur_az),
+                float(az_min),
+                float(az_max),
+                projection_fn_numpy=projection_fn_numpy,
+                grid_convergence_deg=convergence,
+            )
+            if result is not None and PERFORMANCE_FLAGS.relief_cached:
+                self._terrain_geometry_cache_key = cache_key
+                self._terrain_geometry_cache = result
+            return result
 
         started = time.perf_counter()
         azimuths = np.asarray(asset.azimuths, dtype=np.float64)
         relative = (azimuths - float(cur_az) + 180.0) % 360.0 - 180.0
         full_order = np.argsort(relative, kind="stable")
         full_unwrapped = float(cur_az) + relative[full_order]
-        in_view = (
-            (full_unwrapped >= float(az_min))
-            & (full_unwrapped <= float(az_max))
+        in_view = (full_unwrapped >= float(az_min)) & (
+            full_unwrapped <= float(az_max)
         )
         selected = np.flatnonzero(in_view)
         if selected.size:
@@ -404,12 +463,21 @@ class OverlayProjectionGeometryMixin:
 
         original_valid = np.asarray(asset.valid[:, order], dtype=bool)
         original_visible = np.asarray(asset.visible[:, order], dtype=bool)
-        vertex_valid = original_valid & projected_valid & np.isfinite(sx) & np.isfinite(sy)
+        vertex_valid = (
+            original_valid
+            & projected_valid
+            & np.isfinite(sx)
+            & np.isfinite(sy)
+        )
         az_delta = np.diff(unwrapped_az)
         finite_steps = az_delta[np.isfinite(az_delta) & (az_delta > 1e-9)]
-        nominal_step = float(np.median(finite_steps)) if finite_steps.size else 1.0
-        adjacent = np.isfinite(az_delta) & (az_delta > 0.0) & (
-            az_delta <= nominal_step * 1.5 + 1e-9
+        nominal_step = (
+            float(np.median(finite_steps)) if finite_steps.size else 1.0
+        )
+        adjacent = (
+            np.isfinite(az_delta)
+            & (az_delta > 0.0)
+            & (az_delta <= nominal_step * 1.5 + 1e-9)
         )
         cell_valid = (
             vertex_valid[:-1, :-1]
@@ -449,7 +517,9 @@ class OverlayProjectionGeometryMixin:
             triangle_x = sx[triangle_rows, triangle_columns_sorted]
             triangle_y = sy[triangle_rows, triangle_columns_sorted]
             xy = np.stack((triangle_x, triangle_y), axis=2)
-            depth = np.asarray(asset.distances, dtype=np.float64)[triangle_rows]
+            depth = np.asarray(asset.distances, dtype=np.float64)[
+                triangle_rows
+            ]
             vertex_domain = np.zeros(triangle_rows.shape, dtype=np.uint8)
         else:
             xy = np.empty((0, 3, 2), dtype=np.float64)
@@ -462,7 +532,9 @@ class OverlayProjectionGeometryMixin:
         # mesh. Unlike a polar fan it has no collapsed azimuthal edge and thus
         # remains well-conditioned when the camera points at the nadir.
         patch_shape = np.shape(asset.near_patch_altitudes)
-        patch_vertex_count = int(np.prod(patch_shape)) if len(patch_shape) == 2 else 0
+        patch_vertex_count = (
+            int(np.prod(patch_shape)) if len(patch_shape) == 2 else 0
+        )
         if patch_shape[0] >= 2 and patch_shape[1] >= 2:
             patch_east, patch_north = np.meshgrid(
                 np.asarray(asset.near_patch_eastings, dtype=np.float64),
@@ -470,7 +542,9 @@ class OverlayProjectionGeometryMixin:
             )
             patch_distance = np.hypot(patch_east, patch_north)
             convergence = float(
-                getattr(getattr(self, "profile", None), "grid_convergence_deg", 0.0)
+                getattr(
+                    getattr(self, "profile", None), "grid_convergence_deg", 0.0
+                )
                 or 0.0
             )
             patch_azimuth = (
@@ -566,10 +640,9 @@ class OverlayProjectionGeometryMixin:
                     axis=0,
                 )
 
-        twice_area = (
-            (xy[:, 1, 0] - xy[:, 0, 0]) * (xy[:, 2, 1] - xy[:, 0, 1])
-            - (xy[:, 1, 1] - xy[:, 0, 1]) * (xy[:, 2, 0] - xy[:, 0, 0])
-        )
+        twice_area = (xy[:, 1, 0] - xy[:, 0, 0]) * (
+            xy[:, 2, 1] - xy[:, 0, 1]
+        ) - (xy[:, 1, 1] - xy[:, 0, 1]) * (xy[:, 2, 0] - xy[:, 0, 0])
         edge_01 = np.hypot(
             xy[:, 1, 0] - xy[:, 0, 0], xy[:, 1, 1] - xy[:, 0, 1]
         )
@@ -603,7 +676,9 @@ class OverlayProjectionGeometryMixin:
         metrics = _TerrainGeometryMetrics(
             spans=int(xy.shape[0]),
             source_samples=int(altitudes.size + patch_vertex_count),
-            invalid_samples=int(altitudes.size - np.count_nonzero(vertex_valid)),
+            invalid_samples=int(
+                altitudes.size - np.count_nonzero(vertex_valid)
+            ),
             output_vertices=int(xy.shape[0] * 3),
             max_error_px=0.0,
             elapsed_s=elapsed,
@@ -620,4 +695,3 @@ class OverlayProjectionGeometryMixin:
             self._terrain_geometry_cache_key = cache_key
             self._terrain_geometry_cache = result
         return result
-

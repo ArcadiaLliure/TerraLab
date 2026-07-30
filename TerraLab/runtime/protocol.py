@@ -1,10 +1,13 @@
-"""Small, pickle-free protocol shared by TerraLab processes."""
+"""Pickle-free JSON-lines protocol shared by TerraLab processes (v1, active)."""
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping
+
+from TerraLab.scene.contracts import JSONValue, SceneFrame, Viewport
 
 
 PROTOCOL_VERSION = 1
@@ -14,6 +17,8 @@ WORKER_ERROR = "worker_error"
 HEARTBEAT = "heartbeat"
 SHUTDOWN = "shutdown"
 SCENE_SNAPSHOT = "scene_snapshot"
+SCENE_DELTA = "scene_delta"
+RESYNC_REQUEST = "resync_request"
 FRAME_POOL = "frame_pool"
 FRAME_READY = "frame_ready"
 FRAME_RELEASED = "frame_released"
@@ -30,6 +35,8 @@ MESSAGE_KINDS = frozenset(
         HEARTBEAT,
         SHUTDOWN,
         SCENE_SNAPSHOT,
+        SCENE_DELTA,
+        RESYNC_REQUEST,
         FRAME_POOL,
         FRAME_READY,
         FRAME_RELEASED,
@@ -44,6 +51,27 @@ MESSAGE_KINDS = frozenset(
 
 class ProtocolError(ValueError):
     """Raised when a process message violates the runtime contract."""
+
+
+def encode_scene_frame_v1(frame: SceneFrame) -> dict[str, JSONValue]:
+    """The sole protocol-v1 encoder for a typed scene frame."""
+
+    return frame.to_legacy_snapshot()
+
+
+def decode_scene_frame_v1(
+    payload: Mapping[str, object],
+    *,
+    generation: int,
+    viewport: Viewport,
+) -> SceneFrame:
+    """Decode a v1 scene payload before it reaches a render backend."""
+
+    return SceneFrame.from_legacy_snapshot(
+        generation=int(generation),
+        snapshot=payload,
+        viewport=viewport,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,11 +113,29 @@ def envelope(
     return message
 
 
+def _validate_json_value(val: object) -> None:
+    if val is None or isinstance(val, (bool, int, str)):
+        return
+    if isinstance(val, float):
+        if not math.isfinite(val):
+            raise ProtocolError("Message must contain finite JSON values only")
+        return
+    if isinstance(val, Mapping):
+        for k, v in val.items():
+            if not isinstance(k, str):
+                raise ProtocolError("Mapping keys in message payload must be strings")
+            _validate_json_value(v)
+        return
+    if isinstance(val, (list, tuple)):
+        for item in val:
+            _validate_json_value(item)
+        return
+    raise ProtocolError(f"Unsupported JSON payload value type: {type(val).__name__}")
+
+
 def validate(message: Envelope) -> None:
     if int(message.version) != PROTOCOL_VERSION:
-        raise ProtocolError(
-            f"Unsupported protocol version: {message.version}"
-        )
+        raise ProtocolError(f"Unsupported protocol version: {message.version}")
     if message.kind not in MESSAGE_KINDS:
         raise ProtocolError(f"Unknown message kind: {message.kind!r}")
     if not isinstance(message.payload, Mapping):
@@ -97,11 +143,11 @@ def validate(message: Envelope) -> None:
     if int(message.generation) < 0:
         raise ProtocolError("Message generation cannot be negative")
     try:
-        json.dumps(message.to_dict(), ensure_ascii=True, allow_nan=False)
-    except (TypeError, ValueError) as exc:
-        raise ProtocolError(
-            "Message must contain finite JSON values only"
-        ) from exc
+        _validate_json_value(message.payload)
+    except ProtocolError:
+        raise
+    except Exception as exc:
+        raise ProtocolError("Message payload validation failed") from exc
 
 
 def encode(message: Envelope) -> bytes:
@@ -146,4 +192,3 @@ def decode(line: bytes | str) -> Envelope:
         raise ProtocolError("Incomplete runtime message") from exc
     validate(message)
     return message
-

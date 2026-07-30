@@ -463,7 +463,8 @@ class OverlayLightingCacheMixin:
         for row, distance in enumerate(asset.distances):
             palette_position = _clamp01(1.0 - float(distance) / maximum)
             _night_color, day_color = _palette_color(palette_position)
-            fallback[row, :, :] = day_color.getRgb()
+            rgba_tuple = day_color if isinstance(day_color, tuple) and len(day_color) == 4 else (day_color[0], day_color[1], day_color[2], 255) if isinstance(day_color, tuple) else day_color.getRgb()
+            fallback[row, :, :] = rgba_tuple
 
         rows, columns = np.indices(shape, dtype=np.int32)
         sampled = self._relief_surface_materials(

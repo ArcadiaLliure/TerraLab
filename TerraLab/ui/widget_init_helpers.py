@@ -27,7 +27,7 @@ from TerraLab.widgets.constellation_drawing import (
 from TerraLab.widgets.measurement_tools import MeasurementController
 from TerraLab.widgets.scope_ui_manager import ScopeUIManager
 from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
-from TerraLab.widgets.visual_magnitude_engine import VisualMagnitudeEngine
+from TerraLab.scene.photometry import VisualMagnitudeEngine
 
 
 def astro_canvas_init(obj, parent):
@@ -41,10 +41,12 @@ def astro_canvas_init(obj, parent):
     self.setMinimumSize(800, 600)
     self.azimuth_offset = 0
     self.elevation_angle = 40  # Default to Horizon
-    self.vertical_offset_ratio = 0.3 # Default to Shift Down
+    self.vertical_offset_ratio = 0.3  # Default to Shift Down
     self.zoom_level = 1.0
     self.base_fov_deg = 93.9  # zoom=1.0 => ~17mm equiv (sensor 36mm)
-    self.debug_render_metrics = bool(get_config_value("debug_render_metrics", False))
+    self.debug_render_metrics = bool(
+        get_config_value("debug_render_metrics", False)
+    )
     self._last_diagnostics_log_time = 0.0
     self.dragging = False
     self._camera_interaction_until = 0.0
@@ -61,7 +63,7 @@ def astro_canvas_init(obj, parent):
     self.visible_stars_sy = []
     self.visible_sky_objects = []
     self.visible_ngc_objects = []
-    self.press_pos = QPointF(0,0)
+    self.press_pos = QPointF(0, 0)
     self._drawing_ctrl_pan_started = False
     self._drawing_ctrl_click_pending = False
     self._scope_camera_pan_started = False
@@ -82,6 +84,7 @@ def astro_canvas_init(obj, parent):
     self.weather = getattr(parent, "weather", None)
     # HintOverlay -- toast HUD contextual per a zoom, temps i ubicacio
     from TerraLab.widgets.hint_overlay import HintOverlay as _HintOverlay
+
     self.hint_overlay = _HintOverlay(parent=self)
     self._cached_star_image = None
     self._cached_trail_image = None
@@ -94,7 +97,8 @@ def astro_canvas_init(obj, parent):
     # Human Eye Reset Button
     # Human Eye Reset Button
     from PyQt5.QtWidgets import QPushButton
-    self.btn_human_eye = QPushButton("\U0001F441", self)
+
+    self.btn_human_eye = QPushButton("\U0001f441", self)
     self.btn_human_eye.setFixedSize(45, 24)
     self.btn_human_eye.setCursor(Qt.PointingHandCursor)
     self.btn_human_eye.setToolTip("Zoom Natural (17mm)")
@@ -115,7 +119,7 @@ def astro_canvas_init(obj, parent):
     self.btn_human_eye.clicked.connect(self.reset_zoom_human)
     self.btn_human_eye.hide()
     self.hud_visible = True
-    self.btn_hud_toggle = QPushButton("\U0001F441  HUD", self)
+    self.btn_hud_toggle = QPushButton("\U0001f441  HUD", self)
     self.btn_hud_toggle.setObjectName("hudToggleButton")
     self.btn_hud_toggle.setAccessibleName("Mostrar o amagar informació HUD")
     self.btn_hud_toggle.setToolTip("Mostrar o amagar la informació del visor")
@@ -165,7 +169,7 @@ def astro_canvas_init(obj, parent):
         "lon": None,
         "data": None,
     }
-    self._eclipse_cache = {'time': -1, 'value': 1.0}
+    self._eclipse_cache = {"time": -1, "value": 1.0}
     self._moon_pos_cache = {}  # Cache for moon calculations
     self._last_skyfield_update = 0  # timestamp in ms
     # Scope solar procedural cache (normalized features, stable across zoom).
@@ -183,6 +187,7 @@ def astro_canvas_init(obj, parent):
     self._constellation_rename_group_index = None
     self._scope_interaction_until = 0.0
 
+
 def astronomical_widget_init(obj, parent=None, **kwargs):
     self = obj
     self._closing = False
@@ -190,12 +195,15 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     # 1. Initialize properties required by UI/Canvas
     self.asset_manager = AssetManager()
     from TerraLab.data.layer_manager import LayerManager
+
     self.layer_manager = LayerManager(self.asset_manager)
     self.runtime_layout = dict(getattr(self.asset_manager, "layout", {}))
     self.latitude = float(get_config_value("observer_lat", 41.189795))
     self.longitude = float(get_config_value("observer_lon", 1.210058))
     self._observer_offset = float(get_config_value("observer_offset", 0.0))
-    self.observer_timezone = str(get_config_value("observer_timezone", "") or "").strip()
+    self.observer_timezone = str(
+        get_config_value("observer_timezone", "") or ""
+    ).strip()
     # Catalog threshold used in magnitude mode.
     legacy_magnitude_limit = get_config_value("manual_eye_limit_mag", 8.0)
     self.magnitude_limit = float(
@@ -206,7 +214,9 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.auto_star_scale_multiplier = 1.0
     # Visual magnitude engine parameters.
     self.scope_aperture_mm = float(get_config_value("scope_aperture_mm", 80.0))
-    self.scope_aperture_f_number = float(get_config_value("scope_aperture_f_number", 4.0))
+    self.scope_aperture_f_number = float(
+        get_config_value("scope_aperture_f_number", 4.0)
+    )
     self.scope_aperture_input_mode = str(
         get_config_value("scope_aperture_input_mode", "diameter_mm")
     )
@@ -215,35 +225,66 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.scope_instrument_profile = str(
         get_config_value("scope_instrument_profile", "telescope")
     )
-    if self.scope_instrument_profile not in ("telescope", "camera_aps_c", "camera_full_frame"):
+    if self.scope_instrument_profile not in (
+        "telescope",
+        "camera_aps_c",
+        "camera_full_frame",
+    ):
         self.scope_instrument_profile = "telescope"
     self.scope_eyepiece_mm = float(get_config_value("scope_eyepiece_mm", 20.0))
     self.scope_iso = int(get_config_value("scope_iso", 800))
     self.scope_exposure_s = float(get_config_value("scope_exposure_s", 2.0))
     self.scope_k_fallback = float(get_config_value("scope_k_fallback", 0.20))
-    self.milkyway_overlay_enabled = bool(get_config_value("milkyway_overlay_enabled", True))
-    self.milkyway_overlay_blend_mode = str(get_config_value("milkyway_overlay_blend_mode", "add"))
+    self.milkyway_overlay_enabled = bool(
+        get_config_value("milkyway_overlay_enabled", True)
+    )
+    self.milkyway_overlay_blend_mode = str(
+        get_config_value("milkyway_overlay_blend_mode", "add")
+    )
     # L'asset Gaia inclos porta el nucli prop del centre horitzontal del PNG.
     # Amb equirectangular classic (lon 0 a l'esquerra) cal un desplacament de 180 deg.
-    self.milkyway_overlay_ra_offset_deg = float(get_config_value("milkyway_overlay_ra_offset_deg", 180.0))
-    self.milkyway_overlay_coord_frame = str(get_config_value("milkyway_overlay_coord_frame", "galactic"))
-    self.milkyway_overlay_lat_flip = bool(get_config_value("milkyway_overlay_lat_flip", True))
-    self.milkyway_overlay_lon_flip = bool(get_config_value("milkyway_overlay_lon_flip", True))
-    self.milkyway_overlay_opacity = float(get_config_value("milkyway_overlay_opacity", 0.65))
-    default_mw_texture = str(Path(self.runtime_layout.get("data_milkyway", get_base_dir())) / "milkyway_overlay.png")
+    self.milkyway_overlay_ra_offset_deg = float(
+        get_config_value("milkyway_overlay_ra_offset_deg", 180.0)
+    )
+    self.milkyway_overlay_coord_frame = str(
+        get_config_value("milkyway_overlay_coord_frame", "galactic")
+    )
+    self.milkyway_overlay_lat_flip = bool(
+        get_config_value("milkyway_overlay_lat_flip", True)
+    )
+    self.milkyway_overlay_lon_flip = bool(
+        get_config_value("milkyway_overlay_lon_flip", True)
+    )
+    self.milkyway_overlay_opacity = float(
+        get_config_value("milkyway_overlay_opacity", 0.65)
+    )
+    default_mw_texture = str(
+        Path(self.runtime_layout.get("data_milkyway", get_base_dir()))
+        / "milkyway_overlay.png"
+    )
     self.milkyway_overlay_texture_path = str(
         get_config_value("milkyway_overlay_texture_path", default_mw_texture)
     )
-    self.milkyway_overlay_sample_scale = float(get_config_value("milkyway_overlay_sample_scale", 1.0))
+    self.milkyway_overlay_sample_scale = float(
+        get_config_value("milkyway_overlay_sample_scale", 1.0)
+    )
     # Migration from previous low-quality default (0.35): prefer full-resolution sampling.
     if self.milkyway_overlay_sample_scale <= 0.35 + 1e-6:
         self.milkyway_overlay_sample_scale = 1.0
         set_config_value("milkyway_overlay_sample_scale", 1.0)
-    tex_name = os.path.basename(str(self.milkyway_overlay_texture_path)).lower()
+    tex_name = os.path.basename(
+        str(self.milkyway_overlay_texture_path)
+    ).lower()
     _cfg_missing = object()
-    _saved_ra_offset = get_config_value("milkyway_overlay_ra_offset_deg", _cfg_missing)
-    _saved_lat_flip = get_config_value("milkyway_overlay_lat_flip", _cfg_missing)
-    _saved_lon_flip = get_config_value("milkyway_overlay_lon_flip", _cfg_missing)
+    _saved_ra_offset = get_config_value(
+        "milkyway_overlay_ra_offset_deg", _cfg_missing
+    )
+    _saved_lat_flip = get_config_value(
+        "milkyway_overlay_lat_flip", _cfg_missing
+    )
+    _saved_lon_flip = get_config_value(
+        "milkyway_overlay_lon_flip", _cfg_missing
+    )
     _saved_ra_offset_is_zero = False
     try:
         if _saved_ra_offset is _cfg_missing:
@@ -253,14 +294,23 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     except Exception:
         _saved_ra_offset_is_zero = False
     if (
-        str(self.milkyway_overlay_coord_frame).strip().lower().startswith("gal")
+        str(self.milkyway_overlay_coord_frame)
+        .strip()
+        .lower()
+        .startswith("gal")
         and tex_name in ("milkyway_overlay.png", "via_negra.png")
         and _saved_ra_offset_is_zero
     ):
         # Migracio conservadora: els assets galactics inclosos tenen lon 0 al centre del mapa.
         self.milkyway_overlay_ra_offset_deg = 180.0
         set_config_value("milkyway_overlay_ra_offset_deg", 180.0)
-    if str(self.milkyway_overlay_coord_frame).strip().lower().startswith("gal") and tex_name == "milkyway_overlay.png":
+    if (
+        str(self.milkyway_overlay_coord_frame)
+        .strip()
+        .lower()
+        .startswith("gal")
+        and tex_name == "milkyway_overlay.png"
+    ):
         # One-time conservative migration: do not overwrite user calibration.
         if _saved_lat_flip is _cfg_missing:
             self.milkyway_overlay_lat_flip = True
@@ -269,11 +319,24 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
             self.milkyway_overlay_lon_flip = True
             set_config_value("milkyway_overlay_lon_flip", True)
     self.dust_map_enabled = bool(get_config_value("dust_map_enabled", False))
-    default_dust_map = str(Path(self.runtime_layout.get("data_planck", get_base_dir())) / "planck_dust_opacity_eq_u16.npz")
-    self.dust_map_path = str(get_config_value("dust_map_path", default_dust_map))
-    self.dust_density_strength = float(get_config_value("dust_density_strength", 0.0))
-    self.dust_extinction_strength = float(get_config_value("dust_extinction_strength", 0.65))
-    if bool(self.dust_map_enabled) and float(self.dust_density_strength) <= 0.0 and float(self.dust_extinction_strength) <= 0.0:
+    default_dust_map = str(
+        Path(self.runtime_layout.get("data_planck", get_base_dir()))
+        / "planck_dust_opacity_eq_u16.npz"
+    )
+    self.dust_map_path = str(
+        get_config_value("dust_map_path", default_dust_map)
+    )
+    self.dust_density_strength = float(
+        get_config_value("dust_density_strength", 0.0)
+    )
+    self.dust_extinction_strength = float(
+        get_config_value("dust_extinction_strength", 0.65)
+    )
+    if (
+        bool(self.dust_map_enabled)
+        and float(self.dust_density_strength) <= 0.0
+        and float(self.dust_extinction_strength) <= 0.0
+    ):
         # Preset conservador perque Planck sigui visible quan esta activat.
         self.dust_extinction_strength = 0.65
         set_config_value("dust_extinction_strength", 0.65)
@@ -293,18 +356,22 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
         configured_lp_mode,
         legacy_auto=legacy_auto_mode,
     )
-    self.auto_bortle_estimate = int(get_config_value("auto_bortle_estimate", 1))
+    self.auto_bortle_estimate = int(
+        get_config_value("auto_bortle_estimate", 1)
+    )
     self.bortle_value = int(
         get_config_value("bortle_value", self.auto_bortle_estimate)
     )
-    self.light_pollution_enabled = bool(get_config_value("light_pollution_enabled", True))
-    configured_surface_style = str(
-        get_config_value("surface_visual_style", "original") or "original"
-    ).strip().lower()
+    self.light_pollution_enabled = bool(
+        get_config_value("light_pollution_enabled", True)
+    )
+    configured_surface_style = (
+        str(get_config_value("surface_visual_style", "original") or "original")
+        .strip()
+        .lower()
+    )
     self.surface_visual_style = (
-        "vibrant"
-        if configured_surface_style == "vibrant"
-        else "original"
+        "vibrant" if configured_surface_style == "vibrant" else "original"
     )
     now = datetime.now()
     self.manual_year = now.year
@@ -312,10 +379,19 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     # Weather runtime flags (persisted in config).
     # - weather_use_remote_metno: enables/disables real forecast provider.
     # - weather_cache_enabled: enables/disables disk cache reuse for weather data.
-    self.weather_use_remote_metno = bool(get_config_value("weather_use_remote_metno", True))
-    self.weather_cache_enabled = bool(get_config_value("weather_cache_enabled", True))
+    self.weather_use_remote_metno = bool(
+        get_config_value("weather_use_remote_metno", True)
+    )
+    self.weather_cache_enabled = bool(
+        get_config_value("weather_cache_enabled", True)
+    )
     self.scope_fallback_mag_limit = float(
-        max(0.0, float(get_config_value("performance.scope_fallback_mag_limit", 8.0)))
+        max(
+            0.0,
+            float(
+                get_config_value("performance.scope_fallback_mag_limit", 8.0)
+            ),
+        )
     )
     self._perf_boot_t0_mono = time.perf_counter()
     # Weather needs to exist before setup_content -> AstroCanvas -> WeatherControlWidget
@@ -351,7 +427,9 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self._catalog_max_mag = float(STAR_CATALOG_NAKED_EYE_MAX_MAG)
     self._gaia_extension_status_hide_timer = QTimer(self)
     self._gaia_extension_status_hide_timer.setSingleShot(True)
-    self._gaia_extension_status_hide_timer.timeout.connect(self._hide_gaia_extension_status_label)
+    self._gaia_extension_status_hide_timer.timeout.connect(
+        self._hide_gaia_extension_status_label
+    )
     self._catalog_bootstrap_started = False
     self._gaia_resume_prompt_shown = False
     self._gaia_background_dialog = None
@@ -374,7 +452,9 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self.terrain_depth_debounce_timer = QTimer(self)
     self.terrain_depth_debounce_timer.setSingleShot(True)
     self.terrain_depth_debounce_timer.setInterval(2000)
-    self.terrain_depth_debounce_timer.timeout.connect(self._apply_pending_terrain_depth)
+    self.terrain_depth_debounce_timer.timeout.connect(
+        self._apply_pending_terrain_depth
+    )
     self.terrain_ray_precision_debounce_timer = QTimer(self)
     self.terrain_ray_precision_debounce_timer.setSingleShot(True)
     self.terrain_ray_precision_debounce_timer.setInterval(2000)
@@ -398,7 +478,3 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
     self._schedule_lifecycle_callback(
         1500, self._maybe_resume_pending_gaia_download
     )
-
-
-
-

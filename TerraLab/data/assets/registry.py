@@ -27,7 +27,7 @@ from TerraLab.data.copernicus import (
     PRODUCT_URL as COPERNICUS_ORTHOPHOTO_PRODUCT_URL,
 )
 from TerraLab.data.resumable_download import PartialDownload, ResumableDownloader
-from TerraLab.terrain.data_sources import (
+from TerraLab.data.source_catalog import (
     DataSourceRegistry,
     LayerType,
     SourceHealthStatus,

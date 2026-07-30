@@ -18,7 +18,7 @@ from TerraLab.data.stars_dataset import (
     ensure_stars_dataset,
     load_stars_dataset,
 )
-from TerraLab.render.stars_renderer import build_scope_spatial_index_payload
+from TerraLab.scene.plans.stars import build_scope_spatial_index_payload
 from TerraLab.data.catalogs.star_catalog import (
     STAR_CATALOG_NAKED_EYE_MAX_MAG,
     _merge_sorted_catalog_with_no_gaia,

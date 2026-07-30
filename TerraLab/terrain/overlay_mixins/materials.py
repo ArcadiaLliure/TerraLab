@@ -33,6 +33,12 @@ from TerraLab.terrain.render.palette import (
 )
 
 
+def _as_qcolor(value) -> QColor:
+    """Normalize palette tuples at the QPainter presentation boundary."""
+
+    return QColor(value) if isinstance(value, QColor) else _qcolor_from_rgba(value)
+
+
 class OverlayMaterialBuildMixin:
     def _build_terrain_base_material(
         self, asset, surface_cache
@@ -278,8 +284,9 @@ class OverlayMaterialBuildMixin:
             )
 
         _night_color, day_color = _palette_color(1.0)
+        day_rgba = day_color if isinstance(day_color, tuple) and len(day_color) == 4 else (day_color[0], day_color[1], day_color[2], 255) if isinstance(day_color, tuple) else day_color.getRgb()
         fallback_color = np.asarray(
-            day_color.getRgb(),
+            day_rgba,
             dtype=np.uint8,
         )
         fallback = np.broadcast_to(fallback_color, shape + (4,)).copy()
@@ -346,7 +353,7 @@ class OverlayMaterialBuildMixin:
     ) -> QColor:
         del sky_color
         if not self.render_settings.terrain_lighting_enabled:
-            return QColor(color)
+            return _as_qcolor(color)
         factor = max(
             0.0,
             min(
@@ -372,7 +379,8 @@ class OverlayMaterialBuildMixin:
         self, color: QColor, distance_m: float, sky_color: QColor, t_night: float
     ) -> QColor:
         del t_night
-        base = np.asarray(color.getRgb(), dtype=np.uint8)
+        c_rgba = color if isinstance(color, tuple) and len(color) == 4 else (color[0], color[1], color[2], 255) if isinstance(color, tuple) else color.getRgb()
+        base = np.asarray(c_rgba, dtype=np.uint8)
         result = compose_vertex_rgba(
             base,
             1.0,
@@ -451,7 +459,7 @@ class OverlayMaterialBuildMixin:
                 lunar_exposure=lunar_exposure,
             )
         lit = self._apply_terrain_light(
-            QColor(base_color), light_factor, sky_color, t_night
+            _as_qcolor(base_color), light_factor, sky_color, t_night
         )
         return self._apply_terrain_atmosphere(
             lit, distance_m, sky_color, t_night
@@ -482,12 +490,12 @@ class OverlayMaterialBuildMixin:
         palette_t = _clamp01(1.0 - haze)
         night_c, day_c = _palette_color(palette_t)
         base = (
-            QColor(base_color)
+            _as_qcolor(base_color)
             if base_color is not None
             else (
-                QColor(day_c)
+                _as_qcolor(day_c)
                 if light_context is not None
-                else _lerp_color(day_c, night_c, t_night)
+                else _as_qcolor(_lerp_color(day_c, night_c, t_night))
             )
         )
 
@@ -557,7 +565,7 @@ class OverlayMaterialBuildMixin:
         calm_base = _lerp_color(calm_day, calm_night, t_night)
         haze_color = _atmospheric_haze_color(sky_color, t_night)
         calm_base = _lerp_color(calm_base, haze_color, 0.08 + 0.22 * haze)
-        color = _lerp_color(calm_base, color, 0.70)
+        color = _as_qcolor(_lerp_color(calm_base, color, 0.70))
         alpha = int(82 + 58 * (1.0 - haze))
         alpha = int(alpha * (1.0 - 0.30 * _clamp01(t_night)))
         if self.terrain_surface_opaque:
@@ -646,4 +654,3 @@ class OverlayMaterialBuildMixin:
         for position, color in sorted(stops, key=lambda item: item[0]):
             gradient.setColorAt(position, color)
         return QBrush(gradient)
-

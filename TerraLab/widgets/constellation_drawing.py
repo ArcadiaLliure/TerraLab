@@ -10,7 +10,7 @@ from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
 
 from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.utils import getTraduction
-from TerraLab.widgets.spherical_math import slerp_arc_points
+from TerraLab.scene.spherical_math import slerp_arc_points
 
 SkyCoord = Tuple[float, float]  # (alt_deg, az_deg)
 

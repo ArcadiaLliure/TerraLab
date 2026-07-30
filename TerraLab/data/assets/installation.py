@@ -20,9 +20,9 @@ from TerraLab.data.assets.runtime import (
     convert_planck_fits_to_cache,
     set_asset_config,
 )
-from TerraLab.terrain.asc_cache_builder import materialize_asc_caches_spawned
-from TerraLab.terrain.data_sources import LayerType, SourceHealthStatus
-from TerraLab.terrain.source_inspection import inspect_data_source
+from TerraLab.data.asc_cache_builder import materialize_asc_caches_spawned
+from TerraLab.data.source_catalog import LayerType, SourceHealthStatus
+from TerraLab.data.source_inspection import inspect_data_source
 
 
 class AssetInstallMixin:

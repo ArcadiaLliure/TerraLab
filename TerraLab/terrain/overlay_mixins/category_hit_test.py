@@ -8,7 +8,10 @@ import numpy as np
 from PyQt5.QtCore import QPointF, Qt
 from PyQt5.QtGui import QBrush, QPolygonF
 
-from TerraLab.terrain.land_cover.legends.category_info import LandCoverCategoryInfo
+from TerraLab.scene.plans.terrain_geometry import TerrainGeometryPlan
+from TerraLab.terrain.land_cover.legends.category_info import (
+    LandCoverCategoryInfo,
+)
 from TerraLab.terrain.render.overlay_types import (
     _TerrainSurfaceGeometry,
     _TerrainTriangleGeometry,
@@ -31,22 +34,21 @@ class OverlayCategoryHitTestMixin:
             return None
         geometry = self._terrain_surface_image_geometry
         if geometry is None:
-            return self._profile_category_at_screen(
-                cache, float(x), float(y)
-            )
+            return self._profile_category_at_screen(cache, float(x), float(y))
         asset = self._terrain_render_asset
         if asset is None:
             return None
         point_x = float(x)
         point_y = float(y)
 
+        if isinstance(geometry, TerrainGeometryPlan):
+            geometry = geometry.triangle_geometry
+
         if isinstance(geometry, _TerrainTriangleGeometry):
             display_materials = self._terrain_resolved_materials
             display_image = self._terrain_surface_image_cache
             if display_materials is not None and display_image is not None:
-                material_height, material_width = (
-                    display_materials.valid.shape
-                )
+                material_height, material_width = display_materials.valid.shape
                 material_x = int(
                     math.floor(
                         point_x
@@ -64,19 +66,13 @@ class OverlayCategoryHitTestMixin:
                 if (
                     0 <= material_x < material_width
                     and 0 <= material_y < material_height
+                    and bool(display_materials.valid[material_y, material_x])
                     and bool(
-                        display_materials.valid[material_y, material_x]
-                    )
-                    and bool(
-                        display_materials.categorical[
-                            material_y, material_x
-                        ]
+                        display_materials.categorical[material_y, material_x]
                     )
                 ):
                     class_id = int(
-                        display_materials.class_ids[
-                            material_y, material_x
-                        ]
+                        display_materials.class_ids[material_y, material_x]
                     )
                     source_index = int(
                         display_materials.source_indices[
@@ -99,10 +95,18 @@ class OverlayCategoryHitTestMixin:
             render_height = int(self._terrain_raster_cache_key[2])
             triangle_id, bary_u, bary_v = self._terrain_raster_cache
             image = self._terrain_surface_image_cache
-            display_width = int(image.width()) if image is not None else render_width
-            display_height = int(image.height()) if image is not None else render_height
-            px = int(math.floor(point_x * render_width / max(1, display_width)))
-            py = int(math.floor(point_y * render_height / max(1, display_height)))
+            display_width = (
+                int(image.width()) if image is not None else render_width
+            )
+            display_height = (
+                int(image.height()) if image is not None else render_height
+            )
+            px = int(
+                math.floor(point_x * render_width / max(1, display_width))
+            )
+            py = int(
+                math.floor(point_y * render_height / max(1, display_height))
+            )
             if not (0 <= px < render_width and 0 <= py < render_height):
                 return None
             triangle = int(triangle_id[py, px])
@@ -112,22 +116,16 @@ class OverlayCategoryHitTestMixin:
                 [
                     float(bary_u[py, px]),
                     float(bary_v[py, px]),
-                    1.0
-                    - float(bary_u[py, px])
-                    - float(bary_v[py, px]),
+                    1.0 - float(bary_u[py, px]) - float(bary_v[py, px]),
                 ],
                 dtype=np.float64,
             )
-            mesh_shape = tuple(
-                np.asarray(asset.elevations).shape
-            )
+            mesh_shape = tuple(np.asarray(asset.elevations).shape)
             # At a class boundary, use the categorical vertex with the
             # greatest barycentric contribution. Class codes are never mixed.
             for vertex in np.argsort(-weights):
                 row = int(geometry.vertex_rows[triangle, vertex])
-                column = int(
-                    geometry.vertex_columns[triangle, vertex]
-                )
+                column = int(geometry.vertex_columns[triangle, vertex])
                 if int(geometry.vertex_domain[triangle, vertex]) == 1:
                     value = self._category_grid_value(
                         cache, "near_patch", row, column
@@ -137,16 +135,12 @@ class OverlayCategoryHitTestMixin:
                         cache, row, column, mesh_shape
                     )
                 if value is not None:
-                    return self._category_metadata(
-                        cache, value[0], value[1]
-                    )
+                    return self._category_metadata(cache, value[0], value[1])
             return None
 
         if isinstance(geometry, _TerrainSurfaceGeometry):
             point = QPointF(point_x, point_y)
-            mesh_shape = tuple(
-                np.asarray(asset.elevations).shape
-            )
+            mesh_shape = tuple(np.asarray(asset.elevations).shape)
             # Polygons are painted in order; the last containing polygon is
             # the visible upper contribution at this pixel.
             for span, polygon in reversed(
@@ -154,17 +148,13 @@ class OverlayCategoryHitTestMixin:
             ):
                 if not polygon.containsPoint(point, Qt.OddEvenFill):
                     continue
-                nearest = int(
-                    np.argmin(np.abs(np.asarray(span.x) - point_x))
-                )
+                nearest = int(np.argmin(np.abs(np.asarray(span.x) - point_x)))
                 column = int(span.column_indices[nearest])
                 value = self._relief_category_value(
                     cache, int(span.row_index), column, mesh_shape
                 )
                 if value is not None:
-                    return self._category_metadata(
-                        cache, value[0], value[1]
-                    )
+                    return self._category_metadata(cache, value[0], value[1])
                 return None
         return None
 
@@ -284,12 +274,8 @@ class OverlayCategoryHitTestMixin:
                 diagnostic = _sample_cache_value(
                     cache, f"{prefix}_lod_factors"
                 )
-                if (
-                    domain == 0
-                    and (
-                        diagnostic is None
-                        or np.shape(diagnostic) != tuple(shape)
-                    )
+                if domain == 0 and (
+                    diagnostic is None or np.shape(diagnostic) != tuple(shape)
                 ):
                     prefix = "relief"
                     sampled_rows = np.asarray(
@@ -311,8 +297,7 @@ class OverlayCategoryHitTestMixin:
                     if sampled_rows.size and sampled_columns.size:
                         row = int(np.argmin(np.abs(sampled_rows - row)))
                         circular = np.abs(
-                            sampled_columns
-                            - (column % max(1, int(shape[1])))
+                            sampled_columns - (column % max(1, int(shape[1])))
                         )
                         circular = np.minimum(
                             circular,
@@ -359,9 +344,7 @@ class OverlayCategoryHitTestMixin:
             "raster_column": raster_column,
             "sample_origin": origin_names.get(
                 sample_origin,
-                "source_fallback"
-                if source_index >= 0
-                else "terrain_fallback",
+                "source_fallback" if source_index >= 0 else "terrain_fallback",
             ),
         }
 
@@ -428,9 +411,7 @@ class OverlayCategoryHitTestMixin:
                 continue
             f_sx = np.asarray(sx_arr[valid], dtype=np.float32)
             f_sy = np.asarray(sy_arr[valid], dtype=np.float32)
-            points = [
-                QPointF(float(x), float(y)) for x, y in zip(f_sx, f_sy)
-            ]
+            points = [QPointF(float(x), float(y)) for x, y in zip(f_sx, f_sy)]
             points.append(QPointF(float(f_sx[-1]), float(bottom_y)))
             points.append(QPointF(float(f_sx[0]), float(bottom_y)))
             polygons.append(QPolygonF(points))
@@ -463,17 +444,9 @@ class OverlayCategoryHitTestMixin:
                 continue
             f_sx = np.asarray(sx_arr[valid], dtype=np.float32)
             f_sy = np.asarray(sy_arr[valid], dtype=np.float32)
-            f_azimuths = np.asarray(
-                azimuth_arr[valid], dtype=np.float32
-            )
-            points = [
-                QPointF(float(x), float(y))
-                for x, y in zip(f_sx, f_sy)
-            ]
+            f_azimuths = np.asarray(azimuth_arr[valid], dtype=np.float32)
+            points = [QPointF(float(x), float(y)) for x, y in zip(f_sx, f_sy)]
             points.append(QPointF(float(f_sx[-1]), float(bottom_y)))
             points.append(QPointF(float(f_sx[0]), float(bottom_y)))
-            entries.append(
-                (QPolygonF(points), f_sx, f_azimuths)
-            )
+            entries.append((QPolygonF(points), f_sx, f_azimuths))
         self._profile_category_hit_cache[cache_key] = tuple(entries)
-

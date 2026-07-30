@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import numpy as np
-from PyQt5.QtGui import (
-    QColor,
-)
 from scipy.ndimage import (
     distance_transform_edt,
     gaussian_filter,
@@ -82,10 +80,10 @@ def _palette_color(t: float):
     def lerp(a, b, f):
         return int(a + (b - a) * f)
 
-    night_c = QColor(
+    night_c = (
         lerp(nr0, nr1, seg_f), lerp(ng0, ng1, seg_f), lerp(nb0, nb1, seg_f)
     )
-    day_c = QColor(
+    day_c = (
         lerp(dr0, dr1, seg_f), lerp(dg0, dg1, seg_f), lerp(db0, db1, seg_f)
     )
     return night_c, day_c
@@ -126,33 +124,43 @@ LAYER_DEFS = generate_layer_defs(
 
 
 # Ground fill (solid color below the nearest horizon line)
-GROUND_NIGHT = QColor(5, 10, 25)
-GROUND_DAY = QColor(64, 82, 64)  # Matches closest band (muted terrain green)
-ATMOSPHERIC_HAZE_NIGHT = QColor(36, 48, 68)
-ATMOSPHERIC_HAZE_DAY = QColor(138, 166, 184)
+GROUND_NIGHT = (5, 10, 25, 255)
+GROUND_DAY = (64, 82, 64, 255)  # Matches closest band (muted terrain green)
+ATMOSPHERIC_HAZE_NIGHT = (36, 48, 68, 255)
+ATMOSPHERIC_HAZE_DAY = (138, 166, 184, 255)
 EARTH_RADIUS_M = 6_371_000.0
 
 
-def _lerp_color(c1: QColor, c2: QColor, t: float) -> QColor:
-    """Linear interpolation between two QColors."""
-    r = c1.red() + (c2.red() - c1.red()) * t
-    g = c1.green() + (c2.green() - c1.green()) * t
-    b = c1.blue() + (c2.blue() - c1.blue()) * t
-    a = c1.alpha() + (c2.alpha() - c1.alpha()) * t
-    return QColor(int(r), int(g), int(b), int(a))
+def _get_color_rgba(c: Any) -> tuple[int, int, int, int]:
+    if hasattr(c, "red"):
+        return (c.red(), c.green(), c.blue(), c.alpha())
+    arr = np.asarray(c, dtype=np.int32).ravel()
+    if len(arr) == 3:
+        return (int(arr[0]), int(arr[1]), int(arr[2]), 255)
+    return (int(arr[0]), int(arr[1]), int(arr[2]), int(arr[3]))
 
 
-def _with_alpha(color: QColor, alpha: int) -> QColor:
-    result = QColor(color)
-    result.setAlpha(max(0, min(255, int(alpha))))
-    return result
+def _lerp_color(c1: Any, c2: Any, t: float) -> tuple[int, int, int, int]:
+    """Linear interpolation between two RGBA colors or QColors."""
+    r1, g1, b1, a1 = _get_color_rgba(c1)
+    r2, g2, b2, a2 = _get_color_rgba(c2)
+    r = int(r1 + (r2 - r1) * t)
+    g = int(g1 + (g2 - g1) * t)
+    b = int(b1 + (b2 - b1) * t)
+    a = int(a1 + (a2 - a1) * t)
+    return (r, g, b, a)
+
+
+def _with_alpha(color: Any, alpha: int) -> tuple[int, int, int, int]:
+    r, g, b, _ = _get_color_rgba(color)
+    return (r, g, b, max(0, min(255, int(alpha))))
 
 
 def _clamp01(value: float) -> float:
     return max(0.0, min(1.0, float(value)))
 
 
-def _atmospheric_haze_color(sky_color: QColor, t_night: float) -> QColor:
+def _atmospheric_haze_color(sky_color: Any, t_night: float) -> tuple[int, int, int, int]:
     haze_blue = _lerp_color(
         ATMOSPHERIC_HAZE_DAY,
         ATMOSPHERIC_HAZE_NIGHT,
@@ -216,7 +224,11 @@ def _distance_haze_factors(distance_m) -> np.ndarray:
     return np.clip(result, 0.0, 1.0).astype(np.float32)
 
 
-def _qcolor_from_rgba(value) -> QColor:
+def _qcolor_from_rgba(value) -> Any:
+    from PyQt5.QtGui import QColor
+
+    if isinstance(value, QColor):
+        return QColor(value)
     rgba = np.asarray(value, dtype=np.uint8).reshape(-1)
     if rgba.size < 3:
         return QColor(0, 0, 0, 0)
@@ -1092,14 +1104,17 @@ def _terrain_direct_strength(sun_alt: float) -> float:
     return _clamp01(twilight + daylight)
 
 
-def _shade_color(color: QColor, factor: float, sky_color: QColor | None = None) -> QColor:
+def _shade_color(color: Any, factor: float, sky_color: Any | None = None) -> Any:
+    from PyQt5.QtGui import QColor
+
     factor = max(0.55, min(1.35, float(factor)))
+    r, g, b, a = _get_color_rgba(color)
     if factor < 1.0:
         result = QColor(
-            int(color.red() * factor),
-            int(color.green() * factor),
-            int(color.blue() * factor),
-            color.alpha(),
+            int(r * factor),
+            int(g * factor),
+            int(b * factor),
+            a,
         )
         return result
 
@@ -1220,5 +1235,4 @@ class _BandPoints:
 
 
 # ─── Main overlay class ──────────────────────────────────────────
-
 

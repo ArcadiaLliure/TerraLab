@@ -25,8 +25,8 @@ from TerraLab.data.resumable_download import (
     human_bytes,
     progress_message,
 )
-from TerraLab.terrain.data_sources import LayerType, SourceHealthStatus
-from TerraLab.terrain.source_inspection import inspect_data_source
+from TerraLab.data.source_catalog import LayerType, SourceHealthStatus
+from TerraLab.data.source_inspection import inspect_data_source
 
 
 class AssetDiscoveryMixin:

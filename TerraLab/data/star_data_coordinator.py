@@ -1,6 +1,6 @@
-﻿"""Coordinador de dades d'estrelles basat en teseles.
+"""Coordinador de dades d'estrelles basat en teseles.
 
-No pinta ni toca UI. Orquestra IO de cataleg i emet senyals Qt.
+No pinta ni toca UI. Orquestra IO de cataleg i emet callbacks purs.
 """
 
 from __future__ import annotations
@@ -10,10 +10,9 @@ import threading
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
-from PyQt5.QtCore import QObject, pyqtSignal
 
 from TerraLab.common.exception_reporting import log_suppressed_exception
 from TerraLab.common.cancellation import GenerationController
@@ -21,24 +20,55 @@ from TerraLab.common.performance.budget import DEFAULT_PERFORMANCE_BUDGET
 from TerraLab.common.performance.flags import PERFORMANCE_FLAGS
 from TerraLab.data.star_catalog_store import create_star_catalog_store
 from TerraLab.data.tile_manifest import TileEntry, TileManifest
-from TerraLab.render.stars_renderer import build_scope_spatial_index_payload
+from TerraLab.scene.plans.stars import build_scope_spatial_index_payload
 from TerraLab.data.catalogs.star_catalog import (
     _bp_rp_to_rgb_arrays,
     _load_no_gaia_star_arrays,
 )
 
 
-class StarDataCoordinator(QObject):
-    """Orquestra la carrega de teseles Gaia en segon pla."""
+class _SignalShim:
+    """Lightweight shim providing .connect() / .emit() backed by a list of callbacks.
 
-    general_tile_ready = pyqtSignal(object)
-    deep_tile_ready = pyqtSignal(str, object)
-    scope_index_ready = pyqtSignal(object)
-    extension_ready = pyqtSignal(object)
-    error_occurred = pyqtSignal(str)
+    This allows existing consumers that used the old pyqtSignal API
+    (``coordinator.extension_ready.connect(handler)``) to keep working
+    without any Qt dependency in the model layer.
+    """
 
-    def __init__(self, manifest_path: str | Path, parent: QObject | None = None) -> None:
-        super().__init__(parent)
+    def __init__(self, listeners: list[Callable[..., Any]]) -> None:
+        self._listeners = listeners
+
+    def connect(self, fn: Callable[..., Any]) -> None:
+        if fn not in self._listeners:
+            self._listeners.append(fn)
+
+    def disconnect(self, fn: Callable[..., Any] | None = None) -> None:
+        if fn is None:
+            self._listeners.clear()
+        elif fn in self._listeners:
+            self._listeners.remove(fn)
+
+    def emit(self, *args: Any) -> None:
+        for listener in list(self._listeners):
+            listener(*args)
+
+
+class StarDataCoordinator:
+    """Orquestra la carrega de teseles Gaia en segon pla sense dependències de Qt."""
+
+    def __init__(self, manifest_path: str | Path, parent: Any = None) -> None:
+        self._general_tile_listeners: list[Callable[[Any], None]] = []
+        self._deep_tile_listeners: list[Callable[[str, Any], None]] = []
+        self._scope_index_listeners: list[Callable[[Any], None]] = []
+        self._extension_listeners: list[Callable[[Any], None]] = []
+        self._error_listeners: list[Callable[[str], None]] = []
+
+        # Signal-like shims for backwards compatibility with .connect() API
+        self.general_tile_ready = _SignalShim(self._general_tile_listeners)
+        self.deep_tile_ready = _SignalShim(self._deep_tile_listeners)
+        self.scope_index_ready = _SignalShim(self._scope_index_listeners)
+        self.extension_ready = _SignalShim(self._extension_listeners)
+        self.error_occurred = _SignalShim(self._error_listeners)
         self._manifest = TileManifest()
         manifest_file_path = Path(manifest_path).expanduser().resolve()
         self._manifest.load(manifest_file_path)
@@ -57,14 +87,24 @@ class StarDataCoordinator(QObject):
                     f"{int(len(self._no_gaia_supplement.get('ra', [])))} stars"
                 )
             except Exception:
-                log_suppressed_exception(__name__, "StarDataCoordinator.__init__")
+                log_suppressed_exception(
+                    __name__, "StarDataCoordinator.__init__"
+                )
         self._active_dataset: dict[str, Any] = _empty_dataset()
 
         io_workers = min(4, max(1, int(os.cpu_count() or 4) // 4))
-        self._executor = ThreadPoolExecutor(max_workers=io_workers, thread_name_prefix="star-data")
-        self._preload_executor = ThreadPoolExecutor(max_workers=io_workers, thread_name_prefix="star-preload")
-        self._index_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="scope-index")
-        self._query_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="star-query")
+        self._executor = ThreadPoolExecutor(
+            max_workers=io_workers, thread_name_prefix="star-data"
+        )
+        self._preload_executor = ThreadPoolExecutor(
+            max_workers=io_workers, thread_name_prefix="star-preload"
+        )
+        self._index_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="scope-index"
+        )
+        self._query_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="star-query"
+        )
         self._lock = threading.Lock()
         self._last_scope_index_signature: Any = None
         self._active_tiles_signature: tuple[str, ...] | None = None
@@ -77,7 +117,9 @@ class StarDataCoordinator(QObject):
         self._tile_priority_inflight: set[str] = set()
         self._tile_access_seq: int = 0
         self._tile_last_access: dict[str, int] = {}
-        self._max_cached_deep_bytes = int(DEFAULT_PERFORMANCE_BUDGET.stars_bytes)
+        self._max_cached_deep_bytes = int(
+            DEFAULT_PERFORMANCE_BUDGET.stars_bytes
+        )
         self._tile_resident_bytes: dict[str, int] = {}
         self._query_generations = GenerationController()
         self._catalog_store = None
@@ -189,7 +231,9 @@ class StarDataCoordinator(QObject):
             with self._lock:
                 selected: dict[str, dict[str, np.ndarray]] = {}
                 if self._base_tile_id in self._loaded_tiles:
-                    selected[self._base_tile_id] = self._loaded_tiles[self._base_tile_id]
+                    selected[self._base_tile_id] = self._loaded_tiles[
+                        self._base_tile_id
+                    ]
                 if self._no_gaia_tile_id in self._loaded_tiles:
                     selected[self._no_gaia_tile_id] = self._loaded_tiles[
                         self._no_gaia_tile_id
@@ -218,12 +262,12 @@ class StarDataCoordinator(QObject):
                 )
                 self._last_scope_index_signature = None
 
-            self.extension_ready.emit(dict(payload))
+            self._notify_extension_ready(dict(payload))
             self.build_scope_index("__out_of_core_cone__")
         except InterruptedError:
             return
         except Exception as exc:
-            self.error_occurred.emit(f"Error consultant cataleg estel-lar: {exc}")
+            self._notify_error(f"Error consultant cataleg estel-lar: {exc}")
 
     def load_general_tile(self) -> None:
         """Inicia la carrega de la tesela general en background."""
@@ -241,12 +285,21 @@ class StarDataCoordinator(QObject):
         """Carrega una tesela profunda concreta en segon pla."""
         normalized_id = str(tile_id or "").strip()
         if not normalized_id:
-            self.error_occurred.emit("tile_id buit en load_deep_tile")
+            self._notify_error("tile_id buit en load_deep_tile")
             return
 
-        entry = next((item for item in self._manifest.deep_tiles if item.tile_id == normalized_id), None)
+        entry = next(
+            (
+                item
+                for item in self._manifest.deep_tiles
+                if item.tile_id == normalized_id
+            ),
+            None,
+        )
         if entry is None:
-            self.error_occurred.emit(f"Tesela no trobada al manifest: {normalized_id}")
+            self._notify_error(
+                f"Tesela no trobada al manifest: {normalized_id}"
+            )
             return
 
         active_snapshot = None
@@ -266,7 +319,7 @@ class StarDataCoordinator(QObject):
                 self._tile_load_inflight.add(normalized_id)
                 should_submit = True
         if should_emit_active:
-            self.extension_ready.emit(active_snapshot)
+            self._notify_extension_ready(active_snapshot)
         if not should_submit:
             return
         self._executor.submit(self._load_tile_worker, entry, False)
@@ -284,7 +337,7 @@ class StarDataCoordinator(QObject):
                 self._compose_active_dataset_locked()
                 active_snapshot = dict(self._active_dataset)
         if active_snapshot is not None:
-            self.extension_ready.emit(active_snapshot)
+            self._notify_extension_ready(active_snapshot)
         for neighbor in self._manifest.get_adjacent_tiles(str(tile_id or "")):
             with self._lock:
                 if neighbor.tile_id in self._loaded_tiles:
@@ -295,7 +348,9 @@ class StarDataCoordinator(QObject):
                 if neighbor.tile_id in self._tile_load_inflight:
                     continue
                 self._tile_load_inflight.add(neighbor.tile_id)
-            self._preload_executor.submit(self._load_tile_worker, neighbor, False)
+            self._preload_executor.submit(
+                self._load_tile_worker, neighbor, False
+            )
 
     def request_scope_region(
         self,
@@ -305,7 +360,7 @@ class StarDataCoordinator(QObject):
         """Demana la regio activa del scope prioritzant les teseles realment visibles."""
         normalized_focus_id = str(focus_tile_id or "").strip()
         if not normalized_focus_id:
-            self.error_occurred.emit("focus_tile_id buit en request_scope_region")
+            self._notify_error("focus_tile_id buit en request_scope_region")
             return
 
         focus_entry = next(
@@ -317,7 +372,7 @@ class StarDataCoordinator(QObject):
             None,
         )
         if focus_entry is None:
-            self.error_occurred.emit(
+            self._notify_error(
                 f"Tesela no trobada al manifest: {normalized_focus_id}"
             )
             return
@@ -348,8 +403,11 @@ class StarDataCoordinator(QObject):
                 exclude_tile_ids=requested_priority_ids,
             )
 
-        if active_snapshot is not None and int(len(active_snapshot.get("ra", ()))) > 0:
-            self.extension_ready.emit(active_snapshot)
+        if (
+            active_snapshot is not None
+            and int(len(active_snapshot.get("ra", ()))) > 0
+        ):
+            self._notify_extension_ready(active_snapshot)
         for entry in priority_entries:
             self._executor.submit(self._load_tile_worker, entry, False)
         for entry in preload_entries:
@@ -359,7 +417,9 @@ class StarDataCoordinator(QObject):
     def build_scope_index(self, tile_id: str) -> None:
         """Construeix index espacial de la tesela indicada o dataset actiu."""
         normalized_id = str(tile_id or "").strip()
-        self._index_executor.submit(self._build_scope_index_worker, normalized_id)
+        self._index_executor.submit(
+            self._build_scope_index_worker, normalized_id
+        )
 
     def get_loaded_tiles(self) -> set[str]:
         """Retorna el conjunt de teseles carregades en memoria."""
@@ -380,51 +440,73 @@ class StarDataCoordinator(QObject):
         """Retorna el manifest ja carregat en memoria."""
         return self._manifest
 
-    def _load_tile_worker(self, tile: TileEntry, is_general: bool) -> None:
+    def add_general_tile_ready_listener(
+        self, listener: Callable[[Any], None]
+    ) -> None:
+        if listener not in self._general_tile_listeners:
+            self._general_tile_listeners.append(listener)
+
+    def add_deep_tile_ready_listener(
+        self, listener: Callable[[str, Any], None]
+    ) -> None:
+        if listener not in self._deep_tile_listeners:
+            self._deep_tile_listeners.append(listener)
+
+    def add_scope_index_ready_listener(
+        self, listener: Callable[[Any], None]
+    ) -> None:
+        if listener not in self._scope_index_listeners:
+            self._scope_index_listeners.append(listener)
+
+    def add_extension_ready_listener(
+        self, listener: Callable[[Any], None]
+    ) -> None:
+        if listener not in self._extension_listeners:
+            self._extension_listeners.append(listener)
+
+    def add_error_listener(self, listener: Callable[[str], None]) -> None:
+        if listener not in self._error_listeners:
+            self._error_listeners.append(listener)
+
+    def _notify_general_tile_ready(self, active_snapshot: Any) -> None:
+        for listener in list(self._general_tile_listeners):
+            listener(active_snapshot)
+
+    def _notify_deep_tile_ready(self, tile_id: str, arrays: Any) -> None:
+        for listener in list(self._deep_tile_listeners):
+            listener(tile_id, arrays)
+
+    def _notify_scope_index_ready(self, index_payload: Any) -> None:
+        for listener in list(self._scope_index_listeners):
+            listener(index_payload)
+
+    def _notify_extension_ready(self, active_snapshot: Any) -> None:
+        for listener in list(self._extension_listeners):
+            listener(active_snapshot)
+
+    def _notify_error(self, message: str) -> None:
+        for listener in list(self._error_listeners):
+            listener(message)
+
+    def _load_tile_worker(
+        self,
+        tile: TileEntry,
+        is_general: bool,
+    ) -> None:
         try:
-            with self._lock:
-                if tile.tile_id in self._loaded_tiles:
-                    self._tile_load_inflight.discard(tile.tile_id)
-                    self._tile_priority_inflight.discard(tile.tile_id)
-                    active_snapshot = None
-                    if (not is_general) and (
-                        str(tile.tile_id) == str(self._scope_pending_focus_tile_id)
-                    ):
-                        self._activate_scope_focus_locked(tile.tile_id)
-                        self._compose_active_dataset_locked()
-                        active_snapshot = dict(self._active_dataset)
-                else:
-                    active_snapshot = None
-            if is_general:
-                if active_snapshot is not None:
-                    self.general_tile_ready.emit(active_snapshot)
-                return
-            if active_snapshot is not None:
-                self.deep_tile_ready.emit(tile.tile_id, self._loaded_tiles[tile.tile_id])
-                self.extension_ready.emit(active_snapshot)
-                self.build_scope_index(tile.tile_id)
-                return
-
-            arrays = _read_tile_npz(tile.file_path)
-            arrays = _normalize_tile_arrays(arrays)
-            if int(len(arrays["ra"])) <= 0:
-                with self._lock:
-                    self._tile_load_inflight.discard(tile.tile_id)
-                    self._tile_priority_inflight.discard(tile.tile_id)
-                return
-
+            arrays = _normalize_tile_arrays(_read_tile_npz(tile.file_path))
             with self._lock:
                 self._tile_load_inflight.discard(tile.tile_id)
                 self._tile_priority_inflight.discard(tile.tile_id)
                 self._loaded_tiles[tile.tile_id] = arrays
-                self._tile_resident_bytes[tile.tile_id] = _payload_nbytes(arrays)
+                self._tile_resident_bytes[tile.tile_id] = _payload_nbytes(
+                    arrays
+                )
                 self._mark_tile_access_locked(tile.tile_id)
                 if is_general and self._no_gaia_supplement is not None:
                     was_already_present = (
                         self._no_gaia_tile_id in self._loaded_tiles
                     )
-                    # El suplement no-Gaia s'injecta junt amb la tesela general
-                    # (<8) i queda actiu per a posteriors extensions profundes.
                     self._loaded_tiles[self._no_gaia_tile_id] = dict(
                         self._no_gaia_supplement
                     )
@@ -438,7 +520,10 @@ class StarDataCoordinator(QObject):
                                 "attached to general tile dataset"
                             )
                         except Exception:
-                            log_suppressed_exception(__name__, "StarDataCoordinator._load_tile_worker")
+                            log_suppressed_exception(
+                                __name__,
+                                "StarDataCoordinator._load_tile_worker",
+                            )
                 if not is_general:
                     if str(tile.tile_id) == str(
                         self._scope_pending_focus_tile_id
@@ -451,27 +536,38 @@ class StarDataCoordinator(QObject):
                 active_snapshot = dict(self._active_dataset)
 
             if is_general:
-                self.general_tile_ready.emit(active_snapshot)
+                self._notify_general_tile_ready(active_snapshot)
             else:
-                self.deep_tile_ready.emit(tile.tile_id, arrays)
-                self.extension_ready.emit(active_snapshot)
+                self._notify_deep_tile_ready(tile.tile_id, arrays)
+                self._notify_extension_ready(active_snapshot)
                 self.build_scope_index(tile.tile_id)
         except Exception as exc:
             with self._lock:
                 self._tile_load_inflight.discard(tile.tile_id)
                 self._tile_priority_inflight.discard(tile.tile_id)
-            self.error_occurred.emit(f"Error carregant tesela {tile.tile_id}: {exc}")
+            self._notify_error(f"Error carregant tesela {tile.tile_id}: {exc}")
 
     def _build_scope_index_worker(self, tile_id: str) -> None:
         try:
             with self._lock:
                 arrays = self._active_dataset
-                ra = np.asarray(arrays.get("ra", np.empty(0, dtype=np.float32)), dtype=np.float32)
-                dec = np.asarray(arrays.get("dec", np.empty(0, dtype=np.float32)), dtype=np.float32)
-                mag = np.asarray(arrays.get("mag", np.empty(0, dtype=np.float32)), dtype=np.float32)
+                ra = np.asarray(
+                    arrays.get("ra", np.empty(0, dtype=np.float32)),
+                    dtype=np.float32,
+                )
+                dec = np.asarray(
+                    arrays.get("dec", np.empty(0, dtype=np.float32)),
+                    dtype=np.float32,
+                )
+                mag = np.asarray(
+                    arrays.get("mag", np.empty(0, dtype=np.float32)),
+                    dtype=np.float32,
+                )
                 loaded_tile_ids = arrays.get("loaded_tile_ids", frozenset())
                 try:
-                    loaded_ids_key = tuple(sorted(str(tid) for tid in loaded_tile_ids))
+                    loaded_ids_key = tuple(
+                        sorted(str(tid) for tid in loaded_tile_ids)
+                    )
                 except Exception:
                     loaded_ids_key = tuple()
                 index_signature = (int(len(ra)), loaded_ids_key)
@@ -492,7 +588,7 @@ class StarDataCoordinator(QObject):
                 loaded_max_mag = 0.0
             with self._lock:
                 self._last_scope_index_signature = index_signature
-            self.scope_index_ready.emit(
+            self._notify_scope_index_ready(
                 {
                     "tile_id": tile_id,
                     "sorted_indices": sorted_indices,
@@ -502,7 +598,7 @@ class StarDataCoordinator(QObject):
                 }
             )
         except Exception as exc:
-            self.error_occurred.emit(f"Error construint index scope: {exc}")
+            self._notify_error(f"Error construint index scope: {exc}")
 
     def _mark_tile_access_locked(self, tile_id: str) -> None:
         tile_id_n = str(tile_id or "").strip()
@@ -529,8 +625,8 @@ class StarDataCoordinator(QObject):
         if not center_id:
             return
         self._scope_pending_focus_tile_id = center_id
-        self._scope_pending_active_tile_ids = self._scope_active_ids_for_tile_locked(
-            center_id
+        self._scope_pending_active_tile_ids = (
+            self._scope_active_ids_for_tile_locked(center_id)
         )
         requested_priority_ids = self._normalize_priority_tile_ids(
             priority_tile_ids
@@ -557,9 +653,13 @@ class StarDataCoordinator(QObject):
     def _compose_active_dataset_locked(self) -> None:
         selected_tiles: dict[str, dict[str, np.ndarray]] = {}
         if self._base_tile_id in self._loaded_tiles:
-            selected_tiles[self._base_tile_id] = self._loaded_tiles[self._base_tile_id]
+            selected_tiles[self._base_tile_id] = self._loaded_tiles[
+                self._base_tile_id
+            ]
         if self._no_gaia_tile_id in self._loaded_tiles:
-            selected_tiles[self._no_gaia_tile_id] = self._loaded_tiles[self._no_gaia_tile_id]
+            selected_tiles[self._no_gaia_tile_id] = self._loaded_tiles[
+                self._no_gaia_tile_id
+            ]
         composed_scope_tile_ids = set(self._scope_active_tile_ids)
         composed_scope_tile_ids.update(
             tile_id
@@ -699,24 +799,60 @@ def _read_tile_npz(path: Path) -> dict[str, np.ndarray]:
     tile_path = Path(path).expanduser().resolve()
     with np.load(tile_path, allow_pickle=False) as data:
         payload = {
-            "ra": np.asarray(data.get("ra", data.get("RA", np.empty(0, dtype=np.float32))), dtype=np.float32),
-            "dec": np.asarray(data.get("dec", data.get("DEC", np.empty(0, dtype=np.float32))), dtype=np.float32),
-            "mag": np.asarray(data.get("phot_g_mean_mag", data.get("mag", np.empty(0, dtype=np.float32))), dtype=np.float32),
-            "bp_rp": np.asarray(data.get("bp_rp", np.full(int(len(data.get("ra", []))), 0.8, dtype=np.float32)), dtype=np.float32),
+            "ra": np.asarray(
+                data.get("ra", data.get("RA", np.empty(0, dtype=np.float32))),
+                dtype=np.float32,
+            ),
+            "dec": np.asarray(
+                data.get(
+                    "dec", data.get("DEC", np.empty(0, dtype=np.float32))
+                ),
+                dtype=np.float32,
+            ),
+            "mag": np.asarray(
+                data.get(
+                    "phot_g_mean_mag",
+                    data.get("mag", np.empty(0, dtype=np.float32)),
+                ),
+                dtype=np.float32,
+            ),
+            "bp_rp": np.asarray(
+                data.get(
+                    "bp_rp",
+                    np.full(
+                        int(len(data.get("ra", []))), 0.8, dtype=np.float32
+                    ),
+                ),
+                dtype=np.float32,
+            ),
             "source_id": np.asarray(
-                data.get("source_id", np.full(int(len(data.get("ra", []))), -1, dtype=np.int64)),
+                data.get(
+                    "source_id",
+                    np.full(int(len(data.get("ra", []))), -1, dtype=np.int64),
+                ),
                 dtype=np.int64,
             ),
         }
     return payload
 
 
-def _normalize_tile_arrays(payload: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+def _normalize_tile_arrays(
+    payload: dict[str, np.ndarray],
+) -> dict[str, np.ndarray]:
     """Normalitza arrays de tesela i calcula colors RGB."""
-    ra = np.asarray(payload.get("ra", np.empty(0, dtype=np.float32)), dtype=np.float32)
-    dec = np.asarray(payload.get("dec", np.empty(0, dtype=np.float32)), dtype=np.float32)
-    mag = np.asarray(payload.get("mag", np.empty(0, dtype=np.float32)), dtype=np.float32)
-    bp_rp = np.asarray(payload.get("bp_rp", np.full(len(mag), 0.8, dtype=np.float32)), dtype=np.float32)
+    ra = np.asarray(
+        payload.get("ra", np.empty(0, dtype=np.float32)), dtype=np.float32
+    )
+    dec = np.asarray(
+        payload.get("dec", np.empty(0, dtype=np.float32)), dtype=np.float32
+    )
+    mag = np.asarray(
+        payload.get("mag", np.empty(0, dtype=np.float32)), dtype=np.float32
+    )
+    bp_rp = np.asarray(
+        payload.get("bp_rp", np.full(len(mag), 0.8, dtype=np.float32)),
+        dtype=np.float32,
+    )
     source_id = np.asarray(
         payload.get("source_id", np.full(len(mag), -1, dtype=np.int64)),
         dtype=np.int64,
@@ -771,10 +907,9 @@ def _merge_two_sorted_tiles(
         return {key: np.asarray(value) for key, value in right.items()}
     if right_mag.size == 0:
         return {key: np.asarray(value) for key, value in left.items()}
-    right_positions = (
-        np.searchsorted(left_mag, right_mag, side="right")
-        + np.arange(right_mag.size, dtype=np.int64)
-    )
+    right_positions = np.searchsorted(
+        left_mag, right_mag, side="right"
+    ) + np.arange(right_mag.size, dtype=np.int64)
     is_right = np.zeros(left_mag.size + right_mag.size, dtype=bool)
     is_right[right_positions] = True
     left_positions = np.flatnonzero(~is_right)
@@ -818,7 +953,7 @@ def _combine_tiles(
         if not tile:
             continue
         normalized: dict[str, np.ndarray] = {}
-        row_count = int(len(np.asarray(tile.get("mag", ()))) )
+        row_count = int(len(np.asarray(tile.get("mag", ()))))
         for key in ("ra", "dec", "mag", "bp_rp", "r", "g", "b"):
             normalized[key] = np.asarray(
                 tile.get(key, np.empty(row_count, dtype=np.float32)),
@@ -828,7 +963,11 @@ def _combine_tiles(
             tile.get("source_id", np.full(row_count, -1, dtype=np.int64)),
             dtype=np.int64,
         )
-        result = normalized if result is None else _merge_two_sorted_tiles(result, normalized)
+        result = (
+            normalized
+            if result is None
+            else _merge_two_sorted_tiles(result, normalized)
+        )
 
     if result is None:
         result = _empty_dataset()
@@ -836,16 +975,12 @@ def _combine_tiles(
         _deduplicate_positive_source_ids_in_place(result)
 
     result["loaded_tile_ids"] = frozenset(
-        tile_id
-        for tile_id in ordered_ids
-        if str(tile_id) not in internal_ids
+        tile_id for tile_id in ordered_ids if str(tile_id) not in internal_ids
     )
     return result
 
 
-def _deduplicate_positive_source_ids_in_place(
-    payload: dict[str, Any]
-) -> None:
+def _deduplicate_positive_source_ids_in_place(payload: dict[str, Any]) -> None:
     """Elimina duplicats de `source_id` positius mantenint el primer (més brillant)."""
     source_id = np.asarray(
         payload.get("source_id", np.empty(0, dtype=np.int64)), dtype=np.int64

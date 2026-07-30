@@ -6,7 +6,7 @@ from PyQt5.QtCore import QPointF, QRectF, Qt
 from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen
 
 from TerraLab.common.utils import getTraduction
-from TerraLab.widgets.spherical_math import (
+from TerraLab.scene.spherical_math import (
     destination_point,
     screen_to_sky,
     slerp_arc_points,

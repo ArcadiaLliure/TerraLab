@@ -1,8 +1,4 @@
-"""Horizon renderer layer interface.
-
-Current implementation is a no-op placeholder because horizon is still drawn
-in the legacy AstroCanvas path. Kept for modular migration compatibility.
-"""
+"""Legacy QPainter horizon-layer adapter retained during vertical migration."""
 
 from __future__ import annotations
 
@@ -10,36 +6,33 @@ from PyQt5.QtCore import QPointF, Qt
 from PyQt5.QtGui import QColor, QPainterPath
 
 
-class HorizonRenderer:
-    def render(self, ctx, state):
-        """Renderitza el contingut visual segons l'estat actual.
+class LegacyHorizonLayerAdapter:
+    """Delegate the unmigrated horizon callback at the QPainter View boundary."""
 
-        Par?metres:
-        - ctx (Any): Valor del parametre 'ctx'.
-        - state (Any): Valor del parametre 'state'.
-
-        Retorna:
-        - None.
-        """
+    def paint_layer(self, context, render_state) -> None:
         callback = None
-        extras = getattr(state, "extras", {}) or {}
+        extras = getattr(render_state, "extras", {}) or {}
         if isinstance(extras, dict):
             callback = extras.get("render_horizon")
         if callable(callback):
-            callback(ctx, state)
+            callback(context, render_state)
 
 
-def draw_ground_mask(canvas, painter, is_day):
+def paint_legacy_ground_mask(canvas, painter, *, is_day: bool) -> None:
+    """Paint the legacy ground silhouette for the inactive canvas route."""
+
     if canvas is None:
         return
 
     ground_path = QPainterPath()
-    points = []
+    points: list[QPointF | None] = []
     for offset in (-360, 0, 360):
-        for az in range(0, 361, 10):
-            pt = canvas.project_universal_stereo(0, az + offset)
-            if pt:
-                points.append(QPointF(*pt))
+        for azimuth_deg in range(0, 361, 10):
+            projected = canvas.project_universal_stereo(
+                0, azimuth_deg + offset
+            )
+            if projected:
+                points.append(QPointF(*projected))
             elif points:
                 points.append(None)
 
@@ -47,29 +40,28 @@ def draw_ground_mask(canvas, painter, is_day):
         return
 
     bottom_y = canvas.height() * 2.0
-    first = True
-    current_block_start = None
-    for p in points:
-        if p is None:
-            if not first and current_block_start:
+    first_in_segment = True
+    segment_start: QPointF | None = None
+    for point in points:
+        if point is None:
+            if not first_in_segment and segment_start is not None:
                 ground_path.lineTo(ground_path.currentPosition().x(), bottom_y)
-                ground_path.lineTo(current_block_start.x(), bottom_y)
+                ground_path.lineTo(segment_start.x(), bottom_y)
                 ground_path.closeSubpath()
-            first = True
+            first_in_segment = True
             continue
-        if first:
-            ground_path.moveTo(p)
-            current_block_start = p
-            first = False
+        if first_in_segment:
+            ground_path.moveTo(point)
+            segment_start = point
+            first_in_segment = False
         else:
-            ground_path.lineTo(p)
+            ground_path.lineTo(point)
 
-    if not first and current_block_start:
+    if not first_in_segment and segment_start is not None:
         ground_path.lineTo(ground_path.currentPosition().x(), bottom_y)
-        ground_path.lineTo(current_block_start.x(), bottom_y)
+        ground_path.lineTo(segment_start.x(), bottom_y)
         ground_path.closeSubpath()
 
-    col = QColor(20, 30, 20) if bool(is_day) else QColor(5, 5, 10)
-    painter.setBrush(col)
+    painter.setBrush(QColor(20, 30, 20) if is_day else QColor(5, 5, 10))
     painter.setPen(Qt.NoPen)
     painter.drawPath(ground_path)

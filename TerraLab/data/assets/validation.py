@@ -17,8 +17,8 @@ from TerraLab.data.assets.runtime import (
     AssetRemovalReport,
     set_asset_config,
 )
-from TerraLab.terrain.data_sources import LayerType
-from TerraLab.terrain.source_inspection import inspect_data_source
+from TerraLab.data.source_catalog import LayerType
+from TerraLab.data.source_inspection import inspect_data_source
 
 
 class AssetValidationMixin:
@@ -431,9 +431,9 @@ class AssetValidationMixin:
         """
         try:
             import rasterio
-            from TerraLab.terrain.crs import DEFAULT_TRANSFORM_SERVICE
-            from TerraLab.terrain.providers import (
+            from TerraLab.data.crs import (
                 CRS_GEOGRAPHIC,
+                DEFAULT_TRANSFORM_SERVICE,
             )
         except Exception:
             return None
@@ -478,8 +478,8 @@ class AssetValidationMixin:
             - Returns `(lat, lon)` in `EPSG:4326`.
         """
         try:
-            from TerraLab.terrain.infrastructure.dem_tiles import TileIndex
-            from TerraLab.terrain.crs import (
+            from TerraLab.data.dem_tiles import TileIndex
+            from TerraLab.data.crs import (
                 CRS_GEOGRAPHIC,
                 CRS_TERRAIN_INTERNAL,
                 DEFAULT_TRANSFORM_SERVICE,

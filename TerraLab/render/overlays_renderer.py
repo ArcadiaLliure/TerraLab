@@ -350,34 +350,6 @@ def draw_planet(canvas, painter, alt, az, name, col, sz, mag, *, key=None):
     painter.drawText(int(x) + 10, int(y), f"{name} {mag:.1f}")
 
 
-def draw_compass(canvas, painter):
-    if canvas is None:
-        return
-    w = canvas.width()
-    painter.setPen(QPen(QColor(200, 200, 200, 150)))
-    font = painter.font()
-    font.setBold(True)
-    painter.setFont(font)
-    dirs = [
-        (0, "Astro.Dir.North", "North"),
-        (45, "Astro.Dir.NE", "NE"),
-        (90, "Astro.Dir.East", "East"),
-        (135, "Astro.Dir.SE", "SE"),
-        (180, "Astro.Dir.South", "South"),
-        (225, "Astro.Dir.SW", "SW"),
-        (270, "Astro.Dir.West", "West"),
-        (315, "Astro.Dir.NW", "NW"),
-    ]
-    for offset in [-360, 0, 360]:
-        for deg, key, default_text in dirs:
-            pt = canvas.project_universal_stereo(0, deg + offset)
-            if pt:
-                if pt[0] < -200 or pt[0] > w + 200:
-                    continue
-                label = getTraduction(key, default_text)
-                painter.drawText(int(pt[0]) - 10, int(pt[1]) - 5, label)
-
-
 def ngc_symbol_for_type(obj_type: str) -> str:
     kind = str(obj_type or "").upper()
     if kind.startswith("G"):

@@ -27,7 +27,7 @@ from TerraLab.data.copernicus import (
     SERVICE_COVERAGE_WGS84,
     WMS_URL,
 )
-from TerraLab.terrain.data_sources import LayerRole, LayerType, SelectionMode
+from TerraLab.data.source_catalog import LayerRole, LayerType, SelectionMode
 
 
 class AssetDownloadMixin:
