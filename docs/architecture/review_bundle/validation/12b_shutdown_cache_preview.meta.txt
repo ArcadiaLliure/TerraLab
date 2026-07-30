@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Scripts\python.exe -m pytest -q --durations=0 "E:\Desarrollo\TerraLab\docs\architecture\review_bundle\test_shutdown_additional_scenarios.py"
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4
+python=Python 3.13.7
+started=2026-07-26T02:00:15.3396446+02:00
+finished=2026-07-26T02:00:16.9481988+02:00
+duration_seconds=1.607
+exit_code=-1073740791

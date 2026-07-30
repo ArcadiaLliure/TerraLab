@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Scripts\python.exe -m pyright TerraLab/ui/astronomical_widget.py TerraLab/ui/astro_canvas.py TerraLab/terrain/terrain_coordinator.py TerraLab/data/assets_manager.py --outputjson
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4
+python=Python 3.13.7
+started=2026-07-26T01:37:03.8500884+02:00
+finished=2026-07-26T01:37:06.8341524+02:00
+duration_seconds=2.984
+exit_code=0

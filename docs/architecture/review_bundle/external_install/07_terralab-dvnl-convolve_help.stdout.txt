@@ -1,0 +1,18 @@
+usage: terralab-dvnl-convolve [-h] [--kernel {gaussian,power-law}]
+                              [--sigma SIGMA] [--rmax RMAX] [--res RES]
+                              [--tile-size TILE_SIZE]
+                              input output
+
+Convolve a DVNL raster with a dispersion kernel.
+
+positional arguments:
+  input
+  output
+
+options:
+  -h, --help            show this help message and exit
+  --kernel {gaussian,power-law}
+  --sigma SIGMA
+  --rmax RMAX
+  --res RES
+  --tile-size TILE_SIZE

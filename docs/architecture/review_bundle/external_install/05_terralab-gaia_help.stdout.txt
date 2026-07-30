@@ -1,0 +1,24 @@
+usage: terralab-gaia [-h] [--output-dir OUTPUT_DIR] [--mag-limit MAG_LIMIT]
+                     [--visible-mag-limit VISIBLE_MAG_LIMIT]
+                     [--tile-size-deg TILE_SIZE_DEG] [--timeout TIMEOUT]
+                     [--maxrec MAXREC]
+                     [--max-concurrent-requests MAX_CONCURRENT_REQUESTS]
+                     [--request-retries REQUEST_RETRIES]
+                     [--retry-backoff-s RETRY_BACKOFF_S]
+                     [--state-file STATE_FILE] [--no-resume]
+
+Download Gaia catalogue data in 5� � 5� tiles.
+
+options:
+  -h, --help            show this help message and exit
+  --output-dir OUTPUT_DIR
+  --mag-limit MAG_LIMIT
+  --visible-mag-limit VISIBLE_MAG_LIMIT
+  --tile-size-deg TILE_SIZE_DEG
+  --timeout TIMEOUT
+  --maxrec MAXREC
+  --max-concurrent-requests MAX_CONCURRENT_REQUESTS
+  --request-retries REQUEST_RETRIES
+  --retry-backoff-s RETRY_BACKOFF_S
+  --state-file STATE_FILE
+  --no-resume

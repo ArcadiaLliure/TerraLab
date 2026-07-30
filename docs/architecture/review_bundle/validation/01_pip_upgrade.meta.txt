@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Scripts\python.exe -m pip install --upgrade pip
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4
+python=Python 3.13.7
+started=2026-07-26T01:31:26.8103358+02:00
+finished=2026-07-26T01:31:32.4504976+02:00
+duration_seconds=5.639
+exit_code=0

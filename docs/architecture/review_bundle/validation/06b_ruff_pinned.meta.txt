@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Scripts\python.exe -m ruff check TerraLab scripts tests benchmarks tools/dev
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4
+python=Python 3.13.7
+started=2026-07-26T01:36:16.2159207+02:00
+finished=2026-07-26T01:36:16.9750196+02:00
+duration_seconds=0.758
+exit_code=0

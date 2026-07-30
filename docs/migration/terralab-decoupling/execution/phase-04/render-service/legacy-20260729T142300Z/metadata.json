@@ -1,0 +1,1481 @@
+{
+  "schema_version": 1,
+  "captured_utc": "2026-07-29T14:02:56.589884+00:00",
+  "head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+  "backend": "runtime/render_service -> OffscreenSceneRenderer -> QPainter",
+  "viewport": {
+    "width": 320,
+    "height": 180,
+    "device_pixel_ratio": 1.0,
+    "pixel_format": "argb32_premultiplied"
+  },
+  "machine": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.7",
+    "ui_rss_bytes": 72454144,
+    "ui_rss_peak_bytes": 73838592,
+    "requested_font": "Arial",
+    "resolved_font": ""
+  },
+  "repeats": 15,
+  "fixtures": "tests/fixtures/render_characterization_scenes.json",
+  "fixture_assets": [
+    {
+      "path": "fixtures/surface_categorical.npz",
+      "sha256": "01641977ebea0d4f5c7bd5a690884dfad4df691ebde3cd7a7ab58efa37d98636",
+      "bytes": 2276
+    },
+    {
+      "path": "fixtures/surface_rgb.npz",
+      "sha256": "242e3082c0988e4b0296902da03c544db8850b382bed71a1d6c416a410a38793",
+      "bytes": 2267
+    },
+    {
+      "path": "fixtures/terrain_profile.npz",
+      "sha256": "f54e2f8d145e3910d88896e9bf3e48ab57b6d0449dfa58d859e44b9589e0290a",
+      "bytes": 6111
+    },
+    {
+      "path": "fixtures/terrain_relief.npz",
+      "sha256": "bf9a1830ab3e65b3caf4a0a761e74ef535f53701e956aa910a96a2791e93f995",
+      "bytes": 7841
+    }
+  ],
+  "scenes": [
+    {
+      "id": "day",
+      "family": "day_twilight_night",
+      "snapshot_sha256": "17684128fca40e4104b551d73ff7f5acca1962971d862885fa4121f6f9eb6c78",
+      "snapshot_bytes": 317,
+      "image": {
+        "path": "images/day.png",
+        "sha256": "6999f2521402b34dd6d1a9c653b68d9f0ef462b0401bba773ecf7e361cf4905f",
+        "bytes": 15002
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0154,
+            0.0175,
+            0.0146,
+            0.0139,
+            0.0128,
+            0.0132,
+            0.0124,
+            0.0126,
+            0.0154,
+            0.0133,
+            0.0122,
+            0.0121,
+            0.0118,
+            0.0129,
+            0.0139
+          ],
+          "p50": 0.0132,
+          "p95": 0.01603
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.038,
+            0.0187,
+            0.0161,
+            0.0145,
+            0.0127,
+            0.0127,
+            0.0124,
+            0.0197,
+            0.0145,
+            0.0133,
+            0.0123,
+            0.0123,
+            0.0117,
+            0.013,
+            0.0125
+          ],
+          "p50": 0.013,
+          "p95": 0.02519
+        },
+        "frame_render_ms": {
+          "samples": [
+            28.661,
+            1.395,
+            1.159,
+            1.358,
+            1.064,
+            1.014,
+            1.032,
+            1.079,
+            1.045,
+            1.276,
+            1.036,
+            1.188,
+            1.044,
+            1.064,
+            1.063
+          ],
+          "p50": 1.064,
+          "p95": 9.5748
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            29.3228,
+            1.9133,
+            1.5095,
+            1.6997,
+            1.3943,
+            1.3411,
+            1.3414,
+            1.3981,
+            1.374,
+            1.6777,
+            1.3644,
+            1.5358,
+            1.3684,
+            1.3869,
+            1.3555
+          ],
+          "p50": 1.3943,
+          "p95": 10.13615
+        },
+        "present_ms": {
+          "samples": [
+            0.4119,
+            0.2223,
+            0.2019,
+            0.1485,
+            0.1327,
+            0.155,
+            0.1531,
+            0.1313,
+            0.1327,
+            0.1382,
+            0.1304,
+            0.1739,
+            0.1296,
+            0.1218,
+            0.1253
+          ],
+          "p50": 0.1382,
+          "p95": 0.27918
+        },
+        "render_rss_bytes_observed": 118075392,
+        "render_rss_peak_bytes_os": 118075392,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.07559999721706845,
+          "renderer_overlays": 0.26760000037029386,
+          "renderer_stars": 0.007700000423938036,
+          "renderer_total": 1.01859999995213
+        }
+      },
+      "expected_variance": "none"
+    },
+    {
+      "id": "twilight",
+      "family": "day_twilight_night",
+      "snapshot_sha256": "4ee6c92d130f181478546951cc15e3c68d932899c2a991c1ff458ed889604322",
+      "snapshot_bytes": 317,
+      "image": {
+        "path": "images/twilight.png",
+        "sha256": "0f4b6de96a978989dd8a4138bf32bf2011e5319b4e17e1c2240a98a9b113121d",
+        "bytes": 22610
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0149,
+            0.0157,
+            0.0235,
+            0.0215,
+            0.0205,
+            0.0135,
+            0.0128,
+            0.0216,
+            0.0129,
+            0.0168,
+            0.0243,
+            0.0132,
+            0.0207,
+            0.0132,
+            0.0126
+          ],
+          "p50": 0.0157,
+          "p95": 0.02374
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.0229,
+            0.0271,
+            0.0186,
+            0.0244,
+            0.0164,
+            0.0137,
+            0.0166,
+            0.0152,
+            0.0131,
+            0.0214,
+            0.0175,
+            0.0134,
+            0.0167,
+            0.0129,
+            0.0125
+          ],
+          "p50": 0.0166,
+          "p95": 0.02521
+        },
+        "frame_render_ms": {
+          "samples": [
+            35.809,
+            1.276,
+            1.149,
+            1.104,
+            1.047,
+            1.032,
+            1.023,
+            1.229,
+            1.022,
+            1.121,
+            1.03,
+            1.218,
+            1.061,
+            1.024,
+            1.167
+          ],
+          "p50": 1.104,
+          "p95": 11.6359
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            36.5641,
+            1.6974,
+            1.4774,
+            1.3949,
+            1.3318,
+            1.3375,
+            1.3635,
+            1.5667,
+            1.3307,
+            1.4429,
+            1.3426,
+            1.6065,
+            1.371,
+            1.3478,
+            1.5052
+          ],
+          "p50": 1.3949,
+          "p95": 12.15741
+        },
+        "present_ms": {
+          "samples": [
+            0.1456,
+            0.1496,
+            0.1062,
+            0.1022,
+            0.1211,
+            0.0963,
+            0.0952,
+            0.0956,
+            0.129,
+            0.1116,
+            0.1248,
+            0.1116,
+            0.1105,
+            0.0977,
+            0.1195
+          ],
+          "p50": 0.1116,
+          "p95": 0.1468
+        },
+        "render_rss_bytes_observed": 117698560,
+        "render_rss_peak_bytes_os": 117698560,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.07879999975557439,
+          "renderer_overlays": 0.24119999943650328,
+          "renderer_stars": 0.009000003046821803,
+          "renderer_total": 1.1027000000467524
+        }
+      },
+      "expected_variance": "none"
+    },
+    {
+      "id": "night",
+      "family": "day_twilight_night",
+      "snapshot_sha256": "a336805f2ac573f31627347c0f02a5a01da199d5cefeaa385c4e7dc1bdde351a",
+      "snapshot_bytes": 336,
+      "image": {
+        "path": "images/night.png",
+        "sha256": "3f3bf6d1cdcb549ab63b18f826fd433fb3b1238850f5009a7c2ad71ef0d58eb2",
+        "bytes": 55366
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0147,
+            0.0148,
+            0.0142,
+            0.0129,
+            0.013,
+            0.0124,
+            0.0124,
+            0.0127,
+            0.0128,
+            0.0134,
+            0.0124,
+            0.013,
+            0.0126,
+            0.0121,
+            0.012
+          ],
+          "p50": 0.0128,
+          "p95": 0.01473
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.0226,
+            0.0165,
+            0.0143,
+            0.0139,
+            0.013,
+            0.0127,
+            0.0132,
+            0.0131,
+            0.0135,
+            0.0129,
+            0.0122,
+            0.0124,
+            0.0118,
+            0.012,
+            0.0118
+          ],
+          "p50": 0.013,
+          "p95": 0.01833
+        },
+        "frame_render_ms": {
+          "samples": [
+            1198.142,
+            10.133,
+            9.648,
+            9.693,
+            10.774,
+            10.707,
+            9.769,
+            9.449,
+            9.351,
+            9.651,
+            10.049,
+            9.638,
+            10.074,
+            9.651,
+            9.84
+          ],
+          "p50": 9.769,
+          "p95": 366.9844
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            1198.8093,
+            10.6167,
+            10.109,
+            10.0808,
+            11.2478,
+            11.1415,
+            10.1775,
+            9.8249,
+            9.7492,
+            10.1085,
+            10.4962,
+            10.0696,
+            10.5178,
+            10.0585,
+            10.2224
+          ],
+          "p50": 10.1775,
+          "p95": 367.51625
+        },
+        "present_ms": {
+          "samples": [
+            0.1615,
+            0.1331,
+            0.1301,
+            0.1502,
+            0.1828,
+            0.1427,
+            0.147,
+            0.1457,
+            0.1382,
+            0.1728,
+            0.1482,
+            0.1583,
+            0.1833,
+            0.135,
+            0.128
+          ],
+          "p50": 0.147,
+          "p95": 0.18295
+        },
+        "render_rss_bytes_observed": 232525824,
+        "render_rss_peak_bytes_os": 480305152,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.0794000006862916,
+          "renderer_overlays": 5.263200000626966,
+          "renderer_stars": 0.012900000001536682,
+          "renderer_total": 9.775099999387749
+        }
+      },
+      "expected_variance": "none"
+    },
+    {
+      "id": "dense_scope",
+      "family": "dense_scope",
+      "snapshot_sha256": "8c22efbeb1d4976b295abc2c5e401449bfc9b95dff86b09762ebc74786883034",
+      "snapshot_bytes": 427,
+      "image": {
+        "path": "images/dense_scope.png",
+        "sha256": "f4173b51c247c30c2f3a46a32d9b8ea1f83ba929bf96a0a5d143d07bf30d59fc",
+        "bytes": 16018
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0186,
+            0.0183,
+            0.0174,
+            0.0159,
+            0.0159,
+            0.0155,
+            0.0151,
+            0.0154,
+            0.015,
+            0.0155,
+            0.015,
+            0.015,
+            0.0161,
+            0.0152,
+            0.015
+          ],
+          "p50": 0.0155,
+          "p95": 0.01839
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.0269,
+            0.0195,
+            0.0166,
+            0.0157,
+            0.0152,
+            0.0147,
+            0.0151,
+            0.0145,
+            0.015,
+            0.0146,
+            0.0145,
+            0.0144,
+            0.0148,
+            0.0147,
+            0.0141
+          ],
+          "p50": 0.0148,
+          "p95": 0.02172
+        },
+        "frame_render_ms": {
+          "samples": [
+            752.022,
+            3.151,
+            2.785,
+            2.977,
+            2.629,
+            2.579,
+            2.607,
+            2.711,
+            2.622,
+            2.644,
+            2.562,
+            2.579,
+            2.717,
+            2.663,
+            2.576
+          ],
+          "p50": 2.644,
+          "p95": 227.8123
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            752.6314,
+            3.6074,
+            3.1736,
+            3.3281,
+            2.9584,
+            2.9212,
+            2.9518,
+            3.0555,
+            2.9235,
+            2.9495,
+            2.8854,
+            2.8968,
+            3.0641,
+            3.0037,
+            2.9143
+          ],
+          "p50": 2.9584,
+          "p95": 228.3146
+        },
+        "present_ms": {
+          "samples": [
+            0.1639,
+            0.1441,
+            0.128,
+            0.1109,
+            0.103,
+            0.119,
+            0.1162,
+            0.1003,
+            0.0976,
+            0.1029,
+            0.1179,
+            0.1266,
+            0.1215,
+            0.121,
+            0.1186
+          ],
+          "p50": 0.1186,
+          "p95": 0.15004
+        },
+        "render_rss_bytes_observed": 126783488,
+        "render_rss_peak_bytes_os": 126783488,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.07539999933214858,
+          "renderer_overlays": 1.1186999981873669,
+          "renderer_stars": 0.008000002708286047,
+          "renderer_total": 2.530099998693913
+        }
+      },
+      "expected_variance": "none"
+    },
+    {
+      "id": "solar_moon_planets_eclipse",
+      "family": "solar_moon_planets_eclipse",
+      "snapshot_sha256": "69764fe8d74a3c91b99447e0c70a36a3142ef9a45e50034b05fa666d1471e4c3",
+      "snapshot_bytes": 529,
+      "image": {
+        "path": "images/solar_moon_planets_eclipse.png",
+        "sha256": "88dc807bed5b3507162e7952b4ecdd880a92c9cd439a81beba28096064c91a46",
+        "bytes": 12598
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0216,
+            0.0229,
+            0.0206,
+            0.0194,
+            0.0199,
+            0.0198,
+            0.0195,
+            0.0194,
+            0.0192,
+            0.0183,
+            0.0189,
+            0.0185,
+            0.0183,
+            0.0184,
+            0.0178
+          ],
+          "p50": 0.0194,
+          "p95": 0.02199
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.0323,
+            0.0221,
+            0.02,
+            0.0186,
+            0.0194,
+            0.0184,
+            0.0179,
+            0.0177,
+            0.0174,
+            0.0172,
+            0.017,
+            0.0174,
+            0.0171,
+            0.0172,
+            0.0168
+          ],
+          "p50": 0.0177,
+          "p95": 0.02516
+        },
+        "frame_render_ms": {
+          "samples": [
+            28.551,
+            1.287,
+            1.304,
+            1.055,
+            1.116,
+            1.051,
+            1.071,
+            1.597,
+            1.036,
+            1.117,
+            1.204,
+            1.059,
+            1.045,
+            1.206,
+            1.046
+          ],
+          "p50": 1.116,
+          "p95": 9.6832
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            29.2078,
+            1.7386,
+            1.645,
+            1.3753,
+            1.4757,
+            1.3782,
+            1.4074,
+            1.9854,
+            1.3628,
+            1.4652,
+            1.554,
+            1.381,
+            1.3543,
+            1.5504,
+            1.3943
+          ],
+          "p50": 1.4652,
+          "p95": 10.15212
+        },
+        "present_ms": {
+          "samples": [
+            0.1607,
+            0.1029,
+            0.097,
+            0.1168,
+            0.0963,
+            0.1245,
+            0.1211,
+            0.1051,
+            0.1183,
+            0.0926,
+            0.0959,
+            0.0952,
+            0.0937,
+            0.119,
+            0.0961
+          ],
+          "p50": 0.1029,
+          "p95": 0.13536
+        },
+        "render_rss_bytes_observed": 117592064,
+        "render_rss_peak_bytes_os": 117592064,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.07349999941652641,
+          "renderer_overlays": 0.283800000033807,
+          "renderer_stars": 0.006999998731771484,
+          "renderer_total": 0.9957000002032146
+        }
+      },
+      "expected_variance": "none"
+    },
+    {
+      "id": "milky_way_ngc",
+      "family": "milky_way_ngc",
+      "snapshot_sha256": "2af31297dec65e0e9272e545b6cf85c3ebeb9ddfa91f39287f0e2232a5ac2cc9",
+      "snapshot_bytes": 364,
+      "image": {
+        "path": "images/milky_way_ngc.png",
+        "sha256": "bf3eb6eaf8f41ad510c35c333e001bc45da53e7810d7e85d598c0adcad1f02c3",
+        "bytes": 60091
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0169,
+            0.0165,
+            0.0154,
+            0.0147,
+            0.0144,
+            0.0142,
+            0.0136,
+            0.014,
+            0.0138,
+            0.0152,
+            0.0139,
+            0.0137,
+            0.0135,
+            0.014,
+            0.0134
+          ],
+          "p50": 0.014,
+          "p95": 0.01662
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.0248,
+            0.018,
+            0.0155,
+            0.0142,
+            0.0142,
+            0.0135,
+            0.014,
+            0.0133,
+            0.0131,
+            0.014,
+            0.0131,
+            0.0134,
+            0.0134,
+            0.0133,
+            0.0131
+          ],
+          "p50": 0.0135,
+          "p95": 0.02004
+        },
+        "frame_render_ms": {
+          "samples": [
+            1206.783,
+            9.224,
+            9.196,
+            9.262,
+            8.913,
+            9.08,
+            9.099,
+            9.697,
+            8.977,
+            10.014,
+            9.352,
+            9.453,
+            9.163,
+            8.888,
+            9.019
+          ],
+          "p50": 9.196,
+          "p95": 369.0447
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            1207.393,
+            9.7753,
+            9.6348,
+            9.6934,
+            9.3423,
+            9.5119,
+            9.5228,
+            10.1277,
+            9.3843,
+            10.4511,
+            9.8096,
+            9.8875,
+            9.6409,
+            9.3071,
+            9.4411
+          ],
+          "p50": 9.6409,
+          "p95": 369.53367
+        },
+        "present_ms": {
+          "samples": [
+            0.1678,
+            0.1551,
+            0.151,
+            0.148,
+            0.1517,
+            0.1523,
+            0.165,
+            0.1366,
+            0.1318,
+            0.1433,
+            0.1528,
+            0.1521,
+            0.154,
+            0.1287,
+            0.1226
+          ],
+          "p50": 0.1517,
+          "p95": 0.16584
+        },
+        "render_rss_bytes_observed": 231710720,
+        "render_rss_peak_bytes_os": 480215040,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.07660000119358301,
+          "renderer_overlays": 4.672899998695357,
+          "renderer_stars": 0.014100001862971112,
+          "renderer_total": 8.955599998444086
+        }
+      },
+      "expected_variance": "none"
+    },
+    {
+      "id": "terrain_profile",
+      "family": "terrain_profile_relief",
+      "snapshot_sha256": "47526f0e67d3de08bce1aff08cb65253d9533d39f6fa60789d1e0b607ec737ba",
+      "snapshot_bytes": 591,
+      "image": {
+        "path": "images/terrain_profile.png",
+        "sha256": "85ca462fa18000cfa312c5a48c7a0032cadcbee016bbc0694b23ed44d0d9f076",
+        "bytes": 10244
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0197,
+            0.019,
+            0.0185,
+            0.017,
+            0.0166,
+            0.0168,
+            0.0155,
+            0.016,
+            0.0153,
+            0.0168,
+            0.0164,
+            0.0152,
+            0.0153,
+            0.0155,
+            0.0151
+          ],
+          "p50": 0.0164,
+          "p95": 0.01921
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.0319,
+            0.0207,
+            0.0177,
+            0.0168,
+            0.0163,
+            0.0164,
+            0.0156,
+            0.016,
+            0.0161,
+            0.0166,
+            0.0151,
+            0.0148,
+            0.0149,
+            0.0145,
+            0.016
+          ],
+          "p50": 0.0161,
+          "p95": 0.02406
+        },
+        "frame_render_ms": {
+          "samples": [
+            44.022,
+            1.304,
+            1.248,
+            1.066,
+            1.029,
+            1.531,
+            1.024,
+            0.964,
+            1.192,
+            0.965,
+            0.959,
+            0.939,
+            1.017,
+            0.921,
+            0.982
+          ],
+          "p50": 1.024,
+          "p95": 14.2783
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            44.6976,
+            1.7754,
+            1.6587,
+            1.4219,
+            1.3706,
+            1.9329,
+            1.3878,
+            1.2756,
+            1.5204,
+            1.2667,
+            1.2562,
+            1.2359,
+            1.3181,
+            1.227,
+            1.3041
+          ],
+          "p50": 1.3706,
+          "p95": 14.76231
+        },
+        "present_ms": {
+          "samples": [
+            0.1775,
+            0.124,
+            0.1347,
+            0.1316,
+            0.1109,
+            0.103,
+            0.0994,
+            0.0964,
+            0.0996,
+            0.0942,
+            0.0944,
+            0.0914,
+            0.1138,
+            0.0996,
+            0.0969
+          ],
+          "p50": 0.0996,
+          "p95": 0.14754
+        },
+        "render_rss_bytes_observed": 118575104,
+        "render_rss_peak_bytes_os": 118575104,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.10570000085863285,
+          "renderer_overlays": 0.0012999989849049598,
+          "renderer_stars": 0.007099999493220821,
+          "renderer_terrain": 0.15789999815751798,
+          "renderer_total": 0.9385999983351212
+        }
+      },
+      "expected_variance": "none"
+    },
+    {
+      "id": "terrain_relief",
+      "family": "terrain_profile_relief",
+      "snapshot_sha256": "11e177d5094ccd1907bc8bb307c06fd082e7ad9889736aa0041f885f524f0117",
+      "snapshot_bytes": 589,
+      "image": {
+        "path": "images/terrain_relief.png",
+        "sha256": "f024abb42277b1f8b2348aca66d73758fd294ac8dde4530cfb48fa175adf3924",
+        "bytes": 11020
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0185,
+            0.0182,
+            0.0175,
+            0.0174,
+            0.0171,
+            0.0161,
+            0.0156,
+            0.0152,
+            0.0152,
+            0.0151,
+            0.0151,
+            0.015,
+            0.0146,
+            0.0152,
+            0.015
+          ],
+          "p50": 0.0152,
+          "p95": 0.01829
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.0294,
+            0.0196,
+            0.0174,
+            0.0166,
+            0.0157,
+            0.0151,
+            0.0153,
+            0.0152,
+            0.0145,
+            0.0148,
+            0.0141,
+            0.0141,
+            0.0144,
+            0.0142,
+            0.0148
+          ],
+          "p50": 0.0151,
+          "p95": 0.02254
+        },
+        "frame_render_ms": {
+          "samples": [
+            236.455,
+            1.581,
+            1.194,
+            1.065,
+            1.167,
+            1.026,
+            1.033,
+            1.186,
+            1.056,
+            1.036,
+            1.238,
+            1.133,
+            1.115,
+            1.039,
+            1.049
+          ],
+          "p50": 1.115,
+          "p95": 72.0432
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            237.0859,
+            1.9971,
+            1.5368,
+            1.3928,
+            1.4975,
+            1.3326,
+            1.3308,
+            1.5042,
+            1.358,
+            1.335,
+            1.6079,
+            1.4595,
+            1.4604,
+            1.3484,
+            1.3866
+          ],
+          "p50": 1.4595,
+          "p95": 72.52374
+        },
+        "present_ms": {
+          "samples": [
+            0.1396,
+            0.1117,
+            0.1167,
+            0.1052,
+            0.0951,
+            0.0965,
+            0.0971,
+            0.0938,
+            0.096,
+            0.0946,
+            0.1448,
+            0.0957,
+            0.0988,
+            0.1203,
+            0.0974
+          ],
+          "p50": 0.0974,
+          "p95": 0.14116
+        },
+        "render_rss_bytes_observed": 154800128,
+        "render_rss_peak_bytes_os": 161550336,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.07339999865507707,
+          "renderer_overlays": 0.0012999989849049598,
+          "renderer_stars": 0.007200000254670158,
+          "renderer_terrain": 0.260199998592725,
+          "renderer_total": 0.9997000015573576
+        }
+      },
+      "expected_variance": "none"
+    },
+    {
+      "id": "surface_rgb",
+      "family": "surface_rgb_categorical",
+      "snapshot_sha256": "be8111c2faba5f9e2d3edf1d298318c9c8e43947d254f8751c72acfb25ee8257",
+      "snapshot_bytes": 791,
+      "image": {
+        "path": "images/surface_rgb.png",
+        "sha256": "f3e24525635e5e9b0502d9143a7e4f6220596f964336469b9dcaf619e5072ff6",
+        "bytes": 9895
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0197,
+            0.0198,
+            0.0188,
+            0.0187,
+            0.0175,
+            0.0168,
+            0.0167,
+            0.0161,
+            0.0158,
+            0.0175,
+            0.0169,
+            0.0161,
+            0.0159,
+            0.0167,
+            0.0162
+          ],
+          "p50": 0.0168,
+          "p95": 0.01973
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.0328,
+            0.0214,
+            0.0186,
+            0.017,
+            0.0163,
+            0.0168,
+            0.0162,
+            0.0158,
+            0.0162,
+            0.0165,
+            0.0157,
+            0.0154,
+            0.0152,
+            0.0158,
+            0.0157
+          ],
+          "p50": 0.0162,
+          "p95": 0.02482
+        },
+        "frame_render_ms": {
+          "samples": [
+            61.034,
+            1.284,
+            1.116,
+            1.094,
+            0.994,
+            1.065,
+            0.99,
+            0.972,
+            0.972,
+            0.998,
+            1.086,
+            0.995,
+            0.995,
+            1.011,
+            0.988
+          ],
+          "p50": 0.998,
+          "p95": 19.209
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            61.6786,
+            1.7216,
+            1.4292,
+            1.4589,
+            1.3135,
+            1.4176,
+            1.3134,
+            1.2835,
+            1.2755,
+            1.3059,
+            1.4226,
+            1.3195,
+            1.3126,
+            1.3397,
+            1.3144
+          ],
+          "p50": 1.3195,
+          "p95": 19.7087
+        },
+        "present_ms": {
+          "samples": [
+            0.1413,
+            0.1051,
+            0.1119,
+            0.0963,
+            0.1175,
+            0.1013,
+            0.0976,
+            0.095,
+            0.094,
+            0.1116,
+            0.0944,
+            0.0941,
+            0.1148,
+            0.1164,
+            0.0984
+          ],
+          "p50": 0.1013,
+          "p95": 0.12464
+        },
+        "render_rss_bytes_observed": 120250368,
+        "render_rss_peak_bytes_os": 120250368,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.07410000034724362,
+          "renderer_overlays": 0.0015999976312741637,
+          "renderer_stars": 0.007399998139590025,
+          "renderer_terrain": 0.21379999816417694,
+          "renderer_total": 0.9447999982512556
+        }
+      },
+      "expected_variance": "none"
+    },
+    {
+      "id": "surface_categorical",
+      "family": "surface_rgb_categorical",
+      "snapshot_sha256": "fcbdaa59185145b197b99f5234321457402566a45bed3f263da974ff11620822",
+      "snapshot_bytes": 799,
+      "image": {
+        "path": "images/surface_categorical.png",
+        "sha256": "f3e24525635e5e9b0502d9143a7e4f6220596f964336469b9dcaf619e5072ff6",
+        "bytes": 9895
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0243,
+            0.0229,
+            0.0183,
+            0.0194,
+            0.0175,
+            0.0176,
+            0.0168,
+            0.0165,
+            0.0167,
+            0.017,
+            0.0167,
+            0.0168,
+            0.0161,
+            0.0165,
+            0.0167
+          ],
+          "p50": 0.0168,
+          "p95": 0.02332
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.0391,
+            0.0222,
+            0.0195,
+            0.017,
+            0.0171,
+            0.0176,
+            0.017,
+            0.0162,
+            0.0161,
+            0.0161,
+            0.016,
+            0.0159,
+            0.0165,
+            0.0159,
+            0.0157
+          ],
+          "p50": 0.0165,
+          "p95": 0.02727
+        },
+        "frame_render_ms": {
+          "samples": [
+            60.016,
+            1.315,
+            1.15,
+            0.984,
+            1.02,
+            1.003,
+            1.018,
+            1.029,
+            0.998,
+            0.981,
+            1.208,
+            0.984,
+            0.974,
+            1.008,
+            0.984
+          ],
+          "p50": 1.008,
+          "p95": 18.9253
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            60.6302,
+            1.7944,
+            1.5207,
+            1.3279,
+            1.3347,
+            1.3335,
+            1.3406,
+            1.3509,
+            1.3165,
+            1.2954,
+            1.5634,
+            1.3095,
+            1.2977,
+            1.3509,
+            1.3291
+          ],
+          "p50": 1.3347,
+          "p95": 19.44514
+        },
+        "present_ms": {
+          "samples": [
+            0.1618,
+            0.1318,
+            0.1225,
+            0.0972,
+            0.1369,
+            0.1064,
+            0.1248,
+            0.0946,
+            0.0984,
+            0.0958,
+            0.0937,
+            0.0963,
+            0.0918,
+            0.093,
+            0.1226
+          ],
+          "p50": 0.0984,
+          "p95": 0.14437
+        },
+        "render_rss_bytes_observed": 120463360,
+        "render_rss_peak_bytes_os": 120463360,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.07280000136233866,
+          "renderer_overlays": 0.0012999989849049598,
+          "renderer_stars": 0.006999998731771484,
+          "renderer_terrain": 0.20230000154697336,
+          "renderer_total": 0.9418000008736271
+        }
+      },
+      "expected_variance": "none"
+    },
+    {
+      "id": "selection_measurement_constellation",
+      "family": "selection_measurement_constellation",
+      "snapshot_sha256": "07b320288a96adcf679f026828edc539abf7a230801e78f7dccffa2afbaccedb",
+      "snapshot_bytes": 647,
+      "image": {
+        "path": "images/selection_measurement_constellation.png",
+        "sha256": "c587f2e76d18a25d55176e0e2038038efac5cece1b47bbee07c3e2ad06c53e39",
+        "bytes": 17786
+      },
+      "metrics": {
+        "snapshot_encode_ms": {
+          "samples": [
+            0.0245,
+            0.0247,
+            0.0238,
+            0.0213,
+            0.0212,
+            0.0243,
+            0.0224,
+            0.0225,
+            0.0209,
+            0.0209,
+            0.0205,
+            0.02,
+            0.0202,
+            0.0202,
+            0.0206
+          ],
+          "p50": 0.0212,
+          "p95": 0.02456
+        },
+        "snapshot_decode_ms": {
+          "samples": [
+            0.0371,
+            0.0258,
+            0.0223,
+            0.0206,
+            0.0214,
+            0.0218,
+            0.0222,
+            0.0211,
+            0.0201,
+            0.0201,
+            0.0194,
+            0.0188,
+            0.0185,
+            0.0193,
+            0.0183
+          ],
+          "p50": 0.0206,
+          "p95": 0.02919
+        },
+        "frame_render_ms": {
+          "samples": [
+            25.377,
+            3.631,
+            1.592,
+            1.458,
+            1.421,
+            1.385,
+            1.547,
+            1.389,
+            1.386,
+            1.552,
+            1.518,
+            1.707,
+            1.774,
+            1.428,
+            1.501
+          ],
+          "p50": 1.518,
+          "p95": 10.1548
+        },
+        "frame_round_trip_ms": {
+          "samples": [
+            26.1012,
+            4.1235,
+            1.9914,
+            1.7974,
+            1.752,
+            1.7251,
+            1.8768,
+            1.7172,
+            1.7081,
+            1.9042,
+            1.8727,
+            2.2409,
+            2.1342,
+            1.7603,
+            1.8696
+          ],
+          "p50": 1.8727,
+          "p95": 10.71681
+        },
+        "present_ms": {
+          "samples": [
+            0.1477,
+            0.15,
+            0.125,
+            0.0987,
+            0.1174,
+            0.1153,
+            0.0952,
+            0.117,
+            0.1149,
+            0.1013,
+            0.1138,
+            0.1176,
+            0.1053,
+            0.1128,
+            0.1161
+          ],
+          "p50": 0.1153,
+          "p95": 0.14839
+        },
+        "render_rss_bytes_observed": 118304768,
+        "render_rss_peak_bytes_os": 118304768,
+        "render_to_presenter_copy_count_observable": 0,
+        "artifact_capture_copy_count": 1,
+        "cache_counters_emitted": {},
+        "diagnostic_timings_ms": {
+          "renderer_background": 0.09169999975711107,
+          "renderer_overlays": 0.0012999989849049598,
+          "renderer_stars": 0.007800001185387373,
+          "renderer_total": 1.4478000011877157
+        }
+      },
+      "expected_variance": "selection pulse is time-based; fixture inputs remain deterministic"
+    }
+  ],
+  "cache_observability": "No cache hit/miss counter is emitted by the active render-service diagnostics for these fixture paths; empty maps are recorded rather than inventing a rate."
+}

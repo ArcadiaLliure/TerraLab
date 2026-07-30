@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-wheel-final-98204d4\Scripts\terralab-gaia.exe --help
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-wheel-smoke-empty
+python=Python 3.13.7
+started=2026-07-26T01:58:31.3714319+02:00
+finished=2026-07-26T01:58:31.8210091+02:00
+duration_seconds=0.45
+exit_code=0

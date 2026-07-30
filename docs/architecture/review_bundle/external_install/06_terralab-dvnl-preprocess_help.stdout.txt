@@ -1,0 +1,10 @@
+usage: terralab-dvnl-preprocess [-h] input output
+
+Validate and normalize a DVNL GeoTIFF.
+
+positional arguments:
+  input       Input DVNL GeoTIFF
+  output      Cleaned output GeoTIFF
+
+options:
+  -h, --help  show this help message and exit

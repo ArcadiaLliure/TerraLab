@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "rows": 6000,
+  "repeats": 7,
+  "solar_system_on": {
+    "p50_ms": 0.956,
+    "p95_ms": 0.996
+  },
+  "solar_system_off": {
+    "p50_ms": 0.838,
+    "p95_ms": 0.904
+  },
+  "trails_cold_planner_ms": 7.636,
+  "trails_warm_frame": {
+    "p50_ms": 1.063,
+    "p95_ms": 1.284
+  },
+  "trail_cache_reused": true,
+  "trail_raster_cached": true,
+  "rss_delta_bytes": 12288
+}

@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "repeats": 7,
+  "cases": [
+    {
+      "rows": 62000,
+      "scope": false,
+      "visible_after_bucket": 10750,
+      "planner": {
+        "p50_ms": 5.791,
+        "p95_ms": 6.024
+      },
+      "adapter": {
+        "p50_ms": 26.106,
+        "p95_ms": 28.961
+      },
+      "scene_frame": {
+        "p50_ms": 31.816,
+        "p95_ms": 33.879
+      },
+      "legacy_frame": {
+        "p50_ms": 30.708,
+        "p95_ms": 32.398
+      },
+      "scene_vs_legacy_p50_percent": 3.609,
+      "rss_delta_bytes": 446464
+    },
+    {
+      "rows": 62000,
+      "scope": true,
+      "visible_after_bucket": 15135,
+      "planner": {
+        "p50_ms": 5.294,
+        "p95_ms": 5.792
+      },
+      "adapter": {
+        "p50_ms": 47.232,
+        "p95_ms": 48.509
+      },
+      "scene_frame": {
+        "p50_ms": 51.113,
+        "p95_ms": 51.885
+      },
+      "legacy_frame": {
+        "p50_ms": 50.397,
+        "p95_ms": 50.72
+      },
+      "scene_vs_legacy_p50_percent": 1.421,
+      "rss_delta_bytes": 192512,
+      "scope_cold_planner": {
+        "p50_ms": 13.828,
+        "p95_ms": 13.828
+      }
+    },
+    {
+      "rows": 1000000,
+      "scope": false,
+      "visible_after_bucket": 157788,
+      "planner": {
+        "p50_ms": 97.227,
+        "p95_ms": 98.391
+      },
+      "adapter": {
+        "p50_ms": 302.657,
+        "p95_ms": 322.804
+      },
+      "scene_frame": {
+        "p50_ms": 399.424,
+        "p95_ms": 402.305
+      },
+      "legacy_frame": {
+        "p50_ms": 418.02,
+        "p95_ms": 435.914
+      },
+      "scene_vs_legacy_p50_percent": -4.449,
+      "rss_delta_bytes": 385024
+    },
+    {
+      "rows": 1000000,
+      "scope": true,
+      "visible_after_bucket": 1657,
+      "planner": {
+        "p50_ms": 1.63,
+        "p95_ms": 2.843
+      },
+      "adapter": {
+        "p50_ms": 8.199,
+        "p95_ms": 8.585
+      },
+      "scene_frame": {
+        "p50_ms": 10.053,
+        "p95_ms": 10.808
+      },
+      "legacy_frame": {
+        "p50_ms": 9.617,
+        "p95_ms": 10.148
+      },
+      "scene_vs_legacy_p50_percent": 4.53,
+      "rss_delta_bytes": 450560,
+      "scope_cold_planner": {
+        "p50_ms": 213.788,
+        "p95_ms": 213.788
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+usage: terralab-query-elevation [-h] [--dem-path DEM_PATH]
+                                [--observer-offset-m OBSERVER_OFFSET_M]
+                                [--eye-height-m EYE_HEIGHT_M] [--json]
+                                [--precision 0..9]
+                                latitude longitude
+
+Query a WGS84 point using a TerraLab DEM provider.
+
+positional arguments:
+  latitude              WGS84 latitude in degrees
+  longitude             WGS84 longitude in degrees
+
+options:
+  -h, --help            show this help message and exit
+  --dem-path, --dem DEM_PATH
+                        DEM file or directory; defaults to TerraLab's
+                        configured raster_path
+  --observer-offset-m OBSERVER_OFFSET_M
+  --eye-height-m EYE_HEIGHT_M
+  --json                Write machine-readable JSON
+  --precision 0..9

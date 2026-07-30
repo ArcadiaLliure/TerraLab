@@ -1,0 +1,1789 @@
+diff --git a/README.md b/README.md
+index dadbab1..b2397e3 100644
+--- a/README.md
++++ b/README.md
+@@ -139,19 +139,16 @@ python tools/dev/code_inventory.py
+ 
+ Las pruebas de arquitectura se encuentran en
+ [`tests/architecture`](tests/architecture).
+-El chequeo de Pyright es incremental: la deuda dinámica existente está
+-registrada en
+-[`refactor_pyright_baseline.json`](docs/architecture/refactor_pyright_baseline.json)
+-y cualquier aumento hace fallar el comando.
++El chequeo de Pyright es incremental y cualquier aumento respecto al baseline
++vigente hace fallar el comando.
+ 
+ ## Documentación
+ 
+ - [Paquete Python](TerraLab/README.md)
+-- [Subsistema de terreno](TerraLab/terrain/Readme.md)
++- [Subsistema de terreno](TerraLab/terrain/README.md)
+ - [Pipeline de superficie categórica](docs/categorical-surface-pipeline.md)
+ - [Roadmap](docs/roadmap.md)
+ - [Changelog](CHANGELOG.md)
+-- [Informe de refactorización](docs/architecture/refactor_final_report.md)
+ 
+ ## Fuentes y atribución de datos
+ 
+diff --git a/TerraLab/astro/ephemeris_coordinator.py b/TerraLab/astro/ephemeris_coordinator.py
+index 2aa8b78..d2d63e7 100644
+--- a/TerraLab/astro/ephemeris_coordinator.py
++++ b/TerraLab/astro/ephemeris_coordinator.py
+@@ -43,6 +43,7 @@ class EphemerisCoordinator(QObject):
+         self._last_request_key: tuple[int, int, int, int, int] | None = None
+         self._last_submit_mono: float = 0.0
+         self._min_submit_interval_s: float = 0.20
++        self._shutdown = False
+ 
+         self._ts = None
+         self._eph = None
+@@ -57,7 +58,10 @@ class EphemerisCoordinator(QObject):
+ 
+     def shutdown(self) -> None:
+         """Atura el pool intern del coordinador."""
+-        self._executor.shutdown(wait=False, cancel_futures=True)
++        with self._request_lock:
++            self._shutdown = True
++            self._pending_request = None
++        self._executor.shutdown(wait=True, cancel_futures=True)
+ 
+     def configure_observer(self, latitude: float, longitude: float) -> None:
+         """Actualitza coordenades de l'observador per futurs calculs."""
+@@ -82,6 +86,8 @@ class EphemerisCoordinator(QObject):
+         )
+         now_mono = float(time.monotonic())
+         with self._request_lock:
++            if self._shutdown:
++                return
+             # Ignore exact duplicate requests arriving too fast.
+             if (
+                 self._last_request_key == request_key
+@@ -134,7 +140,10 @@ class EphemerisCoordinator(QObject):
+             self.ephemeris_error.emit(f"Error calculant efemerides: {exc}")
+         finally:
+             with self._request_lock:
+-                if self._pending_request is not None:
++                if self._shutdown:
++                    self._pending_request = None
++                    self._request_inflight = False
++                elif self._pending_request is not None:
+                     next_request = self._pending_request
+                     self._pending_request = None
+                     self._request_inflight = True
+diff --git a/TerraLab/data/assets_manager.py b/TerraLab/data/assets_manager.py
+index 8bb77f8..f4c1048 100644
+--- a/TerraLab/data/assets_manager.py
++++ b/TerraLab/data/assets_manager.py
+@@ -1,5 +1,6 @@
+ """Canonical data-library asset manager."""
+ 
++from TerraLab.common.data_library import DataLibrary
+ from TerraLab.common.utils import set_config_value
+ from TerraLab.data.assets import (
+     AssetRegistryMixin,
+@@ -26,6 +27,11 @@ class AssetManager(
+ ):
+     """Coordinate asset manifests, validation, downloads, and installation."""
+ 
++    def __init__(self, library: DataLibrary | None = None) -> None:
++        """Initialize the registry explicitly; mixin order is not a contract."""
++
++        AssetRegistryMixin.__init__(self, library)
++
+ 
+ __all__ = [
+     "AssetManager",
+diff --git a/TerraLab/data/star_data_coordinator.py b/TerraLab/data/star_data_coordinator.py
+index 0a49efc..6c9e57e 100644
+--- a/TerraLab/data/star_data_coordinator.py
++++ b/TerraLab/data/star_data_coordinator.py
+@@ -85,11 +85,12 @@ class StarDataCoordinator(QObject):
+     def shutdown(self) -> None:
+         """Tanca executors interns del coordinador."""
+         self._query_generations.cancel()
+-        self._executor.shutdown(wait=False, cancel_futures=True)
+-        self._preload_executor.shutdown(wait=False, cancel_futures=True)
+-        self._index_executor.shutdown(wait=False, cancel_futures=True)
+-        # The active query observes its generation between chunks.  Join it
+-        # before closing the mmap so a shutdown cannot race a worker read.
++        # Active tasks are bounded file reads or generation-aware index work.
++        # Join every pool so rebuilding the application cannot inherit threads
++        # from the previous widget instance.
++        self._executor.shutdown(wait=True, cancel_futures=True)
++        self._preload_executor.shutdown(wait=True, cancel_futures=True)
++        self._index_executor.shutdown(wait=True, cancel_futures=True)
+         self._query_executor.shutdown(wait=True, cancel_futures=True)
+         if self._catalog_store is not None:
+             self._catalog_store.close()
+diff --git a/TerraLab/render/workers/star_render.py b/TerraLab/render/workers/star_render.py
+index d1d29c8..5e1e3f5 100644
+--- a/TerraLab/render/workers/star_render.py
++++ b/TerraLab/render/workers/star_render.py
+@@ -3,6 +3,8 @@
+ from __future__ import annotations
+ 
+ import math
++import threading
++from concurrent.futures import ThreadPoolExecutor
+ 
+ import numpy as np
+ 
+@@ -27,8 +29,10 @@ from TerraLab.common.exception_reporting import log_suppressed_exception
+ 
+ def _compute_trail_segments_chunk(args):
+     """
+-    Worker function for ProcessPoolExecutor to parallelize star trail math.
+-    Bypasses GIL to process coordinate chunks in parallel.
++    Worker function for parallel star-trail math.
++
++    NumPy releases the GIL for the expensive vector operations, so threads
++    avoid creating child processes that could outlive the Qt canvas.
+     """
+     (
+         ra,
+@@ -45,6 +49,7 @@ def _compute_trail_segments_chunk(args):
+         y_center_val,
+         cam_az_rad,
+         jump_threshold,
++        cancel_event,
+     ) = args
+ 
+     import numpy as np
+@@ -89,6 +94,8 @@ def _compute_trail_segments_chunk(args):
+     # 3. Segments
+     results = []
+     for i in range(len(ra)):
++        if cancel_event.is_set():
++            return []
+         row_inv = invalid[i]
+         if np.all(row_inv):
+             continue
+@@ -149,8 +156,19 @@ class StarRenderWorker(QObject):
+     result_ready = pyqtSignal(QImage, list)  # image, visible_stars_list
+     trails_ready = pyqtSignal(QImage)  # trail image
+ 
++    def __init__(self, parent: QObject | None = None) -> None:
++        super().__init__(parent)
++        self._shutdown_event = threading.Event()
++
++    def request_shutdown(self) -> None:
++        """Thread-safe cancellation requested by the owning canvas."""
++
++        self._shutdown_event.set()
++
+     @pyqtSlot(dict)
+     def render(self, params):
++        if self._shutdown_event.is_set():
++            return
+         # params: dict with all data needed
+         try:
+             width = params["width"]
+@@ -379,6 +397,9 @@ class StarRenderWorker(QObject):
+             # Loop
+             count = len(sx)
+             for i in range(count):
++                if i % 1024 == 0 and self._shutdown_event.is_set():
++                    painter.end()
++                    return
+                 x, y = sx[i], sy[i]
+                 mag = f_mag[i]
+                 alpha_f = eff_alpha[i]
+@@ -571,6 +592,8 @@ class StarRenderWorker(QObject):
+     @pyqtSlot(dict)
+     def render_trails(self, params):
+         """Render star trails to a QImage in background thread."""
++        if self._shutdown_event.is_set():
++            return
+         try:
+             width = params["width"]
+             height = params["height"]
+@@ -715,9 +738,9 @@ class StarRenderWorker(QObject):
+ 
+             jump_threshold = min(width, height) * 0.5
+ 
+-            # Use Multiprocessing to bypass GIL for coordinate math and segment detection
++            # NumPy-heavy chunks run in threads, keeping canvas shutdown free
++            # from child-process lifecycle races.
+             import os
+-            from concurrent.futures import ProcessPoolExecutor
+ 
+             n_stars = len(f_ra)
+             n_workers = min(4, os.cpu_count() or 4)
+@@ -742,17 +765,24 @@ class StarRenderWorker(QObject):
+                         y_center_val,
+                         cam_az_rad,
+                         jump_threshold,
++                        self._shutdown_event,
+                     )
+                 )
+ 
+             # Execute tasks in parallel
+-            with ProcessPoolExecutor(max_workers=n_workers) as executor:
++            with ThreadPoolExecutor(
++                max_workers=n_workers,
++                thread_name_prefix="star-trails",
++            ) as executor:
+                 all_results = list(
+                     executor.map(_compute_trail_segments_chunk, tasks)
+                 )
+ 
+             # Draw aggregated results onto the pixel buffer
+             for chunk_res in all_results:
++                if self._shutdown_event.is_set():
++                    painter.end()
++                    return
+                 for (r, g, b), star_segments in chunk_res:
+                     color = QColor(r, g, b, 120)
+                     painter.setPen(QPen(color, 1.0))
+diff --git a/TerraLab/terrain/terrain_coordinator.py b/TerraLab/terrain/terrain_coordinator.py
+index effa4a3..361e2de 100644
+--- a/TerraLab/terrain/terrain_coordinator.py
++++ b/TerraLab/terrain/terrain_coordinator.py
+@@ -5,11 +5,11 @@ Orquestra HorizonWorker i exposa snapshots sense dependencia de UI.
+ 
+ from __future__ import annotations
+ 
++import time
+ from typing import Any
+ 
+-from PyQt5.QtCore import QObject, QThread, Qt, pyqtSignal
++from PyQt5.QtCore import QObject, QThread, pyqtSignal
+ 
+-from TerraLab.common.exception_reporting import log_suppressed_exception
+ from TerraLab.terrain.worker import HorizonWorker
+ 
+ 
+@@ -21,6 +21,7 @@ class TerrainCoordinator(QObject):
+     horizon_progress = pyqtSignal(object)
+     horizon_error = pyqtSignal(str)
+     bortle_estimate_ready = pyqtSignal(int, float, float, int)
++    bare_elevation_ready = pyqtSignal(float, float, object)
+ 
+     # Calling a QObject method directly does not honour its thread affinity.
+     # These private signals are therefore the only entry points used for work
+@@ -31,69 +32,98 @@ class TerrainCoordinator(QObject):
+     _reload_requested = pyqtSignal()
+     _observer_offset_requested = pyqtSignal(float)
+     _bortle_requested = pyqtSignal(float, float, int)
++    _bare_elevation_requested = pyqtSignal(float, float)
++    _shutdown_cleanup_requested = pyqtSignal()
+ 
+     def __init__(self, tiles_dir: str | None = None, parent: QObject | None = None) -> None:
+         super().__init__(parent)
++        self._current_profile: Any = None
++        self._surface_request_generation = 0
++        self._pending_surface_request: dict[str, Any] | None = None
++        self._observer_offset = 0.0
++        self._progress_text = ""
++        self._elevation_cache: dict[tuple[float, float], float | None] = {}
++        self._pending_elevation_queries: set[tuple[float, float]] = set()
++        self._shutdown_started = False
++        self._shutdown_complete = False
++
+         self._thread = QThread(self)
+-        self._worker = HorizonWorker(tiles_dir=tiles_dir)
++        self._worker = HorizonWorker(
++            tiles_dir=tiles_dir,
++            quit_thread_on_shutdown=True,
++        )
+         self._worker.moveToThread(self._thread)
+ 
+-        self._initialize_requested.connect(
+-            self._worker.initialize, type=Qt.QueuedConnection
+-        )
+-        self._bake_requested.connect(
+-            self._worker.request_bake, type=Qt.QueuedConnection
+-        )
++        # AutoConnection becomes queued because the receiver has worker-thread
++        # affinity. Keeping one-argument ``connect`` calls also matches PyQt's
++        # published type stubs.
++        self._initialize_requested.connect(self._worker.initialize)
++        self._bake_requested.connect(self._worker.request_bake)
+         self._surface_refresh_requested.connect(
+-            self._worker.request_surface_refresh, type=Qt.QueuedConnection
+-        )
+-        self._reload_requested.connect(
+-            self._worker.reload_config, type=Qt.QueuedConnection
++            self._worker.request_surface_refresh
+         )
++        self._reload_requested.connect(self._worker.reload_config)
+         self._observer_offset_requested.connect(
+-            self._worker.set_observer_offset, type=Qt.QueuedConnection
++            self._worker.set_observer_offset
+         )
+         self._bortle_requested.connect(
+-            self._worker.request_bortle_estimate, type=Qt.QueuedConnection
++            self._worker.request_bortle_estimate
+         )
++        self._bare_elevation_requested.connect(
++            self._worker.request_bare_elevation
++        )
++        self._shutdown_cleanup_requested.connect(self._worker.shutdown)
+ 
+         self._worker.profile_ready.connect(self._on_profile_ready)
+         self._worker.preview_ready.connect(self._on_preview_ready)
+         self._worker.progress_state.connect(self.horizon_progress)
++        self._worker.progress_message.connect(self._on_progress_message)
+         self._worker.error_occurred.connect(self.horizon_error)
+         self._worker.bortle_estimate_ready.connect(self.bortle_estimate_ready)
++        self._worker.bare_elevation_ready.connect(
++            self._on_bare_elevation_ready
++        )
+ 
+         self._thread.start()
+ 
+-        self._current_profile: Any = None
+-        self._surface_request_generation = 0
+-        self._pending_surface_request: dict[str, Any] | None = None
++    def shutdown(self, timeout_ms: int = 15_000) -> None:
++        """Cooperatively stop work, close resources, and join the Qt thread."""
+ 
+-    def shutdown(self) -> None:
+-        """Atura el worker de terreny i allibera recursos."""
+-        try:
+-            self._worker.cancel_surface_sampling()
+-            self._worker.abort_current_job()
+-        except Exception:
+-            log_suppressed_exception(__name__, "TerrainCoordinator.shutdown")
+-        try:
++        if self._shutdown_complete:
++            return
++        if not self._shutdown_started:
++            self._shutdown_started = True
++            # ``request_shutdown`` is an explicitly synchronized cancellation
++            # interface: it only sets Events and controls the lock-protected
++            # subprocess. Resource cleanup itself remains queued.
++            self._worker.request_shutdown()
+             self._thread.requestInterruption()
+-            self._thread.quit()
+-            if not self._thread.wait(1500):
+-                self._thread.terminate()
+-                self._thread.wait(1500)
+-        except Exception:
+-            log_suppressed_exception(__name__, "TerrainCoordinator.shutdown")
+-        # No worker code can still be using these resources after the thread
+-        # has stopped, so final cleanup is safe even though its event loop is
+-        # no longer available for a queued invocation.
+-        try:
+-            self._worker.shutdown()
+-        except Exception:
+-            log_suppressed_exception(__name__, "TerrainCoordinator.shutdown")
++            self._shutdown_cleanup_requested.emit()
++
++        deadline = time.monotonic() + max(0, int(timeout_ms)) / 1000.0
++        next_diagnostic = time.monotonic() + 1.0
++        while self._thread.isRunning():
++            remaining_ms = int(max(0.0, deadline - time.monotonic()) * 1000)
++            if remaining_ms <= 0:
++                raise RuntimeError(
++                    "Terrain worker did not stop cooperatively within "
++                    f"{int(timeout_ms)} ms; progress={self._progress_text!r}"
++                )
++            self._thread.wait(min(250, remaining_ms))
++            now = time.monotonic()
++            if self._thread.isRunning() and now >= next_diagnostic:
++                print(
++                    "[TerrainCoordinator] Waiting for cooperative shutdown: "
++                    f"progress={self._progress_text!r}, "
++                    f"remaining_ms={remaining_ms}"
++                )
++                next_diagnostic = now + 1.0
++        self._shutdown_complete = True
+ 
+     @property
+-    def thread(self) -> QThread:
++    def worker_thread(self) -> QThread:
++        """Return the dedicated terrain thread for diagnostics and tests."""
++
+         return self._thread
+ 
+     def initialize(self) -> None:
+@@ -112,21 +142,28 @@ class TerrainCoordinator(QObject):
+     def set_observer_offset(self, offset: float) -> None:
+         """Queue an observer-height update on the terrain thread."""
+ 
+-        self._observer_offset_requested.emit(float(offset))
++        self._observer_offset = float(offset)
++        self._observer_offset_requested.emit(self._observer_offset)
+ 
+     @property
+     def observer_offset(self) -> float:
+-        return float(getattr(self._worker, "observer_offset", 0.0))
++        return self._observer_offset
+ 
+     def get_progress_text(self) -> str:
+-        """Return the worker's lock-protected progress snapshot."""
++        """Return the latest progress snapshot published to the coordinator."""
+ 
+-        return self._worker.get_progress_text()
++        return self._progress_text
+ 
+     def get_bare_elevation(self, lat: float, lon: float) -> float | None:
+-        """Read the initialized provider through the canonical terrain owner."""
++        """Return a cached elevation and queue any missing lookup."""
+ 
+-        return self._worker.get_bare_elevation(float(lat), float(lon))
++        key = (float(lat), float(lon))
++        if key not in self._elevation_cache:
++            if key not in self._pending_elevation_queries:
++                self._pending_elevation_queries.add(key)
++                self._bare_elevation_requested.emit(*key)
++            return None
++        return self._elevation_cache[key]
+ 
+     def request_bortle_estimate(
+         self, lat: float, lon: float, request_id: int = 0
+@@ -210,3 +247,26 @@ class TerrainCoordinator(QObject):
+ 
+     def _on_preview_ready(self, payload: object) -> None:
+         self.horizon_preview_ready.emit(payload)
++
++    def _on_progress_message(self, message: str) -> None:
++        self._progress_text = str(message)
++
++    def _on_bare_elevation_ready(
++        self,
++        lat: float,
++        lon: float,
++        elevation: object,
++    ) -> None:
++        key = (float(lat), float(lon))
++        if elevation is None:
++            value = None
++        elif isinstance(elevation, (int, float)):
++            value = float(elevation)
++        else:
++            raise TypeError(
++                "TerrainWorker returned a non-numeric bare elevation: "
++                f"{type(elevation).__name__}"
++            )
++        self._pending_elevation_queries.discard(key)
++        self._elevation_cache[key] = value
++        self.bare_elevation_ready.emit(key[0], key[1], value)
+diff --git a/TerraLab/terrain/worker.py b/TerraLab/terrain/worker.py
+index aa57603..c7d90ef 100644
+--- a/TerraLab/terrain/worker.py
++++ b/TerraLab/terrain/worker.py
+@@ -10,7 +10,7 @@ import time
+ from pathlib import Path
+ from typing import Optional
+ 
+-from PyQt5.QtCore import QObject, QMetaObject, Qt, pyqtSignal, pyqtSlot
++from PyQt5.QtCore import QObject, QMetaObject, QThread, Qt, pyqtSignal, pyqtSlot
+ 
+ from TerraLab.common.exception_reporting import log_suppressed_exception
+ from TerraLab.common.utils import (
+@@ -44,11 +44,23 @@ class HorizonWorker(QObject):
+     progress_message = pyqtSignal(str)
+     error_occurred = pyqtSignal(str)
+     bortle_estimate_ready = pyqtSignal(int, float, float, int)
++    bare_elevation_ready = pyqtSignal(float, float, object)
+     effective_sources_changed = pyqtSignal(object)
++    shutdown_finished = pyqtSignal()
+ 
+-    def __init__(self, tiles_dir=None, parent=None):
++    def __init__(
++        self,
++        tiles_dir=None,
++        parent=None,
++        *,
++        quit_thread_on_shutdown: bool = False,
++    ):
+         super().__init__(parent)
+         self.tiles_dir = tiles_dir
++        self._quit_thread_on_shutdown = bool(quit_thread_on_shutdown)
++        self._shutdown_event = threading.Event()
++        self._shutdown_lock = threading.Lock()
++        self._shutdown_complete = False
+         self.is_initialized = False
+         self.provider = None
+         self.baker = None
+@@ -169,7 +181,11 @@ class HorizonWorker(QObject):
+     def _surface_request_cancelled(self, generation: int) -> bool:
+         with self._surface_generation_lock:
+             current = self._surface_request_generation
+-        return self._surface_cancel_event.is_set() or int(generation) != current
++        return (
++            self._shutdown_event.is_set()
++            or self._surface_cancel_event.is_set()
++            or int(generation) != current
++        )
+ 
+     def _prepare_surface_samples(
+         self,
+@@ -301,6 +317,8 @@ class HorizonWorker(QObject):
+ 
+     @pyqtSlot(object)
+     def request_surface_refresh(self, profile=None):
++        if self._shutdown_event.is_set():
++            return
+         generation = None
+         target = profile
+         visible_radius_m = None
+@@ -454,9 +472,24 @@ class HorizonWorker(QObject):
+             self._store_progress(None)
+             self.progress_message.emit("")
+ 
+-    def shutdown(self) -> None:
++    def request_shutdown(self) -> None:
++        """Thread-safe cancellation entry point used before queued cleanup."""
++
++        self._shutdown_event.set()
+         self.cancel_surface_sampling()
+         self.abort_current_job()
++
++    @pyqtSlot()
++    def shutdown(self) -> None:
++        """Close worker-owned resources in the worker thread, exactly once."""
++
++        self.request_shutdown()
++        with self._shutdown_lock:
++            if self._shutdown_complete:
++                self.shutdown_finished.emit()
++                return
++            self._shutdown_complete = True
++
+         for resource_name in ("_surface_service", "light_sampler", "provider"):
+             resource = getattr(self, resource_name, None)
+             if resource is not None and hasattr(resource, "close"):
+@@ -466,6 +499,10 @@ class HorizonWorker(QObject):
+                     log_suppressed_exception(__name__, "HorizonWorker.shutdown")
+             setattr(self, resource_name, None)
+ 
++        self.shutdown_finished.emit()
++        if self._quit_thread_on_shutdown:
++            QThread.currentThread().quit()
++
+     @staticmethod
+     def _paths_equivalent(path_a: object, path_b: object) -> bool:
+         try:
+@@ -778,6 +815,17 @@ class HorizonWorker(QObject):
+             print(f"[HorizonWorker] get_bare_elevation error: {exc}")
+             return None
+ 
++    @pyqtSlot(float, float)
++    def request_bare_elevation(self, lat: float, lon: float) -> None:
++        """Resolve one elevation query in the worker thread."""
++
++        if self._shutdown_event.is_set():
++            return
++        latitude = float(lat)
++        longitude = float(lon)
++        value = self.get_bare_elevation(latitude, longitude)
++        self.bare_elevation_ready.emit(latitude, longitude, value)
++
+     def _estimate_light_pollution_isolated(
+         self, lat: float, lon: float
+     ) -> tuple[float, int]:
+@@ -907,6 +955,8 @@ class HorizonWorker(QObject):
+         Retorna:
+         - None.
+         """
++        if self._shutdown_event.is_set():
++            return
+         latitude_deg = 0.0
+         longitude_deg = 0.0
+         try:
+@@ -951,7 +1001,7 @@ class HorizonWorker(QObject):
+         )
+ 
+     def abort_current_job(self) -> None:
+-        """Executa el metode abort_current_job de la classe HorizonWorker.
++        """Thread-safe cancellation of the worker-owned bake subprocess.
+ 
+         Par?metres:
+         - Cap.
+@@ -1194,6 +1244,8 @@ class HorizonWorker(QObject):
+         Retorna:
+         - None.
+         """
++        if self._shutdown_event.is_set():
++            return
+         try:
+             if not isinstance(job, dict):
+                 raise TypeError("Horizon bake job must be a dict")
+@@ -1359,6 +1411,8 @@ class HorizonWorker(QObject):
+                     f"Horizon bake subprocess failed with exit code {return_code}"
+                 )
+         except Exception as exc:
++            if self._shutdown_event.is_set():
++                return
+             print(f"[HorizonWorker] CRITICAL ERROR during bake: {exc}")
+             import traceback
+ 
+diff --git a/TerraLab/ui/astro_canvas.py b/TerraLab/ui/astro_canvas.py
+index ee70125..4dc956a 100644
+--- a/TerraLab/ui/astro_canvas.py
++++ b/TerraLab/ui/astro_canvas.py
+@@ -10,25 +10,29 @@ from datetime import datetime, timedelta, timezone
+ from typing import Any
+ 
+ from PyQt5.QtCore import pyqtSignal
++from PyQt5.QtGui import QPainter
+ from PyQt5.QtWidgets import QWidget
+-from TerraLab.common.exception_reporting import log_suppressed_exception
+ from TerraLab.light_pollution.modes import (
+     LP_MODE_AUTOMATIC,
+     normalize_light_pollution_mode,
+     resolve_bortle_class,
+ )
+ from TerraLab.render.qt.context import RenderContext
++from TerraLab.render.stars_renderer import StarsRenderResult
++from TerraLab.scene.render_state import RenderState
+ from TerraLab.scene.scene_state import build_star_scene_state
++from TerraLab.common.exception_reporting import log_suppressed_exception
+ from TerraLab.ui.canvas_mixins import (
+     CanvasEphemerisRenderingMixin,
+     CanvasInteractionMixin,
+     CanvasProjectionAndRenderingMixin,
+     CanvasSelectionAndTrailsMixin,
+ )
++from TerraLab.ui.widget_init_helpers import astro_canvas_init
+ from TerraLab.widgets.spherical_math import angular_distance
+ 
+ 
+-class AstroCanvas(
++class AstroCanvas(  # type: ignore[reportIncompatibleMethodOverride]  # PyQt5 stubs name Qt callback parameters a0/a1; mixins use descriptive names.
+     CanvasEphemerisRenderingMixin,
+     CanvasProjectionAndRenderingMixin,
+     CanvasSelectionAndTrailsMixin,
+@@ -40,6 +44,29 @@ class AstroCanvas(
+     request_render_signal = pyqtSignal(dict)
+     request_trails_signal = pyqtSignal(dict)
+ 
++    def __init__(self, parent: QWidget | None = None) -> None:
++        """Initialize the canonical canvas without relying on mixin order."""
++
++        astro_canvas_init(self, parent)
++
++    def shutdown(self, timeout_ms: int = 15_000) -> None:
++        """Cancel render work and join the canvas-owned QThread."""
++
++        if self._render_thread_shutdown:
++            return
++        self._camera_idle_timer.stop()
++        self._scope_move_timer.stop()
++        self._selection_pulse_timer.stop()
++        self._worker.request_shutdown()
++        self._thread.requestInterruption()
++        self._thread.quit()
++        if not self._thread.wait(max(0, int(timeout_ms))):
++            raise RuntimeError(
++                "Star render worker did not stop cooperatively within "
++                f"{int(timeout_ms)} ms"
++            )
++        self._render_thread_shutdown = True
++
+     @staticmethod
+     def _target_debug_repr(target: object) -> str:
+         """Construeix una representacio compacta d'un target per logs."""
+@@ -90,30 +117,39 @@ class AstroCanvas(
+         if not self._goto_debug_enabled():
+             return
+         print(f"[GotoDebug] {str(message)}")
+-    def render(self, painter, render_state):
++    def render_scene(
++        self,
++        painter: QPainter,
++        render_state: RenderState,
++    ) -> StarsRenderResult:
+         """Pinta un frame usant exclusivament el `RenderState` rebut."""
+         render_context = RenderContext(
+             painter=painter,
+             width=int(self.width()),
+             height=int(self.height()),
+-            diagnostics=getattr(self, "scene_diagnostics", None),
++            diagnostics=self.scene_diagnostics,
+         )
+         resultat_estrelles = self.sky_renderer.render(render_context, render_state)
+-        try:
+-            # Cataleg actiu del frame per a seleccio exacta (pick/goto) en scope/fallback.
+-            self._active_catalog_ra = getattr(render_state, "np_ra", None)
+-            self._active_catalog_dec = getattr(render_state, "np_dec", None)
+-            self._active_catalog_mag = getattr(render_state, "np_mag", None)
+-            self._active_catalog_bp_rp = getattr(render_state, "np_bp_rp", None)
+-            self._active_catalog_r = getattr(render_state, "np_r", None)
+-            self._active_catalog_g = getattr(render_state, "np_g", None)
+-            self._active_catalog_b = getattr(render_state, "np_b", None)
+-            self._active_catalog_ids = None
+-            self.visible_stars = getattr(resultat_estrelles, "visible_indices", [])
+-            self.visible_stars_sx = getattr(resultat_estrelles, "visible_sx", [])
+-            self.visible_stars_sy = getattr(resultat_estrelles, "visible_sy", [])
+-        except Exception:
+-            log_suppressed_exception(__name__, "AstroCanvas.render")
++        if not isinstance(resultat_estrelles, StarsRenderResult):
++            raise TypeError(
++                "SkyRenderer.render() must return StarsRenderResult, got "
++                f"{type(resultat_estrelles).__name__}"
++            )
++
++        # Publish a complete selection snapshot only after the renderer result
++        # has satisfied its contract. A bad frame cannot leave a half-updated
++        # catalogue behind.
++        self._active_catalog_ra = render_state.np_ra
++        self._active_catalog_dec = render_state.np_dec
++        self._active_catalog_mag = render_state.np_mag
++        self._active_catalog_bp_rp = render_state.np_bp_rp
++        self._active_catalog_r = render_state.np_r
++        self._active_catalog_g = render_state.np_g
++        self._active_catalog_b = render_state.np_b
++        self._active_catalog_ids = None
++        self.visible_stars = resultat_estrelles.visible_indices
++        self.visible_stars_sx = resultat_estrelles.visible_sx
++        self.visible_stars_sy = resultat_estrelles.visible_sy
+         return resultat_estrelles
+ 
+     def _show_object_context_menu(self, event):
+@@ -409,7 +445,7 @@ class AstroCanvas(
+         )
+         if hasattr(self, "scene_diagnostics"):
+             self.scene_diagnostics.reset()
+-        resultat_estrelles = self.render(painter, render_state)
++        resultat_estrelles = self.render_scene(painter, render_state)
+         if hasattr(self, "_emit_render_diagnostics"):
+             self._emit_render_diagnostics(resultat_estrelles)
+         return None
+diff --git a/TerraLab/ui/astronomical_widget.py b/TerraLab/ui/astronomical_widget.py
+index 53a76f0..50d24de 100644
+--- a/TerraLab/ui/astronomical_widget.py
++++ b/TerraLab/ui/astronomical_widget.py
+@@ -9,6 +9,7 @@ import json
+ import time
+ from datetime import datetime
+ from pathlib import Path
++from typing import Callable
+ 
+ import numpy as np
+ from PyQt5.QtCore import QTimer, pyqtSignal
+@@ -19,7 +20,6 @@ from TerraLab.common.custom_widget_base import CustomWidgetBase
+ from TerraLab.common.performance.flags import PERFORMANCE_FLAGS
+ from TerraLab.data.star_data_coordinator import StarDataCoordinator
+ from TerraLab.light_pollution.modes import (
+-    LP_MODE_AUTOMATIC,
+     normalize_light_pollution_mode,
+     resolve_bortle_class,
+ )
+@@ -33,6 +33,13 @@ from TerraLab.ui.widget_mixins import (
+     WidgetLayersMixin,
+     WidgetSurfaceDataMixin,
+ )
++from TerraLab.ui.widget_init_helpers import astronomical_widget_init
++
++GAIA_CATALOG_NOT_CONFIGURED = "catalog_not_configured"
++GAIA_CATALOG_UNAVAILABLE = "catalog_unavailable"
++GAIA_MANIFEST_MISSING = "manifest_missing"
++GAIA_MANIFEST_INVALID = "manifest_invalid"
++GAIA_CATALOG_AVAILABLE = "catalog_available"
+ 
+ 
+ class AstronomicalWidget(
+@@ -48,36 +55,39 @@ class AstronomicalWidget(
+     request_render_signal = pyqtSignal()
+     request_trails_signal = pyqtSignal()
+ 
+-    def __init__(self, *args, **kwargs):
+-        super().__init__(*args, **kwargs)
++    def __init__(self, parent=None, **kwargs):
++        # The canonical class owns initialization. Mixins contribute behavior
++        # only, so construction cannot change when their MRO order changes.
++        astronomical_widget_init(self, parent, **kwargs)
+ 
+         # Coordinators own the canonical scene, terrain and ephemeris state.
+         self.scene_controller = SceneController(
+-            latitude=float(getattr(self, "latitude", 0.0)),
+-            longitude=float(getattr(self, "longitude", 0.0)),
+-            altitude_m=float(getattr(self, "_observer_offset", 0.0)),
+-            manual_year=int(getattr(self, "manual_year", 2026)),
+-            manual_day=int(getattr(self, "manual_day", 0)),
+-            manual_hour=float(getattr(self, "manual_hour", 12.0)),
+-            use_real_time=bool(getattr(self, "use_real_time", True)),
+-            azimuth_offset=float(getattr(getattr(self, "canvas", None), "azimuth_offset", 0.0)),
+-            elevation_angle=float(getattr(getattr(self, "canvas", None), "elevation_angle", 40.0)),
+-            zoom_level=float(getattr(getattr(self, "canvas", None), "zoom_level", 1.0)),
+-            vertical_offset_ratio=float(getattr(getattr(self, "canvas", None), "vertical_offset_ratio", 0.3)),
++            latitude=float(self.latitude),
++            longitude=float(self.longitude),
++            altitude_m=float(self._observer_offset),
++            manual_year=int(self.manual_year),
++            manual_day=int(self.manual_day),
++            manual_hour=float(self.manual_hour),
++            use_real_time=bool(self.use_real_time),
++            azimuth_offset=float(self.canvas.azimuth_offset),
++            elevation_angle=float(self.canvas.elevation_angle),
++            zoom_level=float(self.canvas.zoom_level),
++            vertical_offset_ratio=float(self.canvas.vertical_offset_ratio),
+             light_pollution_mode=normalize_light_pollution_mode(
+-                getattr(self, "light_pollution_mode", LP_MODE_AUTOMATIC)
++                self.light_pollution_mode
+             ),
+         )
+ 
+         self.star_data_coordinator = None
+         self._last_scope_tile_request = ""
++        self.gaia_catalog_status = GAIA_CATALOG_NOT_CONFIGURED
+         self._gaia_manifest_path = self._resolve_gaia_manifest_path()
+         self._gaia_manifest_last_mtime = 0.0
+         self._gaia_general_tile_loaded_mtime = 0.0
+         self._try_attach_star_data_coordinator(force_general_reload=True)
+ 
+         self.terrain_coordinator = TerrainCoordinator(
+-            tiles_dir=str(getattr(self, "runtime_layout", {}).get("data_elevation", "") or "")
++            tiles_dir=str(self.runtime_layout.get("data_elevation", "") or "")
+         )
+         self.terrain_coordinator.horizon_ready.connect(
+             self._on_terrain_coordinator_ready
+@@ -106,6 +116,29 @@ class AstronomicalWidget(
+         )
+         self._gaia_attach_timer.start()
+ 
++    def _schedule_lifecycle_callback(
++        self,
++        delay_ms: int,
++        callback: Callable[[], None],
++    ) -> QTimer | None:
++        """Schedule a callback that is cancelled when this widget closes."""
++
++        if self._closing:
++            return None
++        timer = QTimer(self)
++        timer.setSingleShot(True)
++        self._lifecycle_timers.add(timer)
++
++        def invoke() -> None:
++            self._lifecycle_timers.discard(timer)
++            timer.deleteLater()
++            if not self._closing:
++                callback()
++
++        timer.timeout.connect(invoke)
++        timer.start(max(0, int(delay_ms)))
++        return timer
++
+     def _on_terrain_coordinator_progress(self, state) -> None:
+         """Show surface-raster progress without treating it as a DEM bake."""
+ 
+@@ -191,7 +224,7 @@ class AstronomicalWidget(
+                 from TerraLab.terrain.render.palette import generate_layer_defs
+ 
+                 layer_defs = generate_layer_defs(band_defs)
+-            except Exception as exc:
++            except (TypeError, ValueError) as exc:
+                 print(
+                     "[AstroWidget] Warning: Could not generate surface "
+                     f"layer_defs: {exc}"
+@@ -214,13 +247,33 @@ class AstronomicalWidget(
+         canvas._last_skyfield_update = 0
+         canvas.update()
+ 
+-    def _resolve_gaia_manifest_path(self) -> Path:
+-        """Resol la ruta esperada del `tile_manifest.json` Gaia runtime."""
+-        runtime_layout = getattr(self, "runtime_layout", {}) or {}
+-        gaia_dir = Path(str(runtime_layout.get("data_gaia", "") or "")).expanduser()
+-        if str(gaia_dir).strip():
+-            return gaia_dir / "tile_manifest.json"
+-        return Path("tile_manifest.json")
++    def _resolve_gaia_manifest_path(self) -> Path | None:
++        """Resolve Gaia only from the configured data library, never the CWD."""
++
++        runtime_layout = self.runtime_layout
++        configured = str(runtime_layout.get("data_gaia", "") or "").strip()
++        if not configured:
++            self.gaia_catalog_status = GAIA_CATALOG_NOT_CONFIGURED
++            return None
++
++        gaia_dir = Path(configured).expanduser()
++        if not gaia_dir.is_absolute():
++            library_root = Path(
++                str(runtime_layout.get("root", "") or "")
++            ).expanduser()
++            if not library_root.is_absolute():
++                self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
++                return None
++            gaia_dir = library_root / gaia_dir
++
++        manifest_path = gaia_dir / "tile_manifest.json"
++        if not gaia_dir.is_dir():
++            self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
++        elif not manifest_path.is_file():
++            self.gaia_catalog_status = GAIA_MANIFEST_MISSING
++        else:
++            self.gaia_catalog_status = GAIA_CATALOG_AVAILABLE
++        return manifest_path
+ 
+     def _connect_star_data_coordinator_signals(self) -> None:
+         """Connecta senyals del coordinador de teseles amb el widget."""
+@@ -247,28 +300,59 @@ class AstronomicalWidget(
+     ) -> None:
+         """Inicialitza o refresca coordinador Gaia quan hi ha manifest disponible."""
+         manifest_path = self._gaia_manifest_path
+-        self._ensure_partial_manifest_from_general_tile()
+-        if not manifest_path.is_file():
++        if manifest_path is None:
++            self.gaia_catalog_status = GAIA_CATALOG_NOT_CONFIGURED
+             return
++        self._ensure_partial_manifest_from_general_tile()
+         try:
+             manifest_mtime = float(manifest_path.stat().st_mtime)
+-        except Exception:
+-            manifest_mtime = 0.0
++        except FileNotFoundError:
++            self.gaia_catalog_status = GAIA_MANIFEST_MISSING
++            return
++        except PermissionError as exc:
++            self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
++            self._on_star_data_error(f"Gaia manifest permission error: {exc}")
++            return
++        except OSError as exc:
++            self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
++            self._on_star_data_error(f"Gaia manifest unavailable: {exc}")
++            return
+ 
+         manifest_changed = (
+             manifest_mtime > float(self._gaia_manifest_last_mtime) + 1e-6
+         )
+         if self.star_data_coordinator is not None and manifest_changed:
+-            try:
+-                self.star_data_coordinator.shutdown()
+-            except Exception:
+-                log_suppressed_exception(__name__, "AstronomicalWidget._try_attach_star_data_coordinator")
++            self.star_data_coordinator.shutdown()
+             self.star_data_coordinator = None
+ 
+         if self.star_data_coordinator is None:
+-            self.star_data_coordinator = StarDataCoordinator(manifest_path)
++            try:
++                coordinator = StarDataCoordinator(manifest_path)
++            except FileNotFoundError:
++                self.gaia_catalog_status = GAIA_MANIFEST_MISSING
++                return
++            except PermissionError as exc:
++                self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
++                self._on_star_data_error(
++                    f"Gaia manifest permission error: {exc}"
++                )
++                return
++            except json.JSONDecodeError as exc:
++                self.gaia_catalog_status = GAIA_MANIFEST_INVALID
++                self._on_star_data_error(f"Gaia manifest is invalid JSON: {exc}")
++                return
++            except (TypeError, ValueError) as exc:
++                self.gaia_catalog_status = GAIA_MANIFEST_INVALID
++                self._on_star_data_error(f"Gaia manifest is invalid: {exc}")
++                return
++            except OSError as exc:
++                self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
++                self._on_star_data_error(f"Gaia catalog unavailable: {exc}")
++                return
++            self.star_data_coordinator = coordinator
+             self._connect_star_data_coordinator_signals()
+             force_general_reload = True
++        self.gaia_catalog_status = GAIA_CATALOG_AVAILABLE
+         if (
+             force_general_reload
+             or manifest_changed
+@@ -279,6 +363,8 @@ class AstronomicalWidget(
+     def _ensure_partial_manifest_from_general_tile(self) -> None:
+         """Crea manifest parcial minim quan existeix `tile_all` pero no manifest."""
+         manifest_path = self._gaia_manifest_path
++        if manifest_path is None:
++            return
+         if manifest_path.is_file():
+             return
+         tile_all_path = manifest_path.parent / "tile_all.npz"
+@@ -292,7 +378,7 @@ class AstronomicalWidget(
+                     row_count = int(len(tile_data["RA"]))
+                 else:
+                     row_count = 0
+-        except Exception:
++        except (OSError, ValueError):
+             return
+         if row_count <= 0:
+             return
+@@ -314,7 +400,11 @@ class AstronomicalWidget(
+             manifest_path.parent.mkdir(parents=True, exist_ok=True)
+             with manifest_path.open("w", encoding="utf-8") as handle:
+                 json.dump(payload, handle, indent=2, ensure_ascii=True)
+-        except Exception:
++        except (OSError, TypeError, ValueError) as exc:
++            self.gaia_catalog_status = GAIA_CATALOG_UNAVAILABLE
++            self._on_star_data_error(
++                f"Could not create the partial Gaia manifest: {exc}"
++            )
+             return
+ 
+     def _poll_incremental_gaia_updates(self) -> None:
+@@ -324,17 +414,11 @@ class AstronomicalWidget(
+ 
+     def _gaia_state_paths(self) -> list[Path]:
+         """Retorna rutes candidates de fitxer d'estat Gaia (nou + legacy)."""
+-        runtime_layout = getattr(self, "runtime_layout", {}) or {}
+-        try:
+-            root_dir = Path(runtime_layout.get("root", Path.home())).resolve()
+-        except Exception:
+-            root_dir = Path.home()
+-        try:
+-            gaia_dir = Path(
+-                str(runtime_layout.get("data_gaia", "") or "")
+-            ).expanduser()
+-        except Exception:
+-            gaia_dir = Path()
++        runtime_layout = self.runtime_layout
++        root_dir = Path(runtime_layout.get("root", Path.home())).resolve()
++        gaia_dir = Path(
++            str(runtime_layout.get("data_gaia", "") or "")
++        ).expanduser()
+         return [
+             root_dir / "logs" / "gaia_tiles_state.json",
+             gaia_dir / "gaia_tiles_state.json",
+@@ -352,7 +436,18 @@ class AstronomicalWidget(
+             if isinstance(payload, dict):
+                 payload["_state_path"] = str(candidate_path)
+                 return payload
+-        except Exception:
++        except FileNotFoundError:
++            return None
++        except PermissionError as exc:
++            self._on_star_data_error(
++                f"Gaia state file permission error: {exc}"
++            )
++            return None
++        except json.JSONDecodeError as exc:
++            self._on_star_data_error(f"Gaia state file is invalid JSON: {exc}")
++            return None
++        except OSError as exc:
++            self._on_star_data_error(f"Gaia state file unavailable: {exc}")
+             return None
+         return None
+ 
+@@ -395,7 +490,7 @@ class AstronomicalWidget(
+             return
+         try:
+             tile_mtime = float(tile_path.stat().st_mtime)
+-        except Exception:
++        except (FileNotFoundError, PermissionError, OSError):
+             return
+         if tile_mtime <= float(self._gaia_general_tile_loaded_mtime) + 1e-6:
+             return
+@@ -434,27 +529,79 @@ class AstronomicalWidget(
+                 return True
+         return super()._ensure_asset_before_enable(checkbox, checked, asset_id)
+ 
+-    def closeEvent(self, event):
++    def closeEvent(self, event):  # type: ignore[reportIncompatibleMethodOverride]  # PyQt5 stub calls this parameter a0.
+         """Release application coordinators before closing the widget."""
++        self._closing = True
++        for timer in tuple(self._lifecycle_timers):
++            timer.stop()
++            timer.deleteLater()
++        self._lifecycle_timers.clear()
++        for timer in (
++            self._gaia_attach_timer,
++            self.timer,
++            self.anim_timer,
++            self.bake_debounce_timer,
++            self.terrain_depth_debounce_timer,
++            self.terrain_ray_precision_debounce_timer,
++            self._gaia_extension_watch_timer,
++            self._gaia_extension_status_hide_timer,
++        ):
++            if timer is not None:
++                timer.stop()
++
++        cleanup_errors: list[RuntimeError] = []
++        scope_preload_worker = getattr(self, "_scope_preload_worker", None)
++        if scope_preload_worker is not None:
++            request_shutdown = getattr(
++                scope_preload_worker,
++                "request_shutdown",
++                None,
++            )
++            if callable(request_shutdown):
++                request_shutdown()
++
++        for thread_name in (
++            "_skyfield_thread",
++            "_catalog_thread",
++            "_scope_catalog_thread",
++            "_scope_index_thread",
++            "_scope_preload_thread",
++        ):
++            thread = getattr(self, thread_name, None)
++            if thread is None or not thread.isRunning():
++                continue
++            thread.requestInterruption()
++            thread.quit()
++            if not thread.wait(15_000):
++                cleanup_errors.append(
++                    RuntimeError(
++                        f"{thread_name} did not stop cooperatively"
++                    )
++                )
++
+         try:
+-            if self._gaia_attach_timer is not None:
+-                self._gaia_attach_timer.stop()
+-        except Exception:
+-            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
+-        try:
+-            if self.star_data_coordinator is not None:
++            self.canvas.shutdown()
++        except RuntimeError as exc:
++            cleanup_errors.append(exc)
++        if self.star_data_coordinator is not None:
++            try:
+                 self.star_data_coordinator.shutdown()
+-        except Exception:
+-            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
++            except RuntimeError as exc:
++                cleanup_errors.append(exc)
+         try:
+             self.terrain_coordinator.shutdown()
+-        except Exception:
+-            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
++        except RuntimeError as exc:
++            cleanup_errors.append(exc)
+         try:
+             self.ephemeris_coordinator.shutdown()
+-        except Exception:
+-            log_suppressed_exception(__name__, "AstronomicalWidget.closeEvent")
+-        return super().closeEvent(event)
++        except RuntimeError as exc:
++            cleanup_errors.append(exc)
++        result = super().closeEvent(event)
++        if cleanup_errors:
++            raise RuntimeError(
++                "One or more TerraLab coordinators failed to shut down"
++            ) from cleanup_errors[0]
++        return result
+ 
+     def update_loop(self):
+         """Advance time, coordinators and rendering exactly once per frame."""
+diff --git a/TerraLab/ui/canvas_mixins/interaction.py b/TerraLab/ui/canvas_mixins/interaction.py
+index 1f91e70..3ec5841 100644
+--- a/TerraLab/ui/canvas_mixins/interaction.py
++++ b/TerraLab/ui/canvas_mixins/interaction.py
+@@ -14,15 +14,11 @@ from TerraLab.common.exception_reporting import log_suppressed_exception
+ from TerraLab.scene.projection import unproject_universal_stereo_point
+ from TerraLab.terrain.data_sources import SurfaceMode
+ from TerraLab.ui.canvas_runtime_helpers import canvas_update_skyfield_cache
+-from TerraLab.ui.widget_init_helpers import astro_canvas_init
+ from TerraLab.widgets.measurement_tools import TOOL_NONE
+ from TerraLab.widgets.telescope_scope_mode import TelescopeScopeController
+ 
+ 
+ class CanvasInteractionMixin:
+-    def __init__(self, parent):
+-        return astro_canvas_init(self, parent)
+-
+     def _parent_checkbox_checked(self, attr_name: str, default: bool = False) -> bool:
+         widget = getattr(self.parent_widget, attr_name, None)
+         if widget is None:
+diff --git a/TerraLab/ui/canvas_selection.py b/TerraLab/ui/canvas_selection.py
+index 6656396..55934c8 100644
+--- a/TerraLab/ui/canvas_selection.py
++++ b/TerraLab/ui/canvas_selection.py
+@@ -112,7 +112,7 @@ class CanvasSelection:
+         c = self._canvas
+         pw = getattr(c, "parent_widget", None)
+ 
+-        # 1) Cataleg actiu del frame actual (injectat per AstroCanvas.render).
++        # 1) Cataleg actiu del frame actual (injectat per render_scene).
+         active_ra_catalog = getattr(c, "_active_catalog_ra", None)
+         active_dec_catalog = getattr(c, "_active_catalog_dec", None)
+         active_mag_catalog = getattr(c, "_active_catalog_mag", None)
+diff --git a/TerraLab/ui/scope_preload_worker.py b/TerraLab/ui/scope_preload_worker.py
+index a986fa2..d6eda77 100644
+--- a/TerraLab/ui/scope_preload_worker.py
++++ b/TerraLab/ui/scope_preload_worker.py
+@@ -103,6 +103,29 @@ class ScopeFullPreloadWorker(QObject):
+     ready = pyqtSignal(object)
+     error = pyqtSignal(str)
+ 
++    def __init__(self, parent: QObject | None = None) -> None:
++        super().__init__(parent)
++        self._shutdown_event = threading.Event()
++        self._process_lock = threading.Lock()
++        self._current_process: subprocess.Popen[str] | None = None
++
++    def request_shutdown(self) -> None:
++        """Thread-safe cancellation of a scope preload and its subprocess."""
++
++        self._shutdown_event.set()
++        with self._process_lock:
++            process = self._current_process
++        if process is None or process.poll() is not None:
++            return
++        try:
++            process.terminate()
++            process.wait(timeout=2.0)
++        except subprocess.TimeoutExpired:
++            process.kill()
++            process.wait(timeout=2.0)
++        except OSError:
++            return
++
+     def _emit_ready_from_cache(self, done_payload: dict[str, Any]) -> None:
+         indices_path = str(done_payload.get("indices_path", "") or "")
+         offsets_path = str(done_payload.get("offsets_path", "") or "")
+@@ -152,6 +175,8 @@ class ScopeFullPreloadWorker(QObject):
+         Retorna:
+         - None.
+         """
++        if self._shutdown_event.is_set():
++            return
+         project_root = Path(__file__).resolve().parents[2]
+         cmd = [
+             sys.executable,
+@@ -185,6 +210,8 @@ class ScopeFullPreloadWorker(QObject):
+         except Exception as exc:
+             self.error.emit(f"Scope preload spawn failed: {exc}")
+             return
++        with self._process_lock:
++            self._current_process = proc
+ 
+         done_payload = None
+         last_error = ""
+@@ -228,6 +255,16 @@ class ScopeFullPreloadWorker(QObject):
+ 
+         return_code = proc.wait()
+         stderr_thread.join(timeout=0.2)
++        with self._process_lock:
++            if self._current_process is proc:
++                self._current_process = None
++        if proc.stdout is not None:
++            proc.stdout.close()
++        if proc.stderr is not None:
++            proc.stderr.close()
++
++        if self._shutdown_event.is_set():
++            return
+ 
+         if return_code != 0:
+             if not last_error:
+@@ -273,6 +310,8 @@ class ScopeFullPreloadWorker(QObject):
+         Retorna:
+         - None.
+         """
++        if self._shutdown_event.is_set():
++            return
+         try:
+             ra_arr = np.asarray(ra_all, dtype=np.float32)
+             dec_arr = np.asarray(dec_all, dtype=np.float32)
+@@ -366,6 +405,8 @@ class ScopeFullPreloadWorker(QObject):
+                 mag_all=mag_arr,
+                 max_mag=max_mag_opt,
+             )
++            if self._shutdown_event.is_set():
++                return
+             if sorted_indices is None or offsets is None:
+                 raise RuntimeError(
+                     "Scope index payload build returned empty result"
+diff --git a/TerraLab/ui/widget_bootstrap_helpers.py b/TerraLab/ui/widget_bootstrap_helpers.py
+index de2011e..e8df87b 100644
+--- a/TerraLab/ui/widget_bootstrap_helpers.py
++++ b/TerraLab/ui/widget_bootstrap_helpers.py
+@@ -6,7 +6,7 @@ import os
+ import time
+ 
+ import numpy as np
+-from PyQt5.QtCore import QThread, QTimer
++from PyQt5.QtCore import QThread
+ 
+ from TerraLab.common.exception_reporting import log_suppressed_exception
+ from TerraLab.common.deprecation_registry import emit_deprecation_warning
+@@ -36,7 +36,7 @@ def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
+         return
+     if stage == 0:
+         widget.build_search_index()
+-        QTimer.singleShot(
++        widget._schedule_lifecycle_callback(
+             0,
+             lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
+                 w, t, 1
+@@ -45,7 +45,7 @@ def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
+         return
+     if stage == 1:
+         widget._apply_scope_preloaded_spatial_index()
+-        QTimer.singleShot(
++        widget._schedule_lifecycle_callback(
+             0,
+             lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
+                 w, t, 2
+@@ -54,7 +54,7 @@ def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
+         return
+     if stage == 2:
+         widget._ensure_scope_catalog_loaded()
+-        QTimer.singleShot(
++        widget._schedule_lifecycle_callback(
+             0,
+             lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
+                 w, t, 3
+@@ -64,7 +64,7 @@ def _run_catalog_ready_pipeline_stage(widget, token: int, stage: int) -> None:
+     if stage == 3:
+         if widget.canvas.scope_mode_enabled():
+             widget._ensure_scope_spatial_index_warmup()
+-        QTimer.singleShot(
++        widget._schedule_lifecycle_callback(
+             0,
+             lambda w=widget, t=token: _run_catalog_ready_pipeline_stage(
+                 w, t, 4
+@@ -298,13 +298,15 @@ def widget_start_async_bootstrap(widget):
+             "[AstroWidget] Star catalog loading deferred until horizon ready."
+         )
+         self._catalog_defer_t0 = time.perf_counter()
+-        QTimer.singleShot(15000, self._try_start_catalog_loader_deferred)
++        self._schedule_lifecycle_callback(
++            15_000, self._try_start_catalog_loader_deferred
++        )
+     # --- Canonical terrain coordinator bootstrap ---
+     terrain_coordinator = self.terrain_coordinator
+     saved_offset = float(get_config_value("observer_offset", 0.0))
+     terrain_coordinator.set_observer_offset(saved_offset)
+     try:
+-        terrain_coordinator.thread.setPriority(QThread.LowPriority)
++        terrain_coordinator.worker_thread.setPriority(QThread.LowPriority)
+     except Exception:
+         log_suppressed_exception(__name__, "widget_start_async_bootstrap")
+ 
+@@ -314,14 +316,14 @@ def widget_start_async_bootstrap(widget):
+         )
+         self._begin_horizon_bake()
+ 
+-    QTimer.singleShot(
++    self._schedule_lifecycle_callback(
+         300,
+         terrain_coordinator.initialize,
+     )
+-    QTimer.singleShot(
++    self._schedule_lifecycle_callback(
+         550, lambda w=self: _queue_initial_automatic_light_pollution(w)
+     )
+-    QTimer.singleShot(900, trigger_bake)
++    self._schedule_lifecycle_callback(900, trigger_bake)
+ 
+ 
+ def widget_on_catalog_ready(
+@@ -495,7 +497,7 @@ def widget_on_catalog_ready(
+     # Run heavy post-ready work in small queued steps to keep UI responsive.
+     next_token = int(getattr(self, "_catalog_ready_pipeline_token", 0)) + 1
+     self._catalog_ready_pipeline_token = next_token
+-    QTimer.singleShot(
++    self._schedule_lifecycle_callback(
+         0,
+         lambda w=self, t=next_token: _run_catalog_ready_pipeline_stage(
+             w, t, 0
+@@ -1215,8 +1217,12 @@ def widget_on_scope_extension_ready(
+         self._cleanup_scope_catalog_loader()
+         if bool(getattr(self, "_scope_preload_pending_activation", False)):
+             if not self.canvas.scope_mode_enabled():
+-                QTimer.singleShot(0, self.activate_scope_mode)
++                self._schedule_lifecycle_callback(
++                    0, self.activate_scope_mode
++                )
+             else:
+                 self._scope_preload_pending_activation = False
+         if self.canvas.scope_mode_enabled():
+-            QTimer.singleShot(0, self._ensure_scope_spatial_index_warmup)
++            self._schedule_lifecycle_callback(
++                0, self._ensure_scope_spatial_index_warmup
++            )
+diff --git a/TerraLab/ui/widget_init_helpers.py b/TerraLab/ui/widget_init_helpers.py
+index 50dafee..5f86168 100644
+--- a/TerraLab/ui/widget_init_helpers.py
++++ b/TerraLab/ui/widget_init_helpers.py
+@@ -117,7 +117,7 @@ def astro_canvas_init(obj, parent):
+     # Threading for Stars
+     self._cached_star_image = None
+     self._cached_trail_image = None
+-    self._thread = QThread()
++    self._thread = QThread(self)
+     self._worker = StarRenderWorker()
+     self._worker.moveToThread(self._thread)
+     self._worker.result_ready.connect(self._on_star_result)
+@@ -125,6 +125,7 @@ def astro_canvas_init(obj, parent):
+     self.request_render_signal.connect(self._worker.render)
+     self.request_trails_signal.connect(self._worker.render_trails)
+     self._thread.start()
++    self._render_thread_shutdown = False
+     self.rendering_busy = False
+     self.trail_rendering_busy = False
+     # Info Label for Selection
+@@ -197,6 +198,8 @@ def astro_canvas_init(obj, parent):
+ 
+ def astronomical_widget_init(obj, parent=None, **kwargs):
+     self = obj
++    self._closing = False
++    self._lifecycle_timers = set()
+     # 1. Initialize properties required by UI/Canvas
+     self.asset_manager = AssetManager()
+     from TerraLab.data.layer_manager import LayerManager
+@@ -204,6 +207,7 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
+     self.runtime_layout = dict(getattr(self.asset_manager, "layout", {}))
+     self.latitude = float(get_config_value("observer_lat", 41.189795))
+     self.longitude = float(get_config_value("observer_lon", 1.210058))
++    self._observer_offset = float(get_config_value("observer_offset", 0.0))
+     self.observer_timezone = str(get_config_value("observer_timezone", "") or "").strip()
+     # Catalog threshold used in magnitude mode.
+     legacy_magnitude_limit = get_config_value("manual_eye_limit_mag", 8.0)
+@@ -450,10 +454,16 @@ def astronomical_widget_init(obj, parent=None, **kwargs):
+     self._pending_terrain_depth_km = None
+     self._pending_terrain_ray_step_deg = None
+     self._last_horizon_progress_text = ""
+-    QTimer.singleShot(0, lambda: self._set_scene_load_stage("base_sky"))
+-    QTimer.singleShot(200, self._start_async_bootstrap)
+-    QTimer.singleShot(0, self._maybe_run_first_time_onboarding)
+-    QTimer.singleShot(1500, self._maybe_resume_pending_gaia_download)
++    self._schedule_lifecycle_callback(
++        0, lambda: self._set_scene_load_stage("base_sky")
++    )
++    self._schedule_lifecycle_callback(200, self._start_async_bootstrap)
++    self._schedule_lifecycle_callback(
++        0, self._maybe_run_first_time_onboarding
++    )
++    self._schedule_lifecycle_callback(
++        1500, self._maybe_resume_pending_gaia_download
++    )
+ 
+ 
+ 
+diff --git a/TerraLab/ui/widget_mixins/bootstrap_terrain.py b/TerraLab/ui/widget_mixins/bootstrap_terrain.py
+index 8411ae3..104b15b 100644
+--- a/TerraLab/ui/widget_mixins/bootstrap_terrain.py
++++ b/TerraLab/ui/widget_mixins/bootstrap_terrain.py
+@@ -7,7 +7,7 @@ import time
+ from pathlib import Path
+ from typing import Optional
+ 
+-from PyQt5.QtCore import QThread, QTimer, Qt
++from PyQt5.QtCore import QThread, Qt
+ from PyQt5.QtWidgets import QCheckBox, QDialog, QFrame, QLabel, QVBoxLayout
+ 
+ from TerraLab.common.exception_reporting import log_suppressed_exception
+@@ -19,7 +19,6 @@ from TerraLab.ui.widget_bootstrap_helpers import (
+     widget_start_async_bootstrap,
+     widget_start_scope_full_preload_async,
+ )
+-from TerraLab.ui.widget_init_helpers import astronomical_widget_init
+ from TerraLab.ui.widget_misc_helpers import (
+     widget_apply_scope_preloaded_spatial_index,
+     widget_maybe_resume_pending_gaia_download,
+@@ -30,9 +29,6 @@ from TerraLab.ui.workers.catalog_loader import CatalogLoaderWorker
+ 
+ 
+ class WidgetBootstrapTerrainMixin:
+-    def __init__(self, parent=None, **kwargs):
+-        return astronomical_widget_init(self, parent, **kwargs)
+-
+     def _set_scene_load_stage(self, stage: str):
+         valid = {"boot", "base_sky", "stars_ready", "horizon_preview", "scene_ready"}
+         if stage not in valid:
+@@ -225,7 +221,9 @@ class WidgetBootstrapTerrainMixin:
+         if getattr(self, "_deferred_controls_build_scheduled", False):
+             return
+         self._deferred_controls_build_scheduled = True
+-        QTimer.singleShot(60, self._build_deferred_controls_ui)
++        self._schedule_lifecycle_callback(
++            60, self._build_deferred_controls_ui
++        )
+ 
+     def _on_canvas_first_useful_paint(self):
+         self._hide_startup_placeholder()
+@@ -376,7 +374,7 @@ class WidgetBootstrapTerrainMixin:
+         target = self._missing_layer_target(layer_id)
+         if target is None:
+             return False
+-        QTimer.singleShot(
++        self._schedule_lifecycle_callback(
+             0,
+             lambda target_layer=target: self.open_data_layers_dialog(
+                 focus_layer_id=target_layer
+@@ -490,7 +488,9 @@ class WidgetBootstrapTerrainMixin:
+         if elapsed >= 300.0:
+             self._start_catalog_loader_async(reason="defer_hard_timeout")
+             return
+-        QTimer.singleShot(15000, self._try_start_catalog_loader_deferred)
++        self._schedule_lifecycle_callback(
++            15_000, self._try_start_catalog_loader_deferred
++        )
+ 
+     def _build_horizon_bake_job(self) -> dict:
+         from TerraLab.common.utils import get_config_value
+diff --git a/pyproject.toml b/pyproject.toml
+index 43488e1..f20eecf 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,5 +1,5 @@
+ [build-system]
+-requires = ["setuptools>=61.0.0", "wheel"]
++requires = ["setuptools>=77.0.0", "wheel"]
+ build-backend = "setuptools.build_meta"
+ 
+ [project]
+@@ -10,14 +10,14 @@ readme = "README.md"
+ authors = [
+     { name = "TerraLab Contributors" }
+ ]
+-license = { file = "LICENSE" }
++license = "MIT"
++license-files = ["LICENSE"]
+ requires-python = ">=3.10,<3.14"
+ keywords = ["astronomy", "gis", "dem", "pyqt", "light-pollution"]
+ classifiers = [
+     "Development Status :: 3 - Alpha",
+     "Environment :: X11 Applications :: Qt",
+     "Intended Audience :: Science/Research",
+-    "License :: OSI Approved :: MIT License",
+     "Operating System :: Microsoft :: Windows",
+     "Programming Language :: Python :: 3",
+     "Programming Language :: Python :: 3.10",
+@@ -57,10 +57,11 @@ dev = [
+     "pytest>=8,<9",
+     "pytest-cov>=5,<7",
+     "coverage>=7,<8",
+-    "ruff>=0.6,<1",
++    "ruff==0.13.2",
+     "vulture>=2.11,<3",
+     "pyright>=1.1.380,<2",
+     "import-linter>=2.1,<3",
++    "build==1.5.0",
+ ]
+ geo = [
+     "xarray>=2024.1,<2026",
+@@ -99,9 +100,12 @@ where = ["."]
+ include = ["TerraLab*"]
+ exclude = ["tests*", "proves*", "gaia_stars*", "dist*", "build*"]
+ 
++[tool.setuptools]
++include-package-data = false
++
+ [tool.setuptools.package-data]
+ TerraLab = [
+-    "data/*.json",
++    "data/translations.json",
+     "data/stars/*.json",
+     "terrain/land_cover/legends/*.txt",
+ ]
+diff --git a/tests/test_data_layers_ui_contract.py b/tests/test_data_layers_ui_contract.py
+index c7cd926..3ee3fac 100644
+--- a/tests/test_data_layers_ui_contract.py
++++ b/tests/test_data_layers_ui_contract.py
+@@ -26,6 +26,10 @@ class _LayerGuideHarness:
+     _missing_layer_target = AstronomicalWidget._missing_layer_target
+     _guide_missing_layer = AstronomicalWidget._guide_missing_layer
+ 
++    @staticmethod
++    def _schedule_lifecycle_callback(_delay, callback):
++        callback()
++
+ 
+ class _LayerStatusManager:
+     def __init__(self, states):
+@@ -42,18 +46,13 @@ def test_data_layers_dialog_uses_dark_theme_for_native_qt_surfaces():
+     assert "background-color: #0d1a30" in _DATA_LAYERS_STYLE
+ 
+ 
+-def test_user_click_on_missing_layer_opens_focused_library(monkeypatch):
++def test_user_click_on_missing_layer_opens_focused_library():
+     opened = []
+     widget = _LayerGuideHarness()
+     widget.layer_manager = _LayerStatusManager(
+         {LayerId.SKY_MILKY_WAY: LayerState.MISSING}
+     )
+     widget.open_data_layers_dialog = lambda **kwargs: opened.append(kwargs)
+-    monkeypatch.setattr(
+-        "TerraLab.ui.widget_mixins.bootstrap_terrain.QTimer.singleShot",
+-        lambda _delay, callback: callback(),
+-    )
+-
+     guided = widget._guide_missing_layer(True, LayerId.SKY_MILKY_WAY)
+ 
+     assert guided is True
+diff --git a/tests/test_worker_data_sources.py b/tests/test_worker_data_sources.py
+index 9382935..52690a8 100644
+--- a/tests/test_worker_data_sources.py
++++ b/tests/test_worker_data_sources.py
+@@ -1,4 +1,6 @@
+ from pathlib import Path
++import subprocess
++import sys
+ import threading
+ import time
+ from types import SimpleNamespace
+@@ -204,7 +206,168 @@ def test_terrain_coordinator_shutdown_never_leaves_worker_thread_running():
+     coordinator.shutdown()
+     coordinator.shutdown()
+ 
+-    assert coordinator.thread.isRunning() is False
++    assert coordinator.worker_thread.isRunning() is False
++
++
++def test_terrain_coordinator_shutdown_does_not_use_qthread_terminate():
++    import inspect
++
++    source = inspect.getsource(TerrainCoordinator.shutdown)
++
++    assert ".terminate(" not in source
++
++
++def test_terrain_coordinator_closes_during_bake_and_reaps_subprocess(
++    monkeypatch,
++):
++    app = QCoreApplication.instance() or QCoreApplication([])
++    entered = threading.Event()
++    process_holder = []
++
++    def blocking_bake(worker, _job):
++        process = subprocess.Popen(
++            [sys.executable, "-c", "import time; time.sleep(60)"]
++        )
++        process_holder.append(process)
++        with worker._process_lock:
++            worker._current_process = process
++            worker._current_job_id = "shutdown-test"
++        entered.set()
++        try:
++            process.wait()
++        finally:
++            with worker._process_lock:
++                worker._current_process = None
++                worker._current_job_id = None
++
++    monkeypatch.setattr(HorizonWorker, "request_bake", blocking_bake)
++    coordinator = TerrainCoordinator()
++    try:
++        coordinator.request_bake({"job_id": "shutdown-test"})
++        deadline = time.monotonic() + 5.0
++        while not entered.is_set() and time.monotonic() < deadline:
++            app.processEvents()
++            time.sleep(0.005)
++        assert entered.is_set()
++
++        coordinator.shutdown()
++
++        assert not coordinator.worker_thread.isRunning()
++        assert process_holder[0].poll() is not None
++    finally:
++        for process in process_holder:
++            if process.poll() is None:
++                process.kill()
++                process.wait(timeout=5)
++        coordinator.shutdown()
++
++
++def test_terrain_coordinator_closes_during_surface_sampling(monkeypatch):
++    app = QCoreApplication.instance() or QCoreApplication([])
++    entered = threading.Event()
++    exited = threading.Event()
++
++    def blocking_surface_refresh(worker, payload):
++        generation = int(payload["generation"])
++        entered.set()
++        while not worker._surface_request_cancelled(generation):
++            time.sleep(0.005)
++        exited.set()
++
++    monkeypatch.setattr(
++        HorizonWorker,
++        "request_surface_refresh",
++        blocking_surface_refresh,
++    )
++    coordinator = TerrainCoordinator()
++    try:
++        coordinator.request_surface_refresh(object())
++        deadline = time.monotonic() + 2.0
++        while not entered.is_set() and time.monotonic() < deadline:
++            app.processEvents()
++            time.sleep(0.005)
++        assert entered.is_set()
++
++        coordinator.shutdown()
++
++        assert exited.is_set()
++        assert not coordinator.worker_thread.isRunning()
++    finally:
++        coordinator.shutdown()
++
++
++def test_terrain_coordinator_closes_geotiff_resource_after_cancelled_read(
++    monkeypatch,
++):
++    app = QCoreApplication.instance() or QCoreApplication([])
++    entered = threading.Event()
++
++    class FakeGeoTiffService:
++        def __init__(self):
++            self.closed = False
++
++        def close(self):
++            self.closed = True
++
++    service = FakeGeoTiffService()
++
++    def blocking_geotiff_read(worker, payload):
++        worker._surface_service = service
++        generation = int(payload["generation"])
++        entered.set()
++        while not worker._surface_request_cancelled(generation):
++            time.sleep(0.005)
++
++    monkeypatch.setattr(
++        HorizonWorker,
++        "request_surface_refresh",
++        blocking_geotiff_read,
++    )
++    coordinator = TerrainCoordinator()
++    try:
++        coordinator.request_surface_refresh(object())
++        deadline = time.monotonic() + 2.0
++        while not entered.is_set() and time.monotonic() < deadline:
++            app.processEvents()
++            time.sleep(0.005)
++        assert entered.is_set()
++
++        coordinator.shutdown()
++
++        assert service.closed is True
++        assert not coordinator.worker_thread.isRunning()
++    finally:
++        coordinator.shutdown()
++
++
++def test_bare_elevation_query_runs_in_worker_thread(monkeypatch):
++    app = QCoreApplication.instance() or QCoreApplication([])
++    execution_threads = []
++    ready = threading.Event()
++
++    def elevation(worker, _lat, _lon):
++        execution_threads.append(threading.get_ident())
++        return 123.5
++
++    monkeypatch.setattr(HorizonWorker, "get_bare_elevation", elevation)
++    coordinator = TerrainCoordinator()
++    coordinator.bare_elevation_ready.connect(
++        lambda *_args: ready.set()
++    )
++    try:
++        gui_thread = threading.get_ident()
++        assert coordinator.get_bare_elevation(41.4, 2.1) is None
++        deadline = time.monotonic() + 2.0
++        while not ready.is_set() and time.monotonic() < deadline:
++            app.processEvents()
++            time.sleep(0.005)
++
++        assert ready.is_set()
++        assert coordinator.get_bare_elevation(41.4, 2.1) == 123.5
++        assert execution_threads == [execution_threads[0]]
++        assert execution_threads[0] != gui_thread
++    finally:
++        coordinator.shutdown()
+ 
+ 
+ def test_terrain_coordinator_never_runs_surface_refresh_on_gui_thread(monkeypatch):
+@@ -286,6 +449,7 @@ def test_terrain_coordinator_runs_pending_surface_refresh_when_profile_arrives(
+ 
+ 
+ def test_terrain_coordinator_can_cancel_pending_surface_refresh(monkeypatch):
++    _app = QCoreApplication.instance() or QCoreApplication([])
+     received = []
+ 
+     monkeypatch.setattr(

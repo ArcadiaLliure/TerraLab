@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Scripts\python.exe -m pytest -q tests/test_data_layers_ui_contract.py::test_disabling_surface_layer_hides_material_and_does_not_start_sampling tests/test_astro_rendering.py::test_terrain_3d_toggle_switches_between_mesh_and_all_distance_silhouettes tests/test_astro_rendering.py::test_profile_mode_paints_sampled_surface_material tests/test_surface_mode_switch.py::test_standard_tooltip_event_shows_cached_categorical_description tests/test_surface_mode_switch.py::test_mouse_move_shows_categorical_tooltip_without_waiting_for_qt_delay tests/test_terrain_surface_render.py::test_profile_category_hit_uses_top_visible_polygon_and_nearest_sample
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4
+python=Python 3.13.7
+started=2026-07-26T01:40:05.0425601+02:00
+finished=2026-07-26T01:40:07.1024098+02:00
+duration_seconds=2.059
+exit_code=0

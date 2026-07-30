@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Scripts\python.exe -m pytest -q --durations=0 tests/test_worker_data_sources.py::test_terrain_coordinator_shutdown_never_leaves_worker_thread_running tests/test_worker_data_sources.py::test_terrain_coordinator_shutdown_does_not_use_qthread_terminate tests/test_worker_data_sources.py::test_terrain_coordinator_closes_during_bake_and_reaps_subprocess tests/test_worker_data_sources.py::test_terrain_coordinator_closes_during_surface_sampling tests/test_worker_data_sources.py::test_terrain_coordinator_closes_geotiff_resource_after_cancelled_read tests/test_bake_process_atomic_save.py::test_preview_snapshots_use_immutable_unique_paths tests/test_surface_lod_cache.py::test_atomic_npz_store_can_defer_tile_durability_and_prune_to_one_batch tests/test_qt_lifecycle.py::test_astronomical_widget_can_close_and_rebuild_offscreen
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4
+python=Python 3.13.7
+started=2026-07-26T01:41:14.9551968+02:00
+finished=2026-07-26T01:41:20.3671940+02:00
+duration_seconds=5.411
+exit_code=0

@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "captured_utc": "2026-07-24T21:45:28.798519+00:00",
+  "machine": {
+    "platform": "Windows-11-10.0.26200-SP0",
+    "python": "3.13.7",
+    "logical_cpu": 12,
+    "performance_budget_bytes": 6442450944
+  },
+  "terrain": [
+    {
+      "step_m": 30.0,
+      "d_max_m": 150000.0,
+      "delta_az_deg": 0.5,
+      "azimuths": 720,
+      "polar_samples": 264240,
+      "elapsed_s": 0.236622,
+      "python_peak_bytes": 9175776,
+      "rss_before_bytes": 99729408,
+      "rss_after_bytes": 113012736,
+      "rss_peak_bytes": 118120448
+    },
+    {
+      "step_m": 5.0,
+      "d_max_m": 150000.0,
+      "delta_az_deg": 0.5,
+      "azimuths": 720,
+      "polar_samples": 264240,
+      "elapsed_s": 0.449594,
+      "python_peak_bytes": 25198680,
+      "rss_before_bytes": 111951872,
+      "rss_after_bytes": 112742400,
+      "rss_peak_bytes": 135892992
+    },
+    {
+      "step_m": 1.0,
+      "d_max_m": 150000.0,
+      "delta_az_deg": 0.5,
+      "azimuths": 720,
+      "polar_samples": 264240,
+      "elapsed_s": 1.454046,
+      "python_peak_bytes": 60001011,
+      "rss_before_bytes": 111681536,
+      "rss_after_bytes": 114229248,
+      "rss_peak_bytes": 172544000
+    }
+  ],
+  "star_stream": [
+    {
+      "rows": 62000,
+      "selected": 5168,
+      "elapsed_s": 0.011091,
+      "rows_per_second": 5590269.3,
+      "python_peak_bytes": 1240416,
+      "rss_before_bytes": 113197056,
+      "rss_after_bytes": 114130944,
+      "rss_peak_bytes": 172544000,
+      "chunk_rows": 1000000
+    },
+    {
+      "rows": 1000000,
+      "selected": 83043,
+      "elapsed_s": 0.017653,
+      "rows_per_second": 56646953.5,
+      "python_peak_bytes": 20000384,
+      "rss_before_bytes": 114130944,
+      "rss_after_bytes": 128139264,
+      "rss_peak_bytes": 172544000,
+      "chunk_rows": 1000000
+    },
+    {
+      "rows": 43600000,
+      "selected": 3634601,
+      "elapsed_s": 0.888169,
+      "rows_per_second": 49089745.5,
+      "python_peak_bytes": 24000588,
+      "rss_before_bytes": 116133888,
+      "rss_after_bytes": 121769984,
+      "rss_peak_bytes": 172544000,
+      "chunk_rows": 1000000
+    },
+    {
+      "rows": 157700000,
+      "selected": 13141583,
+      "elapsed_s": 3.267341,
+      "rows_per_second": 48265542.4,
+      "python_peak_bytes": 24000588,
+      "rss_before_bytes": 114569216,
+      "rss_after_bytes": 121970688,
+      "rss_peak_bytes": 172544000,
+      "chunk_rows": 1000000
+    }
+  ]
+}

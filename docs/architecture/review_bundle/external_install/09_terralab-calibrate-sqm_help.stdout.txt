@@ -1,0 +1,10 @@
+usage: terralab-calibrate-sqm [-h] csv output
+
+Calibrate DVNL to SQM.
+
+positional arguments:
+  csv
+  output
+
+options:
+  -h, --help  show this help message and exit

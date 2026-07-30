@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-wheel-final-98204d4\Scripts\terralab-query-elevation.exe --help
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-wheel-smoke-empty
+python=Python 3.13.7
+started=2026-07-26T01:58:30.0518125+02:00
+finished=2026-07-26T01:58:31.3438318+02:00
+duration_seconds=1.291
+exit_code=0

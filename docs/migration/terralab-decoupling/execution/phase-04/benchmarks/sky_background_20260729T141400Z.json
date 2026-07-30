@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "repeats": 1000,
+  "viewport": {
+    "width": 320,
+    "height": 180,
+    "device_pixel_ratio": 1.0
+  },
+  "idle": {
+    "planner_ms": {
+      "p50": 0.003,
+      "p95": 0.0031,
+      "min": 0.0029,
+      "max": 0.026
+    },
+    "adapter_ms": {
+      "p50": 0.0635,
+      "p95": 0.07192,
+      "min": 0.0619,
+      "max": 0.1648
+    },
+    "scene_pipeline_ms": {
+      "p50": 0.0679,
+      "p95": 0.07301,
+      "min": 0.0665,
+      "max": 26.9108
+    },
+    "legacy_pipeline_ms": {
+      "p50": 0.0645,
+      "p95": 0.11,
+      "min": 0.0632,
+      "max": 27.9845
+    },
+    "scene_vs_legacy_p50_percent": 5.271,
+    "sample_buffer_bytes": 9216,
+    "full_frame_bytes": 230400,
+    "planner_cache_hits": 1000,
+    "planner_cache_misses": 1,
+    "adapter_cache_hits": 1000,
+    "adapter_cache_misses": 1
+  },
+  "interaction": {
+    "planner_ms": {
+      "p50": 0.003,
+      "p95": 0.0037,
+      "min": 0.0028,
+      "max": 0.0419
+    },
+    "adapter_ms": {
+      "p50": 0.0641,
+      "p95": 0.079805,
+      "min": 0.0626,
+      "max": 0.1177
+    },
+    "scene_pipeline_ms": {
+      "p50": 0.0686,
+      "p95": 0.078705,
+      "min": 0.0677,
+      "max": 1.3755
+    },
+    "legacy_pipeline_ms": {
+      "p50": 0.0655,
+      "p95": 0.069705,
+      "min": 0.0645,
+      "max": 1.4968
+    },
+    "scene_vs_legacy_p50_percent": 4.733,
+    "sample_buffer_bytes": 400,
+    "full_frame_bytes": 230400,
+    "planner_cache_hits": 1000,
+    "planner_cache_misses": 1,
+    "adapter_cache_hits": 1000,
+    "adapter_cache_misses": 1
+  }
+}

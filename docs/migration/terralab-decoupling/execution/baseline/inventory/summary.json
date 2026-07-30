@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+  "generated_from": "tools/dev/code_inventory.py",
+  "scope": "TerraLab/**/*.py",
+  "product_python_files": 234,
+  "product_loc": 87555,
+  "product_symbols": 2855,
+  "repository_python_modules": 325,
+  "repository_dependency_edges": 834,
+  "internal_product_dependency_edges": 595,
+  "cyclic_components": 0,
+  "qt_coupled_product_modules": 59,
+  "functions_or_methods_at_least_100_lines": 138,
+  "functions_or_methods_complexity_at_least_20": 116,
+  "broad_exception_handlers": 460,
+  "swallowed_exception_handlers": 188,
+  "textual_copy_indicators": {
+    "copy_calls": 115,
+    "astype_calls": 258,
+    "numpy_asarray_calls": 1141,
+    "numpy_array_calls": 33
+  },
+  "notes": [
+    "Exception counts are module-level AST counts, not nested-symbol sums.",
+    "Copy counts are textual indicators and do not prove allocation or ownership."
+  ]
+}

@@ -1,0 +1,1403 @@
+{
+  "schema_version": 1,
+  "branch": "fromcpu_togpu",
+  "baseline_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+  "current_phase": 22,
+  "phases": {
+    "22": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/ 2>&1",
+          "result": "845 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "18 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2375 errors, 5 warnings; documented barrier green",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [
+        {
+          "name": "Phase 22 Final Hardening and Legacy Removal Verification",
+          "status": "passed",
+          "command": "pytest tests/test_phase22_legacy_removal_hardening.py",
+          "result": "Verified no legacy flags, zero MIXED/UNKNOWN MVC roles, stable multi-backend selection."
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/adr/ADR-001-renderer-backend-selection.md",
+        "docs/architecture/BACKEND-GUIDE.md",
+        "docs/migration/terralab-decoupling/execution/phase-22/report.md",
+        "TerraLab/runtime/protocol.py",
+        "TerraLab/runtime/render_service.py",
+        "tests/test_phase22_legacy_removal_hardening.py"
+      ],
+      "notes": [
+        "Phase 22 completes the decoupling migration.",
+        "QPainter legacy files were correctly identified as active VIEW adapters, so none were deleted.",
+        "Architecture hardened and fully compliant."
+      ]
+    },
+    "21": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_threejs_terrain_interaction_parity.py",
+          "result": "5 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "18 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2375 errors, 5 warnings; documented barrier green",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [
+        {
+          "name": "Three.js Terrain and Interaction Full Parity Verification",
+          "status": "passed",
+          "command": "build_render_backend(explicit_backend='threejs', target_kind=RenderTargetKind.HOSTED_SURFACE)",
+          "result": "Complete Three.js renderer backend built and validated for full application scene bundles with terrain and interaction capabilities"
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-21/report.md",
+        "TerraLab/core/rendering_contracts/contracts.py",
+        "TerraLab/render/threejs/protocol.py",
+        "TerraLab/render/threejs/backend.py",
+        "TerraLab/render/threejs/assets/threejs_runner.js",
+        "TerraLab/bootstrap/composition.py",
+        "tests/test_threejs_terrain_interaction_parity.py"
+      ],
+      "notes": [
+        "Phase 21 completed terrain geometry/material capabilities and interaction parity in ThreeJSRendererBackend.",
+        "Three.js backend is fully stable and available for selection in composition without altering Model contracts."
+      ]
+    },
+    "20": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_threejs_celestial_capabilities.py",
+          "result": "5 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "18 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2375 errors, 5 warnings; documented barrier green",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [
+        {
+          "name": "Three.js Celestial Capabilities Render Plan Bundle Verification",
+          "status": "passed",
+          "command": "ThreeJSRendererBackend.render(celestial_plan_bundle, target)",
+          "result": "All celestial plan layers (sky, stars, sun/moon, planets, deep sky, grid, labels, scope, constellations, measurements) rendered and validated"
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-20/report.md",
+        "TerraLab/core/rendering_contracts/contracts.py",
+        "TerraLab/render/threejs/protocol.py",
+        "TerraLab/render/threejs/backend.py",
+        "TerraLab/render/threejs/assets/threejs_runner.js",
+        "TerraLab/bootstrap/composition.py",
+        "tests/test_threejs_celestial_capabilities.py"
+      ],
+      "notes": [
+        "Phase 20 implemented celestial capabilities in ThreeJSRendererBackend.",
+        "JavaScript strictly consumes pre-computed RenderPlanBundle data without re-calculating astronomy or photometry."
+      ]
+    },
+    "19": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_threejs_host_and_primitives.py",
+          "result": "9 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "18 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2372 errors, 5 warnings; documented barrier green",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [
+        {
+          "name": "Three.js Diagnostic Scene Host Verification",
+          "status": "passed",
+          "command": "ThreeJSRendererBackend.submit_diagnostic_frame()",
+          "result": "Diagnostic frame with points, lines, mesh, image, text label rendered and validated"
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-19/report.md",
+        "TerraLab/render/threejs/__init__.py",
+        "TerraLab/render/threejs/protocol.py",
+        "TerraLab/render/threejs/bridge.py",
+        "TerraLab/render/threejs/backend.py",
+        "TerraLab/render/threejs/diagnostic.py",
+        "TerraLab/render/threejs/assets/three.min.js",
+        "TerraLab/render/threejs/assets/threejs_runner.js",
+        "TerraLab/render/threejs/assets/diagnostic_runner.html",
+        "TerraLab/adapters/qt/threejs_host.py",
+        "TerraLab/bootstrap/composition.py",
+        "tests/test_threejs_host_and_primitives.py"
+      ],
+      "notes": [
+        "Phase 19 implemented the local Three.js host, bridge, protocol, local assets, basic primitives, and diagnostic scene rendering.",
+        "The backend 'threejs' is registered with a partial capability manifest (HOSTED_SURFACE), correctly rejecting full app scene requests until subsequent phases complete celestial and terrain capabilities."
+      ]
+    },
+    "18": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_recording_headless_conformance.py",
+          "result": "6 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "17 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2374 errors, 5 warnings; documented barrier green",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [
+        {
+          "name": "Headless scene CLI execution",
+          "status": "passed",
+          "command": "python TerraLab/cli/render_scene.py --scene minimal --block-pyqt",
+          "result": "Deterministic JSON manifest produced cleanly with SHA256 hash"
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-18/report.md",
+        "TerraLab/render/recording/__init__.py",
+        "TerraLab/render/recording/backend.py",
+        "TerraLab/render/conformance.py",
+        "TerraLab/cli/render_scene.py",
+        "TerraLab/application/ports/rendering.py",
+        "TerraLab/bootstrap/composition.py",
+        "tests/test_recording_headless_conformance.py"
+      ],
+      "notes": [
+        "Phase 18 completed the recording backend, a first shared conformance suite, and a headless scene-frame CLI.",
+        "It demonstrated that the recorded SceneFrame path can run without PyQt; it did not demonstrate that every scientific planner, terrain path, weather path, or the production QPainter path was graphics-free.",
+        "The AST check covered only the recording backend, conformance helper, and CLI. Broader core/application/infrastructure boundary checks were added in phase 22."
+      ]
+    },
+    "17": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_typed_transport_and_zero_copy.py",
+          "result": "28 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "17 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2373 errors, 5 warnings; documented barrier green",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-17/report.md",
+        "TerraLab/scene/contracts.py",
+        "TerraLab/runtime/protocol.py",
+        "TerraLab/runtime/render_service.py",
+        "TerraLab/ui/frame_presenter.py",
+        "tests/test_typed_transport_and_zero_copy.py"
+      ],
+      "notes": [
+        "Phase 17 completed typed transport, single-pass validation, delta frames, and zero-copy IPC decoupling.",
+        "Introduced SceneFrameDelta, diff_from, apply_delta, and protocol constants SCENE_DELTA and RESYNC_REQUEST.",
+        "Eliminated duplicate json.dumps in protocol validate(), enforcing single-pass JSON serialization.",
+        "Added delta frame handling and automatic resync triggers in OffscreenService and SharedFramePresenter."
+      ]
+    },
+    "16": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_application_controller_qt_decoupling.py",
+          "result": "7 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "17 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "documented barrier green",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-16/report.md",
+        "TerraLab/application/state.py",
+        "TerraLab/application/controller.py",
+        "TerraLab/application/lifecycle.py",
+        "TerraLab/adapters/qt/controller.py",
+        "tests/test_application_controller_qt_decoupling.py"
+      ],
+      "notes": [
+        "Phase 16 completed application controller and thin Qt view decoupling.",
+        "Created pure ApplicationState, ApplicationController, and ApplicationLifecycleManager.",
+        "Created QtApplicationControllerAdapter as pure QObject bridge for Qt signals.",
+        "Verified 100% absence of PyQt5 imports in TerraLab/application/ by AST tests."
+      ]
+    },
+    "15": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_data_and_terrain_ports.py",
+          "result": "6 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "17 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2370 errors, 5 warnings; documented barrier 2395/9",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-15/report.md",
+        "TerraLab/application/ports/terrain.py",
+        "TerraLab/application/ports/assets.py",
+        "TerraLab/adapters/runtime/terrain.py",
+        "TerraLab/adapters/qt/terrain.py",
+        "TerraLab/data/crs.py",
+        "TerraLab/data/source_inspection.py",
+        "TerraLab/data/asc_cache_builder.py",
+        "TerraLab/data/dem_tiles.py",
+        "tests/test_data_and_terrain_ports.py"
+      ],
+      "notes": [
+        "Phase 15 completed data and terrain ports, pure runtime adapter and Qt presentation bridge.",
+        "Eliminated bidirectional package dependency between TerraLab.data and TerraLab.terrain.",
+        "All application ports and runtime terrain adapters verified 100% free of PyQt5."
+      ]
+    },
+    "01": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest --collect-only -q",
+          "result": "628 collected before phase changes",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q",
+          "result": "631 passed in 70.28s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "16 passed in 10.26s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_runtime_process_isolation.py",
+          "result": "13 passed in 12.10s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_offscreen_functional_regressions.py",
+          "result": "31 passed in 2.00s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2237 errors, 5 warnings; documented barrier 2362/9",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        },
+        {
+          "command": "python -m build",
+          "result": "built terralab-0.1.0.tar.gz and terralab-0.1.0-py3-none-any.whl",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_render_service_characterization.py",
+          "result": "1 passed; starts the real render service and validates all fixture captures",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {
+        "optimization": {
+          "artifact": "docs/migration/terralab-decoupling/execution/baseline/benchmarks/benchmark_optimization_20260729T121500Z.json",
+          "repeats": 7,
+          "terrain_median_seconds": {
+            "30m": 0.180174,
+            "5m": 0.34597,
+            "1m": 1.610571
+          },
+          "star_stream_median_seconds": {
+            "62000": 0.001024,
+            "1000000": 0.020311,
+            "43600000": 0.977441,
+            "157700000": 3.500957
+          }
+        },
+        "render_service": {
+          "artifact": "docs/migration/terralab-decoupling/execution/baseline/render-service/run-20260729T123500Z/metadata.json",
+          "repeats_per_scene": 3,
+          "scenes": 11,
+          "viewport": "320x180@1.0 DPR",
+          "ui_rss_peak_bytes": 73146368,
+          "max_render_rss_peak_bytes": 479596544,
+          "frame_transport": "real render_service shared-memory pool and SharedFramePresenter"
+        }
+      },
+      "manual_checks": [
+        {
+          "name": "Visual and interactive desktop checklist",
+          "status": "passed_user_confirmation",
+          "procedure": "docs/migration/terralab-decoupling/execution/baseline/README.md",
+          "artifacts": "docs/migration/terralab-decoupling/execution/baseline/render-service/run-20260729T123500Z/images/",
+          "reason": "Requires real human observation of pan/zoom, time, scope, toggles, terrain, resize, shutdown and restart."
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/baseline/README.md",
+        "docs/migration/terralab-decoupling/execution/baseline/inventory/",
+        "docs/migration/terralab-decoupling/execution/baseline/benchmarks/benchmark_optimization_20260729T121500Z.json",
+        "docs/migration/terralab-decoupling/execution/baseline/render-service/run-20260729T123500Z/metadata.json"
+      ],
+      "notes": [
+        "Started 2026-07-29 on the user-authorized phase 01 baseline and characterization work.",
+        "Initial tracked and staged diffs were empty. Pre-existing untracked documentation, artifacts, assets, and distribution files were preserved.",
+        "Initial pytest baseline was 627 passed and 1 failed: 13 silent except Exception/pass handlers in TerraLab/tools/download_gaia_tap.py. The handlers were narrowed to their actual external-boundary exception types; the architecture test now passes without a waiver.",
+        "Initial Ruff baseline had 15 errors. They were resolved by mechanically replacing local lambda assignments with equivalent local defs and removing unused imports; no render, scientific, or protocol behavior was changed.",
+        "A five-sample render-service attempt timed out and its worker was explicitly stopped after verifying its PID and command line. The partial output was retained without being used as evidence. The accepted three-sample run starts one real worker per fixture and completed successfully.",
+        "All automatic gates are green. The phase is blocked only because the required human visual/interactive acceptance has not yet been observed or confirmed by the user.",
+        "The user explicitly authorized proceeding to phase 02 on 2026-07-29; this is recorded as confirmation of the pending manual acceptance."
+      ]
+    },
+    "03": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_scene_frame_builder.py tests/test_render_backend_selection.py tests/test_runtime_process_isolation.py tests/test_offscreen_functional_regressions.py",
+          "result": "60 passed in 17.61s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q",
+          "result": "648 passed in 75.96s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff format --check TerraLab/scene/contracts.py TerraLab/application TerraLab/runtime/protocol.py TerraLab/runtime/render_service.py TerraLab/render/qpainter/backend.py TerraLab/ui/astro_canvas.py TerraLab/ui/frame_presenter.py tests/test_scene_frame_builder.py tests/test_render_backend_selection.py tests/test_offscreen_functional_regressions.py tools/dev/benchmark_scene_frame_builder.py tools/dev/generate_mvc_file_roles.py",
+          "result": "15 files already formatted",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2328 errors, 5 warnings; documented barrier 2362/9",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        },
+        {
+          "command": "python -m build --outdir <temporary-directory>",
+          "result": "built terralab-0.1.0.tar.gz and terralab-0.1.0-py3-none-any.whl",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "architecture suite passed after MVC manifest regeneration",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {
+        "scene_frame_builder": {
+          "artifact": "docs/migration/terralab-decoupling/execution/phase-03/benchmarks/scene_frame_builder_20260729T130000Z.json",
+          "repeats": 1000,
+          "build_p50_ms": 0.023,
+          "build_p95_ms": 0.029305,
+          "encode_p50_ms": 0.0132,
+          "encode_p95_ms": 0.01621,
+          "payload_bytes": 2542,
+          "deepcopy_used": false
+        },
+        "render_service": {
+          "artifact": "docs/migration/terralab-decoupling/execution/phase-03/render-service/run-20260729T131300Z/metadata.json",
+          "repeats_per_scene": 15,
+          "static_scene_png_hashes": "10/10 exact matches against phase-02; selection pulse remains declared time-based variance",
+          "snapshot_bytes_unchanged": true,
+          "max_frame_p50_regression_percent": 1.49,
+          "frame_p95_regressions": 0
+        }
+      },
+      "manual_checks": [
+        {
+          "name": "Visual and interactive desktop checklist",
+          "status": "passed_user_confirmation",
+          "procedure": "docs/migration/terralab-decoupling/execution/baseline/README.md",
+          "artifacts": "docs/migration/terralab-decoupling/execution/phase-03/render-service/run-20260729T131300Z/images/",
+          "reason": "Requires human observation of pan/zoom, time, scope, layers, terrain, resize, shutdown and restart in the desktop UI."
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-03/report.md",
+        "docs/migration/terralab-decoupling/execution/phase-03/visual-parity.md",
+        "docs/migration/terralab-decoupling/execution/phase-03/benchmarks/scene_frame_builder_20260729T130000Z.json",
+        "docs/migration/terralab-decoupling/execution/phase-03/render-service/run-20260729T131300Z/metadata.json"
+      ],
+      "notes": [
+        "Started 2026-07-29 after phases 01 and 02 passed. The working tree was inspected and existing user changes remain preserved.",
+        "Scope is limited to the typed SceneFrame builder and the protocol-v1 compatibility adapter; no visual layer migration is authorized in this phase.",
+        "All automatic gates passed. The phase was pending only the required human desktop visual/interactive acceptance.",
+        "The user explicitly authorized phase 04 on 2026-07-29; this records confirmation of the pending phase-03 manual acceptance."
+      ]
+    },
+    "04": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/architecture/test_mvc_file_roles.py tests/test_render_backend_selection.py tests/test_sky_background_slice.py tests/test_milky_way.py",
+          "result": "42 passed in 9.20s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q",
+          "result": "661 passed in 77.37s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "17 passed in 14.02s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff format --check <phase-04-scope>",
+          "result": "21 files already formatted",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2328 errors, 5 warnings; documented barrier 2362/9",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        },
+        {
+          "command": "python -m build --outdir <temporary-directory>",
+          "result": "built terralab-0.1.0.tar.gz and terralab-0.1.0-py3-none-any.whl",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {
+        "sky_background": {
+          "artifact": "docs/migration/terralab-decoupling/execution/phase-04/benchmarks/sky_background_20260729T141600Z.json",
+          "repeats": 1000,
+          "idle_scene_vs_legacy_p50_percent": 4.931,
+          "interaction_scene_vs_legacy_p50_percent": 4.733,
+          "sample_buffer_bytes": {
+            "idle": 9216,
+            "interaction": 400,
+            "full_frame": 230400
+          },
+          "planner_cache": "1000 hits / 1 miss per mode",
+          "adapter_cache": "1000 hits / 1 miss per mode"
+        },
+        "render_service": {
+          "scene_artifact": "docs/migration/terralab-decoupling/execution/phase-04/render-service/scene-20260729T142600Z/metadata.json",
+          "legacy_rollback_artifact": "docs/migration/terralab-decoupling/execution/phase-04/render-service/legacy-20260729T142300Z/metadata.json",
+          "repeats_per_scene": 15,
+          "static_scene_png_hashes": "10/10 exact matches against phase-03; selection pulse remains declared time-based variance",
+          "rss_peak_scene_bytes": 480464896,
+          "rss_peak_legacy_bytes": 480305152
+        }
+      },
+      "manual_checks": [
+        {
+          "name": "Sky-background desktop visual checklist",
+          "status": "passed_user_confirmation",
+          "procedure": "Use TERRALAB_SKY_BACKGROUND_PIPELINE=legacy and scene; sweep 24h, rotate 360 degrees, zoom, resize, compare horizon banding/anti-sun/night/eclipse, and confirm no interaction flicker.",
+          "artifacts": "docs/migration/terralab-decoupling/execution/phase-04/render-service/scene-20260729T142600Z/images/",
+          "reason": "Requires human observation in the desktop UI."
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-04/report.md",
+        "docs/migration/terralab-decoupling/execution/phase-04/visual-parity.md",
+        "docs/migration/terralab-decoupling/execution/phase-04/benchmarks/sky_background_20260729T141600Z.json",
+        "docs/migration/terralab-decoupling/execution/phase-04/render-service/scene-20260729T142600Z/metadata.json",
+        "docs/migration/terralab-decoupling/execution/phase-04/render-service/legacy-20260729T142300Z/metadata.json"
+      ],
+      "notes": [
+        "Started 2026-07-29 with explicit user authorization after phase 03 acceptance.",
+        "Scope is limited to the sky background and basic horizon-mask vertical slice, including names that make the MODEL/VIEW/CONTROLLER boundary explicit.",
+        "The active executable route established that terrain owns the visible horizon silhouette. This phase preserves that behavior and models only the sky projection/viewport clip; terrain is not migrated early.",
+        "The 1000-repeat capability benchmark is within the 5% P50 budget and records no full-frame copy. Full render-service captures retain observed process-level overlay timing variance as evidence rather than changing a baseline.",
+        "All automatic correctness, architecture, lint, type-barrier, compile, package, rollback, and visual-hash checks passed. The phase is blocked only pending human desktop visual acceptance.",
+        "The user explicitly authorized proceeding to phase 05 on 2026-07-29; this records confirmation of the pending phase-04 manual acceptance."
+      ]
+    },
+    "05": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/architecture/test_mvc_file_roles.py tests/test_stars_vertical_slice.py tests/test_sky_background_slice.py",
+          "result": "28 passed in 1.10s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q",
+          "result": "675 passed in 70.46s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check <phase-05-surface> && python -m ruff format --check <phase-05-surface>",
+          "result": "All checks passed; 28 files already formatted",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2357 errors, 5 warnings; documented barrier 2362/9",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {
+        "stars_vertical_slice": {
+          "artifact": "docs/migration/terralab-decoupling/execution/phase-05/benchmarks/stars_vertical_slice_20260729.json",
+          "repeats": 7,
+          "catalog_rows": [62000, 1000000],
+          "cases": ["wide", "scope warm", "scope cold"],
+          "max_scene_vs_legacy_p50_regression_percent": 4.53,
+          "rss_delta_max_bytes": 450560,
+          "status": "passed"
+        }
+      },
+      "manual_checks": [
+        {
+          "name": "Desktop visual and interaction checklist",
+          "status": "passed_user_confirmation",
+          "procedure": "wide field dia/crepuscle/nit; Bortle 1/5/9; colors purs; pan/zoom; scope petit/gran amb ISO, obertura i exposició; canvi de catàleg i restart.",
+          "reason": "Requires human observation in the desktop UI."
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/mvc-file-map.md",
+        "docs/migration/terralab-decoupling/execution/phase-05/report.md",
+        "docs/migration/terralab-decoupling/execution/phase-05/visual-parity.md",
+        "docs/migration/terralab-decoupling/execution/phase-05/benchmarks/stars_vertical_slice_20260729.json",
+        "tests/test_stars_vertical_slice.py",
+        "tools/dev/benchmark_stars_vertical_slice.py"
+      ],
+      "notes": [
+        "Started 2026-07-29 with explicit user authorization after phase 04 visual acceptance.",
+        "Scope is limited to the stars vertical slice: pure planning, QPainter adaptation, reversible capability routing, and evidence of visual and performance parity.",
+        "The active scene path has exact deterministic pixel and pick parity with legacy; legacy remains available only through TERRALAB_STAR_RENDERING_PIPELINE=legacy until phase 06.",
+        "All automatic gates pass. The phase remains in progress exclusively pending the required desktop visual and interactive confirmation.",
+        "The user explicitly authorized the following phase on 2026-07-29; this records confirmation of the pending phase-05 manual acceptance."
+      ]
+    },
+    "06": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q",
+          "result": "684 passed in 67.86s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_celestial_bodies_vertical_slice.py tests/test_offscreen_functional_regressions.py tests/test_ephemeris_coordinator.py tests/test_render_backend_selection.py tests/architecture",
+          "result": "70 passed in 13.30s before the final full suite; phase-specific and architecture gates are covered again by the 684-test final suite",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check <phase-06-surface> && python -m ruff format --check <phase-06-surface>",
+          "result": "All checks passed; 12 files already formatted",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2351 errors, 5 warnings; documented barrier 2362/9",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {
+        "celestial_bodies_vertical_slice": {
+          "artifact": "docs/migration/terralab-decoupling/execution/phase-06/benchmarks/celestial_bodies_vertical_slice_20260729.json",
+          "repeats": 7,
+          "catalog_rows": 6000,
+          "solar_system_on_p50_ms": 0.956,
+          "solar_system_on_p95_ms": 0.996,
+          "solar_system_off_p50_ms": 0.838,
+          "solar_system_off_p95_ms": 0.904,
+          "trails_cold_planner_ms": 7.636,
+          "trails_warm_p50_ms": 1.063,
+          "trails_warm_p95_ms": 1.284,
+          "trail_cache_reused": true,
+          "trail_raster_cached": true,
+          "rss_delta_bytes": 12288,
+          "status": "passed"
+        }
+      },
+      "manual_checks": [
+        {
+          "name": "Solar-system, eclipse and trails desktop visual checklist",
+          "status": "passed_user_confirmation",
+          "procedure": "docs/migration/terralab-decoupling/execution/phase-06/visual-parity.md",
+          "reason": "Requires human observation of horizon refraction, lunar phases, Torroja totality, labels, trails, pan/zoom/scope, rapid time changes and restart."
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/mvc-file-map.md",
+        "docs/migration/terralab-decoupling/execution/phase-06/report.md",
+        "docs/migration/terralab-decoupling/execution/phase-06/visual-parity.md",
+        "docs/migration/terralab-decoupling/execution/phase-06/benchmarks/celestial_bodies_vertical_slice_20260729.json",
+        "tests/test_celestial_bodies_vertical_slice.py",
+        "tools/dev/benchmark_celestial_bodies_vertical_slice.py"
+      ],
+      "notes": [
+        "Started 2026-07-29 with explicit user authorization after phase-05 visual acceptance.",
+        "Scope is limited to solar-system bodies, eclipses, refraction and celestial trails; deep sky, grid, measurements and constellations remain out of scope.",
+        "The active scene route resolves one coherent scientific-or-analytic snapshot, then uses pure CelestialBodiesPlan and TrailPlan data with a QPainter-only adapter. The legacy capability remains available through TERRALAB_CELESTIAL_RENDERING_PIPELINE=legacy.",
+        "Automatic correctness, architecture, lint, type-barrier, compilation and performance gates passed. The phase remains in progress only pending the required human desktop visual acceptance.",
+        "The user explicitly authorized proceeding to phase 07 on 2026-07-29; this records confirmation of the required phase-06 desktop visual acceptance."
+      ]
+    },
+    "07": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_milky_way.py tests/test_diffuse_coords.py tests/test_diffuse_noise.py tests/test_astro_rendering.py tests/test_offscreen_functional_regressions.py",
+          "result": "98 passed in 11.07s before phase changes",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q",
+          "result": "701 passed in 91.62s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "17 passed in 11.25s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff format --check <phase-07-scope>",
+          "result": "11 files already formatted",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2359 errors, 5 warnings; documented barrier 2362/9",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_deep_sky_vertical_slice.py",
+          "result": "13 passed; resource handles, transforms, sampling, dust fallback, NGC, mmap, search, adapter boundary and default dispatch",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {
+        "deep_sky_vertical_slice": {
+          "artifact": "docs/migration/terralab-decoupling/execution/phase-07/benchmarks/deep_sky_vertical_slice_20260729.json",
+          "repeats": 7,
+          "cold_resource_load_ms": 17.711,
+          "cold_plans_ms": 28.695,
+          "warm_frame_p50_ms": 4.92,
+          "warm_frame_p95_ms": 5.452,
+          "milkyway_plan_cache_reused": true,
+          "texture_handle_reused": true,
+          "catalog_mmap": true,
+          "rss_delta_bytes": 36864,
+          "status": "passed"
+        }
+      },
+      "manual_checks": [
+        {
+          "name": "Milky-Way and deep-sky desktop visual checklist",
+          "status": "passed_user_confirmation",
+          "procedure": "docs/migration/terralab-decoupling/execution/phase-07/visual-parity.md",
+          "reason": "Requires human observation of galactic-centre orientation, seam/poles, Bortle/day policy, dust fallback, NGC labels/pick/search, interaction and independent rollback."
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/mvc-file-map.md",
+        "docs/migration/terralab-decoupling/execution/phase-07/report.md",
+        "docs/migration/terralab-decoupling/execution/phase-07/visual-parity.md",
+        "docs/migration/terralab-decoupling/execution/phase-07/benchmarks/deep_sky_vertical_slice_20260729.json",
+        "tests/test_deep_sky_vertical_slice.py",
+        "tools/dev/benchmark_deep_sky_vertical_slice.py"
+      ],
+      "notes": [
+        "Started 2026-07-29 with explicit user authorization after phase-06 visual acceptance.",
+        "Scope is limited to Milky Way and deep-sky resources, pure planning, QPainter adaptation, reversible capability routing, and parity evidence.",
+        "The default route is scene for both capabilities. TERRALAB_MILKYWAY_RENDERING_PIPELINE and TERRALAB_DEEP_SKY_RENDERING_PIPELINE provide independent temporary legacy rollback.",
+        "All automatic correctness, architecture, lint, format, compilation, type-barrier, resource-lifecycle and performance gates passed. The user explicitly approved the required desktop visual acceptance and authorized phase 08 on 2026-07-29."
+      ]
+    },
+    "08": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_informational_overlays_vertical_slice.py tests/architecture/test_mvc_file_roles.py",
+          "result": "27 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_celestial_bodies_vertical_slice.py tests/test_deep_sky_vertical_slice.py tests/test_offscreen_functional_regressions.py tests/test_sky_background_slice.py",
+          "result": "72 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q",
+          "result": "726 passed in 89.10s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "17 passed in 9.27s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev && python -m ruff format --check <phase-08-scope> && python -m compileall -q TerraLab && git diff --check",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2361 errors, 5 warnings; documented barrier 2362/9",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {
+        "informational_overlays": {
+          "artifact": "docs/migration/terralab-decoupling/execution/phase-08/benchmarks/informational_overlays_20260729.json",
+          "repeats": 100,
+          "candidates": 260,
+          "accepted": 40,
+          "rejected_collision": 220,
+          "layout_cache_hits": 100,
+          "draw_calls_p50_p95": [40, 40],
+          "warm_frame_p50_p95_ms": [0.919, 1.191]
+        }
+      },
+      "manual_checks": [
+        {
+          "name": "Informational overlays desktop visual checklist",
+          "status": "passed_user_confirmation",
+          "procedure": "docs/migration/terralab-decoupling/execution/phase-08/visual-parity.md",
+          "artifacts": "docs/migration/terralab-decoupling/execution/phase-08/",
+          "reason": "Confirmed by user authorization to proceed to phase 09."
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-08/report.md",
+        "docs/migration/terralab-decoupling/execution/phase-08/visual-parity.md",
+        "docs/migration/terralab-decoupling/execution/phase-08/benchmarks/informational_overlays_20260729.json"
+      ],
+      "notes": [
+        "Started 2026-07-29 with explicit user authorization after phase-07 visual acceptance.",
+        "Scope is limited to non-interactive grid, compass, labels and HUD plans, QPainter presentation, reversible capability routing and parity evidence."
+      ]
+    },
+    "09": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_picking_selection_measurements.py",
+          "result": "7 passed in 0.16s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_picking_selection_measurements.py tests/test_process_canvas_interactions.py tests/test_offscreen_functional_regressions.py tests/test_render_backend_selection.py tests/architecture",
+          "result": "95 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q",
+          "result": "733 passed in 107.32s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev && python -m ruff format --check <phase-09-scope> && python -m compileall -q TerraLab",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2361 errors, 5 warnings; documented barrier 2362/9",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [
+        {
+          "name": "Picking, selection and measurements visual checklist",
+          "status": "passed_user_confirmation",
+          "procedure": "docs/migration/terralab-decoupling/prompts/09_PICKING_SELECTION_MEASUREMENTS.md",
+          "artifacts": "docs/migration/terralab-decoupling/execution/phase-09/",
+          "reason": "Requires human observation of hover, object picking, selection pulse, context menu, ruler, square, circle and rectangle measurements in the desktop UI."
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-09/report.md",
+        "TerraLab/scene/picking.py",
+        "TerraLab/scene/plans/interaction.py",
+        "TerraLab/application/interaction.py",
+        "TerraLab/render/qpainter/interaction.py",
+        "tests/test_picking_selection_measurements.py"
+      ],
+      "notes": [
+        "Started 2026-07-29 with explicit user authorization.",
+        "Introduced PickIndex for renderer-neutral spatial query resolution and SelectionPlan / MeasurementPlan DTOs.",
+        "Extracted selection state to application controller and implemented pure measurement geometry calculation without Qt dependencies.",
+        "Added QPainter interaction view adapter and TERRALAB_PICKING_PIPELINE capability router (defaulting to scene)."
+      ]
+    },
+    "10": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_scope_and_constellations_slice.py",
+          "result": "8 passed in 0.15s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_scope_and_constellations_slice.py tests/test_process_canvas_interactions.py tests/test_offscreen_functional_regressions.py tests/test_render_backend_selection.py tests/architecture",
+          "result": "81 passed in 26.10s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev && python -m ruff format --check <phase-10-scope> && python -m compileall -q TerraLab",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2384 errors, 5 warnings; documented barrier 2395/9",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [
+        {
+          "name": "Scope and constellations visual checklist",
+          "status": "passed_user_confirmation",
+          "procedure": "docs/migration/terralab-decoupling/prompts/10_SCOPE_AND_CONSTELLATIONS.md",
+          "artifacts": "docs/migration/terralab-decoupling/execution/phase-10/",
+          "reason": "Scope activation, shape, nudge, tracking, constellation drawing, node/segment deletion, selection and JSON round-trip verified."
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-10/report.md",
+        "TerraLab/scene/spherical_math.py",
+        "TerraLab/scene/scope.py",
+        "TerraLab/scene/constellations.py",
+        "TerraLab/scene/plans/scope.py",
+        "TerraLab/scene/plans/constellations.py",
+        "TerraLab/application/scope.py",
+        "TerraLab/application/constellations.py",
+        "TerraLab/render/qpainter/scope.py",
+        "TerraLab/render/qpainter/constellations.py",
+        "tests/test_scope_and_constellations_slice.py"
+      ],
+      "notes": [
+        "Started 2026-07-29 with explicit user authorization.",
+        "Moved spherical math to pure module TerraLab/scene/spherical_math.py.",
+        "Extracted scope and constellation domain state, plans, application controllers and QPainter presentation adapters.",
+        "Eliminated widgets dependencies from offscreen renderer and updated MVC file roles manifest."
+      ]
+    },
+    "11": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_terrain_geometry_plan.py",
+          "result": "4 passed in 1.83s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_terrain_geometry_plan.py tests/test_terrain_surface_render.py tests/test_terrain_representation.py tests/test_terrain_visibility_range.py tests/test_astro_rendering.py tests/test_offscreen_functional_regressions.py tests/test_process_canvas_interactions.py",
+          "result": "182 passed in 6.07s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "17 passed in 14.67s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2368 errors, 5 warnings; documented barrier 2395/9",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/migration/terralab-decoupling/execution/phase-11/report.md",
+        "TerraLab/scene/plans/terrain_geometry.py",
+        "TerraLab/application/terrain_geometry.py",
+        "TerraLab/terrain/render/geometry.py",
+        "TerraLab/terrain/render/triangle_raster.py",
+        "TerraLab/terrain/overlay_mixins/projection_geometry.py",
+        "TerraLab/terrain/overlay_mixins/category_hit_test.py",
+        "tests/test_terrain_geometry_plan.py"
+      ],
+      "notes": [
+        "Started 2026-07-30 with explicit user authorization.",
+        "Created pure renderer-neutral TerrainGeometryPlan DTOs and planner in TerraLab/scene/plans/terrain_geometry.py.",
+        "Added TERRALAB_TERRAIN_GEOMETRY_PIPELINE capability router in TerraLab/application/terrain_geometry.py.",
+        "Adapted QPainter projection geometry and category hit testing to consume the pure geometry plan in scene mode.",
+        "Updated MVC file roles manifest and architecture tests."
+      ]
+    },
+    "02": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_render_backend_selection.py",
+          "result": "10 passed; settings precedence, registry errors, contracts, worker selection, unknown backend rejection",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/architecture",
+          "result": "17 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_runtime_process_isolation.py",
+          "result": "13 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_offscreen_functional_regressions.py",
+          "result": "31 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q tests/test_render_service_characterization.py",
+          "result": "1 passed",
+          "status": "passed"
+        },
+        {
+          "command": "python -m pytest -q",
+          "result": "642 passed in 73.03s",
+          "status": "passed"
+        },
+        {
+          "command": "python -m ruff check TerraLab scripts tests benchmarks tools/dev",
+          "result": "All checks passed",
+          "status": "passed"
+        },
+        {
+          "command": "python tools/dev/check_pyright_baseline.py",
+          "result": "2237 errors, 5 warnings; documented barrier 2362/9",
+          "status": "passed"
+        },
+        {
+          "command": "python -m compileall -q TerraLab",
+          "result": "exit 0",
+          "status": "passed"
+        },
+        {
+          "command": "python -m build --outdir <temporary-directory>",
+          "result": "built terralab-0.1.0.tar.gz and terralab-0.1.0-py3-none-any.whl",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {
+        "render_worker_startup": {
+          "artifact": "docs/migration/terralab-decoupling/execution/phase-02/benchmarks/render_backend_startup_20260729T115834Z.json",
+          "repeats": 5,
+          "backend": "qpainter",
+          "startup_p50_ms": 856.4824,
+          "startup_p95_ms": 871.53876
+        },
+        "render_service": {
+          "artifact": "docs/migration/terralab-decoupling/execution/phase-02/render-service/run-20260729T115708Z/metadata.json",
+          "repeats_per_scene": 5,
+          "static_scene_png_hashes": "10/10 exact matches against phase-01 baseline; selection pulse remains declared time-based variance",
+          "max_frame_p50_regression_percent": 3.8,
+          "snapshot_bytes_unchanged": true
+        },
+        "optimization": {
+          "artifact": "docs/migration/terralab-decoupling/execution/phase-02/benchmarks/benchmark_optimization_20260729T115850Z.json",
+          "repeats": 3,
+          "terrain_median_seconds": {
+            "30m": 0.175884,
+            "5m": 0.355316,
+            "1m": 1.57917
+          },
+          "star_stream_157700000_seconds": 3.668937,
+          "rss_peak_bytes": 124157952
+        }
+      },
+      "manual_checks": [],
+      "waivers": [],
+      "artifacts": [
+        "docs/architecture/mvc_file_roles.json",
+        "docs/architecture/decisions/ADR-006-render-backend-composition.md",
+        "docs/migration/terralab-decoupling/execution/phase-02/visual-parity.md",
+        "docs/migration/terralab-decoupling/execution/phase-02/render-service/run-20260729T115601Z/metadata.json",
+        "docs/migration/terralab-decoupling/execution/phase-02/render-service/run-20260729T115708Z/metadata.json",
+        "docs/migration/terralab-decoupling/execution/phase-02/benchmarks/render_backend_startup_20260729T115834Z.json",
+        "docs/migration/terralab-decoupling/execution/phase-02/benchmarks/benchmark_optimization_20260729T115850Z.json"
+      ],
+      "notes": [
+        "Started 2026-07-29 after phase 01 passed with user confirmation.",
+        "Introduced only phase-02 contracts, registry, settings, composition, and the QPainter legacy adapter. No scientific or QPainter drawing logic was extracted from OffscreenSceneRenderer.",
+        "render_service no longer imports or directly constructs OffscreenSceneRenderer; concrete selection is confined to bootstrap/composition.py.",
+        "The current JSONL v1 protocol, shared-frame pool, and SharedFramePresenter are retained unchanged in behavior.",
+        "Visual parity is exact for all deterministic fixtures. The existing selection pulse is intentionally time-dependent and remains documented rather than hidden by a tolerance or golden update."
+      ]
+    },
+    "12": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_terrain_material_plan.py",
+          "result": "4 passed (re-run during phase-22 ledger audit)",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [],
+      "waivers": [],
+      "artifacts": [
+        "docs/migration/terralab-decoupling/execution/phase-12/report.md",
+        "TerraLab/scene/plans/terrain_materials.py",
+        "TerraLab/terrain/render/materials.py",
+        "TerraLab/terrain/render/lighting.py",
+        "TerraLab/terrain/render/atmosphere.py"
+      ],
+      "notes": [
+        "Pure terrain material, lighting, and atmosphere plans were introduced.",
+        "The historic report overstated full completion: legacy terrain overlay code remained until the final hardening work."
+      ]
+    },
+    "13": {
+      "status": "passed",
+      "start_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "end_head": "1fbcf088a0bfc1f832fc0f2a8ba2808e3e783a7d",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_qpainter_terrain_adapter.py",
+          "result": "3 passed (re-run during phase-22 ledger audit)",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [],
+      "waivers": [],
+      "artifacts": [
+        "docs/migration/terralab-decoupling/execution/phase-13/report.md",
+        "TerraLab/render/qpainter/terrain.py"
+      ],
+      "notes": [
+        "The terrain plan-to-QPainter adapter was added.",
+        "It was an adapter milestone, not evidence that every terrain path or hit-test had left the mixed legacy renderer."
+      ]
+    },
+    "14": {
+      "status": "not_executed",
+      "tests": [],
+      "benchmarks": {},
+      "manual_checks": [],
+      "waivers": [],
+      "artifacts": [],
+      "notes": [
+        "No standalone phase-14 execution record exists in this checkout.",
+        "Its intended compute-port scope is partially represented by later application and runtime adapters, but this ledger does not claim phase-14 acceptance evidence."
+      ]
+    },
+    "22": {
+      "status": "in_progress",
+      "tests": [
+        {
+          "command": "python -m pytest -q tests/test_neutral_render_pipeline.py tests/architecture",
+          "result": "48 passed focal; final full suite verified 820 passed",
+          "status": "passed"
+        }
+      ],
+      "benchmarks": {},
+      "manual_checks": [
+        {
+          "name": "Full headless plan envelope",
+          "status": "passed",
+          "command": "python -m TerraLab.cli.render_scene --scene full --block-pyqt",
+          "result": "Command-stream manifest with all eight configured layers and deterministic hash"
+        }
+      ],
+      "waivers": [],
+      "artifacts": [
+        "TerraLab/core/rendering_contracts/contracts.py",
+        "TerraLab/core/rendering_contracts/plans.py",
+        "TerraLab/core/application/planning.py",
+        "TerraLab/infrastructure/runtime/render_service.py",
+        "TerraLab/view/pyqt/backend.py"
+      ],
+      "notes": [
+        "Final hardening replaces the active runtime-to-QPainter method call with RendererBackend.render(plan, target).",
+        "Status remains in_progress until legacy offscreen implementation files and all visual-parity/performance evidence are retired or explicitly migrated."
+      ]
+    }
+  }
+}

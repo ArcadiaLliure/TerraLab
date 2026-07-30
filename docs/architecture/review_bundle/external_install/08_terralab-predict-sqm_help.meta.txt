@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-wheel-final-98204d4\Scripts\terralab-predict-sqm.exe --help
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-wheel-smoke-empty
+python=Python 3.13.7
+started=2026-07-26T01:58:39.2497792+02:00
+finished=2026-07-26T01:58:40.5527112+02:00
+duration_seconds=1.303
+exit_code=0

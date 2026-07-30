@@ -1,0 +1,12 @@
+........                                                                 [100%]
+============================== slowest durations ==============================
+4.55s call     tests/test_qt_lifecycle.py::test_astronomical_widget_can_close_and_rebuild_offscreen
+0.02s call     tests/test_worker_data_sources.py::test_terrain_coordinator_closes_geotiff_resource_after_cancelled_read
+0.02s call     tests/test_worker_data_sources.py::test_terrain_coordinator_closes_during_bake_and_reaps_subprocess
+0.02s call     tests/test_worker_data_sources.py::test_terrain_coordinator_closes_during_surface_sampling
+0.01s setup    tests/test_bake_process_atomic_save.py::test_preview_snapshots_use_immutable_unique_paths
+0.01s call     tests/test_worker_data_sources.py::test_terrain_coordinator_shutdown_never_leaves_worker_thread_running
+0.01s call     tests/test_surface_lod_cache.py::test_atomic_npz_store_can_defer_tile_durability_and_prune_to_one_batch
+
+(17 durations < 0.005s hidden.  Use -vv to show these durations.)
+8 passed in 4.99s

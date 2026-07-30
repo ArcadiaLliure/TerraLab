@@ -1,0 +1,3596 @@
+{
+  "schema_version": 1,
+  "generated_by": "tools/dev/code_inventory.py",
+  "nodes": [
+    "TerraLab",
+    "TerraLab.__main__",
+    "TerraLab.astro",
+    "TerraLab.astro.engine",
+    "TerraLab.astro.ephemeris_coordinator",
+    "TerraLab.astro.ngc_catalog",
+    "TerraLab.astro.search_engine",
+    "TerraLab.cli",
+    "TerraLab.cli.calibrate_sqm",
+    "TerraLab.cli.dvnl_convolve",
+    "TerraLab.cli.dvnl_preprocess",
+    "TerraLab.cli.gaia",
+    "TerraLab.cli.predict_sqm_raster",
+    "TerraLab.cli.query_elevation",
+    "TerraLab.common",
+    "TerraLab.common.app_paths",
+    "TerraLab.common.cache",
+    "TerraLab.common.cancellation",
+    "TerraLab.common.custom_widget_base",
+    "TerraLab.common.data_library",
+    "TerraLab.common.deprecation_registry",
+    "TerraLab.common.exception_reporting",
+    "TerraLab.common.locks",
+    "TerraLab.common.perf_events",
+    "TerraLab.common.performance",
+    "TerraLab.common.performance.budget",
+    "TerraLab.common.performance.flags",
+    "TerraLab.common.performance.memory",
+    "TerraLab.common.timestamped_print",
+    "TerraLab.common.utils",
+    "TerraLab.config",
+    "TerraLab.data",
+    "TerraLab.data.assets",
+    "TerraLab.data.assets.discovery",
+    "TerraLab.data.assets.downloads",
+    "TerraLab.data.assets.installation",
+    "TerraLab.data.assets.registry",
+    "TerraLab.data.assets.runtime",
+    "TerraLab.data.assets.validation",
+    "TerraLab.data.assets_manager",
+    "TerraLab.data.catalogs",
+    "TerraLab.data.catalogs.constants",
+    "TerraLab.data.catalogs.scope_cache",
+    "TerraLab.data.catalogs.scope_preload_cache",
+    "TerraLab.data.catalogs.star_catalog",
+    "TerraLab.data.converters",
+    "TerraLab.data.converters.planck",
+    "TerraLab.data.copernicus",
+    "TerraLab.data.copernicus.client",
+    "TerraLab.data.copernicus.constants",
+    "TerraLab.data.copernicus.manager",
+    "TerraLab.data.copernicus.manifest",
+    "TerraLab.data.copernicus.mosaic",
+    "TerraLab.data.copernicus.planning",
+    "TerraLab.data.copernicus.validation",
+    "TerraLab.data.gaia_downloader",
+    "TerraLab.data.layer_manager",
+    "TerraLab.data.resumable_download",
+    "TerraLab.data.star_catalog_store",
+    "TerraLab.data.star_data_coordinator",
+    "TerraLab.data.stars_dataset",
+    "TerraLab.data.tile_manifest",
+    "TerraLab.debug",
+    "TerraLab.debug.diagnostics",
+    "TerraLab.layers",
+    "TerraLab.layers.village",
+    "TerraLab.light_pollution",
+    "TerraLab.light_pollution.bortle",
+    "TerraLab.light_pollution.calibration",
+    "TerraLab.light_pollution.dvnl_io",
+    "TerraLab.light_pollution.kernels",
+    "TerraLab.light_pollution.mlim",
+    "TerraLab.light_pollution.modes",
+    "TerraLab.light_pollution.processing",
+    "TerraLab.render",
+    "TerraLab.render.grid_renderer",
+    "TerraLab.render.horizon_renderer",
+    "TerraLab.render.overlays_renderer",
+    "TerraLab.render.qt",
+    "TerraLab.render.qt.context",
+    "TerraLab.render.scope_renderer",
+    "TerraLab.render.sky",
+    "TerraLab.render.sky.milkyway_overlay",
+    "TerraLab.render.sky_renderer",
+    "TerraLab.render.stars_renderer",
+    "TerraLab.render.workers",
+    "TerraLab.render.workers.star_render",
+    "TerraLab.scene",
+    "TerraLab.scene.camera",
+    "TerraLab.scene.projection",
+    "TerraLab.scene.render_state",
+    "TerraLab.scene.scene_controller",
+    "TerraLab.scene.scene_state",
+    "TerraLab.terrain",
+    "TerraLab.terrain.asc_cache_builder",
+    "TerraLab.terrain.bake_process",
+    "TerraLab.terrain.crs",
+    "TerraLab.terrain.data_sources",
+    "TerraLab.terrain.domain",
+    "TerraLab.terrain.domain.bands",
+    "TerraLab.terrain.domain.curvature",
+    "TerraLab.terrain.domain.profile",
+    "TerraLab.terrain.infrastructure",
+    "TerraLab.terrain.infrastructure.dem_tiles",
+    "TerraLab.terrain.land_cover",
+    "TerraLab.terrain.land_cover.legends",
+    "TerraLab.terrain.land_cover.legends.category_info",
+    "TerraLab.terrain.land_cover.legends.s2glc",
+    "TerraLab.terrain.land_cover.visual_styles",
+    "TerraLab.terrain.light_pollution_query",
+    "TerraLab.terrain.light_pollution_sampler",
+    "TerraLab.terrain.mesh",
+    "TerraLab.terrain.mesh.elevation_field",
+    "TerraLab.terrain.mesh.normals",
+    "TerraLab.terrain.overlay",
+    "TerraLab.terrain.overlay_mixins",
+    "TerraLab.terrain.overlay_mixins.band_draw",
+    "TerraLab.terrain.overlay_mixins.category_hit_test",
+    "TerraLab.terrain.overlay_mixins.draw_dispatch",
+    "TerraLab.terrain.overlay_mixins.fallback",
+    "TerraLab.terrain.overlay_mixins.interpolated_material",
+    "TerraLab.terrain.overlay_mixins.light_context",
+    "TerraLab.terrain.overlay_mixins.lighting_cache",
+    "TerraLab.terrain.overlay_mixins.materials",
+    "TerraLab.terrain.overlay_mixins.profile_cache",
+    "TerraLab.terrain.overlay_mixins.projection_geometry",
+    "TerraLab.terrain.overlay_mixins.triangle_paint",
+    "TerraLab.terrain.persistence",
+    "TerraLab.terrain.persistence.profile_npz",
+    "TerraLab.terrain.providers",
+    "TerraLab.terrain.providers.asc_provider",
+    "TerraLab.terrain.providers.chain",
+    "TerraLab.terrain.providers.common",
+    "TerraLab.terrain.providers.geotiff_provider",
+    "TerraLab.terrain.providers.raster_dataset",
+    "TerraLab.terrain.ray_precision",
+    "TerraLab.terrain.raycast",
+    "TerraLab.terrain.raycast.baker",
+    "TerraLab.terrain.render",
+    "TerraLab.terrain.render.atmosphere",
+    "TerraLab.terrain.render.config",
+    "TerraLab.terrain.render.geometry",
+    "TerraLab.terrain.render.lighting",
+    "TerraLab.terrain.render.materials",
+    "TerraLab.terrain.render.overlay_types",
+    "TerraLab.terrain.render.palette",
+    "TerraLab.terrain.render.sampling",
+    "TerraLab.terrain.render.triangle_raster",
+    "TerraLab.terrain.representation",
+    "TerraLab.terrain.sampling",
+    "TerraLab.terrain.services",
+    "TerraLab.terrain.services.elevation_query",
+    "TerraLab.terrain.source_inspection",
+    "TerraLab.terrain.surface",
+    "TerraLab.terrain.surface.cache",
+    "TerraLab.terrain.surface.categorical",
+    "TerraLab.terrain.surface.common",
+    "TerraLab.terrain.surface.factory",
+    "TerraLab.terrain.surface.geometry",
+    "TerraLab.terrain.surface.light_pollution",
+    "TerraLab.terrain.surface.rgb",
+    "TerraLab.terrain.surface.service",
+    "TerraLab.terrain.surface_store",
+    "TerraLab.terrain.terrain_coordinator",
+    "TerraLab.terrain.visibility_range",
+    "TerraLab.terrain.worker",
+    "TerraLab.ui",
+    "TerraLab.ui.astro_canvas",
+    "TerraLab.ui.astronomical_widget",
+    "TerraLab.ui.canvas_input_handler",
+    "TerraLab.ui.canvas_mixins",
+    "TerraLab.ui.canvas_mixins.ephemeris_rendering",
+    "TerraLab.ui.canvas_mixins.interaction",
+    "TerraLab.ui.canvas_mixins.projection_rendering",
+    "TerraLab.ui.canvas_mixins.selection_and_trails",
+    "TerraLab.ui.canvas_runtime_helpers",
+    "TerraLab.ui.canvas_selection",
+    "TerraLab.ui.copernicus_orthophoto_dialog",
+    "TerraLab.ui.data_layers_dialog",
+    "TerraLab.ui.data_library_dialog",
+    "TerraLab.ui.layer_configurator",
+    "TerraLab.ui.onboarding_dialogs",
+    "TerraLab.ui.scope_preload_worker",
+    "TerraLab.ui.sky_controller",
+    "TerraLab.ui.time_bar",
+    "TerraLab.ui.widget_bootstrap_helpers",
+    "TerraLab.ui.widget_controls_builder",
+    "TerraLab.ui.widget_init_helpers",
+    "TerraLab.ui.widget_misc_helpers",
+    "TerraLab.ui.widget_mixins",
+    "TerraLab.ui.widget_mixins.bootstrap_terrain",
+    "TerraLab.ui.widget_mixins.controls_time",
+    "TerraLab.ui.widget_mixins.horizon_scope",
+    "TerraLab.ui.widget_mixins.layers",
+    "TerraLab.ui.widget_mixins.surface_data",
+    "TerraLab.ui.widget_runtime_helpers",
+    "TerraLab.ui.workers",
+    "TerraLab.ui.workers.catalog_loader",
+    "TerraLab.ui.workers.scope_index",
+    "TerraLab.ui.workers.skyfield_loader",
+    "TerraLab.util",
+    "TerraLab.util.build_healpy_index",
+    "TerraLab.util.color",
+    "TerraLab.util.gaia_importer",
+    "TerraLab.util.healpy_catalog_reader",
+    "TerraLab.util.math2d",
+    "TerraLab.util.milkyway_importer",
+    "TerraLab.weather",
+    "TerraLab.weather.metno_provider",
+    "TerraLab.weather.system",
+    "TerraLab.widgets",
+    "TerraLab.widgets.constellation_drawing",
+    "TerraLab.widgets.hint_overlay",
+    "TerraLab.widgets.measurement_tools",
+    "TerraLab.widgets.optica_telescopica",
+    "TerraLab.widgets.physical_math",
+    "TerraLab.widgets.scope_ui_manager",
+    "TerraLab.widgets.spherical_math",
+    "TerraLab.widgets.telescope_runtime",
+    "TerraLab.widgets.telescope_scope_mode",
+    "TerraLab.widgets.terrain_config_dialog",
+    "TerraLab.widgets.visual_magnitude_engine",
+    "benchmarks/benchmark_categorical_pipeline.py",
+    "benchmarks/benchmark_horizon_tile_selection.py",
+    "benchmarks/benchmark_optimization.py",
+    "benchmarks/benchmark_scope_startup.py",
+    "benchmarks/benchmark_terrain_render.py",
+    "scripts.build_stars_dataset",
+    "scripts.check_lp_domes",
+    "scripts.convert_star_ecsv_to_npz",
+    "scripts.debug_lp",
+    "scripts.predict_mlim",
+    "scripts.query_stars_npy",
+    "scripts.verify_industrial_lp",
+    "tests/architecture/__init__.py",
+    "tests/architecture/test_boundaries.py",
+    "tests/architecture/test_import_safety.py",
+    "tests/cli/test_entrypoints.py",
+    "tests/common/test_cache.py",
+    "tests/common/test_cancellation.py",
+    "tests/common/test_exception_reporting.py",
+    "tests/common/test_performance_budget.py",
+    "tests/data/test_gaia_process_pipeline.py",
+    "tests/data/test_star_colours.py",
+    "tests/light_pollution/test_processing.py",
+    "tests/terrain/test_asc_cache.py",
+    "tests/terrain/test_bands.py",
+    "tests/terrain/test_elevation_query.py",
+    "tests/terrain/test_raster_windows.py",
+    "tests/terrain/test_tile_index.py",
+    "tests/terrain/test_vectorized_raycast.py",
+    "tests/test_adaptive_sampling.py",
+    "tests/test_assets_manager_data_sources.py",
+    "tests/test_astro_rendering.py",
+    "tests/test_bake_process_atomic_save.py",
+    "tests/test_canvas_input_handler.py",
+    "tests/test_canvas_selection.py",
+    "tests/test_config.py",
+    "tests/test_copernicus_asset_integration.py",
+    "tests/test_copernicus_orthophoto.py",
+    "tests/test_copernicus_orthophoto_dialog.py",
+    "tests/test_data_layers_ui_contract.py",
+    "tests/test_data_library.py",
+    "tests/test_data_sources.py",
+    "tests/test_deprecated_registry.py",
+    "tests/test_diffuse_coords.py",
+    "tests/test_diffuse_noise.py",
+    "tests/test_gaia_manifest_resolution.py",
+    "tests/test_geospatial_providers.py",
+    "tests/test_horizon_baker_coverage.py",
+    "tests/test_horizon_worker_bortle.py",
+    "tests/test_light_pollution_modes.py",
+    "tests/test_light_pollution_sampler_crs.py",
+    "tests/test_light_pollution_sampler_spatial.py",
+    "tests/test_light_pollution_typed_chain.py",
+    "tests/test_milky_way.py",
+    "tests/test_morell_puig_den_cama.py",
+    "tests/test_onboarding_dem_autolocation.py",
+    "tests/test_packaging_contract.py",
+    "tests/test_providers.py",
+    "tests/test_qt_lifecycle.py",
+    "tests/test_ray_precision.py",
+    "tests/test_s2glc_download.py",
+    "tests/test_s2glc_land_cover.py",
+    "tests/test_scene_controller_render_state.py",
+    "tests/test_scope_ui_manager.py",
+    "tests/test_search_engine.py",
+    "tests/test_spherical_math.py",
+    "tests/test_star_data_coordinator.py",
+    "tests/test_surface_lod_cache.py",
+    "tests/test_surface_mode_switch.py",
+    "tests/test_telescope_runtime.py",
+    "tests/test_terrain_render_pipeline.py",
+    "tests/test_terrain_representation.py",
+    "tests/test_terrain_surface_render.py",
+    "tests/test_terrain_visibility_range.py",
+    "tests/test_tile_cache_load_safety.py",
+    "tests/test_tile_manifest.py",
+    "tests/test_visual_magnitude_engine.py",
+    "tests/test_worker_data_sources.py",
+    "tools/dev/check_pyright_baseline.py",
+    "tools/dev/code_inventory.py",
+    "tools/import_gaia_catalog.py"
+  ],
+  "edges": [
+    {
+      "from": "TerraLab.__main__",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "TerraLab.__main__",
+      "to": "TerraLab.common.timestamped_print"
+    },
+    {
+      "from": "TerraLab.__main__",
+      "to": "TerraLab.ui.astronomical_widget"
+    },
+    {
+      "from": "TerraLab.__main__",
+      "to": "TerraLab.ui.data_library_dialog"
+    },
+    {
+      "from": "TerraLab.astro.ephemeris_coordinator",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.astro.ngc_catalog",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.astro.search_engine",
+      "to": "TerraLab.astro.ngc_catalog"
+    },
+    {
+      "from": "TerraLab.astro.search_engine",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.astro.search_engine",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.cli.calibrate_sqm",
+      "to": "TerraLab.light_pollution.calibration"
+    },
+    {
+      "from": "TerraLab.cli.dvnl_convolve",
+      "to": "TerraLab.light_pollution.kernels"
+    },
+    {
+      "from": "TerraLab.cli.dvnl_convolve",
+      "to": "TerraLab.light_pollution.processing"
+    },
+    {
+      "from": "TerraLab.cli.dvnl_preprocess",
+      "to": "TerraLab.light_pollution.processing"
+    },
+    {
+      "from": "TerraLab.cli.gaia",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "TerraLab.cli.gaia",
+      "to": "TerraLab.data.gaia_downloader"
+    },
+    {
+      "from": "TerraLab.cli.predict_sqm_raster",
+      "to": "TerraLab.light_pollution.processing"
+    },
+    {
+      "from": "TerraLab.cli.query_elevation",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.cli.query_elevation",
+      "to": "TerraLab.terrain.services.elevation_query"
+    },
+    {
+      "from": "TerraLab.common.app_paths",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "TerraLab.common.custom_widget_base",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.common.perf_events",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.common.perf_events",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.common.performance.budget",
+      "to": "TerraLab.common.performance.memory"
+    },
+    {
+      "from": "TerraLab.common.utils",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.common.utils",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.config",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.config",
+      "to": "TerraLab.terrain.ray_precision"
+    },
+    {
+      "from": "TerraLab.config",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.config",
+      "to": "TerraLab.terrain.render.sampling"
+    },
+    {
+      "from": "TerraLab.config",
+      "to": "TerraLab.terrain.visibility_range"
+    },
+    {
+      "from": "TerraLab.data.assets.discovery",
+      "to": "TerraLab.data.assets.runtime"
+    },
+    {
+      "from": "TerraLab.data.assets.discovery",
+      "to": "TerraLab.data.resumable_download"
+    },
+    {
+      "from": "TerraLab.data.assets.discovery",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.data.assets.discovery",
+      "to": "TerraLab.terrain.source_inspection"
+    },
+    {
+      "from": "TerraLab.data.assets.downloads",
+      "to": "TerraLab.data.assets.runtime"
+    },
+    {
+      "from": "TerraLab.data.assets.downloads",
+      "to": "TerraLab.data.copernicus"
+    },
+    {
+      "from": "TerraLab.data.assets.downloads",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.data.assets.installation",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.assets.installation",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.data.assets.installation",
+      "to": "TerraLab.data.assets.discovery"
+    },
+    {
+      "from": "TerraLab.data.assets.installation",
+      "to": "TerraLab.data.assets.runtime"
+    },
+    {
+      "from": "TerraLab.data.assets.installation",
+      "to": "TerraLab.terrain.asc_cache_builder"
+    },
+    {
+      "from": "TerraLab.data.assets.installation",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.data.assets.installation",
+      "to": "TerraLab.terrain.source_inspection"
+    },
+    {
+      "from": "TerraLab.data.assets.registry",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "TerraLab.data.assets.registry",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.assets.registry",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.data.assets.registry",
+      "to": "TerraLab.data.assets.runtime"
+    },
+    {
+      "from": "TerraLab.data.assets.registry",
+      "to": "TerraLab.data.copernicus"
+    },
+    {
+      "from": "TerraLab.data.assets.registry",
+      "to": "TerraLab.data.resumable_download"
+    },
+    {
+      "from": "TerraLab.data.assets.registry",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.data.assets.runtime",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.assets.runtime",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.data.assets.runtime",
+      "to": "TerraLab.data.converters.planck"
+    },
+    {
+      "from": "TerraLab.data.assets.runtime",
+      "to": "TerraLab.data.copernicus"
+    },
+    {
+      "from": "TerraLab.data.assets.runtime",
+      "to": "TerraLab.util.gaia_importer"
+    },
+    {
+      "from": "TerraLab.data.assets.runtime",
+      "to": "TerraLab.util.milkyway_importer"
+    },
+    {
+      "from": "TerraLab.data.assets.validation",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.assets.validation",
+      "to": "TerraLab.data.assets.registry"
+    },
+    {
+      "from": "TerraLab.data.assets.validation",
+      "to": "TerraLab.data.assets.runtime"
+    },
+    {
+      "from": "TerraLab.data.assets.validation",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.data.assets.validation",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.data.assets.validation",
+      "to": "TerraLab.terrain.infrastructure.dem_tiles"
+    },
+    {
+      "from": "TerraLab.data.assets.validation",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.data.assets.validation",
+      "to": "TerraLab.terrain.source_inspection"
+    },
+    {
+      "from": "TerraLab.data.assets_manager",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "TerraLab.data.assets_manager",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.data.assets_manager",
+      "to": "TerraLab.data.assets"
+    },
+    {
+      "from": "TerraLab.data.assets_manager",
+      "to": "TerraLab.data.assets.runtime"
+    },
+    {
+      "from": "TerraLab.data.assets_manager",
+      "to": "TerraLab.data.copernicus"
+    },
+    {
+      "from": "TerraLab.data.catalogs.scope_cache",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.catalogs.scope_preload_cache",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.data.catalogs.scope_preload_cache",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.catalogs.scope_preload_cache",
+      "to": "TerraLab.data.catalogs.star_catalog"
+    },
+    {
+      "from": "TerraLab.data.catalogs.scope_preload_cache",
+      "to": "TerraLab.data.stars_dataset"
+    },
+    {
+      "from": "TerraLab.data.catalogs.scope_preload_cache",
+      "to": "TerraLab.render.stars_renderer"
+    },
+    {
+      "from": "TerraLab.data.catalogs.star_catalog",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.data.catalogs.star_catalog",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.catalogs.star_catalog",
+      "to": "TerraLab.data.catalogs.constants"
+    },
+    {
+      "from": "TerraLab.data.catalogs.star_catalog",
+      "to": "TerraLab.data.catalogs.scope_cache"
+    },
+    {
+      "from": "TerraLab.data.catalogs.star_catalog",
+      "to": "TerraLab.util.color"
+    },
+    {
+      "from": "TerraLab.data.copernicus.client",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.copernicus.client",
+      "to": "TerraLab.common.locks"
+    },
+    {
+      "from": "TerraLab.data.copernicus.manager",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.copernicus.mosaic",
+      "to": "TerraLab.common.locks"
+    },
+    {
+      "from": "TerraLab.data.copernicus.planning",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.data.copernicus.validation",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.copernicus.validation",
+      "to": "TerraLab.common.locks"
+    },
+    {
+      "from": "TerraLab.data.copernicus.validation",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.data.gaia_downloader",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.gaia_downloader",
+      "to": "TerraLab.data.tile_manifest"
+    },
+    {
+      "from": "TerraLab.data.layer_manager",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.data.layer_manager",
+      "to": "TerraLab.data.assets_manager"
+    },
+    {
+      "from": "TerraLab.data.layer_manager",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.data.star_catalog_store",
+      "to": "TerraLab.common.cache"
+    },
+    {
+      "from": "TerraLab.data.star_catalog_store",
+      "to": "TerraLab.common.cancellation"
+    },
+    {
+      "from": "TerraLab.data.star_catalog_store",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.star_catalog_store",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "TerraLab.data.star_catalog_store",
+      "to": "TerraLab.data.tile_manifest"
+    },
+    {
+      "from": "TerraLab.data.star_catalog_store",
+      "to": "TerraLab.util.healpy_catalog_reader"
+    },
+    {
+      "from": "TerraLab.data.star_data_coordinator",
+      "to": "TerraLab.common.cancellation"
+    },
+    {
+      "from": "TerraLab.data.star_data_coordinator",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.data.star_data_coordinator",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "TerraLab.data.star_data_coordinator",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.data.star_data_coordinator",
+      "to": "TerraLab.data.catalogs.star_catalog"
+    },
+    {
+      "from": "TerraLab.data.star_data_coordinator",
+      "to": "TerraLab.data.star_catalog_store"
+    },
+    {
+      "from": "TerraLab.data.star_data_coordinator",
+      "to": "TerraLab.data.tile_manifest"
+    },
+    {
+      "from": "TerraLab.data.star_data_coordinator",
+      "to": "TerraLab.render.stars_renderer"
+    },
+    {
+      "from": "TerraLab.data.stars_dataset",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.data.stars_dataset",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.light_pollution.processing",
+      "to": "TerraLab.light_pollution.calibration"
+    },
+    {
+      "from": "TerraLab.render.overlays_renderer",
+      "to": "TerraLab.astro.engine"
+    },
+    {
+      "from": "TerraLab.render.overlays_renderer",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.render.overlays_renderer",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.render.scope_renderer",
+      "to": "TerraLab.render.stars_renderer"
+    },
+    {
+      "from": "TerraLab.render.sky",
+      "to": "TerraLab.render.sky.milkyway_overlay"
+    },
+    {
+      "from": "TerraLab.render.sky.milkyway_overlay",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.render.sky.milkyway_overlay",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.render.sky.milkyway_overlay",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.render.sky.milkyway_overlay",
+      "to": "TerraLab.scene.projection"
+    },
+    {
+      "from": "TerraLab.render.sky.milkyway_overlay",
+      "to": "TerraLab.util.math2d"
+    },
+    {
+      "from": "TerraLab.render.sky_renderer",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.render.sky_renderer",
+      "to": "TerraLab.render.grid_renderer"
+    },
+    {
+      "from": "TerraLab.render.sky_renderer",
+      "to": "TerraLab.render.horizon_renderer"
+    },
+    {
+      "from": "TerraLab.render.sky_renderer",
+      "to": "TerraLab.render.overlays_renderer"
+    },
+    {
+      "from": "TerraLab.render.sky_renderer",
+      "to": "TerraLab.render.scope_renderer"
+    },
+    {
+      "from": "TerraLab.render.sky_renderer",
+      "to": "TerraLab.render.sky.milkyway_overlay"
+    },
+    {
+      "from": "TerraLab.render.sky_renderer",
+      "to": "TerraLab.render.stars_renderer"
+    },
+    {
+      "from": "TerraLab.render.stars_renderer",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.render.stars_renderer",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.render.stars_renderer",
+      "to": "TerraLab.scene.projection"
+    },
+    {
+      "from": "TerraLab.render.stars_renderer",
+      "to": "TerraLab.util.color"
+    },
+    {
+      "from": "TerraLab.render.stars_renderer",
+      "to": "TerraLab.util.math2d"
+    },
+    {
+      "from": "TerraLab.render.stars_renderer",
+      "to": "TerraLab.widgets.telescope_runtime"
+    },
+    {
+      "from": "TerraLab.render.workers.star_render",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.scene.camera",
+      "to": "TerraLab.util.math2d"
+    },
+    {
+      "from": "TerraLab.scene.projection",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "TerraLab.scene.render_state",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.scene.render_state",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "TerraLab.scene.scene_controller",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.scene.scene_controller",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.scene.scene_controller",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "TerraLab.scene.scene_controller",
+      "to": "TerraLab.scene.render_state"
+    },
+    {
+      "from": "TerraLab.scene.scene_state",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.scene.scene_state",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.scene.scene_state",
+      "to": "TerraLab.data.catalogs.constants"
+    },
+    {
+      "from": "TerraLab.scene.scene_state",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.scene.scene_state",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "TerraLab.scene.scene_state",
+      "to": "TerraLab.util.math2d"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.common.perf_events"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.common.performance.memory"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.config"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.domain.bands"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.light_pollution_sampler"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.persistence.profile_npz"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.ray_precision"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.raycast.baker"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.render.sampling"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.representation"
+    },
+    {
+      "from": "TerraLab.terrain.bake_process",
+      "to": "TerraLab.terrain.visibility_range"
+    },
+    {
+      "from": "TerraLab.terrain.data_sources",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.terrain.data_sources",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.terrain.data_sources",
+      "to": "TerraLab.terrain.representation"
+    },
+    {
+      "from": "TerraLab.terrain.domain.profile",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.domain.profile",
+      "to": "TerraLab.terrain.ray_precision"
+    },
+    {
+      "from": "TerraLab.terrain.domain.profile",
+      "to": "TerraLab.terrain.representation"
+    },
+    {
+      "from": "TerraLab.terrain.infrastructure.dem_tiles",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.infrastructure.dem_tiles",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "TerraLab.terrain.infrastructure.dem_tiles",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.land_cover",
+      "to": "TerraLab.terrain.land_cover.legends.s2glc"
+    },
+    {
+      "from": "TerraLab.terrain.land_cover.legends",
+      "to": "TerraLab.terrain.land_cover.legends.category_info"
+    },
+    {
+      "from": "TerraLab.terrain.land_cover.legends",
+      "to": "TerraLab.terrain.land_cover.legends.s2glc"
+    },
+    {
+      "from": "TerraLab.terrain.land_cover.legends.category_info",
+      "to": "TerraLab.terrain.land_cover.legends.s2glc"
+    },
+    {
+      "from": "TerraLab.terrain.land_cover.visual_styles",
+      "to": "TerraLab.terrain.land_cover.legends.s2glc"
+    },
+    {
+      "from": "TerraLab.terrain.light_pollution_query",
+      "to": "TerraLab.terrain.light_pollution_sampler"
+    },
+    {
+      "from": "TerraLab.terrain.light_pollution_sampler",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.light_pollution_sampler",
+      "to": "TerraLab.common.locks"
+    },
+    {
+      "from": "TerraLab.terrain.light_pollution_sampler",
+      "to": "TerraLab.light_pollution.bortle"
+    },
+    {
+      "from": "TerraLab.terrain.light_pollution_sampler",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.light_pollution_sampler",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.terrain.overlay",
+      "to": "TerraLab.terrain.overlay_mixins"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.band_draw",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.band_draw",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.band_draw",
+      "to": "TerraLab.terrain.render.geometry"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.band_draw",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.band_draw",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.category_hit_test",
+      "to": "TerraLab.terrain.land_cover.legends.category_info"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.category_hit_test",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.category_hit_test",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.draw_dispatch",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.draw_dispatch",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.draw_dispatch",
+      "to": "TerraLab.terrain.render.lighting"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.draw_dispatch",
+      "to": "TerraLab.terrain.render.materials"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.draw_dispatch",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.draw_dispatch",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.fallback",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.fallback",
+      "to": "TerraLab.terrain.ray_precision"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.fallback",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.fallback",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.fallback",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.interpolated_material",
+      "to": "TerraLab.common.perf_events"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.interpolated_material",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.interpolated_material",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.interpolated_material",
+      "to": "TerraLab.terrain.render.geometry"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.interpolated_material",
+      "to": "TerraLab.terrain.render.lighting"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.interpolated_material",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.interpolated_material",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.interpolated_material",
+      "to": "TerraLab.terrain.render.triangle_raster"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.light_context",
+      "to": "TerraLab.terrain.mesh.normals"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.light_context",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.light_context",
+      "to": "TerraLab.terrain.render.lighting"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.light_context",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.light_context",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.lighting_cache",
+      "to": "TerraLab.terrain.land_cover.visual_styles"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.lighting_cache",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.lighting_cache",
+      "to": "TerraLab.terrain.render.lighting"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.lighting_cache",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.lighting_cache",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.materials",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.materials",
+      "to": "TerraLab.terrain.render.atmosphere"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.materials",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.materials",
+      "to": "TerraLab.terrain.render.lighting"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.materials",
+      "to": "TerraLab.terrain.render.materials"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.materials",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.materials",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.profile_cache",
+      "to": "TerraLab.common.cache"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.profile_cache",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.profile_cache",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.profile_cache",
+      "to": "TerraLab.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.profile_cache",
+      "to": "TerraLab.terrain.land_cover.legends.category_info"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.profile_cache",
+      "to": "TerraLab.terrain.persistence.profile_npz"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.profile_cache",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.profile_cache",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.projection_geometry",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.projection_geometry",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.projection_geometry",
+      "to": "TerraLab.terrain.render.lighting"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.projection_geometry",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.projection_geometry",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.triangle_paint",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.triangle_paint",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.triangle_paint",
+      "to": "TerraLab.terrain.render.geometry"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.triangle_paint",
+      "to": "TerraLab.terrain.render.lighting"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.triangle_paint",
+      "to": "TerraLab.terrain.render.materials"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.triangle_paint",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.terrain.overlay_mixins.triangle_paint",
+      "to": "TerraLab.terrain.render.triangle_raster"
+    },
+    {
+      "from": "TerraLab.terrain.persistence.profile_npz",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.persistence.profile_npz",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "TerraLab.terrain.persistence.profile_npz",
+      "to": "TerraLab.terrain.representation"
+    },
+    {
+      "from": "TerraLab.terrain.providers",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.providers.asc_provider",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.providers.asc_provider",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "TerraLab.terrain.providers.asc_provider",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.terrain.providers.asc_provider",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.providers.asc_provider",
+      "to": "TerraLab.terrain.infrastructure.dem_tiles"
+    },
+    {
+      "from": "TerraLab.terrain.providers.asc_provider",
+      "to": "TerraLab.terrain.providers.common"
+    },
+    {
+      "from": "TerraLab.terrain.providers.chain",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.terrain.providers.chain",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.providers.chain",
+      "to": "TerraLab.terrain.providers.asc_provider"
+    },
+    {
+      "from": "TerraLab.terrain.providers.chain",
+      "to": "TerraLab.terrain.providers.common"
+    },
+    {
+      "from": "TerraLab.terrain.providers.chain",
+      "to": "TerraLab.terrain.providers.geotiff_provider"
+    },
+    {
+      "from": "TerraLab.terrain.providers.common",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "TerraLab.terrain.providers.common",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.providers.common",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.providers.geotiff_provider",
+      "to": "TerraLab.common.locks"
+    },
+    {
+      "from": "TerraLab.terrain.providers.geotiff_provider",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "TerraLab.terrain.providers.geotiff_provider",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.providers.geotiff_provider",
+      "to": "TerraLab.terrain.providers.common"
+    },
+    {
+      "from": "TerraLab.terrain.providers.geotiff_provider",
+      "to": "TerraLab.terrain.providers.raster_dataset"
+    },
+    {
+      "from": "TerraLab.terrain.providers.raster_dataset",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.providers.raster_dataset",
+      "to": "TerraLab.common.locks"
+    },
+    {
+      "from": "TerraLab.terrain.providers.raster_dataset",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "TerraLab.terrain.providers.raster_dataset",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.providers.raster_dataset",
+      "to": "TerraLab.terrain.providers.common"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.common.perf_events"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.common.performance.memory"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.terrain.domain.bands"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.terrain.domain.curvature"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.terrain.infrastructure.dem_tiles"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.terrain.mesh.elevation_field"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.terrain.mesh.normals"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.terrain.persistence.profile_npz"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.terrain.render.sampling"
+    },
+    {
+      "from": "TerraLab.terrain.raycast.baker",
+      "to": "TerraLab.terrain.sampling"
+    },
+    {
+      "from": "TerraLab.terrain.render.atmosphere",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.render.geometry",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.render.lighting",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.render.materials",
+      "to": "TerraLab.terrain.render.atmosphere"
+    },
+    {
+      "from": "TerraLab.terrain.render.materials",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.render.overlay_types",
+      "to": "TerraLab.terrain.render.lighting"
+    },
+    {
+      "from": "TerraLab.terrain.render.palette",
+      "to": "TerraLab.terrain.domain.bands"
+    },
+    {
+      "from": "TerraLab.terrain.render.palette",
+      "to": "TerraLab.terrain.land_cover.visual_styles"
+    },
+    {
+      "from": "TerraLab.terrain.render.palette",
+      "to": "TerraLab.terrain.render.atmosphere"
+    },
+    {
+      "from": "TerraLab.terrain.render.palette",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.render.palette",
+      "to": "TerraLab.terrain.representation"
+    },
+    {
+      "from": "TerraLab.terrain.render.palette",
+      "to": "TerraLab.terrain.visibility_range"
+    },
+    {
+      "from": "TerraLab.terrain.render.sampling",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.terrain.render.triangle_raster",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "TerraLab.terrain.sampling",
+      "to": "TerraLab.terrain.domain.curvature"
+    },
+    {
+      "from": "TerraLab.terrain.sampling",
+      "to": "TerraLab.terrain.render.sampling"
+    },
+    {
+      "from": "TerraLab.terrain.services.elevation_query",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.terrain.source_inspection",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.source_inspection",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.source_inspection",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.terrain.source_inspection",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.terrain.source_inspection",
+      "to": "TerraLab.terrain.surface"
+    },
+    {
+      "from": "TerraLab.terrain.surface.cache",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.surface.cache",
+      "to": "TerraLab.terrain.surface.common"
+    },
+    {
+      "from": "TerraLab.terrain.surface.categorical",
+      "to": "TerraLab.common.locks"
+    },
+    {
+      "from": "TerraLab.terrain.surface.categorical",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.terrain.surface.categorical",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.surface.categorical",
+      "to": "TerraLab.terrain.land_cover.legends.s2glc"
+    },
+    {
+      "from": "TerraLab.terrain.surface.categorical",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.terrain.surface.categorical",
+      "to": "TerraLab.terrain.surface.common"
+    },
+    {
+      "from": "TerraLab.terrain.surface.categorical",
+      "to": "TerraLab.terrain.surface.rgb"
+    },
+    {
+      "from": "TerraLab.terrain.surface.categorical",
+      "to": "TerraLab.terrain.surface_store"
+    },
+    {
+      "from": "TerraLab.terrain.surface.common",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.surface.common",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.terrain.surface.common",
+      "to": "TerraLab.terrain.providers.common"
+    },
+    {
+      "from": "TerraLab.terrain.surface.common",
+      "to": "TerraLab.terrain.providers.raster_dataset"
+    },
+    {
+      "from": "TerraLab.terrain.surface.factory",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.surface.factory",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.surface.factory",
+      "to": "TerraLab.terrain.providers.common"
+    },
+    {
+      "from": "TerraLab.terrain.surface.factory",
+      "to": "TerraLab.terrain.surface.categorical"
+    },
+    {
+      "from": "TerraLab.terrain.surface.factory",
+      "to": "TerraLab.terrain.surface.common"
+    },
+    {
+      "from": "TerraLab.terrain.surface.factory",
+      "to": "TerraLab.terrain.surface.light_pollution"
+    },
+    {
+      "from": "TerraLab.terrain.surface.factory",
+      "to": "TerraLab.terrain.surface.rgb"
+    },
+    {
+      "from": "TerraLab.terrain.surface.geometry",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.surface.geometry",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.terrain.surface.geometry",
+      "to": "TerraLab.terrain.surface.cache"
+    },
+    {
+      "from": "TerraLab.terrain.surface.light_pollution",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.surface.light_pollution",
+      "to": "TerraLab.terrain.surface.common"
+    },
+    {
+      "from": "TerraLab.terrain.surface.rgb",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.surface.rgb",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.terrain.surface.rgb",
+      "to": "TerraLab.terrain.surface.common"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.common.cache"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.common.perf_events"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.common.performance.memory"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.terrain.surface.cache"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.terrain.surface.categorical"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.terrain.surface.common"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.terrain.surface.geometry"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.terrain.surface.rgb"
+    },
+    {
+      "from": "TerraLab.terrain.surface.service",
+      "to": "TerraLab.terrain.surface_store"
+    },
+    {
+      "from": "TerraLab.terrain.terrain_coordinator",
+      "to": "TerraLab.terrain.worker"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.common.perf_events"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.config"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.terrain.domain.bands"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.terrain.light_pollution_sampler"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.terrain.persistence.profile_npz"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "TerraLab.terrain.worker",
+      "to": "TerraLab.terrain.surface"
+    },
+    {
+      "from": "TerraLab.ui.astro_canvas",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.astro_canvas",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.ui.astro_canvas",
+      "to": "TerraLab.render.qt.context"
+    },
+    {
+      "from": "TerraLab.ui.astro_canvas",
+      "to": "TerraLab.render.stars_renderer"
+    },
+    {
+      "from": "TerraLab.ui.astro_canvas",
+      "to": "TerraLab.scene.render_state"
+    },
+    {
+      "from": "TerraLab.ui.astro_canvas",
+      "to": "TerraLab.scene.scene_state"
+    },
+    {
+      "from": "TerraLab.ui.astro_canvas",
+      "to": "TerraLab.ui.canvas_mixins"
+    },
+    {
+      "from": "TerraLab.ui.astro_canvas",
+      "to": "TerraLab.ui.widget_init_helpers"
+    },
+    {
+      "from": "TerraLab.ui.astro_canvas",
+      "to": "TerraLab.widgets.spherical_math"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.astro.ephemeris_coordinator"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.common.custom_widget_base"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.data.catalogs.constants"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.data.star_data_coordinator"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.scene.scene_controller"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.terrain.terrain_coordinator"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.ui.widget_init_helpers"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.ui.widget_misc_helpers"
+    },
+    {
+      "from": "TerraLab.ui.astronomical_widget",
+      "to": "TerraLab.ui.widget_mixins"
+    },
+    {
+      "from": "TerraLab.ui.canvas_input_handler",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.canvas_input_handler",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.canvas_input_handler",
+      "to": "TerraLab.widgets.spherical_math"
+    },
+    {
+      "from": "TerraLab.ui.canvas_input_handler",
+      "to": "TerraLab.widgets.telescope_scope_mode"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.ephemeris_rendering",
+      "to": "TerraLab.render.overlays_renderer"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.interaction",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.interaction",
+      "to": "TerraLab.scene.projection"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.interaction",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.interaction",
+      "to": "TerraLab.ui.canvas_runtime_helpers"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.interaction",
+      "to": "TerraLab.widgets.measurement_tools"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.interaction",
+      "to": "TerraLab.widgets.telescope_scope_mode"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.astro.engine"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.render.grid_renderer"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.render.horizon_renderer"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.render.overlays_renderer"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.render.qt.context"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.render.sky_renderer"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.render.stars_renderer"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.scene.projection"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.scene.scene_state"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.projection_rendering",
+      "to": "TerraLab.widgets.spherical_math"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.selection_and_trails",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.selection_and_trails",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.selection_and_trails",
+      "to": "TerraLab.render.stars_renderer"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.selection_and_trails",
+      "to": "TerraLab.ui.canvas_runtime_helpers"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.selection_and_trails",
+      "to": "TerraLab.widgets.measurement_tools"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.selection_and_trails",
+      "to": "TerraLab.widgets.spherical_math"
+    },
+    {
+      "from": "TerraLab.ui.canvas_mixins.selection_and_trails",
+      "to": "TerraLab.widgets.telescope_scope_mode"
+    },
+    {
+      "from": "TerraLab.ui.canvas_runtime_helpers",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.canvas_runtime_helpers",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.canvas_runtime_helpers",
+      "to": "TerraLab.data.catalogs.constants"
+    },
+    {
+      "from": "TerraLab.ui.canvas_runtime_helpers",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.ui.canvas_runtime_helpers",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "TerraLab.ui.canvas_runtime_helpers",
+      "to": "TerraLab.widgets.telescope_runtime"
+    },
+    {
+      "from": "TerraLab.ui.canvas_selection",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.copernicus_orthophoto_dialog",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.copernicus_orthophoto_dialog",
+      "to": "TerraLab.data.copernicus"
+    },
+    {
+      "from": "TerraLab.ui.data_layers_dialog",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.data_layers_dialog",
+      "to": "TerraLab.data.assets_manager"
+    },
+    {
+      "from": "TerraLab.ui.data_layers_dialog",
+      "to": "TerraLab.data.layer_manager"
+    },
+    {
+      "from": "TerraLab.ui.data_layers_dialog",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.ui.data_layers_dialog",
+      "to": "TerraLab.terrain.representation"
+    },
+    {
+      "from": "TerraLab.ui.data_layers_dialog",
+      "to": "TerraLab.terrain.source_inspection"
+    },
+    {
+      "from": "TerraLab.ui.data_layers_dialog",
+      "to": "TerraLab.ui.layer_configurator"
+    },
+    {
+      "from": "TerraLab.ui.data_layers_dialog",
+      "to": "TerraLab.ui.onboarding_dialogs"
+    },
+    {
+      "from": "TerraLab.ui.data_library_dialog",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "TerraLab.ui.layer_configurator",
+      "to": "TerraLab.data.layer_manager"
+    },
+    {
+      "from": "TerraLab.ui.layer_configurator",
+      "to": "TerraLab.data.resumable_download"
+    },
+    {
+      "from": "TerraLab.ui.layer_configurator",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.ui.layer_configurator",
+      "to": "TerraLab.ui.data_library_dialog"
+    },
+    {
+      "from": "TerraLab.ui.onboarding_dialogs",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.onboarding_dialogs",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.onboarding_dialogs",
+      "to": "TerraLab.data"
+    },
+    {
+      "from": "TerraLab.ui.onboarding_dialogs",
+      "to": "TerraLab.data.assets_manager"
+    },
+    {
+      "from": "TerraLab.ui.onboarding_dialogs",
+      "to": "TerraLab.data.copernicus"
+    },
+    {
+      "from": "TerraLab.ui.onboarding_dialogs",
+      "to": "TerraLab.data.layer_manager"
+    },
+    {
+      "from": "TerraLab.ui.onboarding_dialogs",
+      "to": "TerraLab.ui.copernicus_orthophoto_dialog"
+    },
+    {
+      "from": "TerraLab.ui.onboarding_dialogs",
+      "to": "TerraLab.ui.layer_configurator"
+    },
+    {
+      "from": "TerraLab.ui.scope_preload_worker",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.ui.scope_preload_worker",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.scope_preload_worker",
+      "to": "TerraLab.data.catalogs.star_catalog"
+    },
+    {
+      "from": "TerraLab.ui.scope_preload_worker",
+      "to": "TerraLab.render.stars_renderer"
+    },
+    {
+      "from": "TerraLab.ui.sky_controller",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.common.deprecation_registry"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.common.perf_events"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.data.catalogs.constants"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.data.catalogs.scope_cache"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.data.catalogs.star_catalog"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.data.star_data_coordinator"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.data.stars_dataset"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.ui.scope_preload_worker"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.ui.workers.catalog_loader"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.ui.workers.scope_index"
+    },
+    {
+      "from": "TerraLab.ui.widget_bootstrap_helpers",
+      "to": "TerraLab.ui.workers.skyfield_loader"
+    },
+    {
+      "from": "TerraLab.ui.widget_controls_builder",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.widget_controls_builder",
+      "to": "TerraLab.data.layer_manager"
+    },
+    {
+      "from": "TerraLab.ui.widget_controls_builder",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.ui.widget_controls_builder",
+      "to": "TerraLab.terrain.ray_precision"
+    },
+    {
+      "from": "TerraLab.ui.widget_controls_builder",
+      "to": "TerraLab.terrain.visibility_range"
+    },
+    {
+      "from": "TerraLab.ui.widget_controls_builder",
+      "to": "TerraLab.ui.astro_canvas"
+    },
+    {
+      "from": "TerraLab.ui.widget_controls_builder",
+      "to": "TerraLab.ui.time_bar"
+    },
+    {
+      "from": "TerraLab.ui.widget_controls_builder",
+      "to": "TerraLab.widgets.measurement_tools"
+    },
+    {
+      "from": "TerraLab.ui.widget_controls_builder",
+      "to": "TerraLab.widgets.telescope_scope_mode"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.astro.search_engine"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.common.custom_widget_base"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.data.assets_manager"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.data.catalogs.constants"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.data.layer_manager"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.debug.diagnostics"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.layers.village"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.render.sky_renderer"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.render.workers.star_render"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.terrain.overlay"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.ui.canvas_input_handler"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.ui.canvas_selection"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.weather.system"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.widgets.constellation_drawing"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.widgets.hint_overlay"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.widgets.measurement_tools"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.widgets.scope_ui_manager"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.widgets.telescope_scope_mode"
+    },
+    {
+      "from": "TerraLab.ui.widget_init_helpers",
+      "to": "TerraLab.widgets.visual_magnitude_engine"
+    },
+    {
+      "from": "TerraLab.ui.widget_misc_helpers",
+      "to": "TerraLab.common.deprecation_registry"
+    },
+    {
+      "from": "TerraLab.ui.widget_misc_helpers",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.widget_misc_helpers",
+      "to": "TerraLab.common.perf_events"
+    },
+    {
+      "from": "TerraLab.ui.widget_misc_helpers",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.widget_misc_helpers",
+      "to": "TerraLab.ui.onboarding_dialogs"
+    },
+    {
+      "from": "TerraLab.ui.widget_misc_helpers",
+      "to": "TerraLab.ui.workers.catalog_loader"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.common.perf_events"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.config"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.data.layer_manager"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.terrain.ray_precision"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.terrain.visibility_range"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.ui.onboarding_dialogs"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.ui.widget_bootstrap_helpers"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.ui.widget_misc_helpers"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.bootstrap_terrain",
+      "to": "TerraLab.ui.workers.catalog_loader"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.controls_time",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.controls_time",
+      "to": "TerraLab.ui.widget_misc_helpers"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.controls_time",
+      "to": "TerraLab.ui.widget_runtime_helpers"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.controls_time",
+      "to": "TerraLab.widgets.measurement_tools"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.controls_time",
+      "to": "TerraLab.widgets.telescope_scope_mode"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.controls_time",
+      "to": "TerraLab.widgets.terrain_config_dialog"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.data.catalogs.constants"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.terrain.ray_precision"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.terrain.visibility_range"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.ui.astro_canvas"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.ui.widget_bootstrap_helpers"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.ui.widget_controls_builder"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.horizon_scope",
+      "to": "TerraLab.ui.widget_misc_helpers"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.layers",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.layers",
+      "to": "TerraLab.data.catalogs.constants"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.layers",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.layers",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.layers",
+      "to": "TerraLab.ui.widget_runtime_helpers"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.surface_data",
+      "to": "TerraLab.astro.search_engine"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.surface_data",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.surface_data",
+      "to": "TerraLab.data.layer_manager"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.surface_data",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.surface_data",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.surface_data",
+      "to": "TerraLab.ui.data_layers_dialog"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.surface_data",
+      "to": "TerraLab.ui.widget_misc_helpers"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.surface_data",
+      "to": "TerraLab.ui.widget_runtime_helpers"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.surface_data",
+      "to": "TerraLab.widgets.spherical_math"
+    },
+    {
+      "from": "TerraLab.ui.widget_mixins.surface_data",
+      "to": "TerraLab.widgets.telescope_runtime"
+    },
+    {
+      "from": "TerraLab.ui.widget_runtime_helpers",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.ui.widget_runtime_helpers",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.widget_runtime_helpers",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.widget_runtime_helpers",
+      "to": "TerraLab.data.catalogs.star_catalog"
+    },
+    {
+      "from": "TerraLab.ui.widget_runtime_helpers",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.ui.widget_runtime_helpers",
+      "to": "TerraLab.terrain.ray_precision"
+    },
+    {
+      "from": "TerraLab.ui.widget_runtime_helpers",
+      "to": "TerraLab.ui.widget_misc_helpers"
+    },
+    {
+      "from": "TerraLab.ui.widget_runtime_helpers",
+      "to": "TerraLab.widgets.telescope_runtime"
+    },
+    {
+      "from": "TerraLab.ui.widget_runtime_helpers",
+      "to": "TerraLab.widgets.visual_magnitude_engine"
+    },
+    {
+      "from": "TerraLab.ui.workers.catalog_loader",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.ui.workers.catalog_loader",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.ui.workers.catalog_loader",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.ui.workers.catalog_loader",
+      "to": "TerraLab.data.catalogs.constants"
+    },
+    {
+      "from": "TerraLab.ui.workers.catalog_loader",
+      "to": "TerraLab.data.catalogs.scope_cache"
+    },
+    {
+      "from": "TerraLab.ui.workers.catalog_loader",
+      "to": "TerraLab.data.catalogs.star_catalog"
+    },
+    {
+      "from": "TerraLab.ui.workers.catalog_loader",
+      "to": "TerraLab.data.stars_dataset"
+    },
+    {
+      "from": "TerraLab.ui.workers.scope_index",
+      "to": "TerraLab.render.stars_renderer"
+    },
+    {
+      "from": "TerraLab.ui.workers.skyfield_loader",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.util.build_healpy_index",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.util.build_healpy_index",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.util.color",
+      "to": "TerraLab.util.math2d"
+    },
+    {
+      "from": "TerraLab.util.gaia_importer",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.util.gaia_importer",
+      "to": "TerraLab.data.stars_dataset"
+    },
+    {
+      "from": "TerraLab.util.gaia_importer",
+      "to": "TerraLab.util.build_healpy_index"
+    },
+    {
+      "from": "TerraLab.util.healpy_catalog_reader",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.util.milkyway_importer",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.weather.metno_provider",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "TerraLab.weather.metno_provider",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.weather.metno_provider",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.weather.system",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.weather.system",
+      "to": "TerraLab.weather.metno_provider"
+    },
+    {
+      "from": "TerraLab.widgets.constellation_drawing",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.widgets.constellation_drawing",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.widgets.constellation_drawing",
+      "to": "TerraLab.widgets.spherical_math"
+    },
+    {
+      "from": "TerraLab.widgets.measurement_tools",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.widgets.measurement_tools",
+      "to": "TerraLab.widgets.spherical_math"
+    },
+    {
+      "from": "TerraLab.widgets.physical_math",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.widgets.scope_ui_manager",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.widgets.scope_ui_manager",
+      "to": "TerraLab.common.perf_events"
+    },
+    {
+      "from": "TerraLab.widgets.scope_ui_manager",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.widgets.scope_ui_manager",
+      "to": "TerraLab.widgets.measurement_tools"
+    },
+    {
+      "from": "TerraLab.widgets.scope_ui_manager",
+      "to": "TerraLab.widgets.telescope_runtime"
+    },
+    {
+      "from": "TerraLab.widgets.spherical_math",
+      "to": "TerraLab.scene.projection"
+    },
+    {
+      "from": "TerraLab.widgets.telescope_runtime",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "TerraLab.widgets.telescope_runtime",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.widgets.telescope_runtime",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "TerraLab.widgets.telescope_runtime",
+      "to": "TerraLab.widgets.physical_math"
+    },
+    {
+      "from": "TerraLab.widgets.telescope_scope_mode",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.widgets.telescope_scope_mode",
+      "to": "TerraLab.widgets.spherical_math"
+    },
+    {
+      "from": "TerraLab.widgets.terrain_config_dialog",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "TerraLab.widgets.terrain_config_dialog",
+      "to": "TerraLab.config"
+    },
+    {
+      "from": "TerraLab.widgets.terrain_config_dialog",
+      "to": "TerraLab.terrain.visibility_range"
+    },
+    {
+      "from": "TerraLab.widgets.visual_magnitude_engine",
+      "to": "TerraLab.widgets.optica_telescopica"
+    },
+    {
+      "from": "TerraLab.widgets.visual_magnitude_engine",
+      "to": "TerraLab.widgets.physical_math"
+    },
+    {
+      "from": "benchmarks/benchmark_categorical_pipeline.py",
+      "to": "TerraLab.common.performance.memory"
+    },
+    {
+      "from": "benchmarks/benchmark_categorical_pipeline.py",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "benchmarks/benchmark_categorical_pipeline.py",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "benchmarks/benchmark_categorical_pipeline.py",
+      "to": "TerraLab.terrain.render.materials"
+    },
+    {
+      "from": "benchmarks/benchmark_categorical_pipeline.py",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "benchmarks/benchmark_categorical_pipeline.py",
+      "to": "TerraLab.terrain.render.triangle_raster"
+    },
+    {
+      "from": "benchmarks/benchmark_categorical_pipeline.py",
+      "to": "TerraLab.terrain.surface"
+    },
+    {
+      "from": "benchmarks/benchmark_categorical_pipeline.py",
+      "to": "TerraLab.terrain.surface_store"
+    },
+    {
+      "from": "benchmarks/benchmark_horizon_tile_selection.py",
+      "to": "TerraLab.terrain.infrastructure.dem_tiles"
+    },
+    {
+      "from": "benchmarks/benchmark_optimization.py",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "benchmarks/benchmark_optimization.py",
+      "to": "TerraLab.common.performance.memory"
+    },
+    {
+      "from": "benchmarks/benchmark_optimization.py",
+      "to": "TerraLab.data.star_catalog_store"
+    },
+    {
+      "from": "benchmarks/benchmark_optimization.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "benchmarks/benchmark_optimization.py",
+      "to": "TerraLab.terrain.raycast.baker"
+    },
+    {
+      "from": "benchmarks/benchmark_scope_startup.py",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.domain.bands"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.overlay"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.raycast.baker"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.render.sampling"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.representation"
+    },
+    {
+      "from": "benchmarks/benchmark_terrain_render.py",
+      "to": "TerraLab.terrain.visibility_range"
+    },
+    {
+      "from": "scripts.check_lp_domes",
+      "to": "TerraLab.terrain.light_pollution_sampler"
+    },
+    {
+      "from": "scripts.predict_mlim",
+      "to": "TerraLab.light_pollution.mlim"
+    },
+    {
+      "from": "scripts.verify_industrial_lp",
+      "to": "TerraLab.terrain.light_pollution_sampler"
+    },
+    {
+      "from": "tests/cli/test_entrypoints.py",
+      "to": "TerraLab"
+    },
+    {
+      "from": "tests/cli/test_entrypoints.py",
+      "to": "TerraLab.cli"
+    },
+    {
+      "from": "tests/common/test_cache.py",
+      "to": "TerraLab.common.cache"
+    },
+    {
+      "from": "tests/common/test_cancellation.py",
+      "to": "TerraLab.common.cancellation"
+    },
+    {
+      "from": "tests/common/test_exception_reporting.py",
+      "to": "TerraLab.common.exception_reporting"
+    },
+    {
+      "from": "tests/common/test_performance_budget.py",
+      "to": "TerraLab.common.performance.budget"
+    },
+    {
+      "from": "tests/common/test_performance_budget.py",
+      "to": "TerraLab.common.performance.flags"
+    },
+    {
+      "from": "tests/data/test_gaia_process_pipeline.py",
+      "to": "TerraLab.common.cancellation"
+    },
+    {
+      "from": "tests/data/test_gaia_process_pipeline.py",
+      "to": "TerraLab.data.star_catalog_store"
+    },
+    {
+      "from": "tests/data/test_gaia_process_pipeline.py",
+      "to": "TerraLab.util.gaia_importer"
+    },
+    {
+      "from": "tests/data/test_star_colours.py",
+      "to": "TerraLab.util.color"
+    },
+    {
+      "from": "tests/light_pollution/test_processing.py",
+      "to": "TerraLab.light_pollution.processing"
+    },
+    {
+      "from": "tests/terrain/test_asc_cache.py",
+      "to": "TerraLab.terrain.asc_cache_builder"
+    },
+    {
+      "from": "tests/terrain/test_bands.py",
+      "to": "TerraLab.terrain.domain.bands"
+    },
+    {
+      "from": "tests/terrain/test_elevation_query.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "tests/terrain/test_elevation_query.py",
+      "to": "TerraLab.terrain.services"
+    },
+    {
+      "from": "tests/terrain/test_raster_windows.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "tests/terrain/test_tile_index.py",
+      "to": "TerraLab.terrain.infrastructure.dem_tiles"
+    },
+    {
+      "from": "tests/terrain/test_tile_index.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "tests/terrain/test_vectorized_raycast.py",
+      "to": "TerraLab.terrain"
+    },
+    {
+      "from": "tests/terrain/test_vectorized_raycast.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "tests/terrain/test_vectorized_raycast.py",
+      "to": "TerraLab.terrain.raycast.baker"
+    },
+    {
+      "from": "tests/test_adaptive_sampling.py",
+      "to": "TerraLab.terrain.raycast.baker"
+    },
+    {
+      "from": "tests/test_adaptive_sampling.py",
+      "to": "TerraLab.terrain.render.sampling"
+    },
+    {
+      "from": "tests/test_adaptive_sampling.py",
+      "to": "TerraLab.terrain.sampling"
+    },
+    {
+      "from": "tests/test_assets_manager_data_sources.py",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "tests/test_assets_manager_data_sources.py",
+      "to": "TerraLab.data.assets_manager"
+    },
+    {
+      "from": "tests/test_assets_manager_data_sources.py",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "tests/test_assets_manager_data_sources.py",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.astro.ngc_catalog"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.render.overlays_renderer"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.render.sky.milkyway_overlay"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.render.stars_renderer"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.scene.projection"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.terrain.mesh.normals"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.terrain.overlay"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.terrain.persistence.profile_npz"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.terrain.render.geometry"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.terrain.render.triangle_raster"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.terrain.worker"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.ui.astronomical_widget"
+    },
+    {
+      "from": "tests/test_astro_rendering.py",
+      "to": "TerraLab.widgets.telescope_runtime"
+    },
+    {
+      "from": "tests/test_bake_process_atomic_save.py",
+      "to": "TerraLab.terrain"
+    },
+    {
+      "from": "tests/test_bake_process_atomic_save.py",
+      "to": "TerraLab.terrain.bake_process"
+    },
+    {
+      "from": "tests/test_bake_process_atomic_save.py",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "tests/test_canvas_input_handler.py",
+      "to": "TerraLab.ui.canvas_input_handler"
+    },
+    {
+      "from": "tests/test_canvas_selection.py",
+      "to": "TerraLab.ui.astro_canvas"
+    },
+    {
+      "from": "tests/test_canvas_selection.py",
+      "to": "TerraLab.ui.canvas_selection"
+    },
+    {
+      "from": "tests/test_config.py",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "tests/test_copernicus_asset_integration.py",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "tests/test_copernicus_asset_integration.py",
+      "to": "TerraLab.data"
+    },
+    {
+      "from": "tests/test_copernicus_asset_integration.py",
+      "to": "TerraLab.data.assets_manager"
+    },
+    {
+      "from": "tests/test_copernicus_asset_integration.py",
+      "to": "TerraLab.data.copernicus"
+    },
+    {
+      "from": "tests/test_copernicus_asset_integration.py",
+      "to": "TerraLab.data.layer_manager"
+    },
+    {
+      "from": "tests/test_copernicus_asset_integration.py",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "tests/test_copernicus_asset_integration.py",
+      "to": "TerraLab.ui"
+    },
+    {
+      "from": "tests/test_copernicus_asset_integration.py",
+      "to": "TerraLab.ui.onboarding_dialogs"
+    },
+    {
+      "from": "tests/test_copernicus_orthophoto.py",
+      "to": "TerraLab.data"
+    },
+    {
+      "from": "tests/test_copernicus_orthophoto.py",
+      "to": "TerraLab.data.copernicus"
+    },
+    {
+      "from": "tests/test_copernicus_orthophoto_dialog.py",
+      "to": "TerraLab.data.copernicus"
+    },
+    {
+      "from": "tests/test_copernicus_orthophoto_dialog.py",
+      "to": "TerraLab.ui.copernicus_orthophoto_dialog"
+    },
+    {
+      "from": "tests/test_data_layers_ui_contract.py",
+      "to": "TerraLab.data.layer_manager"
+    },
+    {
+      "from": "tests/test_data_layers_ui_contract.py",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "tests/test_data_layers_ui_contract.py",
+      "to": "TerraLab.ui.astronomical_widget"
+    },
+    {
+      "from": "tests/test_data_layers_ui_contract.py",
+      "to": "TerraLab.ui.data_layers_dialog"
+    },
+    {
+      "from": "tests/test_data_library.py",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "tests/test_data_sources.py",
+      "to": "TerraLab.common.app_paths"
+    },
+    {
+      "from": "tests/test_data_sources.py",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "tests/test_data_sources.py",
+      "to": "TerraLab.ui.data_layers_dialog"
+    },
+    {
+      "from": "tests/test_deprecated_registry.py",
+      "to": "TerraLab.common.deprecation_registry"
+    },
+    {
+      "from": "tests/test_diffuse_coords.py",
+      "to": "TerraLab.render.sky.milkyway_overlay"
+    },
+    {
+      "from": "tests/test_diffuse_coords.py",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "tests/test_diffuse_coords.py",
+      "to": "TerraLab.scene.projection"
+    },
+    {
+      "from": "tests/test_diffuse_noise.py",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "tests/test_diffuse_noise.py",
+      "to": "TerraLab.render.sky.milkyway_overlay"
+    },
+    {
+      "from": "tests/test_diffuse_noise.py",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "tests/test_diffuse_noise.py",
+      "to": "TerraLab.scene.scene_state"
+    },
+    {
+      "from": "tests/test_gaia_manifest_resolution.py",
+      "to": "TerraLab.ui.astronomical_widget"
+    },
+    {
+      "from": "tests/test_geospatial_providers.py",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "tests/test_geospatial_providers.py",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "tests/test_geospatial_providers.py",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "tests/test_geospatial_providers.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "tests/test_geospatial_providers.py",
+      "to": "TerraLab.terrain.source_inspection"
+    },
+    {
+      "from": "tests/test_geospatial_providers.py",
+      "to": "TerraLab.terrain.surface"
+    },
+    {
+      "from": "tests/test_horizon_baker_coverage.py",
+      "to": "TerraLab.terrain.raycast.baker"
+    },
+    {
+      "from": "tests/test_horizon_worker_bortle.py",
+      "to": "TerraLab.terrain"
+    },
+    {
+      "from": "tests/test_horizon_worker_bortle.py",
+      "to": "TerraLab.terrain.worker"
+    },
+    {
+      "from": "tests/test_light_pollution_modes.py",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "tests/test_light_pollution_modes.py",
+      "to": "TerraLab.ui.astronomical_widget"
+    },
+    {
+      "from": "tests/test_light_pollution_modes.py",
+      "to": "TerraLab.ui.widget_mixins"
+    },
+    {
+      "from": "tests/test_light_pollution_modes.py",
+      "to": "TerraLab.ui.widget_runtime_helpers"
+    },
+    {
+      "from": "tests/test_light_pollution_modes.py",
+      "to": "TerraLab.widgets.telescope_runtime"
+    },
+    {
+      "from": "tests/test_light_pollution_sampler_crs.py",
+      "to": "TerraLab.terrain.light_pollution_sampler"
+    },
+    {
+      "from": "tests/test_light_pollution_sampler_spatial.py",
+      "to": "TerraLab.terrain"
+    },
+    {
+      "from": "tests/test_light_pollution_sampler_spatial.py",
+      "to": "TerraLab.terrain.light_pollution_sampler"
+    },
+    {
+      "from": "tests/test_light_pollution_typed_chain.py",
+      "to": "TerraLab.terrain.light_pollution_sampler"
+    },
+    {
+      "from": "tests/test_milky_way.py",
+      "to": "TerraLab.data.converters.planck"
+    },
+    {
+      "from": "tests/test_milky_way.py",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "tests/test_milky_way.py",
+      "to": "TerraLab.render.qt.context"
+    },
+    {
+      "from": "tests/test_milky_way.py",
+      "to": "TerraLab.render.sky.milkyway_overlay"
+    },
+    {
+      "from": "tests/test_milky_way.py",
+      "to": "TerraLab.render.sky_renderer"
+    },
+    {
+      "from": "tests/test_milky_way.py",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "tests/test_milky_way.py",
+      "to": "TerraLab.scene.scene_state"
+    },
+    {
+      "from": "tests/test_morell_puig_den_cama.py",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "tests/test_morell_puig_den_cama.py",
+      "to": "TerraLab.terrain.crs"
+    },
+    {
+      "from": "tests/test_morell_puig_den_cama.py",
+      "to": "TerraLab.terrain.domain.curvature"
+    },
+    {
+      "from": "tests/test_morell_puig_den_cama.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "tests/test_morell_puig_den_cama.py",
+      "to": "TerraLab.terrain.visibility_range"
+    },
+    {
+      "from": "tests/test_onboarding_dem_autolocation.py",
+      "to": "TerraLab.common.utils"
+    },
+    {
+      "from": "tests/test_onboarding_dem_autolocation.py",
+      "to": "TerraLab.data.assets_manager"
+    },
+    {
+      "from": "tests/test_onboarding_dem_autolocation.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "tests/test_providers.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "tests/test_ray_precision.py",
+      "to": "TerraLab.terrain.ray_precision"
+    },
+    {
+      "from": "tests/test_s2glc_download.py",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "tests/test_s2glc_download.py",
+      "to": "TerraLab.data.assets_manager"
+    },
+    {
+      "from": "tests/test_s2glc_download.py",
+      "to": "TerraLab.data.resumable_download"
+    },
+    {
+      "from": "tests/test_s2glc_land_cover.py",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "tests/test_s2glc_land_cover.py",
+      "to": "TerraLab.data.assets_manager"
+    },
+    {
+      "from": "tests/test_s2glc_land_cover.py",
+      "to": "TerraLab.data.layer_manager"
+    },
+    {
+      "from": "tests/test_s2glc_land_cover.py",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "tests/test_s2glc_land_cover.py",
+      "to": "TerraLab.terrain.land_cover.legends.category_info"
+    },
+    {
+      "from": "tests/test_s2glc_land_cover.py",
+      "to": "TerraLab.terrain.land_cover.legends.s2glc"
+    },
+    {
+      "from": "tests/test_s2glc_land_cover.py",
+      "to": "TerraLab.terrain.land_cover.visual_styles"
+    },
+    {
+      "from": "tests/test_s2glc_land_cover.py",
+      "to": "TerraLab.terrain.providers"
+    },
+    {
+      "from": "tests/test_s2glc_land_cover.py",
+      "to": "TerraLab.terrain.source_inspection"
+    },
+    {
+      "from": "tests/test_s2glc_land_cover.py",
+      "to": "TerraLab.terrain.surface"
+    },
+    {
+      "from": "tests/test_scene_controller_render_state.py",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "tests/test_scene_controller_render_state.py",
+      "to": "TerraLab.scene.scene_controller"
+    },
+    {
+      "from": "tests/test_scope_ui_manager.py",
+      "to": "TerraLab.widgets.scope_ui_manager"
+    },
+    {
+      "from": "tests/test_search_engine.py",
+      "to": "TerraLab.astro.ngc_catalog"
+    },
+    {
+      "from": "tests/test_search_engine.py",
+      "to": "TerraLab.astro.search_engine"
+    },
+    {
+      "from": "tests/test_spherical_math.py",
+      "to": "TerraLab.scene.camera"
+    },
+    {
+      "from": "tests/test_spherical_math.py",
+      "to": "TerraLab.scene.projection"
+    },
+    {
+      "from": "tests/test_spherical_math.py",
+      "to": "TerraLab.widgets.spherical_math"
+    },
+    {
+      "from": "tests/test_star_data_coordinator.py",
+      "to": "TerraLab.data.star_data_coordinator"
+    },
+    {
+      "from": "tests/test_surface_lod_cache.py",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "tests/test_surface_lod_cache.py",
+      "to": "TerraLab.terrain.surface"
+    },
+    {
+      "from": "tests/test_surface_lod_cache.py",
+      "to": "TerraLab.terrain.surface_store"
+    },
+    {
+      "from": "tests/test_surface_mode_switch.py",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "tests/test_surface_mode_switch.py",
+      "to": "TerraLab.terrain.land_cover.legends.category_info"
+    },
+    {
+      "from": "tests/test_surface_mode_switch.py",
+      "to": "TerraLab.ui.astro_canvas"
+    },
+    {
+      "from": "tests/test_surface_mode_switch.py",
+      "to": "TerraLab.ui.astronomical_widget"
+    },
+    {
+      "from": "tests/test_surface_mode_switch.py",
+      "to": "TerraLab.ui.canvas_input_handler"
+    },
+    {
+      "from": "tests/test_telescope_runtime.py",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "tests/test_telescope_runtime.py",
+      "to": "TerraLab.widgets.telescope_runtime"
+    },
+    {
+      "from": "tests/test_terrain_render_pipeline.py",
+      "to": "TerraLab.terrain.mesh.normals"
+    },
+    {
+      "from": "tests/test_terrain_render_pipeline.py",
+      "to": "TerraLab.terrain.render.atmosphere"
+    },
+    {
+      "from": "tests/test_terrain_render_pipeline.py",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "tests/test_terrain_render_pipeline.py",
+      "to": "TerraLab.terrain.render.lighting"
+    },
+    {
+      "from": "tests/test_terrain_render_pipeline.py",
+      "to": "TerraLab.terrain.render.materials"
+    },
+    {
+      "from": "tests/test_terrain_representation.py",
+      "to": "TerraLab.terrain"
+    },
+    {
+      "from": "tests/test_terrain_representation.py",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "tests/test_terrain_representation.py",
+      "to": "TerraLab.terrain.persistence.profile_npz"
+    },
+    {
+      "from": "tests/test_terrain_representation.py",
+      "to": "TerraLab.terrain.representation"
+    },
+    {
+      "from": "tests/test_terrain_surface_render.py",
+      "to": "TerraLab.terrain.overlay"
+    },
+    {
+      "from": "tests/test_terrain_surface_render.py",
+      "to": "TerraLab.terrain.render.config"
+    },
+    {
+      "from": "tests/test_terrain_surface_render.py",
+      "to": "TerraLab.terrain.render.geometry"
+    },
+    {
+      "from": "tests/test_terrain_surface_render.py",
+      "to": "TerraLab.terrain.render.lighting"
+    },
+    {
+      "from": "tests/test_terrain_surface_render.py",
+      "to": "TerraLab.terrain.render.materials"
+    },
+    {
+      "from": "tests/test_terrain_surface_render.py",
+      "to": "TerraLab.terrain.render.overlay_types"
+    },
+    {
+      "from": "tests/test_terrain_surface_render.py",
+      "to": "TerraLab.terrain.render.palette"
+    },
+    {
+      "from": "tests/test_terrain_surface_render.py",
+      "to": "TerraLab.terrain.render.triangle_raster"
+    },
+    {
+      "from": "tests/test_terrain_surface_render.py",
+      "to": "TerraLab.terrain.representation"
+    },
+    {
+      "from": "tests/test_terrain_surface_render.py",
+      "to": "TerraLab.ui.canvas_runtime_helpers"
+    },
+    {
+      "from": "tests/test_terrain_visibility_range.py",
+      "to": "TerraLab.terrain.domain.bands"
+    },
+    {
+      "from": "tests/test_terrain_visibility_range.py",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "tests/test_terrain_visibility_range.py",
+      "to": "TerraLab.terrain.persistence.profile_npz"
+    },
+    {
+      "from": "tests/test_terrain_visibility_range.py",
+      "to": "TerraLab.terrain.raycast.baker"
+    },
+    {
+      "from": "tests/test_terrain_visibility_range.py",
+      "to": "TerraLab.terrain.visibility_range"
+    },
+    {
+      "from": "tests/test_terrain_visibility_range.py",
+      "to": "TerraLab.terrain.worker"
+    },
+    {
+      "from": "tests/test_tile_cache_load_safety.py",
+      "to": "TerraLab.terrain.infrastructure.dem_tiles"
+    },
+    {
+      "from": "tests/test_tile_manifest.py",
+      "to": "TerraLab.data.tile_manifest"
+    },
+    {
+      "from": "tests/test_visual_magnitude_engine.py",
+      "to": "TerraLab.light_pollution.modes"
+    },
+    {
+      "from": "tests/test_visual_magnitude_engine.py",
+      "to": "TerraLab.widgets.optica_telescopica"
+    },
+    {
+      "from": "tests/test_visual_magnitude_engine.py",
+      "to": "TerraLab.widgets.visual_magnitude_engine"
+    },
+    {
+      "from": "tests/test_worker_data_sources.py",
+      "to": "TerraLab.terrain.data_sources"
+    },
+    {
+      "from": "tests/test_worker_data_sources.py",
+      "to": "TerraLab.terrain.domain.profile"
+    },
+    {
+      "from": "tests/test_worker_data_sources.py",
+      "to": "TerraLab.terrain.surface"
+    },
+    {
+      "from": "tests/test_worker_data_sources.py",
+      "to": "TerraLab.terrain.terrain_coordinator"
+    },
+    {
+      "from": "tests/test_worker_data_sources.py",
+      "to": "TerraLab.terrain.worker"
+    },
+    {
+      "from": "tools/import_gaia_catalog.py",
+      "to": "TerraLab.common.data_library"
+    },
+    {
+      "from": "tools/import_gaia_catalog.py",
+      "to": "TerraLab.util.gaia_importer"
+    }
+  ],
+  "cycles": []
+}

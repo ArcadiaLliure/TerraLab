@@ -1,0 +1,84 @@
+........................................................................ [ 12%]
+........................................................................ [ 25%]
+........................................................................ [ 38%]
+........................................................................ [ 50%]
+........................................................................ [ 63%]
+........................................................................ [ 76%]
+........................................................................ [ 89%]
+..............................................................           [100%]
+============================== warnings summary ===============================
+tests/light_pollution/test_processing.py::test_preprocess_preserves_geospatial_metadata_and_normalizes_nodata
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\TerraLab\light_pollution\processing.py:33: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    data = source.read(1, window=window).astype(np.float32)
+
+tests/light_pollution/test_processing.py::test_preprocess_preserves_geospatial_metadata_and_normalizes_nodata
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\tests\light_pollution\test_processing.py:37: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    cleaned = raster.read(1)
+
+tests/light_pollution/test_processing.py::test_convolution_handles_edges_nan_and_partial_windows
+tests/light_pollution/test_processing.py::test_convolution_handles_edges_nan_and_partial_windows
+tests/light_pollution/test_processing.py::test_convolution_handles_edges_nan_and_partial_windows
+tests/light_pollution/test_processing.py::test_convolution_handles_edges_nan_and_partial_windows
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\TerraLab\light_pollution\processing.py:101: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    data = source.read(1, window=read_window)
+
+tests/light_pollution/test_processing.py::test_convolution_handles_edges_nan_and_partial_windows
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\tests\light_pollution\test_processing.py:55: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    result = raster.read(1)
+
+tests/test_copernicus_orthophoto.py::test_out_of_core_mosaic_preserves_fragment_alignment_and_validates
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\tests\test_copernicus_orthophoto.py:877: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    data = dataset.read(1)
+
+tests/test_copernicus_orthophoto.py::test_u8_output_uses_one_global_stretch_for_u16_values_above_255
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\tests\test_copernicus_orthophoto.py:927: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    converted = dataset.read(1)[0]
+
+tests/test_copernicus_orthophoto.py::test_u16_output_preserves_native_values_without_radiometric_conversion
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\tests\test_copernicus_orthophoto.py:973: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    assert dataset.read(1).tolist() == [[1_234, 54_321]]
+
+tests/test_light_pollution_sampler_spatial.py::test_sampling_matches_same_physical_point_for_latlon_and_terrain_xy
+tests/test_light_pollution_sampler_spatial.py::test_axis_order_is_not_swapped
+tests/test_light_pollution_sampler_spatial.py::test_out_of_bounds_returns_zero
+tests/test_light_pollution_sampler_spatial.py::test_projected_sampling_supports_25831_and_32631_for_same_point
+tests/test_light_pollution_sampler_spatial.py::test_window_sampling_keeps_native_pixel_value_at_query_point
+tests/test_light_pollution_sampler_spatial.py::test_sqm_window_is_clipped_to_avoid_pathological_memory_usage
+tests/test_light_pollution_sampler_spatial.py::test_trace_links_location_sqm_and_bortle
+tests/test_light_pollution_typed_chain.py::test_folder_mosaic_expands_files_and_falls_back_from_nodata
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\TerraLab\terrain\light_pollution_sampler.py:379: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    data = src.read(1, window=window).astype(np.float32)
+
+tests/test_light_pollution_sampler_spatial.py::test_batch_sampling_without_preload_opens_raster_only_once
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\TerraLab\terrain\light_pollution_sampler.py:912: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    data = src.read(
+
+tests/test_light_pollution_sampler_spatial.py::test_missing_crs_uses_explicit_fallback_policy_for_dvnl_extent
+tests/test_light_pollution_sampler_spatial.py::test_projected_sampling_supports_25831_and_32631_for_same_point
+tests/test_light_pollution_sampler_spatial.py::test_window_sampling_keeps_native_pixel_value_at_query_point
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\TerraLab\terrain\light_pollution_sampler.py:426: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    arr = src.read(1, window=((row, row + 1), (col, col + 1))).astype(
+
+tests/test_light_pollution_typed_chain.py::test_folder_mosaic_expands_files_and_falls_back_from_nodata
+tests/test_light_pollution_typed_chain.py::test_folder_mosaic_expands_files_and_falls_back_from_nodata
+tests/test_light_pollution_typed_chain.py::test_folder_mosaic_expands_files_and_falls_back_from_nodata
+tests/test_light_pollution_typed_chain.py::test_folder_mosaic_expands_files_and_falls_back_from_nodata
+tests/test_light_pollution_typed_chain.py::test_folder_mosaic_expands_files_and_falls_back_from_nodata
+tests/test_light_pollution_typed_chain.py::test_folder_mosaic_expands_files_and_falls_back_from_nodata
+tests/test_light_pollution_typed_chain.py::test_typed_source_chain_preserves_valid_zero_instead_of_falling_through
+  C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Lib\site-packages\numpy\ma\core.py:3505: DeprecationWarning: Setting the shape on a NumPy array has been deprecated in NumPy 2.5.
+  As an alternative, you can create a new view using np.reshape (with copy=False if needed).
+    super(MaskedArray, type(self)).shape.__set__(self, shape)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+566 passed, 29 warnings in 41.80s

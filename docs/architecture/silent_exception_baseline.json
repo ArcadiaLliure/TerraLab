@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "captured_utc": "2026-07-25T12:35:00Z",
+  "policy": "No product module may contain an except Exception handler whose only body is pass.",
+  "total": 0,
+  "file_counts": {}
+}

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "id": "TerraLab.tools.download_gaia_tap.main",
+      "module_path": "TerraLab.tools.download_gaia_tap",
+      "class_name": null,
+      "method_name": "main",
+      "replacement": "TerraLab.cli.gaia.main",
+      "phase_introduced": 2,
+      "status": "removed",
+      "notes": "Removed locally after migration to the supported Gaia CLI."
+    },
+    {
+      "id": "TerraLab.ui.sky_widget_impl",
+      "module_path": "TerraLab.ui.sky_widget_impl",
+      "class_name": null,
+      "method_name": "*",
+      "replacement": "TerraLab.ui.astronomical_widget and TerraLab.ui.astro_canvas",
+      "phase_introduced": 12,
+      "status": "removed",
+      "notes": "Removed locally after the canonical UI runtime migration."
+    },
+    {
+      "id": "TerraLab.widgets.sky_widget",
+      "module_path": "TerraLab.widgets.sky_widget",
+      "class_name": null,
+      "method_name": "*",
+      "replacement": "TerraLab.ui.astronomical_widget",
+      "phase_introduced": 12,
+      "status": "removed",
+      "notes": "Removed locally; internal consumers use the canonical UI package."
+    }
+  ]
+}

@@ -1,0 +1,3 @@
+
+[notice] A new release of pip is available: 25.2 -> 26.1.2
+[notice] To update, run: C:\Users\Manel\AppData\Local\Temp\terralab-wheel-final-98204d4\Scripts\python.exe -m pip install --upgrade pip

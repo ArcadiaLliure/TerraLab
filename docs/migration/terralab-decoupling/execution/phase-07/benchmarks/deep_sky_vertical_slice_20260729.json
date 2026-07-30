@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "repeats": 7,
+  "fixture_texture_bytes": 1955,
+  "fixture_catalog_bytes": 245056,
+  "cold_resource_load_ms": 17.711,
+  "cold_plans_ms": 28.695,
+  "warm_frame": {
+    "p50_ms": 4.92,
+    "p95_ms": 5.452
+  },
+  "milkyway_plan_cache_reused": true,
+  "texture_handle_reused": true,
+  "catalog_mmap": true,
+  "rss_delta_bytes": 36864
+}

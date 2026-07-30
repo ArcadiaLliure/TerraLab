@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Scripts\python.exe -m pip install -e ".[dev]"
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4
+python=Python 3.13.7
+started=2026-07-26T01:31:39.8360892+02:00
+finished=2026-07-26T01:34:04.1218624+02:00
+duration_seconds=144.285
+exit_code=0

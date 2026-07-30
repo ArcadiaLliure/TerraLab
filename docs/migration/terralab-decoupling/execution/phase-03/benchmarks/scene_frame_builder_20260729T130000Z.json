@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "repeats": 1000,
+  "build_ms": {
+    "p50": 0.023,
+    "p95": 0.029305,
+    "min": 0.0221,
+    "max": 0.0981
+  },
+  "encode_ms": {
+    "p50": 0.0132,
+    "p95": 0.01621,
+    "min": 0.0127,
+    "max": 0.0587
+  },
+  "payload_bytes": {
+    "min": 2542,
+    "max": 2542,
+    "median": 2542
+  },
+  "allocations": {
+    "tracemalloc_current_bytes": 1232,
+    "tracemalloc_peak_bytes": 4712
+  },
+  "resource_references": {
+    "resource_versions_identity_preserved": true,
+    "catalog_identity_preserved": true,
+    "terrain_profile_identity_preserved": true,
+    "deepcopy_used": false
+  }
+}

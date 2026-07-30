@@ -1,0 +1,98 @@
+{
+  "scene": {
+    "name": "Torroja del Priorat",
+    "latitude": 41.2135485,
+    "longitude": 0.8097282,
+    "radius_m": 30000.0,
+    "grid": [
+      48,
+      120
+    ],
+    "surface_path": "I:\\TerraLab\\data\\earth\\surface\\Cobertura_del_s_l_categ_rica\\S2GLC_Europe_2017_v1.2.tif"
+  },
+  "cold": {
+    "elapsed_s": 1.391136500002176,
+    "valid_samples": 5760,
+    "requested_samples": 5760,
+    "raster_bytes": 34888,
+    "lod_windows": 2686,
+    "lod_rows": 3406,
+    "lod_pixels_decoded": 17444,
+    "lod_unique_cells": 4239,
+    "lod_modal_cells": 4239,
+    "lod_cache_hits": 0,
+    "rss_delta_bytes": 547143680,
+    "peak_rss_delta_bytes": 547143680,
+    "persistent_cache": {
+      "hits": 0,
+      "misses": 271,
+      "writes": 271,
+      "corrupt": 0,
+      "evictions": 0,
+      "loads_ms": 97,
+      "writes_ms": 377,
+      "fsync_ms": 0,
+      "prunes_ms": 4,
+      "prunes": 1,
+      "budget_bytes": 2147483648,
+      "timestamp_ns": 1784848318942088400
+    }
+  },
+  "warm_restart": {
+    "elapsed_s": 0.5764873000007356,
+    "valid_samples": 5760,
+    "requested_samples": 5760,
+    "raster_bytes": 0,
+    "lod_windows": 0,
+    "lod_rows": 0,
+    "lod_pixels_decoded": 0,
+    "lod_unique_cells": 4239,
+    "lod_modal_cells": 0,
+    "lod_cache_hits": 4239,
+    "rss_delta_bytes": 1384448,
+    "peak_rss_delta_bytes": 0,
+    "persistent_cache": {
+      "hits": 271,
+      "misses": 0,
+      "writes": 0,
+      "corrupt": 0,
+      "evictions": 0,
+      "loads_ms": 553,
+      "writes_ms": 0,
+      "fsync_ms": 0,
+      "prunes_ms": 0,
+      "prunes": 0,
+      "budget_bytes": 2147483648,
+      "timestamp_ns": 1784848319553057600
+    }
+  },
+  "render_rotation_proxy": {
+    "iterations": 12,
+    "viewport": [
+      960,
+      540
+    ],
+    "interactive_render_size": [
+      480,
+      270
+    ],
+    "legacy_rgba_interpolation_median_s": 0.01719329999832553,
+    "legacy_rgba_interpolation_p95_s": 0.019039799997699447,
+    "material_resolver_warmup_s": 0.34383789999992587,
+    "categorical_pipeline_median_s": 0.03537839999989956,
+    "categorical_pipeline_p95_s": 0.04941559999861056,
+    "categorical_pipeline_median_fps": 28.265834520578633
+  },
+  "class_histogram": {
+    "62": 1338,
+    "73": 36,
+    "75": 341,
+    "82": 780,
+    "83": 806,
+    "102": 477,
+    "104": 1704,
+    "105": 102,
+    "121": 152,
+    "162": 24
+  }
+}

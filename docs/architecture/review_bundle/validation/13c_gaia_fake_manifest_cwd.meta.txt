@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Scripts\python.exe -m pytest -q "C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4\tests\test_gaia_manifest_resolution.py"
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-gaia-fake
+python=Python 3.13.7
+started=2026-07-26T01:41:52.7917455+02:00
+finished=2026-07-26T01:41:54.2961728+02:00
+duration_seconds=1.503
+exit_code=0

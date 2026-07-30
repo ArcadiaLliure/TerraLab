@@ -1,0 +1,3021 @@
+{
+  "schema_version": 1,
+  "classification_source": "docs/migration/terralab-decoupling/mvc-file-map.md",
+  "entries": [
+    {
+      "path": "TerraLab/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "ENTRYPOINT",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/__main__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "ENTRYPOINT",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/adapters/qt/compute.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "14",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/adapters/qt/controller.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/adapters/qt/terrain.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "15",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/adapters/qt/threejs_host.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/adapters/runtime/compute.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "14",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/adapters/runtime/terrain.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "15",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/application/__init__.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/celestial_rendering.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "06",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/commands.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "03",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/constellations.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/controller.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/deep_sky_rendering.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/interaction.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "09",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/lifecycle.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/overlay_rendering.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "08",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/ports/__init__.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/ports/assets.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "15",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/ports/compute.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "14",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/ports/font_metrics.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "08",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/ports/rendering.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/ports/sky_resources.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/ports/terrain.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "15",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/render_planning.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/scene_builder.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "03",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/scope.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/sky_background.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "04",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/star_rendering.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/state.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/terrain.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/terrain_geometry.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/application/terrain_materials.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/astro/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/astro/apparent.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "06",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/astro/engine.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/astro/ephemeris_coordinator.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "06",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/astro/ngc_catalog.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/astro/photometry.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "06",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/astro/search_engine.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/bootstrap/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "BOOTSTRAP",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/bootstrap/composition.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "BOOTSTRAP",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/bootstrap/settings.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "BOOTSTRAP",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/cli/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "CLI",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/cli/calibrate_sqm.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "CLI",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/cli/dvnl_convolve.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "CLI",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/cli/dvnl_preprocess.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "CLI",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/cli/gaia.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "CLI",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/cli/predict_sqm_raster.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "CLI",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/cli/query_elevation.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "CLI",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/cli/render_scene.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "CLI",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/app_paths.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/cache.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/cancellation.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/custom_widget_base.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/common/data_library.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/deprecation_registry.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/design_tokens.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/common/exception_reporting.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/locks.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/perf_events.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/performance/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/performance/budget.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/performance/flags.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/performance/memory.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/timestamped_print.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/common/utils.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/config.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "BOOTSTRAP",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/core/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/core/application/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/core/application/planning.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/core/model/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/core/rendering_contracts/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/core/rendering_contracts/contracts.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/core/rendering_contracts/plans.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/asc_cache_builder.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "15",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/assets/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/assets/discovery.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/assets/downloads.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/assets/installation.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/assets/registry.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/assets/runtime.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/assets/validation.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/assets_manager.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/catalogs/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/catalogs/constants.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/catalogs/scope_cache.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/catalogs/scope_preload_cache.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/catalogs/star_catalog.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/constants.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/converters/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/converters/planck.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/copernicus/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/copernicus/client.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/copernicus/constants.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/copernicus/manager.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/copernicus/manifest.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/copernicus/mosaic.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/copernicus/planning.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/copernicus/validation.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/crs.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "15",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/dem_tiles.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "15",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/gaia_downloader.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/layer_manager.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/ray_precision.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/resumable_download.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/sky_resources.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/source_catalog.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/source_inspection.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "15",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/star_catalog_store.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/star_data_coordinator.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/stars_dataset.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/terrain_contracts.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/data/tile_manifest.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/data/visibility_range.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/debug/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/debug/diagnostics.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/infrastructure/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/infrastructure/data/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/infrastructure/runtime/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/infrastructure/runtime/render_service.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/layers/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/layers/village.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/light_pollution/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/light_pollution/bortle.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/light_pollution/calibration.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/light_pollution/dvnl_io.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/light_pollution/kernels.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/light_pollution/mlim.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/light_pollution/modes.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/light_pollution/processing.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/render/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/conformance.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "OBSERVABILITY",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/render/grid_renderer.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "08",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/horizon_renderer.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "04",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/overlays_renderer.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/backend.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/bodies.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "06",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/constellations.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/deep_sky.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/interaction.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "09",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/labels.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "08",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/scope.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/sky.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "04",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/stars.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qpainter/terrain.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qt/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/qt/context.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/recording/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/recording/backend.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/registry.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/render/scope_renderer.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/sky/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/sky/milkyway_overlay.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/sky_renderer.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "04",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/stars_renderer.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/threejs/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/threejs/backend.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/threejs/bridge.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/threejs/diagnostic.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/threejs/protocol.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/render/workers/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/runtime/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "RUNTIME_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/runtime/clients.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "RUNTIME_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/runtime/compute_service.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "RUNTIME_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/runtime/frame_pool.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "RUNTIME_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/runtime/offscreen_renderer.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "RUNTIME_ADAPTER",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "06",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/runtime/protocol.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "RUNTIME_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/runtime/render_service.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "RUNTIME_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/runtime/service_io.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "RUNTIME_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/runtime/supervisor.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "RUNTIME_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/scene/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/camera.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/constellations.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/contracts.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/optics.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/photometry.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/photometry_math.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/picking.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "09",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "04",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/bodies.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "06",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/constellations.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/deep_sky.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/interaction.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "09",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/labels.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "08",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/scope.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/sky.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "04",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/stars.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/terrain_geometry.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/plans/terrain_materials.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/projection.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/render_state.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/resources.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/scope.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/scene/spherical_math.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/asc_cache_builder.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/bake_process.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "RUNTIME_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/crs.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/data_sources.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/domain/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/domain/bands.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/domain/curvature.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/domain/profile.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/infrastructure/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/infrastructure/dem_tiles.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/land_cover/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/land_cover/legends/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/land_cover/legends/category_info.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/land_cover/legends/s2glc.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/land_cover/visual_styles.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/light_pollution_query.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/light_pollution_sampler.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/mesh/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/mesh/elevation_field.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/mesh/normals.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/overlay.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/band_draw.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/category_hit_test.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/draw_dispatch.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/fallback.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/interpolated_material.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/light_context.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/lighting_cache.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/materials.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/profile_cache.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/projection_geometry.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/overlay_mixins/triangle_paint.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/persistence/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "PERSISTENCE_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/persistence/profile_npz.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "PERSISTENCE_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/providers/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/providers/asc_provider.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/providers/chain.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/providers/common.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/providers/geotiff_provider.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/providers/raster_dataset.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/ray_precision.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/raycast/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/raycast/baker.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/render/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/render/atmosphere.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/render/config.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/render/geometry.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/render/lighting.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/render/materials.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/render/overlay_types.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/render/palette.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/render/runtime_helpers.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/render/sampling.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/render/triangle_raster.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/terrain/representation.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/sampling.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/services/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/services/elevation_query.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/source_inspection.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/surface/__init__.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/surface/cache.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "PERSISTENCE_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/surface/categorical.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/surface/common.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/surface/factory.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/surface/geometry.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/surface/light_pollution.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/surface/rgb.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/surface/service.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/surface_store.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/terrain/terrain_coordinator.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/terrain/visibility_range.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/terrain/worker.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/tools/download_gaia_tap.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DEV_TOOL",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/tools/download_gaia_tiles.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DEV_TOOL",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/ui/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/application_window.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/astro_canvas.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/astronomical_widget.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/canvas_mixins/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/canvas_mixins/interaction.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/copernicus_orthophoto_dialog.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/data_layers_dialog.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/data_library_dialog.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/design_system.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/frame_presenter.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "06",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/layer_configurator.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/ui/onboarding/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/onboarding/first_run_manager.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/ui/onboarding/onboarding_bridge.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/onboarding/onboarding_window.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/onboarding_dialogs.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/sky_controller.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Application command or use-case coordination."
+    },
+    {
+      "path": "TerraLab/ui/time_bar.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_bootstrap_helpers.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_controls_builder.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_init_helpers.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_misc_helpers.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_mixins/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_mixins/bootstrap_terrain.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_mixins/controls_time.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_mixins/horizon_scope.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_mixins/layers.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_mixins/surface_data.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/widget_runtime_helpers.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/ui/workers/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/util/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DEV_TOOL",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/util/build_healpy_index.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DEV_TOOL",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/util/color.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DEV_TOOL",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/util/gaia_importer.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DEV_TOOL",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/util/healpy_catalog_reader.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DEV_TOOL",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/util/math2d.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DEV_TOOL",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/util/milkyway_importer.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DEV_TOOL",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/view/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/view/opengl/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/view/pyqt/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/view/pyqt/backend.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/view/pyqt/controller.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/view/pyqt/presentation.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/view/threejs/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/view/vulkan/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/weather/__init__.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/weather/metno_provider.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/weather/system.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/widgets/__init__.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/widgets/constellation_drawing.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/widgets/hint_overlay.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/widgets/measurement_tools.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/widgets/optica_telescopica.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/widgets/physical_math.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/widgets/scope_ui_manager.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/widgets/spherical_math.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/widgets/telescope_runtime.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/widgets/telescope_scope_mode.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/widgets/terrain_config_dialog.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "BASELINE",
+      "introduced_or_resolved_in_phase": "01",
+      "replaces": [],
+      "rationale": "Qt widget, presenter, or rendering presentation adapter."
+    },
+    {
+      "path": "TerraLab/widgets/visual_magnitude_engine.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    }
+  ]
+}

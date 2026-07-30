@@ -1,0 +1,10 @@
+Requirement already satisfied: pip in c:\users\manel\appdata\local\temp\terralab-review-venv-98204d4\lib\site-packages (25.2)
+Collecting pip
+  Using cached pip-26.1.2-py3-none-any.whl.metadata (4.6 kB)
+Using cached pip-26.1.2-py3-none-any.whl (1.8 MB)
+Installing collected packages: pip
+  Attempting uninstall: pip
+    Found existing installation: pip 25.2
+    Uninstalling pip-25.2:
+      Successfully uninstalled pip-25.2
+Successfully installed pip-26.1.2

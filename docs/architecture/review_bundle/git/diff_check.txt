@@ -1,0 +1,16 @@
+Exit code: 0
+
+warning: in the working copy of 'TerraLab/astro/ephemeris_coordinator.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'TerraLab/data/assets_manager.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'TerraLab/render/workers/star_render.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'TerraLab/terrain/terrain_coordinator.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'TerraLab/terrain/worker.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'TerraLab/ui/astro_canvas.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'TerraLab/ui/astronomical_widget.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'TerraLab/ui/canvas_mixins/interaction.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'TerraLab/ui/widget_bootstrap_helpers.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'TerraLab/ui/widget_init_helpers.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'TerraLab/ui/widget_mixins/bootstrap_terrain.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'pyproject.toml', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'tests/test_data_layers_ui_contract.py', CRLF will be replaced by LF the next time Git touches it
+warning: in the working copy of 'tests/test_worker_data_sources.py', CRLF will be replaced by LF the next time Git touches it

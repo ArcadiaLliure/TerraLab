@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Scripts\python.exe tools/dev/check_pyright_baseline.py
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4
+python=Python 3.13.7
+started=2026-07-26T01:36:32.5717167+02:00
+finished=2026-07-26T01:36:56.0787318+02:00
+duration_seconds=23.506
+exit_code=0

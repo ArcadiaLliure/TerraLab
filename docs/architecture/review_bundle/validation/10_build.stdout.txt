@@ -1,0 +1,1137 @@
+running egg_info
+writing terralab.egg-info\PKG-INFO
+writing dependency_links to terralab.egg-info\dependency_links.txt
+writing entry points to terralab.egg-info\entry_points.txt
+writing requirements to terralab.egg-info\requires.txt
+writing top-level names to terralab.egg-info\top_level.txt
+reading manifest file 'terralab.egg-info\SOURCES.txt'
+adding license file 'LICENSE'
+writing manifest file 'terralab.egg-info\SOURCES.txt'
+running sdist
+running egg_info
+writing terralab.egg-info\PKG-INFO
+writing dependency_links to terralab.egg-info\dependency_links.txt
+writing entry points to terralab.egg-info\entry_points.txt
+writing requirements to terralab.egg-info\requires.txt
+writing top-level names to terralab.egg-info\top_level.txt
+reading manifest file 'terralab.egg-info\SOURCES.txt'
+adding license file 'LICENSE'
+writing manifest file 'terralab.egg-info\SOURCES.txt'
+running check
+creating terralab-0.1.0
+creating terralab-0.1.0\TerraLab
+creating terralab-0.1.0\TerraLab\astro
+creating terralab-0.1.0\TerraLab\cli
+creating terralab-0.1.0\TerraLab\common
+creating terralab-0.1.0\TerraLab\common\performance
+creating terralab-0.1.0\TerraLab\data
+creating terralab-0.1.0\TerraLab\data\assets
+creating terralab-0.1.0\TerraLab\data\catalogs
+creating terralab-0.1.0\TerraLab\data\converters
+creating terralab-0.1.0\TerraLab\data\copernicus
+creating terralab-0.1.0\TerraLab\data\stars
+creating terralab-0.1.0\TerraLab\debug
+creating terralab-0.1.0\TerraLab\layers
+creating terralab-0.1.0\TerraLab\light_pollution
+creating terralab-0.1.0\TerraLab\render
+creating terralab-0.1.0\TerraLab\render\qt
+creating terralab-0.1.0\TerraLab\render\sky
+creating terralab-0.1.0\TerraLab\render\workers
+creating terralab-0.1.0\TerraLab\scene
+creating terralab-0.1.0\TerraLab\terrain
+creating terralab-0.1.0\TerraLab\terrain\domain
+creating terralab-0.1.0\TerraLab\terrain\infrastructure
+creating terralab-0.1.0\TerraLab\terrain\land_cover
+creating terralab-0.1.0\TerraLab\terrain\land_cover\legends
+creating terralab-0.1.0\TerraLab\terrain\mesh
+creating terralab-0.1.0\TerraLab\terrain\overlay_mixins
+creating terralab-0.1.0\TerraLab\terrain\persistence
+creating terralab-0.1.0\TerraLab\terrain\providers
+creating terralab-0.1.0\TerraLab\terrain\raycast
+creating terralab-0.1.0\TerraLab\terrain\render
+creating terralab-0.1.0\TerraLab\terrain\services
+creating terralab-0.1.0\TerraLab\terrain\surface
+creating terralab-0.1.0\TerraLab\ui
+creating terralab-0.1.0\TerraLab\ui\canvas_mixins
+creating terralab-0.1.0\TerraLab\ui\widget_mixins
+creating terralab-0.1.0\TerraLab\ui\workers
+creating terralab-0.1.0\TerraLab\util
+creating terralab-0.1.0\TerraLab\weather
+creating terralab-0.1.0\TerraLab\widgets
+creating terralab-0.1.0\terralab.egg-info
+creating terralab-0.1.0\tests
+copying files to terralab-0.1.0...
+copying LICENSE -> terralab-0.1.0
+copying README.md -> terralab-0.1.0
+copying pyproject.toml -> terralab-0.1.0
+copying TerraLab\__init__.py -> terralab-0.1.0\TerraLab
+copying TerraLab\__main__.py -> terralab-0.1.0\TerraLab
+copying TerraLab\config.py -> terralab-0.1.0\TerraLab
+copying TerraLab\astro\__init__.py -> terralab-0.1.0\TerraLab\astro
+copying TerraLab\astro\engine.py -> terralab-0.1.0\TerraLab\astro
+copying TerraLab\astro\ephemeris_coordinator.py -> terralab-0.1.0\TerraLab\astro
+copying TerraLab\astro\ngc_catalog.py -> terralab-0.1.0\TerraLab\astro
+copying TerraLab\astro\search_engine.py -> terralab-0.1.0\TerraLab\astro
+copying TerraLab\cli\__init__.py -> terralab-0.1.0\TerraLab\cli
+copying TerraLab\cli\calibrate_sqm.py -> terralab-0.1.0\TerraLab\cli
+copying TerraLab\cli\dvnl_convolve.py -> terralab-0.1.0\TerraLab\cli
+copying TerraLab\cli\dvnl_preprocess.py -> terralab-0.1.0\TerraLab\cli
+copying TerraLab\cli\gaia.py -> terralab-0.1.0\TerraLab\cli
+copying TerraLab\cli\predict_sqm_raster.py -> terralab-0.1.0\TerraLab\cli
+copying TerraLab\cli\query_elevation.py -> terralab-0.1.0\TerraLab\cli
+copying TerraLab\common\__init__.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\app_paths.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\cache.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\cancellation.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\custom_widget_base.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\data_library.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\deprecation_registry.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\exception_reporting.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\locks.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\perf_events.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\timestamped_print.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\utils.py -> terralab-0.1.0\TerraLab\common
+copying TerraLab\common\performance\__init__.py -> terralab-0.1.0\TerraLab\common\performance
+copying TerraLab\common\performance\budget.py -> terralab-0.1.0\TerraLab\common\performance
+copying TerraLab\common\performance\flags.py -> terralab-0.1.0\TerraLab\common\performance
+copying TerraLab\common\performance\memory.py -> terralab-0.1.0\TerraLab\common\performance
+copying TerraLab\data\__init__.py -> terralab-0.1.0\TerraLab\data
+copying TerraLab\data\assets_manager.py -> terralab-0.1.0\TerraLab\data
+copying TerraLab\data\gaia_downloader.py -> terralab-0.1.0\TerraLab\data
+copying TerraLab\data\layer_manager.py -> terralab-0.1.0\TerraLab\data
+copying TerraLab\data\resumable_download.py -> terralab-0.1.0\TerraLab\data
+copying TerraLab\data\star_catalog_store.py -> terralab-0.1.0\TerraLab\data
+copying TerraLab\data\star_data_coordinator.py -> terralab-0.1.0\TerraLab\data
+copying TerraLab\data\stars_dataset.py -> terralab-0.1.0\TerraLab\data
+copying TerraLab\data\tile_manifest.py -> terralab-0.1.0\TerraLab\data
+copying TerraLab\data\translations.json -> terralab-0.1.0\TerraLab\data
+copying TerraLab\data\assets\__init__.py -> terralab-0.1.0\TerraLab\data\assets
+copying TerraLab\data\assets\discovery.py -> terralab-0.1.0\TerraLab\data\assets
+copying TerraLab\data\assets\downloads.py -> terralab-0.1.0\TerraLab\data\assets
+copying TerraLab\data\assets\installation.py -> terralab-0.1.0\TerraLab\data\assets
+copying TerraLab\data\assets\registry.py -> terralab-0.1.0\TerraLab\data\assets
+copying TerraLab\data\assets\runtime.py -> terralab-0.1.0\TerraLab\data\assets
+copying TerraLab\data\assets\validation.py -> terralab-0.1.0\TerraLab\data\assets
+copying TerraLab\data\catalogs\__init__.py -> terralab-0.1.0\TerraLab\data\catalogs
+copying TerraLab\data\catalogs\constants.py -> terralab-0.1.0\TerraLab\data\catalogs
+copying TerraLab\data\catalogs\scope_cache.py -> terralab-0.1.0\TerraLab\data\catalogs
+copying TerraLab\data\catalogs\scope_preload_cache.py -> terralab-0.1.0\TerraLab\data\catalogs
+copying TerraLab\data\catalogs\star_catalog.py -> terralab-0.1.0\TerraLab\data\catalogs
+copying TerraLab\data\converters\__init__.py -> terralab-0.1.0\TerraLab\data\converters
+copying TerraLab\data\converters\planck.py -> terralab-0.1.0\TerraLab\data\converters
+copying TerraLab\data\copernicus\__init__.py -> terralab-0.1.0\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\client.py -> terralab-0.1.0\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\constants.py -> terralab-0.1.0\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\manager.py -> terralab-0.1.0\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\manifest.py -> terralab-0.1.0\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\mosaic.py -> terralab-0.1.0\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\planning.py -> terralab-0.1.0\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\validation.py -> terralab-0.1.0\TerraLab\data\copernicus
+copying TerraLab\data\stars\no_gaia_stars.json -> terralab-0.1.0\TerraLab\data\stars
+copying TerraLab\debug\__init__.py -> terralab-0.1.0\TerraLab\debug
+copying TerraLab\debug\diagnostics.py -> terralab-0.1.0\TerraLab\debug
+copying TerraLab\layers\__init__.py -> terralab-0.1.0\TerraLab\layers
+copying TerraLab\layers\village.py -> terralab-0.1.0\TerraLab\layers
+copying TerraLab\light_pollution\__init__.py -> terralab-0.1.0\TerraLab\light_pollution
+copying TerraLab\light_pollution\bortle.py -> terralab-0.1.0\TerraLab\light_pollution
+copying TerraLab\light_pollution\calibration.py -> terralab-0.1.0\TerraLab\light_pollution
+copying TerraLab\light_pollution\dvnl_io.py -> terralab-0.1.0\TerraLab\light_pollution
+copying TerraLab\light_pollution\kernels.py -> terralab-0.1.0\TerraLab\light_pollution
+copying TerraLab\light_pollution\mlim.py -> terralab-0.1.0\TerraLab\light_pollution
+copying TerraLab\light_pollution\modes.py -> terralab-0.1.0\TerraLab\light_pollution
+copying TerraLab\light_pollution\processing.py -> terralab-0.1.0\TerraLab\light_pollution
+copying TerraLab\render\__init__.py -> terralab-0.1.0\TerraLab\render
+copying TerraLab\render\grid_renderer.py -> terralab-0.1.0\TerraLab\render
+copying TerraLab\render\horizon_renderer.py -> terralab-0.1.0\TerraLab\render
+copying TerraLab\render\overlays_renderer.py -> terralab-0.1.0\TerraLab\render
+copying TerraLab\render\scope_renderer.py -> terralab-0.1.0\TerraLab\render
+copying TerraLab\render\sky_renderer.py -> terralab-0.1.0\TerraLab\render
+copying TerraLab\render\stars_renderer.py -> terralab-0.1.0\TerraLab\render
+copying TerraLab\render\qt\__init__.py -> terralab-0.1.0\TerraLab\render\qt
+copying TerraLab\render\qt\context.py -> terralab-0.1.0\TerraLab\render\qt
+copying TerraLab\render\sky\__init__.py -> terralab-0.1.0\TerraLab\render\sky
+copying TerraLab\render\sky\milkyway_overlay.py -> terralab-0.1.0\TerraLab\render\sky
+copying TerraLab\render\workers\__init__.py -> terralab-0.1.0\TerraLab\render\workers
+copying TerraLab\render\workers\star_render.py -> terralab-0.1.0\TerraLab\render\workers
+copying TerraLab\scene\__init__.py -> terralab-0.1.0\TerraLab\scene
+copying TerraLab\scene\camera.py -> terralab-0.1.0\TerraLab\scene
+copying TerraLab\scene\projection.py -> terralab-0.1.0\TerraLab\scene
+copying TerraLab\scene\render_state.py -> terralab-0.1.0\TerraLab\scene
+copying TerraLab\scene\scene_controller.py -> terralab-0.1.0\TerraLab\scene
+copying TerraLab\scene\scene_state.py -> terralab-0.1.0\TerraLab\scene
+copying TerraLab\terrain\__init__.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\asc_cache_builder.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\bake_process.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\crs.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\data_sources.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\light_pollution_query.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\light_pollution_sampler.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\overlay.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\ray_precision.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\representation.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\sampling.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\source_inspection.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\surface_store.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\terrain_coordinator.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\visibility_range.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\worker.py -> terralab-0.1.0\TerraLab\terrain
+copying TerraLab\terrain\domain\__init__.py -> terralab-0.1.0\TerraLab\terrain\domain
+copying TerraLab\terrain\domain\bands.py -> terralab-0.1.0\TerraLab\terrain\domain
+copying TerraLab\terrain\domain\curvature.py -> terralab-0.1.0\TerraLab\terrain\domain
+copying TerraLab\terrain\domain\profile.py -> terralab-0.1.0\TerraLab\terrain\domain
+copying TerraLab\terrain\infrastructure\__init__.py -> terralab-0.1.0\TerraLab\terrain\infrastructure
+copying TerraLab\terrain\infrastructure\dem_tiles.py -> terralab-0.1.0\TerraLab\terrain\infrastructure
+copying TerraLab\terrain\land_cover\__init__.py -> terralab-0.1.0\TerraLab\terrain\land_cover
+copying TerraLab\terrain\land_cover\visual_styles.py -> terralab-0.1.0\TerraLab\terrain\land_cover
+copying TerraLab\terrain\land_cover\legends\__init__.py -> terralab-0.1.0\TerraLab\terrain\land_cover\legends
+copying TerraLab\terrain\land_cover\legends\category_info.py -> terralab-0.1.0\TerraLab\terrain\land_cover\legends
+copying TerraLab\terrain\land_cover\legends\s2glc.py -> terralab-0.1.0\TerraLab\terrain\land_cover\legends
+copying TerraLab\terrain\mesh\__init__.py -> terralab-0.1.0\TerraLab\terrain\mesh
+copying TerraLab\terrain\mesh\elevation_field.py -> terralab-0.1.0\TerraLab\terrain\mesh
+copying TerraLab\terrain\mesh\normals.py -> terralab-0.1.0\TerraLab\terrain\mesh
+copying TerraLab\terrain\overlay_mixins\__init__.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\band_draw.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\category_hit_test.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\draw_dispatch.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\fallback.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\interpolated_material.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\light_context.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\lighting_cache.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\materials.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\profile_cache.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\projection_geometry.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\triangle_paint.py -> terralab-0.1.0\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\persistence\__init__.py -> terralab-0.1.0\TerraLab\terrain\persistence
+copying TerraLab\terrain\persistence\profile_npz.py -> terralab-0.1.0\TerraLab\terrain\persistence
+copying TerraLab\terrain\providers\__init__.py -> terralab-0.1.0\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\asc_provider.py -> terralab-0.1.0\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\chain.py -> terralab-0.1.0\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\common.py -> terralab-0.1.0\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\geotiff_provider.py -> terralab-0.1.0\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\raster_dataset.py -> terralab-0.1.0\TerraLab\terrain\providers
+copying TerraLab\terrain\raycast\__init__.py -> terralab-0.1.0\TerraLab\terrain\raycast
+copying TerraLab\terrain\raycast\baker.py -> terralab-0.1.0\TerraLab\terrain\raycast
+copying TerraLab\terrain\render\__init__.py -> terralab-0.1.0\TerraLab\terrain\render
+copying TerraLab\terrain\render\atmosphere.py -> terralab-0.1.0\TerraLab\terrain\render
+copying TerraLab\terrain\render\config.py -> terralab-0.1.0\TerraLab\terrain\render
+copying TerraLab\terrain\render\geometry.py -> terralab-0.1.0\TerraLab\terrain\render
+copying TerraLab\terrain\render\lighting.py -> terralab-0.1.0\TerraLab\terrain\render
+copying TerraLab\terrain\render\materials.py -> terralab-0.1.0\TerraLab\terrain\render
+copying TerraLab\terrain\render\overlay_types.py -> terralab-0.1.0\TerraLab\terrain\render
+copying TerraLab\terrain\render\palette.py -> terralab-0.1.0\TerraLab\terrain\render
+copying TerraLab\terrain\render\sampling.py -> terralab-0.1.0\TerraLab\terrain\render
+copying TerraLab\terrain\render\triangle_raster.py -> terralab-0.1.0\TerraLab\terrain\render
+copying TerraLab\terrain\services\__init__.py -> terralab-0.1.0\TerraLab\terrain\services
+copying TerraLab\terrain\services\elevation_query.py -> terralab-0.1.0\TerraLab\terrain\services
+copying TerraLab\terrain\surface\__init__.py -> terralab-0.1.0\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\cache.py -> terralab-0.1.0\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\categorical.py -> terralab-0.1.0\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\common.py -> terralab-0.1.0\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\factory.py -> terralab-0.1.0\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\geometry.py -> terralab-0.1.0\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\light_pollution.py -> terralab-0.1.0\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\rgb.py -> terralab-0.1.0\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\service.py -> terralab-0.1.0\TerraLab\terrain\surface
+copying TerraLab\ui\__init__.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\astro_canvas.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\astronomical_widget.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\canvas_input_handler.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\canvas_runtime_helpers.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\canvas_selection.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\copernicus_orthophoto_dialog.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\data_layers_dialog.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\data_library_dialog.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\layer_configurator.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\onboarding_dialogs.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\scope_preload_worker.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\sky_controller.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\time_bar.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\widget_bootstrap_helpers.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\widget_controls_builder.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\widget_init_helpers.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\widget_misc_helpers.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\widget_runtime_helpers.py -> terralab-0.1.0\TerraLab\ui
+copying TerraLab\ui\canvas_mixins\__init__.py -> terralab-0.1.0\TerraLab\ui\canvas_mixins
+copying TerraLab\ui\canvas_mixins\ephemeris_rendering.py -> terralab-0.1.0\TerraLab\ui\canvas_mixins
+copying TerraLab\ui\canvas_mixins\interaction.py -> terralab-0.1.0\TerraLab\ui\canvas_mixins
+copying TerraLab\ui\canvas_mixins\projection_rendering.py -> terralab-0.1.0\TerraLab\ui\canvas_mixins
+copying TerraLab\ui\canvas_mixins\selection_and_trails.py -> terralab-0.1.0\TerraLab\ui\canvas_mixins
+copying TerraLab\ui\widget_mixins\__init__.py -> terralab-0.1.0\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\bootstrap_terrain.py -> terralab-0.1.0\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\controls_time.py -> terralab-0.1.0\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\horizon_scope.py -> terralab-0.1.0\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\layers.py -> terralab-0.1.0\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\surface_data.py -> terralab-0.1.0\TerraLab\ui\widget_mixins
+copying TerraLab\ui\workers\__init__.py -> terralab-0.1.0\TerraLab\ui\workers
+copying TerraLab\ui\workers\catalog_loader.py -> terralab-0.1.0\TerraLab\ui\workers
+copying TerraLab\ui\workers\scope_index.py -> terralab-0.1.0\TerraLab\ui\workers
+copying TerraLab\ui\workers\skyfield_loader.py -> terralab-0.1.0\TerraLab\ui\workers
+copying TerraLab\util\__init__.py -> terralab-0.1.0\TerraLab\util
+copying TerraLab\util\build_healpy_index.py -> terralab-0.1.0\TerraLab\util
+copying TerraLab\util\color.py -> terralab-0.1.0\TerraLab\util
+copying TerraLab\util\gaia_importer.py -> terralab-0.1.0\TerraLab\util
+copying TerraLab\util\healpy_catalog_reader.py -> terralab-0.1.0\TerraLab\util
+copying TerraLab\util\math2d.py -> terralab-0.1.0\TerraLab\util
+copying TerraLab\util\milkyway_importer.py -> terralab-0.1.0\TerraLab\util
+copying TerraLab\weather\__init__.py -> terralab-0.1.0\TerraLab\weather
+copying TerraLab\weather\metno_provider.py -> terralab-0.1.0\TerraLab\weather
+copying TerraLab\weather\system.py -> terralab-0.1.0\TerraLab\weather
+copying TerraLab\widgets\__init__.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\constellation_drawing.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\hint_overlay.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\measurement_tools.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\optica_telescopica.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\physical_math.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\scope_ui_manager.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\spherical_math.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\telescope_runtime.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\telescope_scope_mode.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\terrain_config_dialog.py -> terralab-0.1.0\TerraLab\widgets
+copying TerraLab\widgets\visual_magnitude_engine.py -> terralab-0.1.0\TerraLab\widgets
+copying terralab.egg-info\PKG-INFO -> terralab-0.1.0\terralab.egg-info
+copying terralab.egg-info\SOURCES.txt -> terralab-0.1.0\terralab.egg-info
+copying terralab.egg-info\dependency_links.txt -> terralab-0.1.0\terralab.egg-info
+copying terralab.egg-info\entry_points.txt -> terralab-0.1.0\terralab.egg-info
+copying terralab.egg-info\requires.txt -> terralab-0.1.0\terralab.egg-info
+copying terralab.egg-info\top_level.txt -> terralab-0.1.0\terralab.egg-info
+copying tests\test_adaptive_sampling.py -> terralab-0.1.0\tests
+copying tests\test_assets_manager_data_sources.py -> terralab-0.1.0\tests
+copying tests\test_astro_rendering.py -> terralab-0.1.0\tests
+copying tests\test_bake_process_atomic_save.py -> terralab-0.1.0\tests
+copying tests\test_canvas_input_handler.py -> terralab-0.1.0\tests
+copying tests\test_canvas_selection.py -> terralab-0.1.0\tests
+copying tests\test_config.py -> terralab-0.1.0\tests
+copying tests\test_copernicus_asset_integration.py -> terralab-0.1.0\tests
+copying tests\test_copernicus_orthophoto.py -> terralab-0.1.0\tests
+copying tests\test_copernicus_orthophoto_dialog.py -> terralab-0.1.0\tests
+copying tests\test_data_layers_ui_contract.py -> terralab-0.1.0\tests
+copying tests\test_data_library.py -> terralab-0.1.0\tests
+copying tests\test_data_sources.py -> terralab-0.1.0\tests
+copying tests\test_deprecated_registry.py -> terralab-0.1.0\tests
+copying tests\test_diffuse_coords.py -> terralab-0.1.0\tests
+copying tests\test_diffuse_noise.py -> terralab-0.1.0\tests
+copying tests\test_gaia_manifest_resolution.py -> terralab-0.1.0\tests
+copying tests\test_geospatial_providers.py -> terralab-0.1.0\tests
+copying tests\test_horizon_baker_coverage.py -> terralab-0.1.0\tests
+copying tests\test_horizon_worker_bortle.py -> terralab-0.1.0\tests
+copying tests\test_light_pollution_modes.py -> terralab-0.1.0\tests
+copying tests\test_light_pollution_sampler_crs.py -> terralab-0.1.0\tests
+copying tests\test_light_pollution_sampler_spatial.py -> terralab-0.1.0\tests
+copying tests\test_light_pollution_typed_chain.py -> terralab-0.1.0\tests
+copying tests\test_milky_way.py -> terralab-0.1.0\tests
+copying tests\test_morell_puig_den_cama.py -> terralab-0.1.0\tests
+copying tests\test_onboarding_dem_autolocation.py -> terralab-0.1.0\tests
+copying tests\test_packaging_contract.py -> terralab-0.1.0\tests
+copying tests\test_providers.py -> terralab-0.1.0\tests
+copying tests\test_qt_lifecycle.py -> terralab-0.1.0\tests
+copying tests\test_ray_precision.py -> terralab-0.1.0\tests
+copying tests\test_s2glc_download.py -> terralab-0.1.0\tests
+copying tests\test_s2glc_land_cover.py -> terralab-0.1.0\tests
+copying tests\test_scene_controller_render_state.py -> terralab-0.1.0\tests
+copying tests\test_scope_ui_manager.py -> terralab-0.1.0\tests
+copying tests\test_search_engine.py -> terralab-0.1.0\tests
+copying tests\test_spherical_math.py -> terralab-0.1.0\tests
+copying tests\test_star_data_coordinator.py -> terralab-0.1.0\tests
+copying tests\test_surface_lod_cache.py -> terralab-0.1.0\tests
+copying tests\test_surface_mode_switch.py -> terralab-0.1.0\tests
+copying tests\test_telescope_runtime.py -> terralab-0.1.0\tests
+copying tests\test_terrain_render_pipeline.py -> terralab-0.1.0\tests
+copying tests\test_terrain_representation.py -> terralab-0.1.0\tests
+copying tests\test_terrain_surface_render.py -> terralab-0.1.0\tests
+copying tests\test_terrain_visibility_range.py -> terralab-0.1.0\tests
+copying tests\test_tile_cache_load_safety.py -> terralab-0.1.0\tests
+copying tests\test_tile_manifest.py -> terralab-0.1.0\tests
+copying tests\test_visual_magnitude_engine.py -> terralab-0.1.0\tests
+copying tests\test_worker_data_sources.py -> terralab-0.1.0\tests
+copying terralab.egg-info\SOURCES.txt -> terralab-0.1.0\terralab.egg-info
+Writing terralab-0.1.0\setup.cfg
+Creating tar archive
+removing 'terralab-0.1.0' (and everything under it)
+running egg_info
+writing terralab.egg-info\PKG-INFO
+writing dependency_links to terralab.egg-info\dependency_links.txt
+writing entry points to terralab.egg-info\entry_points.txt
+writing requirements to terralab.egg-info\requires.txt
+writing top-level names to terralab.egg-info\top_level.txt
+reading manifest file 'terralab.egg-info\SOURCES.txt'
+adding license file 'LICENSE'
+writing manifest file 'terralab.egg-info\SOURCES.txt'
+running bdist_wheel
+running build
+running build_py
+creating build\lib\TerraLab
+copying TerraLab\config.py -> build\lib\TerraLab
+copying TerraLab\__init__.py -> build\lib\TerraLab
+copying TerraLab\__main__.py -> build\lib\TerraLab
+creating build\lib\TerraLab\astro
+copying TerraLab\astro\engine.py -> build\lib\TerraLab\astro
+copying TerraLab\astro\ephemeris_coordinator.py -> build\lib\TerraLab\astro
+copying TerraLab\astro\ngc_catalog.py -> build\lib\TerraLab\astro
+copying TerraLab\astro\search_engine.py -> build\lib\TerraLab\astro
+copying TerraLab\astro\__init__.py -> build\lib\TerraLab\astro
+creating build\lib\TerraLab\cli
+copying TerraLab\cli\calibrate_sqm.py -> build\lib\TerraLab\cli
+copying TerraLab\cli\dvnl_convolve.py -> build\lib\TerraLab\cli
+copying TerraLab\cli\dvnl_preprocess.py -> build\lib\TerraLab\cli
+copying TerraLab\cli\gaia.py -> build\lib\TerraLab\cli
+copying TerraLab\cli\predict_sqm_raster.py -> build\lib\TerraLab\cli
+copying TerraLab\cli\query_elevation.py -> build\lib\TerraLab\cli
+copying TerraLab\cli\__init__.py -> build\lib\TerraLab\cli
+creating build\lib\TerraLab\common
+copying TerraLab\common\app_paths.py -> build\lib\TerraLab\common
+copying TerraLab\common\cache.py -> build\lib\TerraLab\common
+copying TerraLab\common\cancellation.py -> build\lib\TerraLab\common
+copying TerraLab\common\custom_widget_base.py -> build\lib\TerraLab\common
+copying TerraLab\common\data_library.py -> build\lib\TerraLab\common
+copying TerraLab\common\deprecation_registry.py -> build\lib\TerraLab\common
+copying TerraLab\common\exception_reporting.py -> build\lib\TerraLab\common
+copying TerraLab\common\locks.py -> build\lib\TerraLab\common
+copying TerraLab\common\perf_events.py -> build\lib\TerraLab\common
+copying TerraLab\common\timestamped_print.py -> build\lib\TerraLab\common
+copying TerraLab\common\utils.py -> build\lib\TerraLab\common
+copying TerraLab\common\__init__.py -> build\lib\TerraLab\common
+creating build\lib\TerraLab\data
+copying TerraLab\data\assets_manager.py -> build\lib\TerraLab\data
+copying TerraLab\data\gaia_downloader.py -> build\lib\TerraLab\data
+copying TerraLab\data\layer_manager.py -> build\lib\TerraLab\data
+copying TerraLab\data\resumable_download.py -> build\lib\TerraLab\data
+copying TerraLab\data\stars_dataset.py -> build\lib\TerraLab\data
+copying TerraLab\data\star_catalog_store.py -> build\lib\TerraLab\data
+copying TerraLab\data\star_data_coordinator.py -> build\lib\TerraLab\data
+copying TerraLab\data\tile_manifest.py -> build\lib\TerraLab\data
+copying TerraLab\data\__init__.py -> build\lib\TerraLab\data
+creating build\lib\TerraLab\debug
+copying TerraLab\debug\diagnostics.py -> build\lib\TerraLab\debug
+copying TerraLab\debug\__init__.py -> build\lib\TerraLab\debug
+creating build\lib\TerraLab\layers
+copying TerraLab\layers\village.py -> build\lib\TerraLab\layers
+copying TerraLab\layers\__init__.py -> build\lib\TerraLab\layers
+creating build\lib\TerraLab\light_pollution
+copying TerraLab\light_pollution\bortle.py -> build\lib\TerraLab\light_pollution
+copying TerraLab\light_pollution\calibration.py -> build\lib\TerraLab\light_pollution
+copying TerraLab\light_pollution\dvnl_io.py -> build\lib\TerraLab\light_pollution
+copying TerraLab\light_pollution\kernels.py -> build\lib\TerraLab\light_pollution
+copying TerraLab\light_pollution\mlim.py -> build\lib\TerraLab\light_pollution
+copying TerraLab\light_pollution\modes.py -> build\lib\TerraLab\light_pollution
+copying TerraLab\light_pollution\processing.py -> build\lib\TerraLab\light_pollution
+copying TerraLab\light_pollution\__init__.py -> build\lib\TerraLab\light_pollution
+creating build\lib\TerraLab\render
+copying TerraLab\render\grid_renderer.py -> build\lib\TerraLab\render
+copying TerraLab\render\horizon_renderer.py -> build\lib\TerraLab\render
+copying TerraLab\render\overlays_renderer.py -> build\lib\TerraLab\render
+copying TerraLab\render\scope_renderer.py -> build\lib\TerraLab\render
+copying TerraLab\render\sky_renderer.py -> build\lib\TerraLab\render
+copying TerraLab\render\stars_renderer.py -> build\lib\TerraLab\render
+copying TerraLab\render\__init__.py -> build\lib\TerraLab\render
+creating build\lib\TerraLab\scene
+copying TerraLab\scene\camera.py -> build\lib\TerraLab\scene
+copying TerraLab\scene\projection.py -> build\lib\TerraLab\scene
+copying TerraLab\scene\render_state.py -> build\lib\TerraLab\scene
+copying TerraLab\scene\scene_controller.py -> build\lib\TerraLab\scene
+copying TerraLab\scene\scene_state.py -> build\lib\TerraLab\scene
+copying TerraLab\scene\__init__.py -> build\lib\TerraLab\scene
+creating build\lib\TerraLab\terrain
+copying TerraLab\terrain\asc_cache_builder.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\bake_process.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\crs.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\data_sources.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\light_pollution_query.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\light_pollution_sampler.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\overlay.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\ray_precision.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\representation.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\sampling.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\source_inspection.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\surface_store.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\terrain_coordinator.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\visibility_range.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\worker.py -> build\lib\TerraLab\terrain
+copying TerraLab\terrain\__init__.py -> build\lib\TerraLab\terrain
+creating build\lib\TerraLab\ui
+copying TerraLab\ui\astronomical_widget.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\astro_canvas.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\canvas_input_handler.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\canvas_runtime_helpers.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\canvas_selection.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\copernicus_orthophoto_dialog.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\data_layers_dialog.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\data_library_dialog.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\layer_configurator.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\onboarding_dialogs.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\scope_preload_worker.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\sky_controller.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\time_bar.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\widget_bootstrap_helpers.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\widget_controls_builder.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\widget_init_helpers.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\widget_misc_helpers.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\widget_runtime_helpers.py -> build\lib\TerraLab\ui
+copying TerraLab\ui\__init__.py -> build\lib\TerraLab\ui
+creating build\lib\TerraLab\util
+copying TerraLab\util\build_healpy_index.py -> build\lib\TerraLab\util
+copying TerraLab\util\color.py -> build\lib\TerraLab\util
+copying TerraLab\util\gaia_importer.py -> build\lib\TerraLab\util
+copying TerraLab\util\healpy_catalog_reader.py -> build\lib\TerraLab\util
+copying TerraLab\util\math2d.py -> build\lib\TerraLab\util
+copying TerraLab\util\milkyway_importer.py -> build\lib\TerraLab\util
+copying TerraLab\util\__init__.py -> build\lib\TerraLab\util
+creating build\lib\TerraLab\weather
+copying TerraLab\weather\metno_provider.py -> build\lib\TerraLab\weather
+copying TerraLab\weather\system.py -> build\lib\TerraLab\weather
+copying TerraLab\weather\__init__.py -> build\lib\TerraLab\weather
+creating build\lib\TerraLab\widgets
+copying TerraLab\widgets\constellation_drawing.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\hint_overlay.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\measurement_tools.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\optica_telescopica.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\physical_math.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\scope_ui_manager.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\spherical_math.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\telescope_runtime.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\telescope_scope_mode.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\terrain_config_dialog.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\visual_magnitude_engine.py -> build\lib\TerraLab\widgets
+copying TerraLab\widgets\__init__.py -> build\lib\TerraLab\widgets
+creating build\lib\TerraLab\common\performance
+copying TerraLab\common\performance\budget.py -> build\lib\TerraLab\common\performance
+copying TerraLab\common\performance\flags.py -> build\lib\TerraLab\common\performance
+copying TerraLab\common\performance\memory.py -> build\lib\TerraLab\common\performance
+copying TerraLab\common\performance\__init__.py -> build\lib\TerraLab\common\performance
+creating build\lib\TerraLab\data\assets
+copying TerraLab\data\assets\discovery.py -> build\lib\TerraLab\data\assets
+copying TerraLab\data\assets\downloads.py -> build\lib\TerraLab\data\assets
+copying TerraLab\data\assets\installation.py -> build\lib\TerraLab\data\assets
+copying TerraLab\data\assets\registry.py -> build\lib\TerraLab\data\assets
+copying TerraLab\data\assets\runtime.py -> build\lib\TerraLab\data\assets
+copying TerraLab\data\assets\validation.py -> build\lib\TerraLab\data\assets
+copying TerraLab\data\assets\__init__.py -> build\lib\TerraLab\data\assets
+creating build\lib\TerraLab\data\catalogs
+copying TerraLab\data\catalogs\constants.py -> build\lib\TerraLab\data\catalogs
+copying TerraLab\data\catalogs\scope_cache.py -> build\lib\TerraLab\data\catalogs
+copying TerraLab\data\catalogs\scope_preload_cache.py -> build\lib\TerraLab\data\catalogs
+copying TerraLab\data\catalogs\star_catalog.py -> build\lib\TerraLab\data\catalogs
+copying TerraLab\data\catalogs\__init__.py -> build\lib\TerraLab\data\catalogs
+creating build\lib\TerraLab\data\converters
+copying TerraLab\data\converters\planck.py -> build\lib\TerraLab\data\converters
+copying TerraLab\data\converters\__init__.py -> build\lib\TerraLab\data\converters
+creating build\lib\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\client.py -> build\lib\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\constants.py -> build\lib\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\manager.py -> build\lib\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\manifest.py -> build\lib\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\mosaic.py -> build\lib\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\planning.py -> build\lib\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\validation.py -> build\lib\TerraLab\data\copernicus
+copying TerraLab\data\copernicus\__init__.py -> build\lib\TerraLab\data\copernicus
+creating build\lib\TerraLab\render\qt
+copying TerraLab\render\qt\context.py -> build\lib\TerraLab\render\qt
+copying TerraLab\render\qt\__init__.py -> build\lib\TerraLab\render\qt
+creating build\lib\TerraLab\render\sky
+copying TerraLab\render\sky\milkyway_overlay.py -> build\lib\TerraLab\render\sky
+copying TerraLab\render\sky\__init__.py -> build\lib\TerraLab\render\sky
+creating build\lib\TerraLab\render\workers
+copying TerraLab\render\workers\star_render.py -> build\lib\TerraLab\render\workers
+copying TerraLab\render\workers\__init__.py -> build\lib\TerraLab\render\workers
+creating build\lib\TerraLab\terrain\domain
+copying TerraLab\terrain\domain\bands.py -> build\lib\TerraLab\terrain\domain
+copying TerraLab\terrain\domain\curvature.py -> build\lib\TerraLab\terrain\domain
+copying TerraLab\terrain\domain\profile.py -> build\lib\TerraLab\terrain\domain
+copying TerraLab\terrain\domain\__init__.py -> build\lib\TerraLab\terrain\domain
+creating build\lib\TerraLab\terrain\infrastructure
+copying TerraLab\terrain\infrastructure\dem_tiles.py -> build\lib\TerraLab\terrain\infrastructure
+copying TerraLab\terrain\infrastructure\__init__.py -> build\lib\TerraLab\terrain\infrastructure
+creating build\lib\TerraLab\terrain\land_cover
+copying TerraLab\terrain\land_cover\visual_styles.py -> build\lib\TerraLab\terrain\land_cover
+copying TerraLab\terrain\land_cover\__init__.py -> build\lib\TerraLab\terrain\land_cover
+creating build\lib\TerraLab\terrain\mesh
+copying TerraLab\terrain\mesh\elevation_field.py -> build\lib\TerraLab\terrain\mesh
+copying TerraLab\terrain\mesh\normals.py -> build\lib\TerraLab\terrain\mesh
+copying TerraLab\terrain\mesh\__init__.py -> build\lib\TerraLab\terrain\mesh
+creating build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\band_draw.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\category_hit_test.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\draw_dispatch.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\fallback.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\interpolated_material.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\lighting_cache.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\light_context.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\materials.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\profile_cache.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\projection_geometry.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\triangle_paint.py -> build\lib\TerraLab\terrain\overlay_mixins
+copying TerraLab\terrain\overlay_mixins\__init__.py -> build\lib\TerraLab\terrain\overlay_mixins
+creating build\lib\TerraLab\terrain\persistence
+copying TerraLab\terrain\persistence\profile_npz.py -> build\lib\TerraLab\terrain\persistence
+copying TerraLab\terrain\persistence\__init__.py -> build\lib\TerraLab\terrain\persistence
+creating build\lib\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\asc_provider.py -> build\lib\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\chain.py -> build\lib\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\common.py -> build\lib\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\geotiff_provider.py -> build\lib\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\raster_dataset.py -> build\lib\TerraLab\terrain\providers
+copying TerraLab\terrain\providers\__init__.py -> build\lib\TerraLab\terrain\providers
+creating build\lib\TerraLab\terrain\raycast
+copying TerraLab\terrain\raycast\baker.py -> build\lib\TerraLab\terrain\raycast
+copying TerraLab\terrain\raycast\__init__.py -> build\lib\TerraLab\terrain\raycast
+creating build\lib\TerraLab\terrain\render
+copying TerraLab\terrain\render\atmosphere.py -> build\lib\TerraLab\terrain\render
+copying TerraLab\terrain\render\config.py -> build\lib\TerraLab\terrain\render
+copying TerraLab\terrain\render\geometry.py -> build\lib\TerraLab\terrain\render
+copying TerraLab\terrain\render\lighting.py -> build\lib\TerraLab\terrain\render
+copying TerraLab\terrain\render\materials.py -> build\lib\TerraLab\terrain\render
+copying TerraLab\terrain\render\overlay_types.py -> build\lib\TerraLab\terrain\render
+copying TerraLab\terrain\render\palette.py -> build\lib\TerraLab\terrain\render
+copying TerraLab\terrain\render\sampling.py -> build\lib\TerraLab\terrain\render
+copying TerraLab\terrain\render\triangle_raster.py -> build\lib\TerraLab\terrain\render
+copying TerraLab\terrain\render\__init__.py -> build\lib\TerraLab\terrain\render
+creating build\lib\TerraLab\terrain\services
+copying TerraLab\terrain\services\elevation_query.py -> build\lib\TerraLab\terrain\services
+copying TerraLab\terrain\services\__init__.py -> build\lib\TerraLab\terrain\services
+creating build\lib\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\cache.py -> build\lib\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\categorical.py -> build\lib\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\common.py -> build\lib\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\factory.py -> build\lib\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\geometry.py -> build\lib\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\light_pollution.py -> build\lib\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\rgb.py -> build\lib\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\service.py -> build\lib\TerraLab\terrain\surface
+copying TerraLab\terrain\surface\__init__.py -> build\lib\TerraLab\terrain\surface
+creating build\lib\TerraLab\terrain\land_cover\legends
+copying TerraLab\terrain\land_cover\legends\category_info.py -> build\lib\TerraLab\terrain\land_cover\legends
+copying TerraLab\terrain\land_cover\legends\s2glc.py -> build\lib\TerraLab\terrain\land_cover\legends
+copying TerraLab\terrain\land_cover\legends\__init__.py -> build\lib\TerraLab\terrain\land_cover\legends
+creating build\lib\TerraLab\ui\canvas_mixins
+copying TerraLab\ui\canvas_mixins\ephemeris_rendering.py -> build\lib\TerraLab\ui\canvas_mixins
+copying TerraLab\ui\canvas_mixins\interaction.py -> build\lib\TerraLab\ui\canvas_mixins
+copying TerraLab\ui\canvas_mixins\projection_rendering.py -> build\lib\TerraLab\ui\canvas_mixins
+copying TerraLab\ui\canvas_mixins\selection_and_trails.py -> build\lib\TerraLab\ui\canvas_mixins
+copying TerraLab\ui\canvas_mixins\__init__.py -> build\lib\TerraLab\ui\canvas_mixins
+creating build\lib\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\bootstrap_terrain.py -> build\lib\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\controls_time.py -> build\lib\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\horizon_scope.py -> build\lib\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\layers.py -> build\lib\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\surface_data.py -> build\lib\TerraLab\ui\widget_mixins
+copying TerraLab\ui\widget_mixins\__init__.py -> build\lib\TerraLab\ui\widget_mixins
+creating build\lib\TerraLab\ui\workers
+copying TerraLab\ui\workers\catalog_loader.py -> build\lib\TerraLab\ui\workers
+copying TerraLab\ui\workers\scope_index.py -> build\lib\TerraLab\ui\workers
+copying TerraLab\ui\workers\skyfield_loader.py -> build\lib\TerraLab\ui\workers
+copying TerraLab\ui\workers\__init__.py -> build\lib\TerraLab\ui\workers
+copying TerraLab\data\translations.json -> build\lib\TerraLab\data
+creating build\lib\TerraLab\data\stars
+copying TerraLab\data\stars\no_gaia_stars.json -> build\lib\TerraLab\data\stars
+installing to build\bdist.win-amd64\wheel
+running install
+running install_lib
+creating build\bdist.win-amd64\wheel
+creating build\bdist.win-amd64\wheel\TerraLab
+creating build\bdist.win-amd64\wheel\TerraLab\astro
+copying build\lib\TerraLab\astro\engine.py -> build\bdist.win-amd64\wheel\.\TerraLab\astro
+copying build\lib\TerraLab\astro\ephemeris_coordinator.py -> build\bdist.win-amd64\wheel\.\TerraLab\astro
+copying build\lib\TerraLab\astro\ngc_catalog.py -> build\bdist.win-amd64\wheel\.\TerraLab\astro
+copying build\lib\TerraLab\astro\search_engine.py -> build\bdist.win-amd64\wheel\.\TerraLab\astro
+copying build\lib\TerraLab\astro\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\astro
+creating build\bdist.win-amd64\wheel\TerraLab\cli
+copying build\lib\TerraLab\cli\calibrate_sqm.py -> build\bdist.win-amd64\wheel\.\TerraLab\cli
+copying build\lib\TerraLab\cli\dvnl_convolve.py -> build\bdist.win-amd64\wheel\.\TerraLab\cli
+copying build\lib\TerraLab\cli\dvnl_preprocess.py -> build\bdist.win-amd64\wheel\.\TerraLab\cli
+copying build\lib\TerraLab\cli\gaia.py -> build\bdist.win-amd64\wheel\.\TerraLab\cli
+copying build\lib\TerraLab\cli\predict_sqm_raster.py -> build\bdist.win-amd64\wheel\.\TerraLab\cli
+copying build\lib\TerraLab\cli\query_elevation.py -> build\bdist.win-amd64\wheel\.\TerraLab\cli
+copying build\lib\TerraLab\cli\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\cli
+creating build\bdist.win-amd64\wheel\TerraLab\common
+copying build\lib\TerraLab\common\app_paths.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\common\cache.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\common\cancellation.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\common\custom_widget_base.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\common\data_library.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\common\deprecation_registry.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\common\exception_reporting.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\common\locks.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+creating build\bdist.win-amd64\wheel\TerraLab\common\performance
+copying build\lib\TerraLab\common\performance\budget.py -> build\bdist.win-amd64\wheel\.\TerraLab\common\performance
+copying build\lib\TerraLab\common\performance\flags.py -> build\bdist.win-amd64\wheel\.\TerraLab\common\performance
+copying build\lib\TerraLab\common\performance\memory.py -> build\bdist.win-amd64\wheel\.\TerraLab\common\performance
+copying build\lib\TerraLab\common\performance\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\common\performance
+copying build\lib\TerraLab\common\perf_events.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\common\timestamped_print.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\common\utils.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\common\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\common
+copying build\lib\TerraLab\config.py -> build\bdist.win-amd64\wheel\.\TerraLab
+creating build\bdist.win-amd64\wheel\TerraLab\data
+creating build\bdist.win-amd64\wheel\TerraLab\data\assets
+copying build\lib\TerraLab\data\assets\discovery.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\assets
+copying build\lib\TerraLab\data\assets\downloads.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\assets
+copying build\lib\TerraLab\data\assets\installation.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\assets
+copying build\lib\TerraLab\data\assets\registry.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\assets
+copying build\lib\TerraLab\data\assets\runtime.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\assets
+copying build\lib\TerraLab\data\assets\validation.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\assets
+copying build\lib\TerraLab\data\assets\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\assets
+copying build\lib\TerraLab\data\assets_manager.py -> build\bdist.win-amd64\wheel\.\TerraLab\data
+creating build\bdist.win-amd64\wheel\TerraLab\data\catalogs
+copying build\lib\TerraLab\data\catalogs\constants.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\catalogs
+copying build\lib\TerraLab\data\catalogs\scope_cache.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\catalogs
+copying build\lib\TerraLab\data\catalogs\scope_preload_cache.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\catalogs
+copying build\lib\TerraLab\data\catalogs\star_catalog.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\catalogs
+copying build\lib\TerraLab\data\catalogs\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\catalogs
+creating build\bdist.win-amd64\wheel\TerraLab\data\converters
+copying build\lib\TerraLab\data\converters\planck.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\converters
+copying build\lib\TerraLab\data\converters\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\converters
+creating build\bdist.win-amd64\wheel\TerraLab\data\copernicus
+copying build\lib\TerraLab\data\copernicus\client.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\copernicus
+copying build\lib\TerraLab\data\copernicus\constants.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\copernicus
+copying build\lib\TerraLab\data\copernicus\manager.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\copernicus
+copying build\lib\TerraLab\data\copernicus\manifest.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\copernicus
+copying build\lib\TerraLab\data\copernicus\mosaic.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\copernicus
+copying build\lib\TerraLab\data\copernicus\planning.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\copernicus
+copying build\lib\TerraLab\data\copernicus\validation.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\copernicus
+copying build\lib\TerraLab\data\copernicus\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\data\copernicus
+copying build\lib\TerraLab\data\gaia_downloader.py -> build\bdist.win-amd64\wheel\.\TerraLab\data
+copying build\lib\TerraLab\data\layer_manager.py -> build\bdist.win-amd64\wheel\.\TerraLab\data
+copying build\lib\TerraLab\data\resumable_download.py -> build\bdist.win-amd64\wheel\.\TerraLab\data
+creating build\bdist.win-amd64\wheel\TerraLab\data\stars
+copying build\lib\TerraLab\data\stars\no_gaia_stars.json -> build\bdist.win-amd64\wheel\.\TerraLab\data\stars
+copying build\lib\TerraLab\data\stars_dataset.py -> build\bdist.win-amd64\wheel\.\TerraLab\data
+copying build\lib\TerraLab\data\star_catalog_store.py -> build\bdist.win-amd64\wheel\.\TerraLab\data
+copying build\lib\TerraLab\data\star_data_coordinator.py -> build\bdist.win-amd64\wheel\.\TerraLab\data
+copying build\lib\TerraLab\data\tile_manifest.py -> build\bdist.win-amd64\wheel\.\TerraLab\data
+copying build\lib\TerraLab\data\translations.json -> build\bdist.win-amd64\wheel\.\TerraLab\data
+copying build\lib\TerraLab\data\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\data
+creating build\bdist.win-amd64\wheel\TerraLab\debug
+copying build\lib\TerraLab\debug\diagnostics.py -> build\bdist.win-amd64\wheel\.\TerraLab\debug
+copying build\lib\TerraLab\debug\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\debug
+creating build\bdist.win-amd64\wheel\TerraLab\layers
+copying build\lib\TerraLab\layers\village.py -> build\bdist.win-amd64\wheel\.\TerraLab\layers
+copying build\lib\TerraLab\layers\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\layers
+creating build\bdist.win-amd64\wheel\TerraLab\light_pollution
+copying build\lib\TerraLab\light_pollution\bortle.py -> build\bdist.win-amd64\wheel\.\TerraLab\light_pollution
+copying build\lib\TerraLab\light_pollution\calibration.py -> build\bdist.win-amd64\wheel\.\TerraLab\light_pollution
+copying build\lib\TerraLab\light_pollution\dvnl_io.py -> build\bdist.win-amd64\wheel\.\TerraLab\light_pollution
+copying build\lib\TerraLab\light_pollution\kernels.py -> build\bdist.win-amd64\wheel\.\TerraLab\light_pollution
+copying build\lib\TerraLab\light_pollution\mlim.py -> build\bdist.win-amd64\wheel\.\TerraLab\light_pollution
+copying build\lib\TerraLab\light_pollution\modes.py -> build\bdist.win-amd64\wheel\.\TerraLab\light_pollution
+copying build\lib\TerraLab\light_pollution\processing.py -> build\bdist.win-amd64\wheel\.\TerraLab\light_pollution
+copying build\lib\TerraLab\light_pollution\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\light_pollution
+creating build\bdist.win-amd64\wheel\TerraLab\render
+copying build\lib\TerraLab\render\grid_renderer.py -> build\bdist.win-amd64\wheel\.\TerraLab\render
+copying build\lib\TerraLab\render\horizon_renderer.py -> build\bdist.win-amd64\wheel\.\TerraLab\render
+copying build\lib\TerraLab\render\overlays_renderer.py -> build\bdist.win-amd64\wheel\.\TerraLab\render
+creating build\bdist.win-amd64\wheel\TerraLab\render\qt
+copying build\lib\TerraLab\render\qt\context.py -> build\bdist.win-amd64\wheel\.\TerraLab\render\qt
+copying build\lib\TerraLab\render\qt\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\render\qt
+copying build\lib\TerraLab\render\scope_renderer.py -> build\bdist.win-amd64\wheel\.\TerraLab\render
+creating build\bdist.win-amd64\wheel\TerraLab\render\sky
+copying build\lib\TerraLab\render\sky\milkyway_overlay.py -> build\bdist.win-amd64\wheel\.\TerraLab\render\sky
+copying build\lib\TerraLab\render\sky\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\render\sky
+copying build\lib\TerraLab\render\sky_renderer.py -> build\bdist.win-amd64\wheel\.\TerraLab\render
+copying build\lib\TerraLab\render\stars_renderer.py -> build\bdist.win-amd64\wheel\.\TerraLab\render
+creating build\bdist.win-amd64\wheel\TerraLab\render\workers
+copying build\lib\TerraLab\render\workers\star_render.py -> build\bdist.win-amd64\wheel\.\TerraLab\render\workers
+copying build\lib\TerraLab\render\workers\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\render\workers
+copying build\lib\TerraLab\render\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\render
+creating build\bdist.win-amd64\wheel\TerraLab\scene
+copying build\lib\TerraLab\scene\camera.py -> build\bdist.win-amd64\wheel\.\TerraLab\scene
+copying build\lib\TerraLab\scene\projection.py -> build\bdist.win-amd64\wheel\.\TerraLab\scene
+copying build\lib\TerraLab\scene\render_state.py -> build\bdist.win-amd64\wheel\.\TerraLab\scene
+copying build\lib\TerraLab\scene\scene_controller.py -> build\bdist.win-amd64\wheel\.\TerraLab\scene
+copying build\lib\TerraLab\scene\scene_state.py -> build\bdist.win-amd64\wheel\.\TerraLab\scene
+copying build\lib\TerraLab\scene\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\scene
+creating build\bdist.win-amd64\wheel\TerraLab\terrain
+copying build\lib\TerraLab\terrain\asc_cache_builder.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+copying build\lib\TerraLab\terrain\bake_process.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+copying build\lib\TerraLab\terrain\crs.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+copying build\lib\TerraLab\terrain\data_sources.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\domain
+copying build\lib\TerraLab\terrain\domain\bands.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\domain
+copying build\lib\TerraLab\terrain\domain\curvature.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\domain
+copying build\lib\TerraLab\terrain\domain\profile.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\domain
+copying build\lib\TerraLab\terrain\domain\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\domain
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\infrastructure
+copying build\lib\TerraLab\terrain\infrastructure\dem_tiles.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\infrastructure
+copying build\lib\TerraLab\terrain\infrastructure\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\infrastructure
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\land_cover
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\land_cover\legends
+copying build\lib\TerraLab\terrain\land_cover\legends\category_info.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\land_cover\legends
+copying build\lib\TerraLab\terrain\land_cover\legends\s2glc.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\land_cover\legends
+copying build\lib\TerraLab\terrain\land_cover\legends\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\land_cover\legends
+copying build\lib\TerraLab\terrain\land_cover\visual_styles.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\land_cover
+copying build\lib\TerraLab\terrain\land_cover\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\land_cover
+copying build\lib\TerraLab\terrain\light_pollution_query.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+copying build\lib\TerraLab\terrain\light_pollution_sampler.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\mesh
+copying build\lib\TerraLab\terrain\mesh\elevation_field.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\mesh
+copying build\lib\TerraLab\terrain\mesh\normals.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\mesh
+copying build\lib\TerraLab\terrain\mesh\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\mesh
+copying build\lib\TerraLab\terrain\overlay.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\band_draw.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\category_hit_test.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\draw_dispatch.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\fallback.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\interpolated_material.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\lighting_cache.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\light_context.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\materials.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\profile_cache.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\projection_geometry.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\triangle_paint.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+copying build\lib\TerraLab\terrain\overlay_mixins\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\overlay_mixins
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\persistence
+copying build\lib\TerraLab\terrain\persistence\profile_npz.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\persistence
+copying build\lib\TerraLab\terrain\persistence\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\persistence
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\providers
+copying build\lib\TerraLab\terrain\providers\asc_provider.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\providers
+copying build\lib\TerraLab\terrain\providers\chain.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\providers
+copying build\lib\TerraLab\terrain\providers\common.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\providers
+copying build\lib\TerraLab\terrain\providers\geotiff_provider.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\providers
+copying build\lib\TerraLab\terrain\providers\raster_dataset.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\providers
+copying build\lib\TerraLab\terrain\providers\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\providers
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\raycast
+copying build\lib\TerraLab\terrain\raycast\baker.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\raycast
+copying build\lib\TerraLab\terrain\raycast\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\raycast
+copying build\lib\TerraLab\terrain\ray_precision.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\render\atmosphere.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\render\config.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\render\geometry.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\render\lighting.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\render\materials.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\render\overlay_types.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\render\palette.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\render\sampling.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\render\triangle_raster.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\render\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\render
+copying build\lib\TerraLab\terrain\representation.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+copying build\lib\TerraLab\terrain\sampling.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\services
+copying build\lib\TerraLab\terrain\services\elevation_query.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\services
+copying build\lib\TerraLab\terrain\services\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\services
+copying build\lib\TerraLab\terrain\source_inspection.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+creating build\bdist.win-amd64\wheel\TerraLab\terrain\surface
+copying build\lib\TerraLab\terrain\surface\cache.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\surface
+copying build\lib\TerraLab\terrain\surface\categorical.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\surface
+copying build\lib\TerraLab\terrain\surface\common.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\surface
+copying build\lib\TerraLab\terrain\surface\factory.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\surface
+copying build\lib\TerraLab\terrain\surface\geometry.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\surface
+copying build\lib\TerraLab\terrain\surface\light_pollution.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\surface
+copying build\lib\TerraLab\terrain\surface\rgb.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\surface
+copying build\lib\TerraLab\terrain\surface\service.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\surface
+copying build\lib\TerraLab\terrain\surface\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain\surface
+copying build\lib\TerraLab\terrain\surface_store.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+copying build\lib\TerraLab\terrain\terrain_coordinator.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+copying build\lib\TerraLab\terrain\visibility_range.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+copying build\lib\TerraLab\terrain\worker.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+copying build\lib\TerraLab\terrain\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\terrain
+creating build\bdist.win-amd64\wheel\TerraLab\ui
+copying build\lib\TerraLab\ui\astronomical_widget.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\astro_canvas.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\canvas_input_handler.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+creating build\bdist.win-amd64\wheel\TerraLab\ui\canvas_mixins
+copying build\lib\TerraLab\ui\canvas_mixins\ephemeris_rendering.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\canvas_mixins
+copying build\lib\TerraLab\ui\canvas_mixins\interaction.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\canvas_mixins
+copying build\lib\TerraLab\ui\canvas_mixins\projection_rendering.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\canvas_mixins
+copying build\lib\TerraLab\ui\canvas_mixins\selection_and_trails.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\canvas_mixins
+copying build\lib\TerraLab\ui\canvas_mixins\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\canvas_mixins
+copying build\lib\TerraLab\ui\canvas_runtime_helpers.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\canvas_selection.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\copernicus_orthophoto_dialog.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\data_layers_dialog.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\data_library_dialog.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\layer_configurator.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\onboarding_dialogs.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\scope_preload_worker.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\sky_controller.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\time_bar.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\widget_bootstrap_helpers.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\widget_controls_builder.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\widget_init_helpers.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+copying build\lib\TerraLab\ui\widget_misc_helpers.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+creating build\bdist.win-amd64\wheel\TerraLab\ui\widget_mixins
+copying build\lib\TerraLab\ui\widget_mixins\bootstrap_terrain.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\widget_mixins
+copying build\lib\TerraLab\ui\widget_mixins\controls_time.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\widget_mixins
+copying build\lib\TerraLab\ui\widget_mixins\horizon_scope.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\widget_mixins
+copying build\lib\TerraLab\ui\widget_mixins\layers.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\widget_mixins
+copying build\lib\TerraLab\ui\widget_mixins\surface_data.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\widget_mixins
+copying build\lib\TerraLab\ui\widget_mixins\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\widget_mixins
+copying build\lib\TerraLab\ui\widget_runtime_helpers.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+creating build\bdist.win-amd64\wheel\TerraLab\ui\workers
+copying build\lib\TerraLab\ui\workers\catalog_loader.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\workers
+copying build\lib\TerraLab\ui\workers\scope_index.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\workers
+copying build\lib\TerraLab\ui\workers\skyfield_loader.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\workers
+copying build\lib\TerraLab\ui\workers\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui\workers
+copying build\lib\TerraLab\ui\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\ui
+creating build\bdist.win-amd64\wheel\TerraLab\util
+copying build\lib\TerraLab\util\build_healpy_index.py -> build\bdist.win-amd64\wheel\.\TerraLab\util
+copying build\lib\TerraLab\util\color.py -> build\bdist.win-amd64\wheel\.\TerraLab\util
+copying build\lib\TerraLab\util\gaia_importer.py -> build\bdist.win-amd64\wheel\.\TerraLab\util
+copying build\lib\TerraLab\util\healpy_catalog_reader.py -> build\bdist.win-amd64\wheel\.\TerraLab\util
+copying build\lib\TerraLab\util\math2d.py -> build\bdist.win-amd64\wheel\.\TerraLab\util
+copying build\lib\TerraLab\util\milkyway_importer.py -> build\bdist.win-amd64\wheel\.\TerraLab\util
+copying build\lib\TerraLab\util\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\util
+creating build\bdist.win-amd64\wheel\TerraLab\weather
+copying build\lib\TerraLab\weather\metno_provider.py -> build\bdist.win-amd64\wheel\.\TerraLab\weather
+copying build\lib\TerraLab\weather\system.py -> build\bdist.win-amd64\wheel\.\TerraLab\weather
+copying build\lib\TerraLab\weather\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\weather
+creating build\bdist.win-amd64\wheel\TerraLab\widgets
+copying build\lib\TerraLab\widgets\constellation_drawing.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\hint_overlay.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\measurement_tools.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\optica_telescopica.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\physical_math.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\scope_ui_manager.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\spherical_math.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\telescope_runtime.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\telescope_scope_mode.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\terrain_config_dialog.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\visual_magnitude_engine.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\widgets\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab\widgets
+copying build\lib\TerraLab\__init__.py -> build\bdist.win-amd64\wheel\.\TerraLab
+copying build\lib\TerraLab\__main__.py -> build\bdist.win-amd64\wheel\.\TerraLab
+running install_egg_info
+running egg_info
+writing terralab.egg-info\PKG-INFO
+writing dependency_links to terralab.egg-info\dependency_links.txt
+writing entry points to terralab.egg-info\entry_points.txt
+writing requirements to terralab.egg-info\requires.txt
+writing top-level names to terralab.egg-info\top_level.txt
+reading manifest file 'terralab.egg-info\SOURCES.txt'
+adding license file 'LICENSE'
+writing manifest file 'terralab.egg-info\SOURCES.txt'
+Copying terralab.egg-info to build\bdist.win-amd64\wheel\.\terralab-0.1.0-py3.13.egg-info
+running install_scripts
+creating build\bdist.win-amd64\wheel\terralab-0.1.0.dist-info\WHEEL
+creating 'C:\\Users\\Manel\\AppData\\Local\\Temp\\terralab-review-98204d4\\dist\\.tmp-rhf8n108\\terralab-0.1.0-py3-none-any.whl' and adding 'build\\bdist.win-amd64\\wheel' to it
+adding 'TerraLab/__init__.py'
+adding 'TerraLab/__main__.py'
+adding 'TerraLab/config.py'
+adding 'TerraLab/astro/__init__.py'
+adding 'TerraLab/astro/engine.py'
+adding 'TerraLab/astro/ephemeris_coordinator.py'
+adding 'TerraLab/astro/ngc_catalog.py'
+adding 'TerraLab/astro/search_engine.py'
+adding 'TerraLab/cli/__init__.py'
+adding 'TerraLab/cli/calibrate_sqm.py'
+adding 'TerraLab/cli/dvnl_convolve.py'
+adding 'TerraLab/cli/dvnl_preprocess.py'
+adding 'TerraLab/cli/gaia.py'
+adding 'TerraLab/cli/predict_sqm_raster.py'
+adding 'TerraLab/cli/query_elevation.py'
+adding 'TerraLab/common/__init__.py'
+adding 'TerraLab/common/app_paths.py'
+adding 'TerraLab/common/cache.py'
+adding 'TerraLab/common/cancellation.py'
+adding 'TerraLab/common/custom_widget_base.py'
+adding 'TerraLab/common/data_library.py'
+adding 'TerraLab/common/deprecation_registry.py'
+adding 'TerraLab/common/exception_reporting.py'
+adding 'TerraLab/common/locks.py'
+adding 'TerraLab/common/perf_events.py'
+adding 'TerraLab/common/timestamped_print.py'
+adding 'TerraLab/common/utils.py'
+adding 'TerraLab/common/performance/__init__.py'
+adding 'TerraLab/common/performance/budget.py'
+adding 'TerraLab/common/performance/flags.py'
+adding 'TerraLab/common/performance/memory.py'
+adding 'TerraLab/data/__init__.py'
+adding 'TerraLab/data/assets_manager.py'
+adding 'TerraLab/data/gaia_downloader.py'
+adding 'TerraLab/data/layer_manager.py'
+adding 'TerraLab/data/resumable_download.py'
+adding 'TerraLab/data/star_catalog_store.py'
+adding 'TerraLab/data/star_data_coordinator.py'
+adding 'TerraLab/data/stars_dataset.py'
+adding 'TerraLab/data/tile_manifest.py'
+adding 'TerraLab/data/translations.json'
+adding 'TerraLab/data/assets/__init__.py'
+adding 'TerraLab/data/assets/discovery.py'
+adding 'TerraLab/data/assets/downloads.py'
+adding 'TerraLab/data/assets/installation.py'
+adding 'TerraLab/data/assets/registry.py'
+adding 'TerraLab/data/assets/runtime.py'
+adding 'TerraLab/data/assets/validation.py'
+adding 'TerraLab/data/catalogs/__init__.py'
+adding 'TerraLab/data/catalogs/constants.py'
+adding 'TerraLab/data/catalogs/scope_cache.py'
+adding 'TerraLab/data/catalogs/scope_preload_cache.py'
+adding 'TerraLab/data/catalogs/star_catalog.py'
+adding 'TerraLab/data/converters/__init__.py'
+adding 'TerraLab/data/converters/planck.py'
+adding 'TerraLab/data/copernicus/__init__.py'
+adding 'TerraLab/data/copernicus/client.py'
+adding 'TerraLab/data/copernicus/constants.py'
+adding 'TerraLab/data/copernicus/manager.py'
+adding 'TerraLab/data/copernicus/manifest.py'
+adding 'TerraLab/data/copernicus/mosaic.py'
+adding 'TerraLab/data/copernicus/planning.py'
+adding 'TerraLab/data/copernicus/validation.py'
+adding 'TerraLab/data/stars/no_gaia_stars.json'
+adding 'TerraLab/debug/__init__.py'
+adding 'TerraLab/debug/diagnostics.py'
+adding 'TerraLab/layers/__init__.py'
+adding 'TerraLab/layers/village.py'
+adding 'TerraLab/light_pollution/__init__.py'
+adding 'TerraLab/light_pollution/bortle.py'
+adding 'TerraLab/light_pollution/calibration.py'
+adding 'TerraLab/light_pollution/dvnl_io.py'
+adding 'TerraLab/light_pollution/kernels.py'
+adding 'TerraLab/light_pollution/mlim.py'
+adding 'TerraLab/light_pollution/modes.py'
+adding 'TerraLab/light_pollution/processing.py'
+adding 'TerraLab/render/__init__.py'
+adding 'TerraLab/render/grid_renderer.py'
+adding 'TerraLab/render/horizon_renderer.py'
+adding 'TerraLab/render/overlays_renderer.py'
+adding 'TerraLab/render/scope_renderer.py'
+adding 'TerraLab/render/sky_renderer.py'
+adding 'TerraLab/render/stars_renderer.py'
+adding 'TerraLab/render/qt/__init__.py'
+adding 'TerraLab/render/qt/context.py'
+adding 'TerraLab/render/sky/__init__.py'
+adding 'TerraLab/render/sky/milkyway_overlay.py'
+adding 'TerraLab/render/workers/__init__.py'
+adding 'TerraLab/render/workers/star_render.py'
+adding 'TerraLab/scene/__init__.py'
+adding 'TerraLab/scene/camera.py'
+adding 'TerraLab/scene/projection.py'
+adding 'TerraLab/scene/render_state.py'
+adding 'TerraLab/scene/scene_controller.py'
+adding 'TerraLab/scene/scene_state.py'
+adding 'TerraLab/terrain/__init__.py'
+adding 'TerraLab/terrain/asc_cache_builder.py'
+adding 'TerraLab/terrain/bake_process.py'
+adding 'TerraLab/terrain/crs.py'
+adding 'TerraLab/terrain/data_sources.py'
+adding 'TerraLab/terrain/light_pollution_query.py'
+adding 'TerraLab/terrain/light_pollution_sampler.py'
+adding 'TerraLab/terrain/overlay.py'
+adding 'TerraLab/terrain/ray_precision.py'
+adding 'TerraLab/terrain/representation.py'
+adding 'TerraLab/terrain/sampling.py'
+adding 'TerraLab/terrain/source_inspection.py'
+adding 'TerraLab/terrain/surface_store.py'
+adding 'TerraLab/terrain/terrain_coordinator.py'
+adding 'TerraLab/terrain/visibility_range.py'
+adding 'TerraLab/terrain/worker.py'
+adding 'TerraLab/terrain/domain/__init__.py'
+adding 'TerraLab/terrain/domain/bands.py'
+adding 'TerraLab/terrain/domain/curvature.py'
+adding 'TerraLab/terrain/domain/profile.py'
+adding 'TerraLab/terrain/infrastructure/__init__.py'
+adding 'TerraLab/terrain/infrastructure/dem_tiles.py'
+adding 'TerraLab/terrain/land_cover/__init__.py'
+adding 'TerraLab/terrain/land_cover/visual_styles.py'
+adding 'TerraLab/terrain/land_cover/legends/__init__.py'
+adding 'TerraLab/terrain/land_cover/legends/category_info.py'
+adding 'TerraLab/terrain/land_cover/legends/s2glc.py'
+adding 'TerraLab/terrain/mesh/__init__.py'
+adding 'TerraLab/terrain/mesh/elevation_field.py'
+adding 'TerraLab/terrain/mesh/normals.py'
+adding 'TerraLab/terrain/overlay_mixins/__init__.py'
+adding 'TerraLab/terrain/overlay_mixins/band_draw.py'
+adding 'TerraLab/terrain/overlay_mixins/category_hit_test.py'
+adding 'TerraLab/terrain/overlay_mixins/draw_dispatch.py'
+adding 'TerraLab/terrain/overlay_mixins/fallback.py'
+adding 'TerraLab/terrain/overlay_mixins/interpolated_material.py'
+adding 'TerraLab/terrain/overlay_mixins/light_context.py'
+adding 'TerraLab/terrain/overlay_mixins/lighting_cache.py'
+adding 'TerraLab/terrain/overlay_mixins/materials.py'
+adding 'TerraLab/terrain/overlay_mixins/profile_cache.py'
+adding 'TerraLab/terrain/overlay_mixins/projection_geometry.py'
+adding 'TerraLab/terrain/overlay_mixins/triangle_paint.py'
+adding 'TerraLab/terrain/persistence/__init__.py'
+adding 'TerraLab/terrain/persistence/profile_npz.py'
+adding 'TerraLab/terrain/providers/__init__.py'
+adding 'TerraLab/terrain/providers/asc_provider.py'
+adding 'TerraLab/terrain/providers/chain.py'
+adding 'TerraLab/terrain/providers/common.py'
+adding 'TerraLab/terrain/providers/geotiff_provider.py'
+adding 'TerraLab/terrain/providers/raster_dataset.py'
+adding 'TerraLab/terrain/raycast/__init__.py'
+adding 'TerraLab/terrain/raycast/baker.py'
+adding 'TerraLab/terrain/render/__init__.py'
+adding 'TerraLab/terrain/render/atmosphere.py'
+adding 'TerraLab/terrain/render/config.py'
+adding 'TerraLab/terrain/render/geometry.py'
+adding 'TerraLab/terrain/render/lighting.py'
+adding 'TerraLab/terrain/render/materials.py'
+adding 'TerraLab/terrain/render/overlay_types.py'
+adding 'TerraLab/terrain/render/palette.py'
+adding 'TerraLab/terrain/render/sampling.py'
+adding 'TerraLab/terrain/render/triangle_raster.py'
+adding 'TerraLab/terrain/services/__init__.py'
+adding 'TerraLab/terrain/services/elevation_query.py'
+adding 'TerraLab/terrain/surface/__init__.py'
+adding 'TerraLab/terrain/surface/cache.py'
+adding 'TerraLab/terrain/surface/categorical.py'
+adding 'TerraLab/terrain/surface/common.py'
+adding 'TerraLab/terrain/surface/factory.py'
+adding 'TerraLab/terrain/surface/geometry.py'
+adding 'TerraLab/terrain/surface/light_pollution.py'
+adding 'TerraLab/terrain/surface/rgb.py'
+adding 'TerraLab/terrain/surface/service.py'
+adding 'TerraLab/ui/__init__.py'
+adding 'TerraLab/ui/astro_canvas.py'
+adding 'TerraLab/ui/astronomical_widget.py'
+adding 'TerraLab/ui/canvas_input_handler.py'
+adding 'TerraLab/ui/canvas_runtime_helpers.py'
+adding 'TerraLab/ui/canvas_selection.py'
+adding 'TerraLab/ui/copernicus_orthophoto_dialog.py'
+adding 'TerraLab/ui/data_layers_dialog.py'
+adding 'TerraLab/ui/data_library_dialog.py'
+adding 'TerraLab/ui/layer_configurator.py'
+adding 'TerraLab/ui/onboarding_dialogs.py'
+adding 'TerraLab/ui/scope_preload_worker.py'
+adding 'TerraLab/ui/sky_controller.py'
+adding 'TerraLab/ui/time_bar.py'
+adding 'TerraLab/ui/widget_bootstrap_helpers.py'
+adding 'TerraLab/ui/widget_controls_builder.py'
+adding 'TerraLab/ui/widget_init_helpers.py'
+adding 'TerraLab/ui/widget_misc_helpers.py'
+adding 'TerraLab/ui/widget_runtime_helpers.py'
+adding 'TerraLab/ui/canvas_mixins/__init__.py'
+adding 'TerraLab/ui/canvas_mixins/ephemeris_rendering.py'
+adding 'TerraLab/ui/canvas_mixins/interaction.py'
+adding 'TerraLab/ui/canvas_mixins/projection_rendering.py'
+adding 'TerraLab/ui/canvas_mixins/selection_and_trails.py'
+adding 'TerraLab/ui/widget_mixins/__init__.py'
+adding 'TerraLab/ui/widget_mixins/bootstrap_terrain.py'
+adding 'TerraLab/ui/widget_mixins/controls_time.py'
+adding 'TerraLab/ui/widget_mixins/horizon_scope.py'
+adding 'TerraLab/ui/widget_mixins/layers.py'
+adding 'TerraLab/ui/widget_mixins/surface_data.py'
+adding 'TerraLab/ui/workers/__init__.py'
+adding 'TerraLab/ui/workers/catalog_loader.py'
+adding 'TerraLab/ui/workers/scope_index.py'
+adding 'TerraLab/ui/workers/skyfield_loader.py'
+adding 'TerraLab/util/__init__.py'
+adding 'TerraLab/util/build_healpy_index.py'
+adding 'TerraLab/util/color.py'
+adding 'TerraLab/util/gaia_importer.py'
+adding 'TerraLab/util/healpy_catalog_reader.py'
+adding 'TerraLab/util/math2d.py'
+adding 'TerraLab/util/milkyway_importer.py'
+adding 'TerraLab/weather/__init__.py'
+adding 'TerraLab/weather/metno_provider.py'
+adding 'TerraLab/weather/system.py'
+adding 'TerraLab/widgets/__init__.py'
+adding 'TerraLab/widgets/constellation_drawing.py'
+adding 'TerraLab/widgets/hint_overlay.py'
+adding 'TerraLab/widgets/measurement_tools.py'
+adding 'TerraLab/widgets/optica_telescopica.py'
+adding 'TerraLab/widgets/physical_math.py'
+adding 'TerraLab/widgets/scope_ui_manager.py'
+adding 'TerraLab/widgets/spherical_math.py'
+adding 'TerraLab/widgets/telescope_runtime.py'
+adding 'TerraLab/widgets/telescope_scope_mode.py'
+adding 'TerraLab/widgets/terrain_config_dialog.py'
+adding 'TerraLab/widgets/visual_magnitude_engine.py'
+adding 'terralab-0.1.0.dist-info/licenses/LICENSE'
+adding 'terralab-0.1.0.dist-info/METADATA'
+adding 'terralab-0.1.0.dist-info/WHEEL'
+adding 'terralab-0.1.0.dist-info/entry_points.txt'
+adding 'terralab-0.1.0.dist-info/top_level.txt'
+adding 'terralab-0.1.0.dist-info/RECORD'
+removing build\bdist.win-amd64\wheel
+Successfully built terralab-0.1.0.tar.gz and terralab-0.1.0-py3-none-any.whl

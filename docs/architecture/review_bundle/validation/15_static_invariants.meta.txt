@@ -1,0 +1,7 @@
+command=C:\Users\Manel\AppData\Local\Temp\terralab-review-venv-98204d4\Scripts\python.exe -m pytest -q tests/architecture/test_boundaries.py::test_packages_do_not_use_numbered_fragments_or_dynamic_namespace_copying tests/architecture/test_boundaries.py::test_silent_generic_exception_debt_does_not_increase tests/architecture/test_boundaries.py::test_runtime_readers_never_enable_numpy_pickle tests/architecture/test_boundaries.py::test_product_module_graph_is_acyclic
+directory=C:\Users\Manel\AppData\Local\Temp\terralab-review-98204d4
+python=Python 3.13.7
+started=2026-07-26T02:01:03.7072146+02:00
+finished=2026-07-26T02:01:08.0723065+02:00
+duration_seconds=4.364
+exit_code=0

@@ -1,0 +1,9 @@
+{
+  "files": 382,
+  "python_modules": 303,
+  "symbols": 3744,
+  "dependency_edges": 821,
+  "cycles": 0,
+  "dead_code_candidates": 945,
+  "output_dir": "C:\\Users\\Manel\\AppData\\Local\\Temp\\terralab-review-98204d4\\docs\\architecture"
+}

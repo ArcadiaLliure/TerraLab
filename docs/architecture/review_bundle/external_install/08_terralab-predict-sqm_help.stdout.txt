@@ -1,0 +1,13 @@
+usage: terralab-predict-sqm [-h] [--elevation ELEVATION]
+                            input_agg model output
+
+Predict an SQM raster from aggregated DVNL.
+
+positional arguments:
+  input_agg
+  model
+  output
+
+options:
+  -h, --help            show this help message and exit
+  --elevation ELEVATION

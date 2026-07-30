@@ -1,0 +1,31 @@
+[AstroWidget] Skyfield loading in background...
+[AstroWidget] Star catalog loading deferred until horizon ready.
+[SkyfieldLoader] Initialized in 0.009s
+[AstroWidget] Skyfield failed to load.
+[AstroWidget] Skyfield loading in background...
+[AstroWidget] Star catalog loading deferred until horizon ready.
+[SkyfieldLoader] Initialized in 0.007s
+[AstroWidget] Skyfield failed to load.
+{
+  "package_file": "C:\\Users\\Manel\\AppData\\Local\\Temp\\terralab-wheel-final-98204d4\\Lib\\site-packages\\TerraLab\\__init__.py",
+  "instances": 2,
+  "close_seconds": [
+    0.0019266999952378683,
+    0.0021557000000029802
+  ],
+  "python_thread_survivors": [],
+  "terrain_qthreads_running": [
+    false,
+    false
+  ],
+  "canvas_qthreads_running": [
+    false,
+    false
+  ],
+  "isolation_root": "C:\\Users\\Manel\\AppData\\Local\\Temp\\terralab-wheel-final-isolated-state-98204d4",
+  "resolved_dem_paths": [
+    "C:\\Users\\Manel\\AppData\\Local\\Temp\\terralab-wheel-final-isolated-state-98204d4\\data\\data\\earth\\elevation",
+    "C:\\Users\\Manel\\AppData\\Local\\Temp\\terralab-wheel-final-isolated-state-98204d4\\data\\data\\earth\\elevation"
+  ],
+  "result": "PASS"
+}
