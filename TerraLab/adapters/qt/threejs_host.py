@@ -57,6 +57,32 @@ _HOST_ASSET_MIME_TYPES = {
 logger = logging.getLogger(__name__)
 
 
+class LoggingWebEnginePage(QWebEnginePage):
+    """Forward browser-console diagnostics to the Python application log."""
+
+    def javaScriptConsoleMessage(  # noqa: N802 - Qt callback name.
+        self,
+        level: object,
+        message: str,
+        line_number: int,
+        source_id: str,
+    ) -> None:
+        try:
+            log_level = {
+                0: logging.INFO,
+                1: logging.WARNING,
+            }.get(int(level), logging.ERROR)
+        except (TypeError, ValueError):
+            log_level = logging.ERROR
+        logger.log(
+            log_level,
+            "Three.js console %s:%s: %s",
+            source_id,
+            line_number,
+            message,
+        )
+
+
 class ThreeJSLoopbackAssetServer:
     """Serve the bundled host and versioned buffers on one loopback origin."""
 
@@ -249,7 +275,7 @@ class ThreeJSWebEngineHostPresenter(QWidget):
         self._channel_script = self._load_qwebchannel_script()
 
         self._profile = QWebEngineProfile(self)
-        self._page_instance = QWebEnginePage(self._profile, self)
+        self._page_instance = LoggingWebEnginePage(self._profile, self)
         self._view = QWebEngineView(self)
         self._view.setPage(self._page_instance)
         layout = QVBoxLayout(self)
@@ -269,7 +295,12 @@ class ThreeJSWebEngineHostPresenter(QWidget):
         self._channel.registerObject("threeBridge", self._web_channel_bridge)
         page.setWebChannel(self._channel)
         self._web_channel_bridge.inbound.connect(self.receive_js_message)
+        self._view.loadStarted.connect(self._on_page_load_started)
+        self._view.loadProgress.connect(self._on_page_load_progress)
         self._view.loadFinished.connect(self._on_page_load_finished)
+        self._view.renderProcessTerminated.connect(
+            self._on_render_process_terminated
+        )
         self.webgl_error.connect(self._log_webgl_error)
         self._bridge.set_outbound_handler(self._on_bridge_outbound)
 
@@ -409,6 +440,27 @@ class ThreeJSWebEngineHostPresenter(QWidget):
     def _on_page_load_finished(self, ok: bool) -> None:
         if not ok and not self._surface_closed:
             self.webgl_error.emit("The local Three.js host page did not load")
+        elif ok:
+            logger.debug("Three.js host page loaded")
+
+    @staticmethod
+    def _on_page_load_started() -> None:
+        logger.debug("Loading local Three.js host page")
+
+    @staticmethod
+    def _on_page_load_progress(progress: int) -> None:
+        logger.debug("Three.js host page load progress: %s%%", progress)
+
+    def _on_render_process_terminated(
+        self,
+        status: object,
+        exit_code: int,
+    ) -> None:
+        if not self._surface_closed:
+            self.webgl_error.emit(
+                "Three.js render process terminated "
+                f"(status={status}, exit_code={exit_code})"
+            )
 
     @staticmethod
     def _log_webgl_error(detail: str) -> None:

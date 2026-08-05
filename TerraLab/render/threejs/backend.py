@@ -114,19 +114,23 @@ class ThreeJSRendererBackend(RendererBackend):
         self._output_port = output_port
 
     def attach_surface(self, target: HostedSurfaceTarget) -> None:
-        """Start or resize the bridge with the live host dimensions."""
+        """Validate a live host surface without driving its lifecycle.
+
+        The Qt/WebEngine host alone owns ``START``, ``RESIZE``, visibility,
+        restart and close messages.  The backend may submit scene resources
+        only after that host reports ``renderer_ready``.
+        """
 
         self._require_started()
+        if not self._bridge.is_ready:
+            raise RenderBackendLifecycleError(
+                "Three.js host is not renderer_ready"
+            )
         viewport = BridgeViewport(
             width=target.width,
             height=target.height,
             device_pixel_ratio=target.device_pixel_ratio,
         )
-        if self._bridge.is_started:
-            if viewport != self._attached_viewport:
-                self._bridge.resize(viewport)
-        else:
-            self._bridge.start(viewport)
         self._attached_viewport = viewport
 
     @staticmethod

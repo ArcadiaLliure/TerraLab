@@ -424,6 +424,25 @@
     return attribute;
   };
 
+  ThreeJSRunner.prototype.replaceInstancedAttribute = function (geometry, primitive, name, components, normalized, dynamic, bufferName) {
+    var THREE = global.THREE;
+    var source = bufferName || name;
+    var key = this.bufferKey(primitive, source);
+    var existing = geometry.getAttribute(name);
+    if (existing && existing._terralabResourceKey === key) {
+      return existing;
+    }
+    var attribute = new THREE.InstancedBufferAttribute(
+      this.bufferView(primitive, source), components, Boolean(normalized), 1
+    );
+    if (dynamic) {
+      attribute.setUsage(THREE.DynamicDrawUsage);
+    }
+    attribute._terralabResourceKey = key;
+    geometry.setAttribute(name, attribute);
+    return attribute;
+  };
+
   ThreeJSRunner.prototype.getWhiteTexture = function () {
     var THREE = global.THREE;
     if (!this.whiteTexture) {
@@ -509,7 +528,7 @@
   };
 
   ThreeJSRunner.prototype.horizonFragment = function () {
-    return 'float horizonAlpha(){ vec2 uv=vec2(gl_FragCoord.x/(uViewport.x*uDpr),1.0-gl_FragCoord.y/(uViewport.y*uDpr)); return texture2D(uHorizon,uv).a; }';
+    return 'uniform sampler2D uHorizon; uniform vec2 uViewport; uniform float uDpr; float horizonAlpha(){ vec2 uv=vec2(gl_FragCoord.x/(uViewport.x*uDpr),1.0-gl_FragCoord.y/(uViewport.y*uDpr)); return texture2D(uHorizon,uv).a; }';
   };
 
   ThreeJSRunner.prototype.makeSkyMaterial = function () {
@@ -623,13 +642,15 @@
         uOpacity: { value: 1.0 },
         uTileFade: { value: 1.0 }
       },
-      vertexShader: 'attribute vec4 color; attribute float alpha; attribute vec2 uv; attribute vec3 normal; attribute float elevations_m; attribute float class_ids; attribute float categorical_flags; uniform vec2 uViewport; uniform float uAzimuthDeg; uniform float uZoom; uniform float uElevationDeg; uniform float uVerticalRatio; uniform float uProjectionPlane; varying vec4 vColor; varying float vAlpha; varying vec2 vUv; void main(){ vec2 screen=position.xy; if(uProjectionPlane>0.5){ float azimuth=radians(uAzimuthDeg); float side=position.x*cos(azimuth)-position.z*sin(azimuth); float forward=position.z*cos(azimuth)+position.x*sin(azimuth); float denominator=1.0+forward; if(denominator<=0.000001){gl_Position=vec4(2.0,2.0,0.0,1.0);return;} float scale=0.5*uViewport.y*uZoom; float elevationCenter=2.0*tan(radians(uElevationDeg)*0.5); screen=vec2(0.5*uViewport.x+(2.0*side/denominator)*scale,0.5*uViewport.y-uViewport.y*uVerticalRatio+((2.0*position.y/denominator)-elevationCenter)*scale); } vColor=color; vAlpha=alpha; vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(screen,0.0,1.0); }',
+      // position, normal and uv are declared by Three.js in every ShaderMaterial
+      // prefix.  Colour remains a custom vec4 attribute, so avoid vertexColors:
+      // true (which would inject an incompatible built-in colour declaration).
+      vertexShader: 'attribute vec4 color; attribute float alpha; attribute float elevations_m; attribute float class_ids; attribute float categorical_flags; uniform vec2 uViewport; uniform float uAzimuthDeg; uniform float uZoom; uniform float uElevationDeg; uniform float uVerticalRatio; uniform float uProjectionPlane; varying vec4 vColor; varying float vAlpha; varying vec2 vUv; void main(){ vec2 screen=position.xy; if(uProjectionPlane>0.5){ float azimuth=radians(uAzimuthDeg); float side=position.x*cos(azimuth)-position.z*sin(azimuth); float forward=position.z*cos(azimuth)+position.x*sin(azimuth); float denominator=1.0+forward; if(denominator<=0.000001){gl_Position=vec4(2.0,2.0,0.0,1.0);return;} float scale=0.5*uViewport.y*uZoom; float elevationCenter=2.0*tan(radians(uElevationDeg)*0.5); screen=vec2(0.5*uViewport.x+(2.0*side/denominator)*scale,0.5*uViewport.y-uViewport.y*uVerticalRatio+((2.0*position.y/denominator)-elevationCenter)*scale); } vColor=color; vAlpha=alpha; vUv=uv; gl_Position=projectionMatrix*modelViewMatrix*vec4(screen,0.0,1.0); }',
       fragmentShader: 'uniform sampler2D uTexture; uniform float uUseTexture; uniform float uOpacity; uniform float uTileFade; varying vec4 vColor; varying float vAlpha; varying vec2 vUv; void main(){ vec4 resolved=vColor; if(uUseTexture>0.5){ resolved*=texture2D(uTexture,vUv); } float alpha=resolved.a*vAlpha*uOpacity*uTileFade; if(alpha<0.002) discard; gl_FragColor=vec4(resolved.rgb,alpha); }',
       transparent: blendMode !== 'opaque',
       depthTest: true,
       depthWrite: blendMode === 'opaque',
-      blending: this.terrainBlendMode(blendMode),
-      vertexColors: true
+      blending: this.terrainBlendMode(blendMode)
     });
   };
 
@@ -947,7 +968,10 @@
     var THREE = global.THREE;
     if (!this.deepSkyBase) {
       this.deepSkyBase = new THREE.InstancedBufferGeometry();
-      this.deepSkyBase.setAttribute('position', new THREE.BufferAttribute(new Float32Array([-1,-1, 1,-1, 1,1, -1,-1, 1,1, -1,1]), 2));
+      this.deepSkyBase.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+        -1,-1,0, 1,-1,0, 1,1,0,
+        -1,-1,0, 1,1,0, -1,1,0
+      ]), 3));
     }
     return this.deepSkyBase.clone();
   };
@@ -974,11 +998,11 @@
       this.worldGroup.add(mesh);
     }
     var geometry = mesh.geometry;
-    this.replaceAttribute(geometry, primitive, 'iPosition', 2, false, true, 'positions');
-    this.replaceAttribute(geometry, primitive, 'iRadius', 2, false, true, 'radii');
-    this.replaceAttribute(geometry, primitive, 'iRotation', 1, false, true, 'rotations');
-    this.replaceAttribute(geometry, primitive, 'iColor', 4, true, true, 'colors');
-    this.replaceAttribute(geometry, primitive, 'iFlags', 2, false, true, 'flags');
+    this.replaceInstancedAttribute(geometry, primitive, 'iPosition', 2, false, true, 'positions');
+    this.replaceInstancedAttribute(geometry, primitive, 'iRadius', 2, false, true, 'radii');
+    this.replaceInstancedAttribute(geometry, primitive, 'iRotation', 1, false, true, 'rotations');
+    this.replaceInstancedAttribute(geometry, primitive, 'iColor', 4, true, true, 'colors');
+    this.replaceInstancedAttribute(geometry, primitive, 'iFlags', 2, false, true, 'flags');
     geometry.instanceCount = primitive.buffers.positions.element_count;
     this.setViewportUniforms(mesh.material);
     mesh.renderOrder = Number(primitive.layer_order || 0);
@@ -1032,9 +1056,9 @@
     if (!this.screenQuadBase) {
       this.screenQuadBase = new THREE.InstancedBufferGeometry();
       this.screenQuadBase.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
-        0,-1, 1,-1, 1,1,
-        0,-1, 1,1, 0,1
-      ]), 2));
+        0,-1,0, 1,-1,0, 1,1,0,
+        0,-1,0, 1,1,0, 0,1,0
+      ]), 3));
     }
     return this.screenQuadBase;
   };
@@ -1047,7 +1071,7 @@
         uWidth: { value: 1.0 },
         uDashed: { value: false }
       },
-      vertexShader: 'attribute vec2 iStart; attribute vec2 iEnd; varying float vDistance; void main(){vec2 delta=iEnd-iStart; float lineLength=max(0.0001,length(delta)); vec2 normal=vec2(-delta.y,delta.x)/lineLength; vec2 point=mix(iStart,iEnd,position.x)+normal*position.y*uWidth*0.5; vDistance=position.x*lineLength; gl_Position=projectionMatrix*modelViewMatrix*vec4(point,0.0,1.0);}',
+      vertexShader: 'attribute vec2 iStart; attribute vec2 iEnd; uniform float uWidth; varying float vDistance; void main(){vec2 delta=iEnd-iStart; float lineLength=max(0.0001,length(delta)); vec2 normal=vec2(-delta.y,delta.x)/lineLength; vec2 point=mix(iStart,iEnd,position.x)+normal*position.y*uWidth*0.5; vDistance=position.x*lineLength; gl_Position=projectionMatrix*modelViewMatrix*vec4(point,0.0,1.0);}',
       fragmentShader: 'uniform vec4 uColor; uniform bool uDashed; varying float vDistance; void main(){if(uDashed&&mod(vDistance,8.0)>4.0) discard; if(uColor.a<0.01) discard; gl_FragColor=uColor;}',
       transparent: true, depthTest: false, depthWrite: false
     });
@@ -1061,8 +1085,8 @@
       this.screenOverlayGroup.add(lines);
     }
     var geometry = lines.geometry;
-    this.replaceAttribute(geometry, primitive, 'iStart', 2, false, false, 'starts');
-    this.replaceAttribute(geometry, primitive, 'iEnd', 2, false, false, 'ends');
+    this.replaceInstancedAttribute(geometry, primitive, 'iStart', 2, false, false, 'starts');
+    this.replaceInstancedAttribute(geometry, primitive, 'iEnd', 2, false, false, 'ends');
     geometry.instanceCount = primitive.buffers.starts.element_count;
     var rgba = primitive.rgba || [255,255,255,255];
     lines.material.uniforms.uColor.value.set(rgba[0]/255, rgba[1]/255, rgba[2]/255, rgba[3]/255);
@@ -1131,11 +1155,11 @@
       this.screenOverlayGroup.add(mesh);
     }
     var geometry = mesh.geometry;
-    this.replaceAttribute(geometry, primitive, 'iBounds', 4, false, false, 'bounds');
-    this.replaceAttribute(geometry, primitive, 'iFill', 4, true, false, 'fills');
-    this.replaceAttribute(geometry, primitive, 'iStroke', 4, true, false, 'strokes');
-    this.replaceAttribute(geometry, primitive, 'iStrokeWidth', 1, false, false, 'stroke_widths');
-    this.replaceAttribute(geometry, primitive, 'iCornerRadius', 1, false, false, 'corner_radii');
+    this.replaceInstancedAttribute(geometry, primitive, 'iBounds', 4, false, false, 'bounds');
+    this.replaceInstancedAttribute(geometry, primitive, 'iFill', 4, true, false, 'fills');
+    this.replaceInstancedAttribute(geometry, primitive, 'iStroke', 4, true, false, 'strokes');
+    this.replaceInstancedAttribute(geometry, primitive, 'iStrokeWidth', 1, false, false, 'stroke_widths');
+    this.replaceInstancedAttribute(geometry, primitive, 'iCornerRadius', 1, false, false, 'corner_radii');
     geometry.instanceCount = primitive.buffers.bounds.element_count;
     mesh.renderOrder = Number(primitive.layer_order || 0);
     mesh.userData.version = primitive.version;
@@ -1234,7 +1258,9 @@
       uv[itemIndex * 4 + 2] = (item.x + item.width) / maxWidth;
       uv[itemIndex * 4 + 3] = 1.0 - item.y / atlasHeight;
     }
-    var texture = new THREE.CanvasTexture(canvas); texture.needsUpdate = true; texture.flipY = false;
+    // Canvas 2D has a top-left origin; Three.js flips it on upload so the
+    // atlas matches the top-left screen coordinates carried by the plan.
+    var texture = new THREE.CanvasTexture(canvas); texture.needsUpdate = true; texture.flipY = true;
     texture.colorSpace = THREE.SRGBColorSpace || texture.colorSpace;
     var atlas = { key: key, texture: texture, uv: uv };
     this.textTextureCache[key] = atlas;
@@ -1264,8 +1290,8 @@
         this.releaseTextAtlas(id);
       }
       var atlas = this.buildTextAtlas(primitive);
-      this.replaceAttribute(mesh.geometry, primitive, 'iBounds', 4, false, false, 'bounds');
-      this.replaceAttribute(mesh.geometry, primitive, 'iClip', 4, false, false, 'clips');
+      this.replaceInstancedAttribute(mesh.geometry, primitive, 'iBounds', 4, false, false, 'bounds');
+      this.replaceInstancedAttribute(mesh.geometry, primitive, 'iClip', 4, false, false, 'clips');
       mesh.geometry.setAttribute('iUv', new global.THREE.InstancedBufferAttribute(atlas.uv, 4));
       mesh.geometry.instanceCount = primitive.buffers.bounds.element_count;
       mesh.userData.atlas = atlas;

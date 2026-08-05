@@ -242,21 +242,44 @@ class DataLibrary:
         )
 
     def layout(self, *, create: bool = True) -> dict[str, Path]:
+        """Return the managed paths, reusing populated pre-layout datasets.
+
+        TerraLab 0.x stored datasets directly below ``data/<dataset>``.  The
+        current layout groups them by domain (for example ``data/sky/gaia``).
+        A library can therefore contain empty directories from a newer release
+        next to a complete catalogue downloaded by an older one.  Prefer the
+        populated canonical location, but keep reading a populated legacy
+        location until the user explicitly migrates it.  This avoids silently
+        hiding large local downloads or duplicating them during startup.
+        """
         root = self.root
+        sky = root / "data" / "sky"
+        earth = root / "data" / "earth"
+
+        def dataset_path(canonical: Path, legacy_name: str) -> Path:
+            legacy = root / "data" / legacy_name
+            if self._contains_dataset_files(canonical) or not self._contains_dataset_files(
+                legacy
+            ):
+                return canonical
+            return legacy
+
         paths = {
             "root": root,
             "data_root": root,
             "state_root": application_state_root(),
             "config": root / "config",
             "data_source_catalog": root / "config" / "data_sources.json",
-            "data_gaia": root / "data" / "sky" / "gaia",
-            "data_ngc": root / "data" / "sky" / "ngc",
-            "data_milkyway": root / "data" / "sky" / "milky-way",
-            "data_planck": root / "data" / "sky" / "planck",
-            "data_ephemeris": root / "data" / "sky" / "solar-system",
-            "data_elevation": root / "data" / "earth" / "elevation",
-            "data_surface": root / "data" / "earth" / "surface",
-            "data_light_pollution": root / "data" / "earth" / "light-pollution",
+            "data_gaia": dataset_path(sky / "gaia", "gaia"),
+            "data_ngc": dataset_path(sky / "ngc", "ngc"),
+            "data_milkyway": dataset_path(sky / "milky-way", "milkyway"),
+            "data_planck": dataset_path(sky / "planck", "planck"),
+            "data_ephemeris": sky / "solar-system",
+            "data_elevation": dataset_path(earth / "elevation", "elevation"),
+            "data_surface": dataset_path(earth / "surface", "surface"),
+            "data_light_pollution": dataset_path(
+                earth / "light-pollution", "light_pollution"
+            ),
             "cache_weather": root / "cache" / "weather",
             "cache_terrain": root / "cache" / "terrain",
             "cache_stars": root / "cache" / "stars",
@@ -272,6 +295,20 @@ class DataLibrary:
                 elif key not in {"root", "data_root", "state_root"}:
                     path.mkdir(parents=True, exist_ok=True)
         return paths
+
+    @staticmethod
+    def _contains_dataset_files(path: Path) -> bool:
+        """Return whether a dataset directory has direct payload files.
+
+        TerraLab dataset roots always contain their manifest or payload at the
+        first level.  Inspecting that level keeps layout resolution cheap even
+        for large tiled catalogues.
+        """
+
+        try:
+            return any(entry.is_file() for entry in path.iterdir())
+        except OSError:
+            return False
 
     def asset_state(self, asset_id: str) -> dict[str, Any]:
         assets = self.load_manifest().get("assets", {})
