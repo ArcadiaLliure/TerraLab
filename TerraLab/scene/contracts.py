@@ -560,7 +560,7 @@ class SceneFrameDelta:
 
 @dataclass(frozen=True, slots=True)
 class SceneFrame:
-    """Typed, immutable frame with one deterministic protocol-v1 adapter."""
+    """Typed, immutable renderer-neutral scene input."""
 
     generation: int
     viewport: Viewport

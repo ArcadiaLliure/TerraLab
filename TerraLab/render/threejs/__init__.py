@@ -1,7 +1,7 @@
-"""Three.js hosted surface rendering backend and bridge implementation."""
+"""Three.js hosted-surface implementation package.
 
-from __future__ import annotations
+Concrete backend construction is deliberately owned by
+``bootstrap.composition``; this package performs no compatibility re-export.
+"""
 
-from TerraLab.render.threejs.backend import ThreeJSRendererBackend
-
-__all__ = ("ThreeJSRendererBackend",)
+__all__: tuple[str, ...] = ()

@@ -9,10 +9,7 @@ from TerraLab.astro.ngc_catalog import (
     iter_ngc_aliases,
     load_ngc_catalog,
 )
-from TerraLab.render.overlays_renderer import (
-    draw_skyfield_objects,
-    draw_sun_skyfield,
-)
+from TerraLab.render.overlays_renderer import draw_skyfield_objects
 from TerraLab.render.sky.milkyway_overlay import MilkyWayOverlay
 from TerraLab.render.stars_renderer import StarsRenderer
 from TerraLab.scene.camera import Camera
@@ -21,6 +18,7 @@ from TerraLab.scene.projection import (
     project_universal_stereo_point,
     radec_to_altaz_numpy,
 )
+from TerraLab.scene.plans.terrain import _profile_plan
 from TerraLab.terrain.domain.profile import HorizonProfile
 from TerraLab.terrain.mesh.normals import compute_polar_mesh_normals
 from TerraLab.terrain.persistence.profile_npz import load_profile, save_profile
@@ -35,7 +33,6 @@ from TerraLab.terrain.render.triangle_raster import (
 )
 from TerraLab.terrain.render.config import TerrainRenderSettings
 from TerraLab.terrain.worker import HorizonWorker
-from TerraLab.ui.astronomical_widget import AstronomicalWidget
 from TerraLab.widgets.telescope_runtime import on_telescope_view_enabled
 
 
@@ -92,6 +89,48 @@ def test_terrain_projection_uses_full_altitude_azimuth_coordinates():
     )
     assert np.max(np.abs(projected_x - expected_x)) < 1e-4
     assert np.max(np.abs(projected_y - expected_y)) < 1e-4
+
+
+def test_profile_plan_skips_nonfinite_samples_without_joining_a_gap():
+    camera = Camera(
+        azimuth_offset=180.0,
+        elevation_angle=30.0,
+        zoom_level=1.0,
+        vertical_offset_ratio=0.0,
+    )
+    assert project_universal_stereo_point(
+        float("nan"), 0.0, 800, 600, camera
+    ) is None
+    assert project_universal_stereo_point(
+        0.0, float("inf"), 800, 600, camera
+    ) is None
+
+    profile = HorizonProfile(
+        azimuths=np.asarray((0.0, 90.0, 180.0, 270.0)),
+        bands=[
+            {
+                "id": "horizon",
+                "angles": np.asarray(
+                    (0.0, float("nan"), 0.0, 0.0)
+                ),
+            }
+        ],
+    )
+    frame = SimpleNamespace(
+        generation=1,
+        viewport=SimpleNamespace(width=800, height=600),
+        terrain=SimpleNamespace(
+            surface_visual_style=SimpleNamespace(value="original")
+        ),
+    )
+    result = _profile_plan(
+        frame, SimpleNamespace(camera=camera), profile, order=5
+    )
+
+    assert result.scene_plan is not None
+    mesh = result.scene_plan.primitives[0]
+    assert len(mesh.vertices) == 4
+    assert len(mesh.indices) == 6
 
 
 def test_distance_silhouettes_use_the_full_sky_projection():
@@ -1560,6 +1599,7 @@ def test_astro_canvas_update_accepts_unexpected_arguments(monkeypatch):
     from TerraLab.ui.astro_canvas import AstroCanvas
 
     app = QApplication.instance() or QApplication([])
+    assert app is not None
     mock_sched = MagicMock()
     monkeypatch.setattr(AstroCanvas, "_schedule_process_scene", mock_sched)
 

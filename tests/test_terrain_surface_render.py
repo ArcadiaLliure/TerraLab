@@ -2,6 +2,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from PyQt5.QtCore import QPointF
 from PyQt5.QtGui import QColor, QImage, QPainter, QPolygonF
 
@@ -55,6 +56,19 @@ from TerraLab.terrain.render.runtime_helpers import (
 )
 
 
+class _TrackingImagePainter:
+    """Proxy that exposes whether a temporary QImage painter was closed."""
+
+    Antialiasing = QPainter.Antialiasing
+
+    def __init__(self, image, created) -> None:
+        self._painter = QPainter(image)
+        created.append(self)
+
+    def __getattr__(self, name):
+        return getattr(self._painter, name)
+
+
 def _overlay() -> HorizonOverlay:
     return HorizonOverlay(
         horizon_profile_path=None,
@@ -64,9 +78,7 @@ def _overlay() -> HorizonOverlay:
 
 def _cached_material_fixture(style="original"):
     overlay = _overlay()
-    overlay.render_settings = TerrainRenderSettings(
-        surface_visual_style=style
-    )
+    overlay.render_settings = TerrainRenderSettings(surface_visual_style=style)
     elevations = np.asarray(
         (
             (120.0, 128.0, 122.0, 116.0),
@@ -155,8 +167,8 @@ def _cached_material_fixture(style="original"):
 
 
 def test_base_material_cache_is_immutable_and_independent_of_time_and_light():
-    overlay, asset, surface_cache, rgba, _classes = (
-        _cached_material_fixture("original")
+    overlay, asset, surface_cache, rgba, _classes = _cached_material_fixture(
+        "original"
     )
 
     first = overlay._build_terrain_base_material(asset, surface_cache)
@@ -176,16 +188,15 @@ def test_base_material_cache_is_immutable_and_independent_of_time_and_light():
     np.testing.assert_array_equal(first.polar.base_rgba, rgba)
     assert np.shares_memory(first.polar.base_rgba, rgba)
     assert first.resident_bytes == (
-        first.polar_protected.nbytes
-        + first.near_patch_protected.nbytes
+        first.polar_protected.nbytes + first.near_patch_protected.nbytes
     )
     assert not first.polar.base_rgba.flags.writeable
     assert not first.polar.class_ids.flags.writeable
 
 
 def test_base_material_key_changes_only_for_static_material_inputs():
-    overlay, asset, surface_cache, _rgba, _classes = (
-        _cached_material_fixture("vibrant")
+    overlay, asset, surface_cache, _rgba, _classes = _cached_material_fixture(
+        "vibrant"
     )
     initial = overlay._terrain_base_material_key(asset, surface_cache)
 
@@ -195,9 +206,7 @@ def test_base_material_key_changes_only_for_static_material_inputs():
         vibrant_bloom_threshold=0.91,
         vibrant_haze_strength=0.42,
     )
-    dynamic_change = overlay._terrain_base_material_key(
-        asset, surface_cache
-    )
+    dynamic_change = overlay._terrain_base_material_key(asset, surface_cache)
     overlay.render_settings = replace(
         overlay.render_settings,
         vibrant_material_slope_influence=0.09,
@@ -211,30 +220,32 @@ def test_base_material_key_changes_only_for_static_material_inputs():
 
 
 def test_vibrant_base_material_preserves_semantic_identity_and_small_classes():
-    overlay, asset, surface_cache, _rgba, classes = (
-        _cached_material_fixture("vibrant")
+    overlay, asset, surface_cache, _rgba, classes = _cached_material_fixture(
+        "vibrant"
     )
 
-    material = overlay._build_terrain_base_material(
-        asset, surface_cache
-    ).polar
+    material = overlay._build_terrain_base_material(asset, surface_cache).polar
 
     np.testing.assert_array_equal(material.class_ids, classes)
     assert int(material.class_ids[0, 0]) == 62
     assert int(material.class_ids[1, 3]) == 162
-    assert int(
-        overlay._build_terrain_base_material(
-            asset, surface_cache
-        ).near_patch.class_ids[0, 1]
-    ) == 62
-    assert int(
-        overlay._build_terrain_base_material(
-            asset, surface_cache
-        ).near_patch.class_ids[1, 1]
-    ) == 162
-    material_cache = overlay._build_terrain_base_material(
-        asset, surface_cache
+    assert (
+        int(
+            overlay._build_terrain_base_material(
+                asset, surface_cache
+            ).near_patch.class_ids[0, 1]
+        )
+        == 62
     )
+    assert (
+        int(
+            overlay._build_terrain_base_material(
+                asset, surface_cache
+            ).near_patch.class_ids[1, 1]
+        )
+        == 162
+    )
+    material_cache = overlay._build_terrain_base_material(asset, surface_cache)
     assert material_cache.polar_protected[0, 0]
     assert material_cache.polar_protected[1, 3]
     assert material_cache.near_patch_protected[0, 1]
@@ -244,17 +255,15 @@ def test_vibrant_base_material_preserves_semantic_identity_and_small_classes():
 
 
 def test_vibrant_orthophoto_base_preserves_source_rgb_and_is_cached():
-    overlay, asset, surface_cache, rgba, _classes = (
-        _cached_material_fixture("vibrant")
+    overlay, asset, surface_cache, rgba, _classes = _cached_material_fixture(
+        "vibrant"
     )
     surface_cache["cache_id"] = "synthetic-orthophoto-v1"
     surface_cache["source_legend_ids"] = ("orthophoto",)
     surface_cache["visual_class_ids"] = np.full(
         rgba.shape[:2], -1, dtype=np.int64
     )
-    surface_cache["visual_categorical"] = np.zeros(
-        rgba.shape[:2], dtype=bool
-    )
+    surface_cache["visual_categorical"] = np.zeros(rgba.shape[:2], dtype=bool)
 
     first = overlay._build_terrain_base_material(asset, surface_cache)
     second = overlay._build_terrain_base_material(asset, surface_cache)
@@ -266,8 +275,8 @@ def test_vibrant_orthophoto_base_preserves_source_rgb_and_is_cached():
 
 
 def test_fallback_material_is_cached_without_surface_or_time_dependency():
-    overlay, asset, _surface_cache, _rgba, _classes = (
-        _cached_material_fixture("original")
+    overlay, asset, _surface_cache, _rgba, _classes = _cached_material_fixture(
+        "original"
     )
     overlay.profile = SimpleNamespace(
         surface_samples=None, resolved_radius_m=240.0
@@ -288,8 +297,8 @@ def test_fallback_material_is_cached_without_surface_or_time_dependency():
 
 
 def test_lighting_cache_key_is_camera_free_but_time_sensitive():
-    overlay, asset, _surface_cache, _rgba, _classes = (
-        _cached_material_fixture("vibrant")
+    overlay, asset, _surface_cache, _rgba, _classes = _cached_material_fixture(
+        "vibrant"
     )
     noon = TerrainCelestialLightContext(42.0, 155.0)
     later = TerrainCelestialLightContext(18.0, 225.0)
@@ -309,8 +318,8 @@ def test_lighting_cache_key_is_camera_free_but_time_sensitive():
 
 
 def test_resolved_material_cache_reuses_projected_classes_across_time():
-    overlay, asset, surface_cache, _rgba, _classes = (
-        _cached_material_fixture("vibrant")
+    overlay, asset, surface_cache, _rgba, _classes = _cached_material_fixture(
+        "vibrant"
     )
     base = overlay._build_terrain_base_material(asset, surface_cache)
     triangles = np.asarray(
@@ -375,8 +384,8 @@ def test_resolved_material_cache_reuses_projected_classes_across_time():
 
 
 def test_resolved_material_cache_rejects_stale_triangle_geometry():
-    overlay, asset, surface_cache, _rgba, _classes = (
-        _cached_material_fixture("vibrant")
+    overlay, asset, surface_cache, _rgba, _classes = _cached_material_fixture(
+        "vibrant"
     )
     base = overlay._build_terrain_base_material(asset, surface_cache)
     first_triangles = np.asarray(
@@ -450,8 +459,8 @@ def test_resolved_material_cache_rejects_stale_triangle_geometry():
 
 
 def test_render_cache_layers_invalidate_independently_for_time_and_camera():
-    overlay, asset, _surface_cache, _rgba, _classes = (
-        _cached_material_fixture("vibrant")
+    overlay, asset, _surface_cache, _rgba, _classes = _cached_material_fixture(
+        "vibrant"
     )
     overlay._terrain_render_asset = asset
     mesh = overlay.profile.terrain_mesh
@@ -508,9 +517,7 @@ def test_render_cache_layers_invalidate_independently_for_time_and_camera():
         assert rendered
 
     noon = TerrainCelestialLightContext(35.0, 315.0)
-    moon = TerrainCelestialLightContext(
-        -24.0, 300.0, 42.0, 120.0, 0.94
-    )
+    moon = TerrainCelestialLightContext(-24.0, 300.0, 42.0, 120.0, 0.94)
     render(45.0, noon, 0.0, QColor(151, 190, 219))
     initial = overlay.terrain_cache_diagnostics()
 
@@ -526,8 +533,7 @@ def test_render_cache_layers_invalidate_independently_for_time_and_camera():
     )
     assert after_time["raster"]["builds"] == initial["raster"]["builds"]
     assert (
-        after_time["lighting"]["builds"]
-        == initial["lighting"]["builds"] + 1
+        after_time["lighting"]["builds"] == initial["lighting"]["builds"] + 1
     )
     assert after_time["resolved_material"]["last_hit"]
     assert after_time["raster"]["last_hit"]
@@ -539,8 +545,7 @@ def test_render_cache_layers_invalidate_independently_for_time_and_camera():
         == after_time["base_material"]["builds"]
     )
     assert (
-        after_camera["lighting"]["builds"]
-        == after_time["lighting"]["builds"]
+        after_camera["lighting"]["builds"] == after_time["lighting"]["builds"]
     )
     assert (
         after_camera["resolved_material"]["builds"]
@@ -557,10 +562,7 @@ def test_render_cache_layers_invalidate_independently_for_time_and_camera():
         repaint["base_material"]["builds"]
         == after_camera["base_material"]["builds"]
     )
-    assert (
-        repaint["lighting"]["builds"]
-        == after_camera["lighting"]["builds"]
-    )
+    assert repaint["lighting"]["builds"] == after_camera["lighting"]["builds"]
     assert (
         repaint["resolved_material"]["builds"]
         == after_camera["resolved_material"]["builds"]
@@ -826,9 +828,7 @@ def test_profile_fallback_uses_the_same_sun_moon_and_night_model():
     heights = np.zeros(2, dtype=np.float32)
     day_context = TerrainCelestialLightContext(30.0, 90.0)
     night_context = TerrainCelestialLightContext(-30.0, 90.0)
-    moon_context = TerrainCelestialLightContext(
-        -30.0, 90.0, 45.0, 90.0, 1.0
-    )
+    moon_context = TerrainCelestialLightContext(-30.0, 90.0, 45.0, 90.0, 1.0)
 
     day = overlay._terrain_profile_light_grid(
         azimuths,
@@ -902,9 +902,7 @@ def test_missing_surface_fallback_keeps_a_neutral_base_for_celestial_lighting():
         distances=np.asarray((100.0, 1_000.0), dtype=np.float32),
     )
 
-    daylight_base = overlay._terrain_vertex_materials(
-        asset, 0.0
-    ).base_rgba
+    daylight_base = overlay._terrain_vertex_materials(asset, 0.0).base_rgba
     night_base = overlay._terrain_vertex_materials(asset, 1.0).base_rgba
 
     np.testing.assert_array_equal(night_base, daylight_base)
@@ -958,12 +956,8 @@ def _categorical_cache(classes, *, legend="s2glc_europe_2017"):
         relief_class_ids=class_grid,
         relief_categorical=np.ones(class_grid.shape, dtype=bool),
         relief_source_indices=np.zeros(class_grid.shape, dtype=np.int16),
-        relief_distance_indices=np.arange(
-            class_grid.shape[0], dtype=np.int32
-        ),
-        relief_azimuth_indices=np.arange(
-            class_grid.shape[1], dtype=np.int32
-        ),
+        relief_distance_indices=np.arange(class_grid.shape[0], dtype=np.int32),
+        relief_azimuth_indices=np.arange(class_grid.shape[1], dtype=np.int32),
     )
 
 
@@ -1039,9 +1033,7 @@ def test_relief_category_hit_matches_the_regularized_display_material():
 
 def test_profile_category_hit_uses_top_visible_polygon_and_nearest_sample():
     overlay = _overlay()
-    cache = _categorical_cache(
-        [[1, 10]], legend="clcplus_backbone_2023"
-    )
+    cache = _categorical_cache([[1, 10]], legend="clcplus_backbone_2023")
     overlay.profile = SimpleNamespace(surface_samples=cache)
     overlay._terrain_render_asset = SimpleNamespace(
         elevations=np.zeros((1, 2), dtype=np.float32)
@@ -1097,9 +1089,7 @@ def test_profile_representation_uses_cached_polygon_without_raster_io():
             QPointF(0.0, 10.0),
         ]
     )
-    overlay._profile_category_hit_cache[
-        ("band", id(band))
-    ] = (
+    overlay._profile_category_hit_cache[("band", id(band))] = (
         (
             polygon,
             np.asarray([0.0, 10.0], dtype=np.float32),
@@ -1619,9 +1609,7 @@ def test_surface_material_lookup_is_independent_of_triangle_diagonal():
             4,
             supersample=1,
         )
-        vertex_classes = np.where(
-            triangle_xy[..., 0] < 2.0, 83, 105
-        )
+        vertex_classes = np.where(triangle_xy[..., 0] < 2.0, 83, 105)
         vertex_rgba = np.where(
             (vertex_classes == 83)[..., None],
             np.asarray(green, dtype=np.uint8),
@@ -1735,9 +1723,7 @@ def test_same_category_keeps_discrete_base_with_continuous_lighting():
         v,
         np.asarray([[[0.5], [1.0], [1.5]]]),
     )
-    settings = TerrainRenderSettings(
-        atmospheric_perspective_enabled=False
-    )
+    settings = TerrainRenderSettings(atmospheric_perspective_enabled=False)
 
     final = compose_vertex_rgba(
         resolved.base_rgba,
@@ -1799,9 +1785,7 @@ def test_region_regularization_rounds_corners_and_absorbs_thin_streaks():
     assert regularized.class_ids[4, 15] == 62
     assert regularized.class_ids[8, 8] == 62
     assert regularized.class_ids[15, 15] == 82
-    np.testing.assert_array_equal(
-        regularized.base_rgba[4, 15], background
-    )
+    np.testing.assert_array_equal(regularized.base_rgba[4, 15], background)
     np.testing.assert_array_equal(regularized.valid, materials.valid)
     np.testing.assert_array_equal(
         regularized.categorical, materials.categorical
@@ -1813,9 +1797,9 @@ def test_region_regularization_keeps_protected_small_building():
     building = np.asarray((185, 105, 75, 255), dtype=np.uint8)
     class_ids = np.full((25, 25), 82, dtype=np.int64)
     class_ids[11:14, 11:14] = 62
-    rgba = np.where(
-        (class_ids == 62)[..., None], building, background
-    ).astype(np.uint8)
+    rgba = np.where((class_ids == 62)[..., None], building, background).astype(
+        np.uint8
+    )
     materials = TerrainMaterialSamples(
         rgba,
         np.ones((25, 25), dtype=bool),
@@ -1847,9 +1831,7 @@ def test_vibrant_palette_changes_colour_without_changing_category_identity():
         np.ones((1, 2), dtype=bool),
         np.zeros((1, 2), dtype=np.int16),
     )
-    cache = SimpleNamespace(
-        source_legend_ids=("s2glc_europe_2017",)
-    )
+    cache = SimpleNamespace(source_legend_ids=("s2glc_europe_2017",))
 
     vibrant = _vibrant_categorical_palette(materials, cache)
 
@@ -1943,10 +1925,9 @@ def test_conifer_material_uses_dem_orientation_for_cool_dense_shade():
     south_luminance = float(varied[0, 0, :3] @ weights)
     north_luminance = float(varied[0, 1, :3] @ weights)
     assert north_luminance < south_luminance
-    assert (
-        varied[0, 1, 2] / max(1, int(varied[0, 1, 0]))
-        > varied[0, 0, 2] / max(1, int(varied[0, 0, 0]))
-    )
+    assert varied[0, 1, 2] / max(1, int(varied[0, 1, 0])) > varied[
+        0, 0, 2
+    ] / max(1, int(varied[0, 0, 0]))
 
 
 def test_snow_reveals_mineral_colour_on_low_steep_sunlit_slope():
@@ -2164,9 +2145,7 @@ def test_vibrant_bloom_uses_low_opacity_additive_composition():
 
     rgb = 220.0 / 255.0
     threshold_value = (rgb - 0.70) / 0.30
-    bright = threshold_value * threshold_value * (
-        3.0 - 2.0 * threshold_value
-    )
+    bright = threshold_value * threshold_value * (3.0 - 2.0 * threshold_value)
     expected = round((rgb + rgb * bright * 0.15) * 255.0)
     assert np.all(bloomed[8, 8, :3] == expected)
 
@@ -2310,3 +2289,143 @@ def test_horizon_coverage_uses_terrain_rgb_without_light_or_dark_halo():
         antialiased[..., :3][affected],
         np.broadcast_to((40, 90, 150), antialiased[..., :3][affected].shape),
     )
+
+
+def test_profile_cache_closes_temporary_painter_when_band_drawing_fails(
+    monkeypatch,
+):
+    """A failed profile band cannot leave its cached QImage being painted."""
+
+    from TerraLab.terrain.overlay_mixins import draw_dispatch
+
+    overlay = _overlay()
+    band = SimpleNamespace(band_min=0.0)
+    overlay.profile = SimpleNamespace(
+        terrain_mesh=None,
+        resolved_mask=np.ones(1, dtype=bool),
+    )
+    overlay._layers = [(band, QColor(20, 20, 20), QColor(80, 90, 100))]
+    overlay._prepare_profile_polygon_cache = lambda *_args: None
+    overlay._profile_layers_for_frame = lambda _interaction: overlay._layers
+
+    def fail_band(*_args, **_kwargs):
+        raise RuntimeError("synthetic profile band failure")
+
+    overlay._draw_band_linear = fail_band
+    created = []
+    monkeypatch.setattr(
+        draw_dispatch,
+        "QPainter",
+        lambda image: _TrackingImagePainter(image, created),
+    )
+    draw_dispatch.QPainter.Antialiasing = QPainter.Antialiasing
+    image = QImage(160, 100, QImage.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    painter = QPainter(image)
+
+    try:
+        with pytest.raises(
+            RuntimeError, match="synthetic profile band failure"
+        ):
+            overlay.draw(
+                painter,
+                lambda altitude, azimuth: (azimuth, altitude),
+                160,
+                100,
+                0.0,
+                1.0,
+                0.0,
+                12.0,
+                terrain_3d_enabled=False,
+                light_context=TerrainCelestialLightContext(15.0, 180.0),
+            )
+    finally:
+        painter.end()
+
+    assert len(created) == 1
+    assert not created[0].isActive()
+
+
+def test_surface_cache_closes_temporary_painter_when_geometry_fails(
+    monkeypatch,
+):
+    """A failed surface span cannot destroy a QImage with an active painter."""
+
+    from TerraLab.common.performance.flags import PERFORMANCE_FLAGS
+    from TerraLab.terrain.overlay_mixins import projection_geometry
+
+    overlay, asset, _surface_cache, _rgba, _classes = (
+        _cached_material_fixture()
+    )
+    mesh = overlay.profile.terrain_mesh
+    overlay._terrain_render_asset = asset
+    context = TerrainCelestialLightContext(15.0, 180.0)
+    overlay._resolve_light_context = lambda *_args, **_kwargs: context
+    overlay._configured_light = lambda *_args, **_kwargs: (
+        15.0,
+        180.0,
+        np.asarray((0.0, 1.0, 1.0), dtype=np.float32),
+    )
+    overlay._terrain_sun_visibility = lambda *_args, **_kwargs: np.ones_like(
+        asset.elevations
+    )
+    overlay._terrain_light_factor = lambda *_args, **_kwargs: np.ones_like(
+        asset.elevations
+    )
+    overlay._smooth_light_grid = lambda values, *_args, **_kwargs: values
+    overlay._terrain_light_bounds = lambda *_args, **_kwargs: (0.0, 1.0)
+    geometry = SimpleNamespace(
+        metrics=SimpleNamespace(
+            spans=1,
+            output_vertices=4,
+            max_error_px=0.0,
+            elapsed_s=0.0,
+        )
+    )
+    overlay._terrain_geometry_for_view = lambda *_args, **_kwargs: geometry
+
+    def fail_polygons(*_args, **_kwargs):
+        raise RuntimeError("synthetic surface geometry failure")
+
+    overlay._terrain_polygons_for_geometry = fail_polygons
+    monkeypatch.setattr(
+        projection_geometry,
+        "PERFORMANCE_FLAGS",
+        replace(PERFORMANCE_FLAGS, relief_cached=True),
+    )
+    created = []
+    monkeypatch.setattr(
+        projection_geometry,
+        "QPainter",
+        lambda image: _TrackingImagePainter(image, created),
+    )
+    projection_geometry.QPainter.Antialiasing = QPainter.Antialiasing
+    image = QImage(160, 100, QImage.Format_ARGB32_Premultiplied)
+    image.fill(0)
+    painter = QPainter(image)
+
+    try:
+        with pytest.raises(
+            RuntimeError, match="synthetic surface geometry failure"
+        ):
+            overlay._draw_terrain_surface_2d(
+                painter,
+                mesh,
+                lambda altitude, azimuth: (azimuth, altitude),
+                160,
+                100,
+                1.0,
+                0.0,
+                -90.0,
+                90.0,
+                0.0,
+                QColor(100, 140, 180),
+                15.0,
+                180.0,
+                light_context=context,
+            )
+    finally:
+        painter.end()
+
+    assert len(created) == 1
+    assert not created[0].isActive()

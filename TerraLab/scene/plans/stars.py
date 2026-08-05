@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Mapping
 
@@ -34,6 +34,15 @@ class StarPickBatch:
     catalog_indices: np.ndarray
     screen_x: np.ndarray
     screen_y: np.ndarray
+    altitude_deg: np.ndarray = field(
+        default_factory=lambda: _empty(np.dtype(np.float32))
+    )
+    azimuth_deg: np.ndarray = field(
+        default_factory=lambda: _empty(np.dtype(np.float32))
+    )
+    magnitude: np.ndarray = field(
+        default_factory=lambda: _empty(np.dtype(np.float32))
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -793,6 +802,8 @@ class StarScenePlanner:
         if not np.any(bounds):
             return self._empty_plan()
         indices = indices[bounds]
+        altitude = altitude[bounds]
+        azimuth = azimuth[bounds]
         sx = np.asarray(sx_all[bounds], dtype=np.float32)
         sy = np.asarray(sy_all[bounds], dtype=np.float32)
         magnitude = magnitude[bounds]
@@ -811,8 +822,10 @@ class StarScenePlanner:
                     {"total_in_view": float(total_in_view)}
                 ),
             )
-        indices, sx, sy, magnitude, bp_rp = (
+        indices, altitude, azimuth, sx, sy, magnitude, bp_rp = (
             indices[visible],
+            altitude[visible],
+            azimuth[visible],
             sx[visible],
             sy[visible],
             magnitude[visible],
@@ -833,8 +846,10 @@ class StarScenePlanner:
             _, first = np.unique(keys, return_index=True)
             keep = order[first]
             keep = keep[np.argsort(magnitude[keep], kind="mergesort")]
-            indices, sx, sy, magnitude, bp_rp = (
+            indices, altitude, azimuth, sx, sy, magnitude, bp_rp = (
                 indices[keep],
+                altitude[keep],
+                azimuth[keep],
                 sx[keep],
                 sy[keep],
                 magnitude[keep],
@@ -1102,6 +1117,9 @@ class StarScenePlanner:
                 _readonly(np.asarray(indices, dtype=np.int32)),
                 _readonly(np.asarray(sx, dtype=np.float32)),
                 _readonly(np.asarray(sy, dtype=np.float32)),
+                _readonly(np.asarray(altitude, dtype=np.float32)),
+                _readonly(np.asarray(azimuth, dtype=np.float32)),
+                _readonly(np.asarray(magnitude, dtype=np.float32)),
             ),
             total_in_view=total_in_view,
             after_magnitude_cut=after_magnitude_cut,

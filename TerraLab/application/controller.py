@@ -50,7 +50,9 @@ class ApplicationController:
 
     def __init__(self, initial_state: ApplicationState | None = None) -> None:
         self._state: ApplicationState = (
-            initial_state if initial_state is not None else create_initial_application_state()
+            initial_state
+            if initial_state is not None
+            else create_initial_application_state()
         )
         self._lifecycle = ApplicationLifecycleManager()
         self._scene_frame_builder = SceneFrameBuilder()
@@ -69,27 +71,39 @@ class ApplicationController:
     def lifecycle(self) -> ApplicationLifecycleManager:
         return self._lifecycle
 
-    def add_state_listener(self, listener: Callable[[ApplicationState], None]) -> None:
+    def add_state_listener(
+        self, listener: Callable[[ApplicationState], None]
+    ) -> None:
         if listener not in self._state_listeners:
             self._state_listeners.append(listener)
 
-    def remove_state_listener(self, listener: Callable[[ApplicationState], None]) -> None:
+    def remove_state_listener(
+        self, listener: Callable[[ApplicationState], None]
+    ) -> None:
         if listener in self._state_listeners:
             self._state_listeners.remove(listener)
 
-    def add_frame_listener(self, listener: Callable[[SceneFrame], None]) -> None:
+    def add_frame_listener(
+        self, listener: Callable[[SceneFrame], None]
+    ) -> None:
         if listener not in self._frame_listeners:
             self._frame_listeners.append(listener)
 
-    def remove_frame_listener(self, listener: Callable[[SceneFrame], None]) -> None:
+    def remove_frame_listener(
+        self, listener: Callable[[SceneFrame], None]
+    ) -> None:
         if listener in self._frame_listeners:
             self._frame_listeners.remove(listener)
 
-    def add_pick_request_listener(self, listener: Callable[[object], None]) -> None:
+    def add_pick_request_listener(
+        self, listener: Callable[[object], None]
+    ) -> None:
         if listener not in self._pick_request_listeners:
             self._pick_request_listeners.append(listener)
 
-    def remove_pick_request_listener(self, listener: Callable[[object], None]) -> None:
+    def remove_pick_request_listener(
+        self, listener: Callable[[object], None]
+    ) -> None:
         if listener in self._pick_request_listeners:
             self._pick_request_listeners.remove(listener)
 
@@ -131,7 +145,9 @@ class ApplicationController:
         self._notify_frame_listeners(frame)
         return frame
 
-    def set_viewport(self, width: int, height: int, device_pixel_ratio: float = 1.0) -> None:
+    def set_viewport(
+        self, width: int, height: int, device_pixel_ratio: float = 1.0
+    ) -> None:
         """Store presentation dimensions without treating them as camera state."""
 
         self._viewport = Viewport(
@@ -152,17 +168,25 @@ class ApplicationController:
     def handle_command(self, command: Any) -> None:
         """Route typed command to specific use case handler."""
         if isinstance(command, PointerPressedCommand):
-            self.process_pointer_press(command.x, command.y, command.button, command.modifiers)
+            self.process_pointer_press(
+                command.x, command.y, command.button, command.modifiers
+            )
         elif isinstance(command, PointerMovedCommand):
             self.process_pointer_move(command.x, command.y)
         elif isinstance(command, PointerReleasedCommand):
             self.process_pointer_release(command.x, command.y, command.button)
         elif isinstance(command, PickRequestedCommand):
-            self.process_pick_request(command.x, command.y, command.radius, command.purpose)
+            self.process_pick_request(
+                command.x, command.y, command.radius, command.purpose
+            )
         elif isinstance(command, MeasurementCommand):
-            self.process_measurement_command(command.action, command.tool, command.x, command.y)
+            self.process_measurement_command(
+                command.action, command.tool, command.x, command.y
+            )
         else:
-            logger.warning("Unhandled command type: %s", type(command).__name__)
+            logger.warning(
+                "Unhandled command type: %s", type(command).__name__
+            )
 
     # -------------------------------------------------------------------------
     # Use Cases: Time & Observer Location
@@ -231,10 +255,20 @@ class ApplicationController:
         vertical_ratio: float | None = None,
     ) -> None:
         curr = self._state.user_view.camera
-        new_az = float(azimuth_deg) if azimuth_deg is not None else curr.azimuth
-        new_el = float(elevation_deg) if elevation_deg is not None else curr.elevation
+        new_az = (
+            float(azimuth_deg) if azimuth_deg is not None else curr.azimuth
+        )
+        new_el = (
+            float(elevation_deg)
+            if elevation_deg is not None
+            else curr.elevation
+        )
         new_z = float(zoom) if zoom is not None else curr.zoom
-        new_vr = float(vertical_ratio) if vertical_ratio is not None else curr.vertical_ratio
+        new_vr = (
+            float(vertical_ratio)
+            if vertical_ratio is not None
+            else curr.vertical_ratio
+        )
 
         new_cam = CameraState(
             azimuth=new_az,
@@ -244,13 +278,17 @@ class ApplicationController:
         )
         self._update_state(self._state.with_camera(new_cam))
 
-    def pan_camera(self, delta_azimuth_deg: float, delta_elevation_deg: float) -> None:
+    def pan_camera(
+        self, delta_azimuth_deg: float, delta_elevation_deg: float
+    ) -> None:
         curr = self._state.user_view.camera
         new_az = (curr.azimuth + delta_azimuth_deg) % 360.0
         new_el = max(-90.0, min(90.0, curr.elevation + delta_elevation_deg))
         self.set_camera(azimuth_deg=new_az, elevation_deg=new_el)
 
-    def zoom_camera(self, wheel_steps: float, factor_per_step: float = 1.10) -> None:
+    def zoom_camera(
+        self, wheel_steps: float, factor_per_step: float = 1.10
+    ) -> None:
         curr = self._state.user_view.camera
         factor = factor_per_step ** float(wheel_steps)
         new_zoom = max(0.01, min(100.0, curr.zoom * factor))
@@ -350,7 +388,7 @@ class ApplicationController:
     def process_pick_request(
         self, x: float, y: float, radius: float, purpose: str
     ) -> None:
-        from TerraLab.application.ports.rendering import PickRequest
+        from TerraLab.core.rendering_contracts.contracts import PickRequest
 
         request = PickRequest(
             generation=max(0, self._generation),
@@ -376,8 +414,16 @@ class ApplicationController:
                 object_type=str(payload.get("type", "")),
                 key=str(payload.get("key", payload.get("name", ""))),
                 name=str(payload.get("name", "")),
-                altitude=(float(payload["alt"]) if payload.get("alt") is not None else None),
-                azimuth=(float(payload["az"]) if payload.get("az") is not None else None),
+                altitude=(
+                    float(payload["alt"])
+                    if payload.get("alt") is not None
+                    else None
+                ),
+                azimuth=(
+                    float(payload["az"])
+                    if payload.get("az") is not None
+                    else None
+                ),
             )
         )
 

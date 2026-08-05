@@ -223,3 +223,72 @@ def test_disabling_surface_layer_hides_material_and_does_not_start_sampling(
     assert cancel_calls == [True]
     assert visibility_calls == [False]
     assert tooltip_hides == [True]
+
+
+def test_enabling_surface_activates_topography_before_requesting_data():
+    refresh_calls = []
+    topography_calls = []
+    canvas_updates = []
+    dummy = SimpleNamespace(
+        chk_enable_village=_CheckedBox(False),
+        terrain_coordinator=SimpleNamespace(
+            request_surface_refresh=lambda **kwargs: refresh_calls.append(kwargs)
+        ),
+        canvas=SimpleNamespace(update=lambda: canvas_updates.append(True)),
+        _persist_visibility_state=lambda *_args: None,
+        _surface_refresh_view_kwargs=lambda: {"view_fov_deg": 75.0},
+        on_topography_toggled=lambda checked: topography_calls.append(
+            bool(checked)
+        ),
+    )
+
+    AstronomicalWidget.on_surface_layer_toggled(dummy, True)
+
+    assert dummy.chk_enable_village.checked is True
+    assert topography_calls == [True]
+    assert refresh_calls == [{"profile": None, "view_fov_deg": 75.0}]
+    assert canvas_updates == [True]
+
+
+def test_enabling_surface_starts_missing_terrain_profile_after_bootstrap():
+    refresh_calls = []
+    bake_calls = []
+    dummy = SimpleNamespace(
+        chk_enable_village=_CheckedBox(True),
+        terrain_coordinator=SimpleNamespace(
+            request_surface_refresh=lambda **kwargs: refresh_calls.append(kwargs)
+        ),
+        canvas=SimpleNamespace(update=lambda: None),
+        _persist_visibility_state=lambda *_args: None,
+        _surface_refresh_view_kwargs=lambda: {"view_fov_deg": 75.0},
+        _full_horizon_profile=None,
+        _active_horizon_job_id=None,
+        _async_bootstrap_started=True,
+        _begin_horizon_bake=lambda: bake_calls.append(True),
+    )
+
+    AstronomicalWidget.on_surface_layer_toggled(dummy, True)
+
+    assert refresh_calls == [{"profile": None, "view_fov_deg": 75.0}]
+    assert bake_calls == [True]
+
+
+def test_completed_terrain_profile_does_not_duplicate_surface_sampling():
+    surface_toggle_calls = []
+    dummy = SimpleNamespace(
+        cancel_pending_horizon_preview=lambda: None,
+        canvas=SimpleNamespace(update=lambda: None),
+        on_horizon_progress=lambda _message: None,
+        _set_scene_load_stage=lambda _stage: None,
+        on_surface_layer_toggled=lambda checked: surface_toggle_calls.append(checked),
+        _active_horizon_job_id="job-1",
+    )
+
+    AstronomicalWidget._on_terrain_coordinator_ready(
+        dummy,
+        {"job_id": "job-1", "profile_path": "C:/immutable/profile.npz"},
+    )
+
+    assert dummy._remote_terrain_profile_path == "C:/immutable/profile.npz"
+    assert dummy._remote_terrain_surface_path == ""
+    assert surface_toggle_calls == []

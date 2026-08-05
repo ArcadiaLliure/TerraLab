@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -26,7 +27,7 @@ from TerraLab.application.commands import (
     UserViewState,
 )
 from TerraLab.application.controller import ApplicationController
-from TerraLab.application.ports.rendering import PickResult
+from TerraLab.core.rendering_contracts.contracts import PickResult
 from TerraLab.scene.contracts import (
     CameraState,
     CatalogResource,
@@ -50,12 +51,14 @@ from TerraLab.scene.contracts import (
     freeze_json_mapping,
 )
 from TerraLab.ui.canvas_mixins.interaction import CanvasInteractionMixin
-from TerraLab.ui.frame_presenter import SharedFramePresenter
 from TerraLab.ui.widget_init_helpers import astro_canvas_init
 from TerraLab.scene.constellations import (
     ConstellationGroup,
     ConstellationNode,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class AstroCanvas(CanvasInteractionMixin, QWidget):
@@ -79,15 +82,23 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             runtime.start()
             app.aboutToQuit.connect(runtime.stop)
 
-        self._frame_presenter = SharedFramePresenter(runtime, self)
+        # The composition-selected route owns the compatible presenter.  A
+        # Three.js hosted surface is not represented as a shared raster frame.
+        self._frame_presenter = runtime.render_route.create_presenter(
+            runtime, self
+        )
         controller = getattr(parent, "application_controller", None)
         self._application_controller = (
-            controller if isinstance(controller, ApplicationController) else ApplicationController()
+            controller
+            if isinstance(controller, ApplicationController)
+            else ApplicationController()
         )
         if parent is not None and controller is None:
             # The parent owns the controller lifetime; the canvas is only an
             # input/presentation adapter and may be recreated safely.
-            setattr(parent, "application_controller", self._application_controller)
+            setattr(
+                parent, "application_controller", self._application_controller
+            )
         self._frame_presenter.setAttribute(
             Qt.WA_TransparentForMouseEvents, True
         )
@@ -188,9 +199,10 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
         try:
             self._frame_presenter.submit(self._next_scene_frame())
         except Exception:
-            log_suppressed_exception(
-                __name__, "AstroCanvas._submit_process_scene"
-            )
+            # A scene that cannot reach the active renderer must never turn
+            # into an unexplained black surface.  This is not a best-effort
+            # repaint: it is the only frame submission path for Three.js.
+            logger.exception("Unable to submit the resolved scene frame")
 
     def _on_process_frame_presented(
         self, _generation: int, _render_ms: float
@@ -1190,20 +1202,27 @@ class AstroCanvas(CanvasInteractionMixin, QWidget):
             )
 
     def _on_process_pick(self, result: object) -> None:
-        if not isinstance(result, dict):
+        typed_result = result if isinstance(result, PickResult) else None
+        payload = (
+            dict(typed_result.payload) if typed_result is not None else result
+        )
+        if not isinstance(payload, dict):
             return
         # Runtime already resolved the hit against its plan.  The canvas only
         # presents it; application state remains the single selection owner.
         try:
             self._application_controller.process_pick_result(
-                PickResult(
+                typed_result
+                if typed_result is not None
+                else PickResult(
                     generation=int(getattr(self, "_scene_generation", 0)),
                     request_id="qt-presenter",
-                    payload=freeze_json_mapping(result),
+                    payload=freeze_json_mapping(payload),
                 )
             )
         except (TypeError, ValueError):
             log_suppressed_exception(__name__, "AstroCanvas.pick_state")
+        result = payload
         if str(result.get("purpose", "")) == "hover":
             if result.get("kind") != "surface":
                 QToolTip.hideText()

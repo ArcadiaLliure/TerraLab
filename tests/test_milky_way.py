@@ -12,7 +12,7 @@ from astropy.io import fits
 from PyQt5.QtGui import QImage, QPainter
 
 from TerraLab.render.sky.milkyway_overlay import MilkyWayOverlay
-from TerraLab.render.sky_renderer import SkyRenderer
+from TerraLab.render.sky_renderer import LegacySkyLayerAdapter
 from TerraLab.light_pollution.modes import (
     LP_MODE_AUTOMATIC,
     LP_MODE_MAGNITUDE,
@@ -342,7 +342,7 @@ def test_stars_disabled_does_not_raise_and_returns_empty_result() -> None:
                 },
             },
         )
-        result = SkyRenderer().render(ctx, state)
+        result = LegacySkyLayerAdapter().paint_layers(ctx, state)
     finally:
         painter.end()
 

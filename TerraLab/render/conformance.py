@@ -9,12 +9,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from TerraLab.application.ports.rendering import (
+from TerraLab.core.rendering_contracts.contracts import (
+    CommandStreamOutput,
     PickRequest,
     PickResult,
     RasterFrameOutput,
-    RecordingOutput,
     RenderBackendLifecycleError,
+    RenderCapability,
     RenderFailure,
     RenderOutputPort,
     RendererBackend,
@@ -204,7 +205,7 @@ class BackendConformanceSuite:
         if backend.backend_id == "recording":
             assert len(port.frames) == 1
             out = port.frames[0]
-            assert isinstance(out, (RecordingOutput, RasterFrameOutput))
+            assert isinstance(out, (CommandStreamOutput, RasterFrameOutput))
             assert out.generation == 1
 
         backend.close()
@@ -233,6 +234,10 @@ class BackendConformanceSuite:
         port = MockRenderOutputPort()
         backend.start(port)
 
+        if RenderCapability.PICKING not in backend.capabilities:
+            backend.close()
+            return
+
         frame = create_minimal_test_frame(1)
         backend.submit(frame)
 
@@ -244,6 +249,13 @@ class BackendConformanceSuite:
             purpose="select",
         )
         res = backend.request_pick(req)
+        # Hosted renderers return through RenderOutputPort after their live
+        # surface has observed the click.  They must not manufacture a
+        # synchronous CPU response just to satisfy this generic suite.
+        if res is None:
+            assert not port.picks
+            backend.close()
+            return
         assert isinstance(res, PickResult)
         assert res.generation == 1
         assert res.request_id == "test-pick-1"

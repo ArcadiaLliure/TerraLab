@@ -18,6 +18,7 @@ from PyQt5.QtCore import (
     pyqtSignal,
 )
 
+from TerraLab.bootstrap.composition import RenderRoute, build_render_route
 from TerraLab.runtime.protocol import (
     Envelope,
     HEARTBEAT,
@@ -48,15 +49,14 @@ class _WorkerState:
 
 
 class RuntimeSupervisor(QObject):
-    """Own render/compute processes without ever waiting on the GUI thread."""
+    """Own isolated compute processes without blocking the GUI thread."""
 
     message_received = pyqtSignal(str, object)
     worker_ready = pyqtSignal(str)
     worker_failed = pyqtSignal(str, str)
     worker_unavailable = pyqtSignal(str, str)
 
-    _MODULES = {
-        "render": "TerraLab.runtime.render_service",
+    _AUXILIARY_MODULES = {
         "compute": "TerraLab.runtime.compute_service",
     }
 
@@ -65,10 +65,13 @@ class RuntimeSupervisor(QObject):
         parent: QObject | None = None,
         *,
         render_backend: str | None = None,
+        render_route: RenderRoute | None = None,
     ) -> None:
         super().__init__(parent)
         self._workers: dict[str, _WorkerState] = {}
-        self._render_backend = str(render_backend or "").strip() or None
+        self._render_route = render_route or build_render_route(
+            explicit_backend=render_backend
+        )
         self._closing = False
         self._shutdown_timer = QTimer(self)
         self._shutdown_timer.setSingleShot(True)
@@ -79,11 +82,17 @@ class RuntimeSupervisor(QObject):
         self._heartbeat_timer.timeout.connect(self._check_workers)
 
     def start(self) -> None:
-        for role, module in self._MODULES.items():
+        for role, module in self._AUXILIARY_MODULES.items():
             if role not in self._workers:
                 self._workers[role] = self._create_worker(role, module)
             self._start_worker(self._workers[role])
         self._heartbeat_timer.start()
+
+    @property
+    def render_route(self) -> RenderRoute:
+        """The composition-selected backend/target/presenter lifecycle."""
+
+        return self._render_route
 
     def is_ready(self, role: str) -> bool:
         state = self._workers.get(str(role))
@@ -130,9 +139,7 @@ class RuntimeSupervisor(QObject):
             process = state.process
             if process.state() == QProcess.NotRunning:
                 continue
-            remaining_ms = max(
-                0, int((deadline - time.monotonic()) * 1000.0)
-            )
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000.0))
             if remaining_ms and process.waitForFinished(remaining_ms):
                 continue
             process.terminate()
@@ -202,12 +209,8 @@ class RuntimeSupervisor(QObject):
         existing_pythonpath = environment.value("PYTHONPATH", "")
         pythonpath = str(import_root)
         if existing_pythonpath:
-            pythonpath = (
-                pythonpath + os.pathsep + existing_pythonpath
-            )
+            pythonpath = pythonpath + os.pathsep + existing_pythonpath
         environment.insert("PYTHONPATH", pythonpath)
-        if state.role == "render" and self._render_backend is not None:
-            environment.insert("TERRALAB_RENDER_BACKEND", self._render_backend)
         state.process.setProcessEnvironment(environment)
         state.process.setWorkingDirectory(str(import_root))
         state.process.setProgram(sys.executable)
@@ -235,9 +238,8 @@ class RuntimeSupervisor(QObject):
 
         if state.pending is None:
             state.pending = deque()
-        latest_wins = message.kind == "scene_snapshot" or (
-            message.kind == "compute_request"
-            and bool(message.request_id)
+        latest_wins = message.kind == "compute_request" and bool(
+            message.request_id
         )
         if latest_wins:
             state.pending = deque(
@@ -331,16 +333,10 @@ class RuntimeSupervisor(QObject):
         for state in self._workers.values():
             if state.process.state() != QProcess.Running:
                 continue
-            if (
-                (state.ready and now - state.last_heartbeat_mono > 6.0)
-                or (
-                    not state.ready
-                    and now - state.started_mono > 10.0
-                )
+            if (state.ready and now - state.last_heartbeat_mono > 6.0) or (
+                not state.ready and now - state.started_mono > 10.0
             ):
-                state.failure_reason = (
-                    f"{state.role} worker heartbeat timeout"
-                )
+                state.failure_reason = f"{state.role} worker heartbeat timeout"
                 state.process.terminate()
                 continue
             self.send(

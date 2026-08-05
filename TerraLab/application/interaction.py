@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Mapping
 
-from TerraLab.application.ports.rendering import PickRequest, PickResult
+from TerraLab.core.rendering_contracts.contracts import PickRequest, PickResult
 from TerraLab.scene.contracts import freeze_json_mapping
+from TerraLab.scene.contracts import SelectionState
 from TerraLab.scene.picking import PickIndex
 from TerraLab.scene.plans.interaction import (
     MeasurementItemPlan,
@@ -74,9 +76,13 @@ class SelectionStateStore:
             self.selected_key = str(star_info.get("id", self.selected_key))
             self.selected_name = f"Gaia #{self.selected_key}"
         sx = payload.get("screen_x")
-        self.screen_x = float(sx) if isinstance(sx, (int, float, str)) else None
+        self.screen_x = (
+            float(sx) if isinstance(sx, (int, float, str)) else None
+        )
         sy = payload.get("screen_y")
-        self.screen_y = float(sy) if isinstance(sy, (int, float, str)) else None
+        self.screen_y = (
+            float(sy) if isinstance(sy, (int, float, str)) else None
+        )
         self.extra = dict(payload)
 
 
@@ -87,9 +93,11 @@ class ApplicationInteractionController:
         self._selection = SelectionStateStore()
         self._active_pipeline = resolve_picking_pipeline()
         self._last_generation = 0
-        self._measurement_items: list[dict[str, Any]] = []
+        self._measurement_items: list[MeasurementItemPlan] = []
         self._measurement_tool = "none"
-        self._undo_stack: list[list[dict[str, Any]]] = []
+        self._measurement_start: tuple[float, float] | None = None
+        self._measurement_preview: MeasurementItemPlan | None = None
+        self._measurement_clear_revision = -1
 
     @property
     def selection(self) -> SelectionStateStore:
@@ -140,6 +148,120 @@ class ApplicationInteractionController:
         if purpose in ("select", "context"):
             self._selection.update_from_pick(payload)
 
+    def sync_selection(
+        self,
+        selection: SelectionState,
+        pick_index: PickIndex,
+        screen_position: tuple[float, float] | None = None,
+    ) -> None:
+        """Adopt the application snapshot; renderer state is never consulted."""
+
+        if not selection.kind:
+            self._selection.clear()
+            return
+        payload: dict[str, Any] = {
+            "kind": selection.kind,
+            "type": selection.object_type,
+            "key": selection.key,
+            "name": selection.name,
+            "alt": selection.altitude or 0.0,
+            "az": selection.azimuth or 0.0,
+        }
+        if selection.star is not None:
+            payload["star"] = {
+                "name": selection.star.name,
+                "mag": selection.star.magnitude,
+            }
+        if screen_position is not None:
+            payload["screen_x"], payload["screen_y"] = screen_position
+        elif selection.altitude is not None and selection.azimuth is not None:
+            result = pick_index.query(
+                float(self._selection.screen_x or 0.0),
+                float(self._selection.screen_y or 0.0),
+                0.0,
+            )
+            if result.get("kind") != "none":
+                payload.update(result)
+        self._selection.update_from_pick(payload)
+
+    def sync_measurement(self, tool: str, clear_revision: int) -> None:
+        """Synchronise measurement intent from the controller-built frame."""
+
+        self._measurement_tool = str(tool or "none")
+        if int(clear_revision) != self._measurement_clear_revision:
+            self._measurement_items.clear()
+            self._measurement_start = None
+            self._measurement_preview = None
+            self._measurement_clear_revision = int(clear_revision)
+
+    def process_interaction_request(
+        self, request: PickRequest, pick_index: PickIndex
+    ) -> PickResult:
+        """Apply the declared measurement command in application state."""
+
+        if request.generation < self._last_generation:
+            return PickResult(
+                request.generation,
+                request.request_id,
+                {"kind": "interaction", "handled": False, "stale": True},
+            )
+        self._last_generation = request.generation
+        action = str(request.action or "")
+        sky = pick_index.unproject(float(request.x), float(request.y))
+        handled = False
+        if (
+            action == "press"
+            and sky is not None
+            and self._measurement_tool != "none"
+        ):
+            self._measurement_start = sky
+            self._measurement_preview = None
+            handled = True
+        elif (
+            action == "move"
+            and sky is not None
+            and self._measurement_start is not None
+        ):
+            self._measurement_preview = build_measurement_item_plan(
+                self._measurement_tool, self._measurement_start, sky
+            )
+            handled = True
+        elif (
+            action == "release"
+            and sky is not None
+            and self._measurement_start is not None
+        ):
+            self._measurement_items.append(
+                build_measurement_item_plan(
+                    self._measurement_tool,
+                    self._measurement_start,
+                    sky,
+                    selected=True,
+                )
+            )
+            self._measurement_start = None
+            self._measurement_preview = None
+            handled = True
+        elif action == "undo" and self._measurement_items:
+            self._measurement_items.pop()
+            handled = True
+        elif action == "delete" and self._measurement_items:
+            self._measurement_items.pop()
+            handled = True
+        elif action == "cancel":
+            self._measurement_start = None
+            self._measurement_preview = None
+            handled = True
+        return PickResult(
+            request.generation,
+            request.request_id,
+            {
+                "kind": "interaction",
+                "handled": handled,
+                "domain": "measurement",
+            },
+        )
+
     def build_selection_plan(
         self, generation: int, pulse_phase: float = 0.0
     ) -> SelectionPlan:
@@ -147,6 +269,7 @@ class ApplicationInteractionController:
         if self._selection.selected_kind is None:
             return SelectionPlan(generation=generation)
 
+        pulse = 0.5 * (math.sin(float(pulse_phase) * 2.0 * math.pi) + 1.0)
         return SelectionPlan(
             generation=generation,
             selected_kind=self._selection.selected_kind,
@@ -155,28 +278,15 @@ class ApplicationInteractionController:
             screen_x=self._selection.screen_x,
             screen_y=self._selection.screen_y,
             pulse_phase=float(pulse_phase),
-            pulse_radius_px=24.0,
-            pulse_alpha=1.0,
+            pulse_radius_px=14.0 + pulse * 4.0,
+            pulse_alpha=(85.0 + (1.0 - pulse) * 120.0) / 255.0,
         )
 
     def build_measurement_plan(self, generation: int) -> MeasurementPlan:
         """Build an immutable MeasurementPlan for the view presenter."""
-        item_plans: list[MeasurementItemPlan] = []
-        for item in self._measurement_items:
-            tool = str(item.get("tool", "none"))
-            a = item.get("a", (0.0, 0.0))
-            b = item.get("b", (0.0, 0.0))
-            rot = float(item.get("rotation_deg", 0.0))
-            sel = bool(item.get("selected", False))
-            item_plans.append(
-                build_measurement_item_plan(
-                    tool=tool, a=a, b=b, rotation_deg=rot, selected=sel
-                )
-            )
-
         return MeasurementPlan(
             generation=generation,
-            items=tuple(item_plans),
-            preview=None,
+            items=tuple(self._measurement_items),
+            preview=self._measurement_preview,
             active_tool=self._measurement_tool,
         )

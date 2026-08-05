@@ -3,6 +3,51 @@
   "classification_source": "docs/migration/terralab-decoupling/mvc-file-map.md",
   "entries": [
     {
+      "path": "TerraLab/application/overlay_interaction_planning.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "06",
+      "replaces": ["TerraLab/runtime/offscreen_renderer.py"],
+      "rationale": "Coordinates resolved overlays, selection, measurements and generation-bound picking without paint calls."
+    },
+    {
+      "path": "TerraLab/scene/plans/overlays.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "06",
+      "replaces": [],
+      "rationale": "Defines immutable screen-space overlay primitives shared by presentation backends."
+    },
+    {
+      "path": "TerraLab/application/celestial_planning.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": ["TerraLab/runtime/offscreen_renderer.py"],
+      "rationale": "Coordinates typed celestial planning and data handles without QPainter calls."
+    },
+    {
+      "path": "TerraLab/data/catalogs/render_cache.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": ["TerraLab/runtime/offscreen_renderer.py"],
+      "rationale": "Owns read-only star-catalogue mmap lifetimes and exposes typed array views."
+    },
+    {
+      "path": "TerraLab/scene/plans/celestial.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "05",
+      "replaces": [],
+      "rationale": "Groups fully resolved renderer-neutral celestial plans for one generation."
+    },
+    {
       "path": "TerraLab/__init__.py",
       "mvc_role": "OUTSIDE_MVC",
       "technical_role": "ENTRYPOINT",
@@ -192,15 +237,6 @@
       "rationale": "Application command or use-case coordination."
     },
     {
-      "path": "TerraLab/application/ports/rendering.py",
-      "mvc_role": "CONTROLLER",
-      "technical_role": "APPLICATION_SERVICE",
-      "status": "TARGET",
-      "introduced_or_resolved_in_phase": "02",
-      "replaces": [],
-      "rationale": "Application command or use-case coordination."
-    },
-    {
       "path": "TerraLab/application/ports/sky_resources.py",
       "mvc_role": "CONTROLLER",
       "technical_role": "APPLICATION_SERVICE",
@@ -370,6 +406,15 @@
       "introduced_or_resolved_in_phase": "02",
       "replaces": [],
       "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
+    },
+    {
+      "path": "TerraLab/application/render_controller.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "12",
+      "replaces": ["TerraLab/application/hosted_surface_controller.py"],
+      "rationale": "Coordinates the renderer-neutral plan, CPU pick policy, backend output, and lifecycle for every presenter."
     },
     {
       "path": "TerraLab/bootstrap/composition.py",
@@ -1101,15 +1146,6 @@
       "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
     },
     {
-      "path": "TerraLab/infrastructure/runtime/render_service.py",
-      "mvc_role": "OUTSIDE_MVC",
-      "technical_role": "DATA_ADAPTER",
-      "status": "BASELINE",
-      "introduced_or_resolved_in_phase": "01",
-      "replaces": [],
-      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
-    },
-    {
       "path": "TerraLab/layers/__init__.py",
       "mvc_role": "MODEL",
       "technical_role": "SCIENTIFIC_DOMAIN",
@@ -1246,15 +1282,6 @@
     },
     {
       "path": "TerraLab/render/qpainter/__init__.py",
-      "mvc_role": "VIEW",
-      "technical_role": "QT_PRESENTATION",
-      "status": "TARGET",
-      "introduced_or_resolved_in_phase": "02",
-      "replaces": [],
-      "rationale": "Qt widget, presenter, or rendering presentation adapter."
-    },
-    {
-      "path": "TerraLab/render/qpainter/backend.py",
       "mvc_role": "VIEW",
       "technical_role": "QT_PRESENTATION",
       "status": "TARGET",
@@ -1461,15 +1488,6 @@
       "rationale": "Qt widget, presenter, or rendering presentation adapter."
     },
     {
-      "path": "TerraLab/render/threejs/diagnostic.py",
-      "mvc_role": "VIEW",
-      "technical_role": "QT_PRESENTATION",
-      "status": "BASELINE",
-      "introduced_or_resolved_in_phase": "01",
-      "replaces": [],
-      "rationale": "Qt widget, presenter, or rendering presentation adapter."
-    },
-    {
       "path": "TerraLab/render/threejs/protocol.py",
       "mvc_role": "VIEW",
       "technical_role": "QT_PRESENTATION",
@@ -1524,25 +1542,7 @@
       "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
     },
     {
-      "path": "TerraLab/runtime/offscreen_renderer.py",
-      "mvc_role": "OUTSIDE_MVC",
-      "technical_role": "RUNTIME_ADAPTER",
-      "status": "TARGET",
-      "introduced_or_resolved_in_phase": "06",
-      "replaces": [],
-      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
-    },
-    {
       "path": "TerraLab/runtime/protocol.py",
-      "mvc_role": "OUTSIDE_MVC",
-      "technical_role": "RUNTIME_ADAPTER",
-      "status": "BASELINE",
-      "introduced_or_resolved_in_phase": "01",
-      "replaces": [],
-      "rationale": "Technical adapter, bootstrap, entrypoint, or development tool."
-    },
-    {
-      "path": "TerraLab/runtime/render_service.py",
       "mvc_role": "OUTSIDE_MVC",
       "technical_role": "RUNTIME_ADAPTER",
       "status": "BASELINE",
@@ -3016,6 +3016,42 @@
       "introduced_or_resolved_in_phase": "05",
       "replaces": [],
       "rationale": "Pure scientific/domain data or algorithms; no presentation API."
+    },
+    {
+      "path": "TerraLab/ui/hosted_surface_presenter.py",
+      "mvc_role": "VIEW",
+      "technical_role": "QT_PRESENTATION",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "02",
+      "replaces": [],
+      "rationale": "Qt hosted-surface presenter; it submits neutral frames and presents acknowledgements without raster coercion."
+    },
+    {
+      "path": "TerraLab/application/terrain_planning.py",
+      "mvc_role": "CONTROLLER",
+      "technical_role": "APPLICATION_SERVICE",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "13",
+      "replaces": ["TerraLab/runtime/offscreen_renderer.py"],
+      "rationale": "Coordinates prepared terrain resources and publishes renderer-neutral terrain work orders."
+    },
+    {
+      "path": "TerraLab/data/terrain_plan_resources.py",
+      "mvc_role": "OUTSIDE_MVC",
+      "technical_role": "DATA_ADAPTER",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "13",
+      "replaces": ["TerraLab/runtime/offscreen_renderer.py"],
+      "rationale": "Loads immutable profile and sampled-surface artifacts before terrain planning."
+    },
+    {
+      "path": "TerraLab/scene/plans/terrain.py",
+      "mvc_role": "MODEL",
+      "technical_role": "SCIENTIFIC_DOMAIN",
+      "status": "TARGET",
+      "introduced_or_resolved_in_phase": "13",
+      "replaces": ["TerraLab/terrain/overlay_mixins/draw_dispatch.py"],
+      "rationale": "Builds CPU-resolved terrain geometry, material buffers, profile triangles and surface hit records."
     }
   ]
 }

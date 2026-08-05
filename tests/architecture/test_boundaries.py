@@ -60,6 +60,65 @@ def test_domain_and_layer_boundaries() -> None:
     _assert_no_imports(PACKAGE / "ui", ("scripts", "tools"))
 
 
+def test_phase_02_render_contracts_do_not_depend_on_qt_or_backends() -> None:
+    contracts = PACKAGE / "scene" / "contracts.py"
+    forbidden = (
+        "PyQt5",
+        "TerraLab.application",
+        "TerraLab.render",
+        "TerraLab.runtime",
+        "TerraLab.ui",
+    )
+    imports = _imports(contracts)
+    assert not [
+        imported
+        for imported in imports
+        if any(
+            imported == prefix or imported.startswith(f"{prefix}.")
+            for prefix in forbidden
+        )
+    ]
+    _assert_no_imports(
+        PACKAGE / "application",
+        ("PyQt5", "TerraLab.render", "TerraLab.ui"),
+    )
+    removed_render_runtime = (
+        PACKAGE / "runtime" / "offscreen_renderer.py",
+        PACKAGE / "runtime" / "render_service.py",
+        PACKAGE / "runtime" / "hosted_surface_service.py",
+    )
+    assert not [path for path in removed_render_runtime if path.exists()]
+
+
+def test_final_core_and_infrastructure_boundaries_are_graphics_free() -> None:
+    """Qt may exist only below the selected PyQt presentation adapter."""
+
+    forbidden = (
+        "PyQt5",
+        "PySide",
+        "Qt",
+        "TerraLab.ui",
+        "TerraLab.widgets",
+    )
+    for relative in (
+        "core",
+        "application",
+        "infrastructure",
+    ):
+        path = PACKAGE / relative
+        if path.exists():
+            _assert_no_imports(path, forbidden)
+
+    legacy_render_modules = (
+        PACKAGE / "runtime" / "offscreen_renderer.py",
+        PACKAGE / "runtime" / "render_service.py",
+        PACKAGE / "runtime" / "hosted_surface_service.py",
+        PACKAGE / "infrastructure" / "runtime" / "render_service.py",
+        PACKAGE / "infrastructure" / "runtime" / "hosted_surface_service.py",
+    )
+    assert not [path for path in legacy_render_modules if path.exists()]
+
+
 def test_ui_process_cannot_import_science_or_render_implementations() -> None:
     _assert_no_imports(
         PACKAGE / "ui",
@@ -191,7 +250,9 @@ def test_renderers_do_not_expose_parallel_impl_functions() -> None:
     assert not violations, "\n".join(violations)
 
 
-def test_packages_do_not_use_numbered_fragments_or_dynamic_namespace_copying() -> None:
+def test_packages_do_not_use_numbered_fragments_or_dynamic_namespace_copying() -> (
+    None
+):
     source_roots = (PACKAGE, ROOT / "tests")
     numbered = [
         path.relative_to(ROOT).as_posix()
@@ -229,16 +290,33 @@ def test_packages_do_not_use_numbered_fragments_or_dynamic_namespace_copying() -
             if not isinstance(node, ast.Call):
                 if (
                     isinstance(node, (ast.Assign, ast.AnnAssign))
-                    and isinstance(node.targets[0] if isinstance(node, ast.Assign) else node.target, ast.Subscript)
                     and isinstance(
-                        (node.targets[0] if isinstance(node, ast.Assign) else node.target).value,
+                        node.targets[0]
+                        if isinstance(node, ast.Assign)
+                        else node.target,
+                        ast.Subscript,
+                    )
+                    and isinstance(
+                        (
+                            node.targets[0]
+                            if isinstance(node, ast.Assign)
+                            else node.target
+                        ).value,
                         ast.Call,
                     )
                     and isinstance(
-                        (node.targets[0] if isinstance(node, ast.Assign) else node.target).value.func,
+                        (
+                            node.targets[0]
+                            if isinstance(node, ast.Assign)
+                            else node.target
+                        ).value.func,
                         ast.Name,
                     )
-                    and (node.targets[0] if isinstance(node, ast.Assign) else node.target).value.func.id
+                    and (
+                        node.targets[0]
+                        if isinstance(node, ast.Assign)
+                        else node.target
+                    ).value.func.id
                     == "globals"
                 ):
                     namespace_copying.append(
@@ -301,17 +379,13 @@ def test_pure_terrain_render_does_not_perform_file_io() -> None:
                 violations.append(
                     f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:open"
                 )
-            if (
-                isinstance(node.func, ast.Attribute)
-                and node.func.attr
-                in {
-                    "open",
-                    "read_bytes",
-                    "read_text",
-                    "write_bytes",
-                    "write_text",
-                }
-            ):
+            if isinstance(node.func, ast.Attribute) and node.func.attr in {
+                "open",
+                "read_bytes",
+                "read_text",
+                "write_bytes",
+                "write_text",
+            }:
                 violations.append(
                     f"{path.relative_to(ROOT).as_posix()}:{node.lineno}:"
                     f"{node.func.attr}"

@@ -117,22 +117,42 @@ class TextMetricsProvider(Protocol):
 class PlanetLabelSource(Protocol):
     """Projected planet data required for a label candidate only."""
 
-    key: str
-    screen_x: float
-    screen_y: float
-    radius_px: float
-    rgba: RGBA
-    label: str
+    @property
+    def key(self) -> str: ...
+
+    @property
+    def screen_x(self) -> float: ...
+
+    @property
+    def screen_y(self) -> float: ...
+
+    @property
+    def radius_px(self) -> float: ...
+
+    @property
+    def rgba(self) -> RGBA: ...
+
+    @property
+    def label(self) -> str: ...
 
 
 class DeepSkyLabelSource(Protocol):
     """Projected deep-sky glyph data required for a label candidate only."""
 
-    name: str
-    screen_x: float
-    screen_y: float
-    radius_x_px: float
-    rgba: RGBA
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def screen_x(self) -> float: ...
+
+    @property
+    def screen_y(self) -> float: ...
+
+    @property
+    def radius_x_px(self) -> float: ...
+
+    @property
+    def rgba(self) -> RGBA: ...
 
 
 @dataclass(frozen=True, slots=True)

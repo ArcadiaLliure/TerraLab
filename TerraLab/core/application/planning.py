@@ -1,138 +1,106 @@
-"""Application-owned conversion from a SceneFrame to renderer-neutral plans."""
+"""Application-owned composition of typed renderer-neutral render plans."""
 
 from __future__ import annotations
 
 from TerraLab.core.rendering_contracts.plans import (
+    ArtifactResource,
+    Bounds,
+    InteractionAffordance,
     InteractionPlan,
-    MaterialBatch,
     PickingPlan,
     RenderPlanBundle,
     ResourcePlan,
     SceneRenderPlan,
-    SpriteBatch,
-    TextBatch,
 )
-from TerraLab.scene.contracts import SceneFrame, freeze_json_mapping
+from TerraLab.scene.contracts import ResourceRef, SceneFrame
 
 
 class SceneRenderPlanner:
-    """Resolve the common cross-backend plan envelope for a scene frame.
+    """Compose the common render envelope without inventing draw primitives.
 
-    Capability-specific planners can enrich the ordered plans without changing
-    a backend.  This first composition step deliberately records only plain
-    values already resolved by ``SceneFrameBuilder``; adapters never inspect
-    widgets or derive visibility policy.
+    Capability planners supply ``SceneRenderPlan.primitives`` only after they
+    have resolved geometry, culling, text layout and material inputs on CPU.
+    This composer therefore publishes the frame ordering and versioned CPU
+    artifacts, but deliberately does not turn a viewport or a selection name
+    into a fake drawable primitive.
     """
 
-    def build(self, frame: SceneFrame) -> RenderPlanBundle:
-        resources = ResourcePlan(
-            freeze_json_mapping(
-                {
-                    "catalog": frame.resources.catalog.catalog_path,
-                    "ngc": frame.resources.ngc.path or "",
-                    "terrain_profile": frame.resources.terrain_profile.path or "",
-                    "terrain_surface": frame.resources.terrain_surface.path or "",
-                    "milkyway_texture": frame.resources.milkyway_texture.path or "",
-                    "dust_map": frame.resources.dust_map.path or "",
-                }
-            )
+    @staticmethod
+    def _artifact(
+        resource_id: str,
+        kind: str,
+        resource: ResourceRef,
+    ) -> ArtifactResource | None:
+        source = resource.path or resource.handle
+        if not source:
+            return None
+        return ArtifactResource(
+            resource_id=resource_id,
+            kind=kind,
+            source=source,
+            version=resource.version or "unversioned",
+            handle=resource.handle,
         )
+
+    def build(self, frame: SceneFrame) -> RenderPlanBundle:
+        resource_specs = (
+            self._artifact(
+                "ngc-catalog", "catalog", frame.resources.ngc
+            ),
+            self._artifact(
+                "terrain-profile", "terrain-profile", frame.resources.terrain_profile
+            ),
+            self._artifact(
+                "terrain-surface", "terrain-surface", frame.resources.terrain_surface
+            ),
+            self._artifact(
+                "milkyway-texture", "texture", frame.resources.milkyway_texture
+            ),
+            self._artifact("dust-map", "texture", frame.resources.dust_map),
+        )
+        artifacts = tuple(item for item in resource_specs if item is not None)
+        catalog = frame.resources.catalog
+        if catalog.catalog_path:
+            artifacts += (
+                ArtifactResource(
+                    resource_id="star-catalog",
+                    kind="catalog",
+                    source=catalog.catalog_path,
+                    version=catalog.version or "unversioned",
+                ),
+            )
+
         plans = tuple(
             SceneRenderPlan(
                 capability=layer.value,
-                geometry=(
-                    freeze_json_mapping(
-                        {
-                            "kind": "viewport",
-                            "x": 0.0,
-                            "y": 0.0,
-                            "width": frame.viewport.width,
-                            "height": frame.viewport.height,
-                        }
-                    ),
-                ),
-                materials=(
-                    MaterialBatch(
-                        "layer",
-                        freeze_json_mapping(
-                            {
-                                "opacity": 1.0,
-                                "bortle": frame.bortle,
-                                "magnitude_limit": frame.magnitude_limit,
-                            }
-                        ),
-                    ),
-                ),
-                sprites=(
-                    SpriteBatch(
-                        "selection",
-                        (
-                            freeze_json_mapping(
-                                {
-                                    "name": frame.selection.name,
-                                    "kind": frame.selection.kind,
-                                }
-                            ),
-                        )
-                        if frame.selection.name or frame.selection.kind
-                        else (),
-                    ),
-                ),
-                text=(
-                    TextBatch(
-                        "selection_label",
-                        (
-                            freeze_json_mapping(
-                                {"text": frame.selection.name}
-                            ),
-                        )
-                        if frame.selection.name
-                        else (),
-                    ),
-                ),
-                metadata=freeze_json_mapping(
-                    {
-                        "enabled": True,
-                        "generation": frame.generation,
-                        "camera_azimuth": frame.camera.azimuth,
-                        "camera_elevation": frame.camera.elevation,
-                    }
-                ),
+                layer_order=index,
+                frame_generation=frame.generation,
             )
-            for layer in frame.layers.order
+            for index, layer in enumerate(frame.layers.order)
         )
-        selected = frame.selection
-        records = ()
-        if selected.kind or selected.key or selected.name:
-            records = (
-                freeze_json_mapping(
-                    {
-                        "kind": selected.kind,
-                        "key": selected.key,
-                        "name": selected.name,
-                        "alt": selected.altitude if selected.altitude is not None else 0.0,
-                        "az": selected.azimuth if selected.azimuth is not None else 0.0,
-                    }
-                ),
-            )
+        viewport_bounds = Bounds(
+            minimum=(0.0, 0.0, 0.0),
+            maximum=(float(frame.viewport.width), float(frame.viewport.height), 0.0),
+        )
         return RenderPlanBundle(
             generation=frame.generation,
             frame=frame,
             plans=plans,
-            resources=resources,
-            picking=PickingPlan(frame.generation, records=records),
+            resources=ResourcePlan(
+                frame_generation=frame.generation,
+                artifacts=artifacts,
+            ),
+            picking=PickingPlan(frame.generation),
             interaction=InteractionPlan(
                 frame.generation,
                 affordances=(
-                    freeze_json_mapping(
-                        {"active": frame.presentation.interaction_active}
+                    InteractionAffordance(
+                        affordance_id="scene-input",
+                        action="scene-input",
+                        bounds=viewport_bounds,
+                        active=frame.presentation.interaction_active,
+                        layer_order=0,
                     ),
                 ),
-            ),
-            metadata=freeze_json_mapping(
-                {
-                    "schema_version": frame.schema_version,
-                    "plan_count": len(plans),
-                }
             ),
         )

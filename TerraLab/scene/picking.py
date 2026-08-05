@@ -35,6 +35,8 @@ class PickRecord:
             "alt": float(self.alt_deg),
             "az": float(self.az_deg) % 360.0,
             "screen_distance": float(screen_distance),
+            "screen_x": float(self.screen_x),
+            "screen_y": float(self.screen_y),
         }
         if self.kind == "star":
             star_dict: dict[str, Any] = {
@@ -199,3 +201,8 @@ class PickIndex:
             "alt": float(sky_alt),
             "az": float(sky_az),
         }
+
+    def unproject(self, x: float, y: float) -> tuple[float, float] | None:
+        """Return the Model-defined sky coordinate for a normalised pointer."""
+
+        return self.unproject_fn(float(x), float(y)) if self.unproject_fn else None

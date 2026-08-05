@@ -31,6 +31,14 @@ class TerraLabMainWindow(QMainWindow):
 
         self.viewer = AstronomicalWidget(parent=self, frameless=False)
         self.setCentralWidget(self.viewer)
+        # ``AstroCanvas`` obtains the presenter solely from the composition
+        # route.  With ``threejs`` that object is HostedSurfacePresenter and
+        # its QWebEngine surface is therefore physically inside this window.
+        self.render_surface = getattr(
+            getattr(self.viewer, "canvas", None),
+            "_frame_presenter",
+            None,
+        )
         self._build_application_menu()
         self._build_runtime_status()
 

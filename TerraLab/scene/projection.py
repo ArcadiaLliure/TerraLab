@@ -97,8 +97,30 @@ def project_universal_stereo_point(
     height: int,
     camera: Camera,
 ) -> Optional[Tuple[float, float]]:
-    az_rel = math.radians(float(az_deg) - float(camera.azimuth_offset))
-    alt_rad = math.radians(float(alt_deg))
+    try:
+        altitude = float(alt_deg)
+        azimuth = float(az_deg)
+        camera_azimuth = float(camera.azimuth_offset)
+        camera_elevation = float(camera.elevation_angle)
+        zoom = float(camera.zoom_level)
+        vertical_ratio = float(camera.vertical_offset_ratio)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not all(
+        math.isfinite(value)
+        for value in (
+            altitude,
+            azimuth,
+            camera_azimuth,
+            camera_elevation,
+            zoom,
+            vertical_ratio,
+        )
+    ):
+        return None
+
+    az_rel = math.radians(azimuth - camera_azimuth)
+    alt_rad = math.radians(altitude)
 
     cos_alt = math.cos(alt_rad)
     sin_alt = math.sin(alt_rad)
@@ -113,17 +135,15 @@ def project_universal_stereo_point(
     x = k * cos_alt * sin_az
     y = k * sin_alt
 
-    scale_h = height * 0.5 * float(camera.zoom_level)
+    scale_h = height * 0.5 * zoom
     cx = width * 0.5
-    cy_base = (height * 0.5) + (height * float(camera.vertical_offset_ratio))
+    cy_base = (height * 0.5) + (height * vertical_ratio)
 
-    y_center_val = 2.0 * math.tan(
-        math.radians(float(camera.elevation_angle)) * 0.5
-    )
+    y_center_val = 2.0 * math.tan(math.radians(camera_elevation) * 0.5)
     sx = cx + x * scale_h
     sy = cy_base - (y - y_center_val) * scale_h
 
-    return sx, sy
+    return (sx, sy) if math.isfinite(sx) and math.isfinite(sy) else None
 
 
 def project_universal_stereo_numpy(

@@ -7,11 +7,10 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from TerraLab.application.ports.rendering import (
+from TerraLab.core.rendering_contracts.contracts import (
     CommandStreamOutput,
     CommandStreamTarget,
     PickRequest,
-    PickResult,
     PresenterKind,
     RenderBackendLifecycleError,
     RenderCapability,
@@ -44,14 +43,13 @@ class RecordingRendererBackend(RendererBackend):
     capabilities = frozenset(
         {
             RenderCapability.COMMAND_STREAM,
-            RenderCapability.PICKING,
-            RenderCapability.INTERACTION,
             RenderCapability.SKY_BACKGROUND,
             RenderCapability.RECORDING,
         }
     )
     presenter_kinds = frozenset({PresenterKind.RECORDING})
     target_kinds = frozenset({RenderTargetKind.COMMAND_STREAM})
+    requires_host_pick = False
 
     def __init__(self) -> None:
         self._started = False
@@ -190,42 +188,13 @@ class RecordingRendererBackend(RendererBackend):
         self,
         request: PickRequest,
         plan: RenderPlanBundle | None = None,
-    ) -> PickResult:
+    ) -> None:
+        """Recording has no visual surface and deliberately has no picking."""
+
         self._require_started()
-        if request.generation < 0:
-            raise ValueError("PickRequest generation cannot be negative")
-
-        purpose = str(request.purpose or "select")
-        payload: dict[str, Any] = {
-            "generation": int(request.generation),
-            "request_id": str(request.request_id),
-            "purpose": purpose,
-            "x": float(request.x),
-            "y": float(request.y),
-        }
-
-        if purpose == "hover":
-            payload["kind"] = "surface"
-            payload["surface"] = "ground"
-        elif purpose == "interaction":
-            payload["kind"] = "interaction"
-            payload["action"] = str(request.action)
-            payload["options"] = (
-                dict(request.options) if request.options else {}
-            )
-        else:
-            payload["kind"] = "sky"
-            payload["alt"] = 0.0
-            payload["az"] = 0.0
-
-        result = PickResult(
-            generation=int(request.generation),
-            request_id=str(request.request_id),
-            payload=freeze_json_mapping(payload),
+        raise RenderBackendLifecycleError(
+            "Recording backend does not implement visual picking"
         )
-        if self._output_port is not None:
-            self._output_port.pick_ready(result)
-        return result
 
     def close(self) -> None:
         if self._closed:

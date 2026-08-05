@@ -110,10 +110,11 @@ TerraLab = [
     "terrain/land_cover/legends/*.txt",
     "ui/onboarding/assets/*.html",
     "ui/onboarding/assets/audio/*.mp3",
+    "render/threejs/assets/*.html",
+    "render/threejs/assets/*.js",
 ]
 
 [project.urls]
 Homepage = "https://github.com/ArcadiaLliure/TerraLab"
 Repository = "https://github.com/ArcadiaLliure/TerraLab"
 Issues = "https://github.com/ArcadiaLliure/TerraLab/issues"
-

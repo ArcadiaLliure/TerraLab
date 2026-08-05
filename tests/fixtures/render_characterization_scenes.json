@@ -1,0 +1,199 @@
+{
+  "schema_version": 1,
+  "viewport": {
+    "width": 320,
+    "height": 180,
+    "device_pixel_ratio": 1.0
+  },
+  "scenes": [
+    {
+      "id": "day",
+      "family": "day_twilight_night",
+      "snapshot": {
+        "ut_hour": 12.0,
+        "day_of_year_utc": 172,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "bortle": 4,
+        "camera": {"azimuth": 180.0, "elevation": 35.0, "zoom": 1.0, "vertical_ratio": 0.0},
+        "layers": ["grid", "sun_moon"],
+        "hud_visible": true,
+        "loading": false
+      }
+    },
+    {
+      "id": "twilight",
+      "family": "day_twilight_night",
+      "snapshot": {
+        "ut_hour": 19.5,
+        "day_of_year_utc": 172,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "bortle": 4,
+        "camera": {"azimuth": 250.0, "elevation": 28.0, "zoom": 1.1, "vertical_ratio": 0.0},
+        "layers": ["grid", "sun_moon"],
+        "hud_visible": true,
+        "loading": false
+      }
+    },
+    {
+      "id": "night",
+      "family": "day_twilight_night",
+      "snapshot": {
+        "ut_hour": 22.0,
+        "day_of_year_utc": 172,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "bortle": 4,
+        "camera": {"azimuth": 180.0, "elevation": 45.0, "zoom": 1.0, "vertical_ratio": 0.0},
+        "layers": ["stars", "grid", "milkyway", "deep_sky"],
+        "hud_visible": true,
+        "loading": false
+      }
+    },
+    {
+      "id": "dense_scope",
+      "family": "dense_scope",
+      "snapshot": {
+        "ut_hour": 22.0,
+        "day_of_year_utc": 172,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "bortle": 3,
+        "camera": {"azimuth": 180.0, "elevation": 45.0, "zoom": 8.0, "vertical_ratio": 0.0},
+        "layers": ["stars", "grid", "deep_sky"],
+        "scope_enabled": true,
+        "scope_center_sky": [45.0, 180.0],
+        "scope_fov_deg": [1.2, 0.8],
+        "scope_shape": "circle",
+        "hud_visible": true,
+        "loading": false
+      }
+    },
+    {
+      "id": "solar_moon_planets_eclipse",
+      "family": "solar_moon_planets_eclipse",
+      "snapshot": {
+        "ut_hour": 18.0,
+        "day_of_year_utc": 223,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "bortle": 4,
+        "camera": {"azimuth": 180.0, "elevation": 35.0, "zoom": 2.0, "vertical_ratio": 0.0},
+        "layers": ["sun_moon", "planets", "solar_system", "grid"],
+        "ephemeris": {
+          "timestamp_utc": "2026-08-12T18:00:00+00:00",
+          "sun": {"alt": 45.0, "az": 180.0, "rad_deg": 0.2666},
+          "moon": {"alt": 45.0, "az": 180.1, "rad_deg": 0.2725, "illumination": 0.0, "sep_real": 0.1}
+        },
+        "hud_visible": true,
+        "loading": false
+      }
+    },
+    {
+      "id": "milky_way_ngc",
+      "family": "milky_way_ngc",
+      "snapshot": {
+        "ut_hour": 22.0,
+        "day_of_year_utc": 172,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "bortle": 2,
+        "camera": {"azimuth": 180.0, "elevation": 50.0, "zoom": 1.4, "vertical_ratio": 0.0},
+        "layers": ["milkyway", "deep_sky", "grid", "stars"],
+        "milkyway": {"enabled": true},
+        "hud_visible": true,
+        "loading": false
+      }
+    },
+    {
+      "id": "terrain_profile",
+      "family": "terrain_profile_relief",
+      "snapshot": {
+        "ut_hour": 12.0,
+        "day_of_year_utc": 172,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "camera": {"azimuth": 180.0, "elevation": -18.0, "zoom": 1.0, "vertical_ratio": 0.0},
+        "layers": ["terrain", "grid"],
+        "terrain": {"profile_asset": "profile", "horizon_enabled": true, "topography_enabled": true, "surface_enabled": false, "terrain_3d_enabled": false},
+        "hud_visible": true,
+        "loading": false
+      }
+    },
+    {
+      "id": "terrain_relief",
+      "family": "terrain_profile_relief",
+      "snapshot": {
+        "ut_hour": 12.0,
+        "day_of_year_utc": 172,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "camera": {"azimuth": 180.0, "elevation": -18.0, "zoom": 1.0, "vertical_ratio": 0.0},
+        "layers": ["terrain", "grid"],
+        "terrain": {"profile_asset": "relief", "horizon_enabled": true, "topography_enabled": true, "surface_enabled": false, "terrain_3d_enabled": true},
+        "hud_visible": true,
+        "loading": false
+      }
+    },
+    {
+      "id": "surface_rgb",
+      "family": "surface_rgb_categorical",
+      "snapshot": {
+        "ut_hour": 12.0,
+        "day_of_year_utc": 172,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "camera": {"azimuth": 180.0, "elevation": -18.0, "zoom": 1.0, "vertical_ratio": 0.0},
+        "layers": ["terrain", "grid"],
+        "terrain": {"profile_asset": "relief", "surface_asset": "rgb", "horizon_enabled": true, "topography_enabled": true, "surface_enabled": true, "terrain_3d_enabled": true, "surface_visual_style": "original"},
+        "hud_visible": true,
+        "loading": false
+      }
+    },
+    {
+      "id": "surface_categorical",
+      "family": "surface_rgb_categorical",
+      "snapshot": {
+        "ut_hour": 12.0,
+        "day_of_year_utc": 172,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "camera": {"azimuth": 180.0, "elevation": -18.0, "zoom": 1.0, "vertical_ratio": 0.0},
+        "layers": ["terrain", "grid"],
+        "terrain": {"profile_asset": "relief", "surface_asset": "categorical", "horizon_enabled": true, "topography_enabled": true, "surface_enabled": true, "terrain_3d_enabled": true, "surface_visual_style": "original"},
+        "hud_visible": true,
+        "loading": false
+      }
+    },
+    {
+      "id": "selection_measurement_constellation",
+      "family": "selection_measurement_constellation",
+      "snapshot": {
+        "ut_hour": 22.0,
+        "day_of_year_utc": 172,
+        "year_utc": 2026,
+        "latitude": 41.2,
+        "longitude": 0.8,
+        "camera": {"azimuth": 180.0, "elevation": 45.0, "zoom": 1.0, "vertical_ratio": 0.0},
+        "layers": ["grid"],
+        "selection": {"kind": "sky", "alt": 45.0, "az": 180.0, "name": "Fixture selection"},
+        "measurement": {"tool": "ruler", "clear_revision": 0},
+        "constellation": {"enabled": true, "visible": true, "groups": [{"name": "Fixture line", "nodes": [{"ra": 0.0, "dec": 0.0, "star_id": "a", "star_name": "A", "connect": false}, {"ra": 5.0, "dec": 5.0, "star_id": "b", "star_name": "B", "connect": true}]}]},
+        "interactions": [{"action": "press", "x": 150.0, "y": 90.0}, {"action": "move", "x": 180.0, "y": 100.0}, {"action": "release", "x": 180.0, "y": 100.0}],
+        "hud_visible": true,
+        "loading": false
+      }
+    }
+  ]
+}

@@ -6,6 +6,15 @@ import math
 from dataclasses import dataclass, field
 from typing import Mapping
 
+from TerraLab.scene.plans.labels import (
+    FontStyle,
+    ScreenRect,
+    StrokeStyle,
+    TextMetricsProvider,
+    TextStyle,
+)
+from TerraLab.scene.projection import project_universal_stereo_point
+from TerraLab.scene.render_state import RenderState
 from TerraLab.scene.spherical_math import (
     angular_delta_signed,
     angular_distance,
@@ -55,6 +64,144 @@ class MeasurementPlan:
     items: tuple[MeasurementItemPlan, ...] = ()
     preview: MeasurementItemPlan | None = None
     active_tool: str = "none"
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenMeasurementLabel:
+    """Already measured text box for a measurement overlay."""
+
+    text: tuple[str, ...]
+    bounds: ScreenRect
+    baseline: tuple[float, float]
+    style: TextStyle
+    background_rgba: tuple[int, int, int, int]
+    corner_radius_px: float
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenMeasurementItem:
+    """Projected measurement geometry that a View can paint directly."""
+
+    paths: tuple[tuple[tuple[float, float], ...], ...]
+    line_style: StrokeStyle
+    glow_style: StrokeStyle
+    handles: tuple[tuple[float, float], ...]
+    handle_radius_px: float
+    label: ScreenMeasurementLabel | None
+    selected: bool
+
+
+@dataclass(frozen=True, slots=True)
+class ScreenMeasurementPlan:
+    """Resolved screen-space measurement primitives for one frame."""
+
+    generation: int
+    items: tuple[ScreenMeasurementItem, ...] = ()
+    preview: ScreenMeasurementItem | None = None
+
+
+_MEASUREMENT_FONT = FontStyle("Arial", 11.0, 400)
+
+
+def _project_path(
+    path: tuple[SkyCoord, ...], state: RenderState, width: int, height: int
+) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        (float(point[0]), float(point[1]))
+        for altitude, azimuth in path
+        if (point := project_universal_stereo_point(
+            altitude, azimuth, width, height, state.camera
+        )) is not None
+    )
+
+
+def project_measurement_item(
+    item: MeasurementItemPlan,
+    state: RenderState,
+    width: int,
+    height: int,
+    metrics: TextMetricsProvider,
+    *,
+    preview: bool = False,
+) -> ScreenMeasurementItem:
+    """Resolve measurement screen geometry and label bounds outside the View."""
+
+    alpha = 140 if preview else 220
+    line_rgba = (255, 245, 120, alpha) if item.selected else (255, 255, 255, alpha)
+    glow_rgba = (
+        (255, 255, 180, int(alpha * 0.45))
+        if item.selected
+        else (255, 255, 255, int(alpha * 0.35))
+    )
+    paths = tuple(
+        points for path in item.paths_sky
+        if len(points := _project_path(path, state, width, height)) >= 2
+    )
+    handles = tuple(
+        (float(point[0]), float(point[1]))
+        for sky in item.handles_sky.values()
+        if (point := project_universal_stereo_point(
+            sky[0], sky[1], width, height, state.camera
+        )) is not None
+    )
+    label: ScreenMeasurementLabel | None = None
+    if item.label:
+        anchor = project_universal_stereo_point(
+            item.anchor_sky[0], item.anchor_sky[1], width, height, state.camera
+        )
+        if anchor is not None:
+            lines = tuple(line for line in item.label.split("\n") if line)
+            style = TextStyle(_MEASUREMENT_FONT, (255, 255, 255, alpha))
+            measured = tuple(metrics.measure_text(line, style) for line in lines)
+            line_height = max((measure.height_px for measure in measured), default=1.0)
+            box_width = min(
+                320.0,
+                max(1.0, max((measure.advance_px for measure in measured), default=0.0) + 12.0),
+            )
+            box_height = max(1.0, line_height * len(lines) + 8.0)
+            x, y = float(anchor[0]) + 8.0, float(anchor[1]) + 8.0
+            label = ScreenMeasurementLabel(
+                lines,
+                ScreenRect(x, y, box_width, box_height),
+                (x + 6.0, y + 4.0 + max((measure.ascent_px for measure in measured), default=0.0)),
+                style,
+                (0, 0, 0, min(205, alpha)),
+                5.0,
+            )
+    return ScreenMeasurementItem(
+        paths,
+        StrokeStyle(line_rgba, 1.2 if item.selected else 1.0),
+        StrokeStyle(glow_rgba, 3.2 if item.selected else 3.0),
+        handles if item.selected else (),
+        4.0,
+        label,
+        item.selected,
+    )
+
+
+def project_measurement_plan(
+    plan: MeasurementPlan,
+    state: RenderState,
+    width: int,
+    height: int,
+    metrics: TextMetricsProvider,
+) -> ScreenMeasurementPlan:
+    """Project a pure measurement plan once; presentation code never projects it."""
+
+    return ScreenMeasurementPlan(
+        generation=plan.generation,
+        items=tuple(
+            project_measurement_item(item, state, width, height, metrics)
+            for item in plan.items
+        ),
+        preview=(
+            project_measurement_item(
+                plan.preview, state, width, height, metrics, preview=True
+            )
+            if plan.preview is not None
+            else None
+        ),
+    )
 
 
 def build_measurement_item_plan(

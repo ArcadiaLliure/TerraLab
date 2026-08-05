@@ -886,16 +886,6 @@ def _angular_radius_px_local(
     return max(1.0, float(angular_radius_deg) * float(fallback_pixels_per_deg))
 
 
-def _disc_visibility_floor_px(canvas) -> float:
-    """Small on-screen floor so Sun/Moon remain readable in wide FOV views."""
-    try:
-        side = float(min(int(canvas.width()), int(canvas.height())))
-        # ~2 px at 1080p, capped to avoid oversized discs.
-        return float(max(1.8, min(3.0, side * 0.0019)))
-    except Exception:
-        return 2.0
-
-
 def draw_skyfield_objects(
     canvas, painter, ut_hour, day_of_year, ambient_light=1.0, mag_limit=None
 ):
@@ -1001,9 +991,8 @@ def draw_skyfield_objects(
                 moon_ang_vis_deg,
                 pixels_per_deg,
             )
-            min_disc_px = _disc_visibility_floor_px(canvas)
-            sun_radius_px = max(float(min_disc_px), float(sun_radius_px))
-            moon_radius_px = max(float(min_disc_px), float(moon_radius_px))
+            sun_radius_px = max(0.05, float(sun_radius_px))
+            moon_radius_px = max(0.05, float(moon_radius_px))
             if scope_disc_cap_px is not None:
                 sun_radius_px = min(sun_radius_px, float(scope_disc_cap_px))
                 moon_radius_px = min(moon_radius_px, float(scope_disc_cap_px))
@@ -1340,9 +1329,8 @@ def draw_skyfield_objects(
             moon_ang_vis_deg,
             pixels_per_deg,
         )
-        min_disc_px = _disc_visibility_floor_px(canvas)
-        sun_radius_px = max(float(min_disc_px), float(sun_radius_px))
-        moon_radius_px = max(float(min_disc_px), float(moon_radius_px))
+        sun_radius_px = max(0.05, float(sun_radius_px))
+        moon_radius_px = max(0.05, float(moon_radius_px))
 
         # --- SUN COLOR (Atmospheric Extinction) ---
         # Zenith: White/Yellow

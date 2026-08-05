@@ -1,16 +1,22 @@
-"""Three.js hosted surface renderer backend implementation."""
+"""Three.js View adapter for resolved celestial and overlay render plans.
+
+The adapter owns lifecycle, bridge transport and GPU presentation only.  It
+receives the same immutable celestial plans that QPainter consumes; it neither
+selects scientific data nor recalculates projection, photometry or visibility.
+"""
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
 
-from TerraLab.application.ports.rendering import (
+from TerraLab.core.rendering_contracts.contracts import (
     HostedSurfaceOutput,
     HostedSurfaceTarget,
     PickRequest,
     PickResult,
     RenderBackendLifecycleError,
     RenderCapability,
+    RenderFailure,
     RenderOutput,
     RenderOutputPort,
     RenderTarget,
@@ -19,12 +25,18 @@ from TerraLab.application.ports.rendering import (
 )
 from TerraLab.core.rendering_contracts.plans import RenderPlanBundle
 from TerraLab.render.threejs.bridge import ThreeJSBridge
-from TerraLab.render.threejs.diagnostic import build_diagnostic_primitive_manifest
-from TerraLab.scene.contracts import JSONValue, SceneFrame, freeze_json_mapping
+from TerraLab.render.threejs.protocol import (
+    BridgeViewport,
+    OP_ERROR,
+    OP_PICK_RESULT,
+    PreparedBridgeFrame,
+    prepare_celestial_plan_bundle,
+)
+from TerraLab.scene.contracts import JSONValue, freeze_json_mapping
 
 
 class ThreeJSRendererBackend(RendererBackend):
-    """Hosted surface backend utilizing local Three.js bridge and primitives."""
+    """Present resolved sky and overlay layers in a hosted WebGL view."""
 
     backend_id = "threejs"
     capabilities = frozenset(
@@ -46,14 +58,18 @@ class ThreeJSRendererBackend(RendererBackend):
         }
     )
     target_kinds = frozenset({RenderTargetKind.HOSTED_SURFACE})
+    requires_host_pick = True
 
     def __init__(self, bridge: ThreeJSBridge | None = None) -> None:
         self._started = False
         self._closed = False
         self._output_port: RenderOutputPort | None = None
         self._bridge = bridge or ThreeJSBridge()
-        self._last_frame_generation = -1
+        self._attached_viewport: BridgeViewport | None = None
         self._history: dict[int, Mapping[str, JSONValue]] = {}
+        self._latest_plan: RenderPlanBundle | None = None
+        self._pending_picks: dict[tuple[int, str], PickRequest] = {}
+        self._bridge.add_inbound_listener(self._on_bridge_message)
 
     @property
     def is_started(self) -> bool:
@@ -67,69 +83,96 @@ class ThreeJSRendererBackend(RendererBackend):
     def bridge(self) -> ThreeJSBridge:
         return self._bridge
 
+    def bind_host_bridge(self, bridge: ThreeJSBridge) -> None:
+        """Bind the single bridge owned by the live WebEngine host.
+
+        Composition creates the renderer without Qt. The presenter supplies
+        its already-connected host bridge before the backend is started, which
+        prevents a second, unbound presentation route.
+        """
+
+        if self._started or self._closed:
+            raise RenderBackendLifecycleError(
+                "Three.js host bridge can only be bound before start"
+            )
+        if bridge is self._bridge:
+            return
+        self._bridge.remove_inbound_listener(self._on_bridge_message)
+        self._bridge = bridge
+        self._bridge.add_inbound_listener(self._on_bridge_message)
+
     def start(self, output_port: RenderOutputPort) -> None:
         if self._closed:
             raise RenderBackendLifecycleError(
                 "Cannot restart a closed Three.js backend"
             )
         if self._started:
-            raise RenderBackendLifecycleError("Three.js backend is already started")
-
+            raise RenderBackendLifecycleError(
+                "Three.js backend is already started"
+            )
         self._started = True
         self._output_port = output_port
-        self._bridge.start({"width": 1920, "height": 1080, "dpr": 1.0})
 
-    def submit_diagnostic_frame(self, surface_id: str = "threejs-surface-0") -> HostedSurfaceOutput:
-        """Submit and render the diagnostic scene for Phase 19 verification."""
+    def attach_surface(self, target: HostedSurfaceTarget) -> None:
+        """Start or resize the bridge with the live host dimensions."""
+
         self._require_started()
-        diag_manifest = build_diagnostic_primitive_manifest()
-        gen = int(diag_manifest["generation"])  # type: ignore[arg-type]
-        self._bridge.submit_frame(gen, diag_manifest)
-        self._history[gen] = diag_manifest
-        self._last_frame_generation = gen
-
-        output = HostedSurfaceOutput(
-            generation=gen,
-            surface_id=surface_id,
-            metadata=freeze_json_mapping(
-                {
-                    "backend": self.backend_id,
-                    "diagnostic": True,
-                    "primitives_count": len(diag_manifest["primitives"]),  # type: ignore[arg-type]
-                }
-            ),
+        viewport = BridgeViewport(
+            width=target.width,
+            height=target.height,
+            device_pixel_ratio=target.device_pixel_ratio,
         )
-        if self._output_port is not None:
-            self._output_port.frame_ready(output)
-        return output
+        if self._bridge.is_started:
+            if viewport != self._attached_viewport:
+                self._bridge.resize(viewport)
+        else:
+            self._bridge.start(viewport)
+        self._attached_viewport = viewport
+
+    @staticmethod
+    def prepare_celestial_plan_for_bridge(
+        plan: RenderPlanBundle,
+    ) -> PreparedBridgeFrame:
+        """Pack resolved celestial and overlay attributes for WebGL."""
+
+        return prepare_celestial_plan_bundle(plan)
 
     def render(
         self,
         plan: RenderPlanBundle,
         target: RenderTarget,
     ) -> RenderOutput:
-        """Render a plan bundle onto a HostedSurfaceTarget."""
         self._require_started()
         if not isinstance(target, HostedSurfaceTarget):
             raise TypeError(
-                f"Three.js backend requires HostedSurfaceTarget, got {type(target).__name__}"
+                "Three.js requires a HostedSurfaceTarget, got "
+                f"{type(target).__name__}"
             )
-
-        gen = int(plan.generation)
-        frame_manifest = self._build_plan_bundle_manifest(plan)
-        self._bridge.submit_frame(gen, frame_manifest)
-        self._history[gen] = frame_manifest
-        self._last_frame_generation = gen
-
+        self.attach_surface(target)
+        prepared = self.prepare_celestial_plan_for_bridge(plan)
+        self._bridge.submit_prepared_frame(prepared)
+        self._history[plan.generation] = prepared.manifest
+        self._latest_plan = plan
+        self._pending_picks = {
+            key: request
+            for key, request in self._pending_picks.items()
+            if key[0] >= plan.generation
+        }
         output = HostedSurfaceOutput(
-            generation=gen,
+            generation=plan.generation,
             surface_id=target.surface_id,
             metadata=freeze_json_mapping(
                 {
                     "backend": self.backend_id,
-                    "plans_count": len(plan.plans),
-                    "viewport_width": target.width,
-                    "viewport_height": target.height,
+                    "plan_native": True,
+                    "celestial_plan_native": plan.celestial is not None,
+                    "overlay_plan_native": plan.overlays is not None,
+                    "terrain_plan_native": any(
+                        primitive.kind == "terrain_mesh"
+                        for scene_plan in plan.plans
+                        for primitive in scene_plan.primitives
+                    ),
+                    "typed_binary_transport": True,
                 }
             ),
         )
@@ -137,96 +180,51 @@ class ThreeJSRendererBackend(RendererBackend):
             self._output_port.frame_ready(output)
         return output
 
-    def _build_plan_bundle_manifest(self, bundle: RenderPlanBundle) -> Mapping[str, Any]:
-        frame = bundle.frame
-        primitives: list[dict[str, Any]] = []
-
-        for p in bundle.plans:
-            cap = p.capability
-            if cap == "sky_background":
-                for g in p.geometry:
-                    primitives.append({"kind": "sky_gradient", "geometry": dict(g)})
-            elif cap == "stars":
-                for s in p.sprites:
-                    primitives.append({"kind": "star_batch", "name": s.name, "count": len(s.items)})
-            elif cap in ("sun_moon", "planets", "solar_system", "ephemeris_bodies"):
-                for m in p.materials:
-                    primitives.append({"kind": "celestial_body", "name": m.name, "values": dict(m.values)})
-            elif cap in ("milkyway", "deep_sky"):
-                for g in p.geometry:
-                    primitives.append({"kind": "milkyway_mesh", "geometry": dict(g)})
-            elif cap == "grid":
-                for g in p.geometry:
-                    primitives.append({"kind": "grid_lines", "geometry": dict(g)})
-            elif cap in ("labels", "hud"):
-                for t in p.text:
-                    primitives.append({"kind": "label_text", "name": t.name, "count": len(t.items)})
-            elif cap == "scope":
-                for g in p.geometry:
-                    primitives.append({"kind": "scope_mask", "geometry": dict(g)})
-            elif cap == "constellations":
-                for g in p.geometry:
-                    primitives.append({"kind": "constellation_segment", "geometry": dict(g)})
-            elif cap in ("measurements", "picking"):
-                for g in p.geometry:
-                    primitives.append({"kind": "measurement_pulse", "geometry": dict(g)})
-            elif cap in ("terrain_geometry", "terrain"):
-                for g in p.geometry:
-                    primitives.append({"kind": "terrain_mesh", "geometry": dict(g)})
-            elif cap == "terrain_materials":
-                for m in p.materials:
-                    primitives.append({"kind": "terrain_material", "name": m.name, "values": dict(m.values)})
-
-        return {
-            "generation": int(frame.generation),
-            "viewport": {
-                "width": int(frame.viewport.width),
-                "height": int(frame.viewport.height),
-                "dpr": float(frame.viewport.device_pixel_ratio),
-            },
-            "bortle": int(frame.bortle),
-            "magnitude_limit": float(frame.magnitude_limit),
-            "layers": [str(layer) for layer in frame.layers.order],
-            "primitives": primitives,
-        }
-
     def request_pick(
         self,
         request: PickRequest,
         plan: RenderPlanBundle | None = None,
-    ) -> PickResult:
+    ) -> None:
+        """Ask the live Three.js host for an asynchronous visual hit.
+
+        There is deliberately no CPU PickIndex fallback here: a Three.js pick
+        is valid only when its matching host response arrives.
+        """
+
         self._require_started()
-        if request.generation < 0:
-            raise ValueError("PickRequest generation cannot be negative")
-
-        gen = int(request.generation)
-        req_id = str(request.request_id)
-        purpose = str(request.purpose or "select")
-        self._bridge.request_pick(gen, req_id, request.x, request.y, purpose)
-
-        payload: dict[str, Any] = {
-            "generation": gen,
-            "request_id": req_id,
-            "backend": self.backend_id,
-            "x": float(request.x),
-            "y": float(request.y),
-            "purpose": purpose,
-        }
-        if purpose in ("hover", "surface", "ground"):
-            payload["kind"] = "surface"
-            payload["surface"] = "ground"
-            payload["hit"] = True
-        else:
-            payload["hit"] = False
-
-        result = PickResult(
-            generation=gen,
-            request_id=req_id,
-            payload=freeze_json_mapping(payload),
+        active_plan = plan or self._latest_plan
+        if (
+            active_plan is None
+            or active_plan.generation != request.generation
+            or not self._bridge.is_started
+        ):
+            self._report_failure(
+                operation="pick_request",
+                message="No matching rendered Three.js generation for pick",
+                generation=request.generation,
+                request_id=request.request_id,
+                code="stale_or_unrendered_generation",
+            )
+            return
+        key = (request.generation, request.request_id)
+        self._pending_picks[key] = request
+        self._bridge.request_pick(
+            request.generation,
+            request.request_id,
+            request.x,
+            request.y,
+            request.radius,
+            request.purpose,
+            request.action,
+            request.options,
         )
-        if self._output_port is not None:
-            self._output_port.pick_ready(result)
-        return result
+
+    def get_frame_manifest(
+        self, generation: int
+    ) -> Mapping[str, JSONValue] | None:
+        """Expose the exact typed transport only for backend conformance tests."""
+
+        return self._history.get(int(generation))
 
     def close(self) -> None:
         if self._closed:
@@ -235,25 +233,113 @@ class ThreeJSRendererBackend(RendererBackend):
         self._started = False
         self._bridge.close()
         self._output_port = None
-
-    def get_frame_manifest(self, generation: int) -> Mapping[str, JSONValue] | None:
-        return self._history.get(int(generation))
-
-    def _build_frame_manifest(self, frame: SceneFrame) -> Mapping[str, Any]:
-        return {
-            "generation": int(frame.generation),
-            "viewport": {
-                "width": int(frame.viewport.width),
-                "height": int(frame.viewport.height),
-                "dpr": float(frame.viewport.device_pixel_ratio),
-            },
-            "bortle": int(frame.bortle),
-            "magnitude_limit": float(frame.magnitude_limit),
-            "layers": [str(layer) for layer in frame.layers.order],
-        }
+        self._attached_viewport = None
+        self._latest_plan = None
+        self._history.clear()
+        self._pending_picks.clear()
+        self._bridge.remove_inbound_listener(self._on_bridge_message)
 
     def _require_started(self) -> None:
         if self._closed:
             raise RenderBackendLifecycleError("Three.js backend is closed")
         if not self._started:
-            raise RenderBackendLifecycleError("Three.js backend has not started")
+            raise RenderBackendLifecycleError(
+                "Three.js backend has not started"
+            )
+
+    def _on_bridge_message(self, message: Mapping[str, JSONValue]) -> None:
+        """Route validated host events into the neutral output port."""
+
+        operation = str(message.get("op", ""))
+        if operation == OP_PICK_RESULT:
+            self._publish_host_pick(message)
+        elif operation == OP_ERROR:
+            payload = message.get("payload")
+            details = payload if isinstance(payload, Mapping) else {}
+            raw_generation = message.get("gen", 0)
+            self._report_failure(
+                operation=str(details.get("operation", "host")),
+                message=str(details.get("message", "Unknown Three.js error")),
+                generation=(
+                    int(raw_generation)
+                    if isinstance(raw_generation, int)
+                    else 0
+                ),
+                request_id=(
+                    str(details["request_id"])
+                    if isinstance(details.get("request_id"), str)
+                    else None
+                ),
+                code=(
+                    str(details["code"])
+                    if isinstance(details.get("code"), str)
+                    else None
+                ),
+            )
+
+    def _publish_host_pick(self, message: Mapping[str, JSONValue]) -> None:
+        payload = message.get("payload")
+        if not isinstance(payload, Mapping):
+            self._report_failure(
+                operation="pick_result",
+                message="Three.js returned a non-object pick payload",
+                generation=_message_generation(message),
+                code="invalid_pick_payload",
+            )
+            return
+        generation = _message_generation(message)
+        request_id = str(payload.get("request_id", ""))
+        request = self._pending_picks.pop((generation, request_id), None)
+        if request is None:
+            return
+        if (
+            self._latest_plan is None
+            or generation != request.generation
+            or generation != self._latest_plan.generation
+        ):
+            return
+        response = dict(payload)
+        response["purpose"] = request.purpose
+        response["generation"] = generation
+        if isinstance(response.get("magnitude"), (int, float)):
+            response.setdefault("mag", response["magnitude"])
+        if not isinstance(response.get("kind"), str):
+            object_kind = response.get("object_kind")
+            response["kind"] = (
+                object_kind
+                if isinstance(object_kind, str) and object_kind
+                else "none"
+            )
+        result = PickResult(
+            generation=generation,
+            request_id=request_id,
+            payload=freeze_json_mapping(response),
+        )
+        if self._output_port is not None:
+            self._output_port.pick_ready(result)
+
+    def _report_failure(
+        self,
+        *,
+        operation: str,
+        message: str,
+        generation: int = 0,
+        request_id: str | None = None,
+        code: str | None = None,
+    ) -> None:
+        if self._output_port is not None:
+            self._output_port.backend_failed(
+                RenderFailure(
+                    backend_id=self.backend_id,
+                    operation=operation,
+                    message=message,
+                    generation=generation,
+                    request_id=request_id,
+                    code=code,
+                )
+            )
+
+
+def _message_generation(message: Mapping[str, JSONValue]) -> int:
+    value = message.get("gen", 0)
+    return int(value) if isinstance(value, int) else 0

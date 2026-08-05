@@ -236,19 +236,6 @@ class CelestialBodiesPlanner:
         )
 
     @staticmethod
-    def celestial_disc_visual_factor(physical_radius_px: float) -> float:
-        """Magnify discs uniformly while retaining eclipse contact geometry."""
-
-        radius = max(0.05, float(physical_radius_px))
-        if radius <= 36.0:
-            scale = 4.0
-        elif radius < 96.0:
-            scale = 4.0 - 3.0 * ((radius - 36.0) / 60.0)
-        else:
-            scale = 1.0
-        return max(scale, 18.0 / radius)
-
-    @staticmethod
     def _sun_colours(altitude_deg: float) -> tuple[RGBA, RGBA]:
         if altitude_deg < 5.0:
             return (255, 190, 72, 255), (255, 108, 22, 255)
@@ -350,7 +337,7 @@ class CelestialBodiesPlanner:
                 ),
             )
         )
-        physical_sun_geometry = self.refracted_disc_geometry(
+        sun_geometry = self.refracted_disc_geometry(
             sun_altitude,
             sun_azimuth,
             sun_radius,
@@ -370,18 +357,7 @@ class CelestialBodiesPlanner:
         )
         picks: list[BodyPickRecord] = []
         sun_plan: SunDiscPlan | None = None
-        sun_geometry = physical_sun_geometry
         if show_sun_moon and sun_geometry is not None:
-            visual_factor = self.celestial_disc_visual_factor(
-                sun_geometry.radius_x_px
-            )
-            sun_geometry = RefractedDiscPlan(
-                sun_geometry.screen_x,
-                sun_geometry.screen_y,
-                sun_geometry.radius_x_px * visual_factor,
-                sun_geometry.radius_y_px * visual_factor,
-                sun_geometry.apparent_altitude_deg,
-            )
             totality = bool(
                 moon_radius >= sun_radius
                 and separation <= max(0.0, moon_radius - sun_radius)
@@ -431,37 +407,6 @@ class CelestialBodiesPlanner:
                 ),
             )
             eclipsing = separation < sun_radius + moon_radius
-            eclipse_presentation = separation < 4.0
-            if (
-                eclipse_presentation
-                and sun_plan is not None
-                and physical_sun_geometry is not None
-            ):
-                factor = self.celestial_disc_visual_factor(
-                    physical_sun_geometry.radius_x_px
-                )
-                moon_geometry = RefractedDiscPlan(
-                    sun_plan.geometry.screen_x
-                    + (moon_geometry.screen_x - sun_plan.geometry.screen_x)
-                    * factor,
-                    sun_plan.geometry.screen_y
-                    + (moon_geometry.screen_y - sun_plan.geometry.screen_y)
-                    * factor,
-                    moon_geometry.radius_x_px * factor,
-                    moon_geometry.radius_y_px * factor,
-                    moon_geometry.apparent_altitude_deg,
-                )
-            else:
-                factor = self.celestial_disc_visual_factor(
-                    moon_geometry.radius_x_px
-                )
-                moon_geometry = RefractedDiscPlan(
-                    moon_geometry.screen_x,
-                    moon_geometry.screen_y,
-                    moon_geometry.radius_x_px * factor,
-                    moon_geometry.radius_y_px * factor,
-                    moon_geometry.apparent_altitude_deg,
-                )
             visibility = daylight_moon_alpha(
                 illumination=illumination,
                 elongation_deg=separation,

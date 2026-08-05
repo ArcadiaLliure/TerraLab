@@ -14,7 +14,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from TerraLab.application.ports.rendering import (
+from TerraLab.core.rendering_contracts.contracts import (
     CommandStreamTarget,
     RenderOutputPort,
 )
